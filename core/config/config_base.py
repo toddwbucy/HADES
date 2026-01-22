@@ -152,8 +152,10 @@ class BaseConfig(BaseModel, ABC):
             instance.validate_full()
             return instance
         except ValidationError as e:
-            raise ConfigValidationError("Failed to create from dict",
-                                      [f"{err['loc']}: {err['msg']}" for err in e.errors])
+            raise ConfigValidationError(
+                "Failed to create from dict",
+                [f"{err['loc']}: {err['msg']}" for err in e.errors()]
+            ) from e
 
     @classmethod
     def from_json(cls: Type[T], json_str: str) -> T:
