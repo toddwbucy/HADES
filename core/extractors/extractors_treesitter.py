@@ -146,7 +146,7 @@ class TreeSitterExtractor:
             symbols = self._extract_language_symbols(tree, content, language)
             
             # Calculate metrics
-            metrics = self._calculate_metrics(tree, content)
+            metrics = self._calculate_metrics(tree, content, language)
             
             # Extract structure
             structure = self._extract_structure(tree, content, language)
@@ -678,7 +678,7 @@ class TreeSitterExtractor:
         
         return symbols
     
-    def _calculate_metrics(self, tree, content: str) -> Dict[str, Any]:
+    def _calculate_metrics(self, tree, content: str, language: str) -> Dict[str, Any]:
         """
         Calculate code complexity metrics.
         
@@ -719,7 +719,6 @@ class TreeSitterExtractor:
         }
         
         # Get language-specific control flow nodes or use a default set
-        language = getattr(tree, 'language', 'python')
         cf_nodes = control_flow_nodes.get(language, control_flow_nodes['python'])
         
         def traverse(node, depth=0, in_string_or_comment=False):

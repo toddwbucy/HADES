@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Union
 from datetime import datetime
 
+from .extractors_base import ExtractorBase, ExtractorConfig, ExtractionResult
+
 logger = logging.getLogger(__name__)
 
 
-class LaTeXExtractor:
+class LaTeXExtractor(ExtractorBase):
     """
     Extract content from LaTeX source files.
 
@@ -27,23 +29,43 @@ class LaTeXExtractor:
     directly from the LaTeX source, avoiding all PDF parsing issues.
     """
     
-    def __init__(self, use_pandoc: bool = False):
+    def __init__(self, config: Optional[ExtractorConfig] = None, use_pandoc: bool = False, **kwargs):
         """
         Initialize LaTeX extractor.
-        
+
         Args:
+            config: ExtractorConfig object or None for defaults
             use_pandoc: Whether to use pandoc for LaTeX to markdown conversion
+            **kwargs: Additional options
         """
-        self.use_pandoc = use_pandoc
+        super().__init__(config)
+        self.use_pandoc = kwargs.get('use_pandoc', use_pandoc)
         # Track pandoc conversion stats
         self.pandoc_stats = {
             'attempts': 0,
             'successes': 0,
             'failures': 0
         }
-        logger.info(f"Initialized LaTeX extractor (pandoc: {use_pandoc})")
-    
-    def extract(self, latex_path: Union[str, Path]) -> Dict[str, Any]:
+        logger.info(f"Initialized LaTeX extractor (pandoc: {self.use_pandoc})")
+
+    @property
+    def supported_formats(self) -> List[str]:
+        """Get list of supported file formats."""
+        return ['.tex', '.gz', '.tar.gz']
+
+    def _dict_to_result(self, data: Dict[str, Any]) -> ExtractionResult:
+        """Convert internal dict format to ExtractionResult."""
+        structures = data.get('structures', {})
+        return ExtractionResult(
+            text=data.get('full_text', ''),
+            metadata=data.get('metadata', {}),
+            equations=structures.get('equations', []),
+            tables=structures.get('tables', []),
+            references=structures.get('citations', []),
+            processing_time=data.get('metadata', {}).get('processing_time', 0.0)
+        )
+
+    def extract(self, latex_path: Union[str, Path], **kwargs) -> ExtractionResult:
         """
         Extract content from LaTeX source archive.
         
@@ -93,25 +115,42 @@ class LaTeXExtractor:
             # Handle based on file type
             if is_tar or not is_latex:
                 # Extract from gzipped tar archive (original code path)
-                return self._extract_from_tar_gz(latex_path, start_time)
+                return self._dict_to_result(self._extract_from_tar_gz(latex_path, start_time))
             else:
                 # Handle plain gzipped .tex file
-                return self._extract_from_plain_gz(latex_path, start_time)
+                return self._dict_to_result(self._extract_from_plain_gz(latex_path, start_time))
                 
         except Exception as e:
             logger.error(f"LaTeX extraction failed for {latex_path}: {e}")
-            return self._empty_result(latex_path, str(e))
+            return self._dict_to_result(self._empty_result(latex_path, str(e)))
     
+    def _is_safe_tar_member(self, member: tarfile.TarInfo, target_path: Path) -> bool:
+        """Check if a tar member is safe to extract (no path traversal)."""
+        # Reject absolute paths
+        if member.name.startswith('/') or member.name.startswith('\\'):
+            return False
+        # Reject paths with .. that could escape target
+        member_path = (target_path / member.name).resolve()
+        try:
+            member_path.relative_to(target_path.resolve())
+            return True
+        except ValueError:
+            return False
+
     def _extract_from_tar_gz(self, latex_path: Path, start_time: datetime) -> Dict[str, Any]:
         """Extract from tar.gz archive (multiple files)."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            
+
             try:
-                # Extract the tar.gz file
+                # Extract the tar.gz file with path traversal protection
                 with gzip.open(latex_path, 'rb') as gz:
                     with tarfile.open(fileobj=gz, mode='r') as tar:
-                        tar.extractall(temp_path)
+                        # Filter and extract only safe members
+                        safe_members = [m for m in tar.getmembers()
+                                        if self._is_safe_tar_member(m, temp_path)]
+                        for member in safe_members:
+                            tar.extract(member, temp_path)
             except tarfile.TarError as e:
                 # Not a valid tar file, might be plain gzipped
                 logger.debug(f"Not a tar archive, trying plain gzip: {e}")
@@ -466,23 +505,24 @@ class LaTeXExtractor:
             }
         }
     
-    def extract_batch(self, latex_paths: List[str]) -> List[Dict[str, Any]]:
+    def extract_batch(self, latex_paths: List[Union[str, Path]], **kwargs) -> List[ExtractionResult]:
         """
         Extract from multiple LaTeX sources.
-        
+
         Args:
             latex_paths: List of LaTeX archive paths
-            
+            **kwargs: Additional extraction options
+
         Returns:
-            List of extraction results
+            List of ExtractionResult objects
         """
         results = []
         for latex_path in latex_paths:
             try:
-                result = self.extract(latex_path)
+                result = self.extract(latex_path, **kwargs)
                 results.append(result)
             except Exception as e:
                 logger.error(f"Failed to extract {latex_path}: {e}")
-                results.append(self._empty_result(Path(latex_path), str(e)))
-        
+                results.append(self._dict_to_result(self._empty_result(Path(latex_path), str(e))))
+
         return results

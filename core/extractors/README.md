@@ -26,51 +26,55 @@ extractors/
 Abstract interface for all extractors:
 
 ```python
-from core.extractors import ExtractorBase, ExtractionResult
+from core.extractors import ExtractorBase, ExtractionResult, ExtractorConfig
+from typing import List, Union
+from pathlib import Path
 
 class CustomExtractor(ExtractorBase):
     """Custom extraction implementation."""
 
-    def extract(self, file_path: str) -> ExtractionResult:
+    @property
+    def supported_formats(self) -> List[str]:
+        """Supported file extensions."""
+        return ['.custom']
+
+    def extract(self, file_path: Union[str, Path], **kwargs) -> ExtractionResult:
         """Extract content from file."""
-        # Implementation
         return ExtractionResult(
             text=extracted_text,
             metadata=metadata,
-            structures=structures
+            tables=tables,
+            equations=equations
         )
 
-    def can_handle(self, file_path: str) -> bool:
-        """Check if extractor can process file."""
-        return file_path.endswith('.custom')
+    def extract_batch(self, file_paths: List[Union[str, Path]], **kwargs) -> List[ExtractionResult]:
+        """Extract from multiple files."""
+        return [self.extract(fp, **kwargs) for fp in file_paths]
 ```
 
 ### DoclingExtractor
 
-State-of-the-art PDF and document extraction using IBM Docling:
+PDF and document extraction using IBM Docling:
 
 ```python
 from core.extractors import DoclingExtractor
 
 # Initialize with configuration
 extractor = DoclingExtractor(
-    use_ocr=True,  # Enable OCR for scanned PDFs
-    extract_tables=True,
-    extract_equations=True,
-    extract_images=False,  # Skip images for text-only
-    chunk_size=1000,  # Tokens per chunk
-    overlap=200  # Token overlap
+    use_ocr=True,        # Enable OCR for scanned PDFs
+    extract_tables=True,  # Extract table structures
+    use_fallback=True     # Use PyMuPDF fallback on failure
 )
 
 # Extract from PDF
 result = extractor.extract("paper.pdf")
 
-# Access structured content
+# Access extracted content
 print(f"Text length: {len(result.text)}")
-print(f"Sections: {len(result.sections)}")
-print(f"Equations: {len(result.equations)}")
 print(f"Tables: {len(result.tables)}")
-print(f"Chunks: {len(result.chunks)}")
+print(f"Equations: {len(result.equations)}")
+print(f"Extractor: {result.metadata.get('extractor')}")
+print(f"Processing time: {result.processing_time}s")
 ```
 
 ### LaTeXExtractor
@@ -128,22 +132,23 @@ for cls in result.classes:
 
 ### RobustExtractor
 
-Fallback extractor with multiple strategies:
+Fallback extractor with timeout protection and PyMuPDF fallback:
 
 ```python
 from core.extractors import RobustExtractor
 
-# Tries multiple extraction methods
+# Timeout-protected extraction with fallback
 extractor = RobustExtractor(
-    strategies=["docling", "pypdf", "pdfminer", "ocr"],
-    min_text_length=100,  # Minimum acceptable result
-    max_retries=3
+    use_ocr=False,        # Enable OCR for scanned PDFs
+    extract_tables=True,  # Extract table structures
+    timeout=30,           # Seconds before timeout
+    use_fallback=True     # Use PyMuPDF fallback on failure
 )
 
-# Robust extraction with fallbacks
-result = extractor.extract("corrupted.pdf")
-print(f"Extraction method used: {result.metadata['method']}")
-print(f"Success after {result.metadata['attempts']} attempts")
+# Robust extraction with subprocess isolation
+result = extractor.extract("problematic.pdf")
+print(f"Extractor used: {result.metadata.get('extractor')}")
+print(f"Text length: {len(result.text)}")
 ```
 
 ### get_extractor()
@@ -169,47 +174,23 @@ extractor = get_extractor("document.pdf", use_ocr=True)
 ```python
 @dataclass
 class ExtractionResult:
-    """Structured extraction output."""
+    """Result of document extraction."""
 
     # Core content
     text: str  # Full extracted text
-    chunks: List[TextChunk]  # Segmented chunks
+    metadata: Dict[str, Any]  # Document metadata (extractor, num_pages, etc.)
 
-    # Structural elements
-    sections: List[Section]  # Document sections
-    equations: List[Equation]  # Mathematical content
-    tables: List[Table]  # Tabular data
-    figures: List[Figure]  # Images/diagrams
+    # Structural elements (lists of dicts)
+    chunks: List[Dict[str, Any]]      # Segmented text chunks
+    equations: List[Dict[str, Any]]   # Mathematical content
+    tables: List[Dict[str, Any]]      # Tabular data
+    images: List[Dict[str, Any]]      # Figures and images
+    code_blocks: List[Dict[str, Any]] # Code blocks
+    references: List[Dict[str, Any]]  # Bibliography references
 
-    # Metadata
-    metadata: Dict[str, Any]  # Document metadata
-    statistics: ExtractionStats  # Performance metrics
-
-    # Quality indicators
-    confidence: float  # Extraction confidence [0, 1]
-    warnings: List[str]  # Issues encountered
-```
-
-### TextChunk Structure
-
-```python
-@dataclass
-class TextChunk:
-    """Segmented text unit."""
-
-    id: str  # Unique identifier
-    text: str  # Chunk content
-    start_idx: int  # Start position in document
-    end_idx: int  # End position in document
-
-    # Context preservation
-    section: Optional[str]  # Parent section
-    page_num: Optional[int]  # Source page
-
-    # Semantic metadata
-    has_equation: bool
-    has_table: bool
-    has_code: bool
+    # Status
+    error: Optional[str]       # Error message if extraction failed
+    processing_time: float     # Extraction duration in seconds
 ```
 
 ## Usage Patterns
@@ -232,22 +213,19 @@ print(f"Abstract: {result.text[:500]}")
 ### Structured Processing
 
 ```python
-# Extract with structure preservation
-extractor = DoclingExtractor(
-    preserve_structure=True,
-    extract_hierarchy=True
-)
+# Extract with table structures
+extractor = DoclingExtractor(extract_tables=True)
 
 result = extractor.extract("paper.pdf")
 
-# Navigate document structure
-for section in result.sections:
-    print(f"\n{section.level}. {section.title}")
-    print(f"Content: {section.text[:200]}...")
+# Access tables
+for table in result.tables:
+    print(f"Table caption: {table.get('caption', 'N/A')}")
+    print(f"Table content: {table.get('content', '')[:200]}...")
 
-    # Process subsections
-    for subsection in section.children:
-        print(f"  {subsection.title}")
+# Access equations if extracted
+for eq in result.equations:
+    print(f"Equation: {eq.get('latex', str(eq))}")
 ```
 
 ### Batch Processing
@@ -275,28 +253,22 @@ print(f"Processed {len(results)} documents")
 ```python
 from core.extractors import DoclingExtractor
 from core.embedders import JinaV4Embedder
-from core.database import ArangoClient
+from core.database.arango import ArangoHttp2Client
 
 # Complete pipeline
-extractor = DoclingExtractor(chunk_size=1000)
-embedder = JinaV4Embedder(device="cuda")
-db = ArangoClient()
+extractor = DoclingExtractor()
+embedder = JinaV4Embedder()
 
 # Process document
 result = extractor.extract("paper.pdf")
 
-# Generate embeddings for chunks
-embeddings = embedder.embed_batch(
-    [chunk.text for chunk in result.chunks]
-)
+# Generate embeddings from full text
+# Note: chunking is typically done by the embedder with late chunking
+embedding = embedder.embed(result.text)
 
-# Store in database
-for chunk, embedding in zip(result.chunks, embeddings):
-    db.store_chunk(
-        document_id=result.metadata['document_id'],
-        chunk=chunk,
-        embedding=embedding
-    )
+# Or embed multiple documents
+texts = [result.text for result in extractor.extract_batch(pdf_files)]
+embeddings = embedder.embed_batch(texts)
 ```
 
 ## Advanced Features
@@ -305,114 +277,57 @@ for chunk, embedding in zip(result.chunks, embeddings):
 
 ```python
 # Enable OCR for scanned documents
-extractor = DoclingExtractor(
-    use_ocr=True,
-    ocr_language="eng",  # Language for OCR
-    ocr_confidence_threshold=0.8  # Minimum confidence
-)
+extractor = DoclingExtractor(use_ocr=True)
 
 result = extractor.extract("scanned_document.pdf")
 
-if result.metadata.get('used_ocr'):
-    print(f"OCR confidence: {result.confidence}")
-    print(f"OCR warnings: {result.warnings}")
+print(f"Extractor: {result.metadata.get('extractor')}")
+print(f"Text extracted: {len(result.text)} characters")
 ```
 
 ### Equation Extraction
 
 ```python
-# Mathematical content extraction
-extractor = DoclingExtractor(
-    extract_equations=True,
-    parse_latex_math=True
-)
+# Equations are extracted automatically by Docling
+extractor = DoclingExtractor()
 
 result = extractor.extract("math_paper.pdf")
 
+# Equations are dicts with latex and label keys
 for eq in result.equations:
-    print(f"LaTeX: {eq.latex}")
-    print(f"Text: {eq.text}")
-    print(f"Location: Page {eq.page_num}")
-    print(f"Referenced as: {eq.label}")
+    print(f"LaTeX: {eq.get('latex', str(eq))}")
+    print(f"Label: {eq.get('label')}")
 ```
 
 ### Table Extraction
 
 ```python
 # Tabular data extraction
-extractor = DoclingExtractor(
-    extract_tables=True,
-    table_format="markdown"  # or "csv", "json"
-)
+extractor = DoclingExtractor(extract_tables=True)
 
 result = extractor.extract("data_paper.pdf")
 
+# Tables are dicts with caption, content, rows, headers keys
 for table in result.tables:
-    print(f"Table: {table.caption}")
-    print(f"Dimensions: {table.rows}x{table.cols}")
-    print(f"Content:\n{table.markdown}")
-
-    # Access as DataFrame
-    df = table.to_dataframe()
-    print(df.describe())
-```
-
-### Multi-language Support
-
-```python
-# Language-specific extraction
-extractor = DoclingExtractor(
-    language="auto",  # Auto-detect
-    supported_languages=["en", "de", "fr", "zh"]
-)
-
-result = extractor.extract("multilingual.pdf")
-print(f"Detected language: {result.metadata['language']}")
-print(f"Language confidence: {result.metadata['language_confidence']}")
+    print(f"Caption: {table.get('caption', 'N/A')}")
+    print(f"Content: {table.get('content', '')[:200]}")
+    print(f"Headers: {table.get('headers', [])}")
 ```
 
 ## Performance Optimization
 
-### Chunking Strategies
+### Timeout Protection
 
 ```python
-from core.extractors import ChunkingStrategy
+from core.extractors import RobustExtractor
 
-# Semantic chunking
-extractor = DoclingExtractor(
-    chunking_strategy=ChunkingStrategy.SEMANTIC,
-    chunk_size=1000,
-    overlap=200
+# Use RobustExtractor for timeout protection
+extractor = RobustExtractor(
+    timeout=30,        # Max seconds for extraction
+    use_fallback=True  # Fall back to PyMuPDF on timeout
 )
 
-# Sliding window
-extractor = DoclingExtractor(
-    chunking_strategy=ChunkingStrategy.SLIDING_WINDOW,
-    window_size=512,
-    stride=256
-)
-
-# Section-based
-extractor = DoclingExtractor(
-    chunking_strategy=ChunkingStrategy.SECTION_BASED,
-    min_chunk_size=100,
-    max_chunk_size=2000
-)
-```
-
-### Memory Management
-
-```python
-# Stream processing for large files
-extractor = DoclingExtractor(
-    stream_mode=True,  # Process in chunks
-    max_memory_mb=1024  # Limit memory usage
-)
-
-# Process large PDF
-with extractor.extract_stream("large_file.pdf") as stream:
-    for chunk in stream:
-        process_chunk(chunk)  # Process incrementally
+result = extractor.extract("large_file.pdf")
 ```
 
 ### Caching
@@ -476,17 +391,17 @@ export MAX_MEMORY_MB=2048
 ### Common Issues
 
 ```python
-from core.extractors import ExtractionError, CorruptedFileError
+from core.extractors import DoclingExtractor, RobustExtractor
 
 try:
+    extractor = DoclingExtractor()
     result = extractor.extract("document.pdf")
-except CorruptedFileError as e:
-    # Try robust extractor
-    robust = RobustExtractor()
+except RuntimeError as e:
+    # Try robust extractor with fallback
+    robust = RobustExtractor(use_fallback=True)
     result = robust.extract("document.pdf")
-except ExtractionError as e:
-    print(f"Extraction failed: {e}")
-    # Implement fallback
+except FileNotFoundError as e:
+    print(f"File not found: {e}")
 ```
 
 ### Validation
@@ -495,24 +410,13 @@ except ExtractionError as e:
 def validate_extraction(result: ExtractionResult) -> bool:
     """Validate extraction quality."""
 
+    # Check for errors
+    if result.error:
+        return False
+
     # Check minimum content
     if len(result.text) < 100:
         return False
-
-    # Check confidence
-    if result.confidence < 0.5:
-        return False
-
-    # Check for critical warnings
-    critical_warnings = [
-        "Failed to extract text",
-        "OCR failed",
-        "Corrupted file"
-    ]
-
-    for warning in result.warnings:
-        if any(crit in warning for crit in critical_warnings):
-            return False
 
     return True
 ```

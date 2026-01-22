@@ -4,6 +4,10 @@ Extractors Module
 Provides document extraction capabilities for various file formats.
 """
 
+import os
+from pathlib import Path
+from typing import Union
+
 from .extractors_base import ExtractorBase, ExtractorConfig, ExtractionResult
 
 # Import extractors
@@ -33,23 +37,25 @@ except ImportError:
     RobustExtractor = None  # type: ignore[misc]
 
 
-def get_extractor(file_path: str, **kwargs):
+def get_extractor(file_path: Union[str, Path, os.PathLike], **kwargs):
     """
     Get an appropriate extractor for a file.
 
     Args:
-        file_path: Path to the file
+        file_path: Path to the file (str, Path, or os.PathLike)
         **kwargs: Additional configuration for the extractor
 
     Returns:
         Extractor instance
     """
-    file_path_lower = file_path.lower()
+    file_path_lower = str(file_path).lower()
 
     if file_path_lower.endswith('.pdf'):
         if DoclingExtractor is not None:
             return DoclingExtractor(**kwargs)
-        raise ImportError("DoclingExtractor not available")
+        if RobustExtractor is not None:
+            return RobustExtractor(**kwargs)
+        raise ImportError("No PDF extractor available (DoclingExtractor and RobustExtractor unavailable)")
 
     if file_path_lower.endswith('.tex'):
         if LaTeXExtractor is not None:
