@@ -175,7 +175,7 @@ class BaseConfig(BaseModel, ABC):
             data = json.loads(json_str)
             return cls.from_dict(data)
         except json.JSONDecodeError as e:
-            raise ConfigValidationError("Invalid JSON format", [str(e)])
+            raise ConfigValidationError("Invalid JSON format", [str(e)]) from e
 
     @classmethod
     def from_file(cls: Type[T], file_path: Union[str, Path]) -> T:
@@ -204,7 +204,7 @@ class BaseConfig(BaseModel, ABC):
             return instance
 
         except (IOError, OSError) as e:
-            raise ConfigValidationError(f"Failed to read configuration file: {path}", [str(e)])
+            raise ConfigValidationError(f"Failed to read configuration file: {path}", [str(e)]) from e
 
     def save_to_file(self, file_path: Union[str, Path]) -> None:
         """
@@ -228,7 +228,7 @@ class BaseConfig(BaseModel, ABC):
             logger.info(f"Configuration saved to {path}")
 
         except (IOError, OSError) as e:
-            raise ConfigError(f"Failed to save configuration to {path}: {e}")
+            raise ConfigError(f"Failed to save configuration to {path}: {e}") from e
 
     def merge(self: T, other: T) -> T:
         """
