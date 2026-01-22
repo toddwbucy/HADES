@@ -160,7 +160,7 @@ class DoclingExtractor(ExtractorBase):
                     'images': [],
                     'figures': [],
                     'metadata': {
-                        'page_count': 1,
+                        'num_pages': 1,
                         'extractor': 'text_reader',
                         'pdf_path': str(pdf_path),
                         'processing_time': 0.0,

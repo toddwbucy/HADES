@@ -77,8 +77,10 @@ def _extract_with_pymupdf(pdf_path: str) -> Optional[Dict[str, Any]]:
                 'full_text': full_text,
                 'text': full_text,
                 'markdown': full_text,
-                'num_pages': num_pages,
-                'extractor': 'pymupdf_fallback'
+                'metadata': {
+                    'num_pages': num_pages,
+                    'extractor': 'pymupdf_fallback'
+                }
             }
     except Exception as e:
         logger.error(f"PyMuPDF fallback failed: {e}")
