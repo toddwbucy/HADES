@@ -128,6 +128,22 @@ class RobustExtractor(ExtractorBase):
             processing_time=data.get('metadata', {}).get('processing_time', 0.0)
         )
 
+    def _cleanup_executor_processes(self, executor: ProcessPoolExecutor) -> None:
+        """Clean up only the executor's own worker processes."""
+        try:
+            if hasattr(executor, '_processes'):
+                for process in executor._processes.values():
+                    if process and process.is_alive():
+                        logger.debug(f"Terminating executor worker: {process.pid}")
+                        process.terminate()
+                        process.join(timeout=2)
+                        if process.is_alive():
+                            logger.warning(f"Force killing executor worker: {process.pid}")
+                            process.kill()
+                            process.join(timeout=1)
+        except (AttributeError, Exception) as e:
+            logger.debug(f"Could not access executor processes: {e}")
+
     def extract(self, pdf_path: Union[str, Path], **kwargs) -> ExtractionResult:
         """
         Extract text and structures from PDF with timeout protection.
@@ -179,43 +195,16 @@ class RobustExtractor(ExtractorBase):
                 # Cancel the future and shutdown executor
                 future.cancel()
                 executor.shutdown(wait=False, cancel_futures=True)
-                
-                # Clean up any remaining child processes
-                for child in mp.active_children():
-                    logger.debug(f"Terminating child process: {child.pid}")
-                    child.terminate()
-                    child.join(timeout=2)
-                    if child.is_alive():
-                        logger.warning(f"Force killing child process: {child.pid}")
-                        child.kill()
-                        child.join(timeout=1)
-                
-                # Additional cleanup of executor processes
-                try:
-                    # Try public shutdown API first
-                    executor.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    # Fall back to private attribute access as last resort
-                    try:
-                        if hasattr(executor, '_processes'):
-                            for process in executor._processes.values():
-                                if process and process.is_alive():
-                                    process.terminate()
-                                    process.join(timeout=2)
-                                    if process.is_alive():
-                                        process.kill()
-                                        process.join(timeout=1)
-                    except (AttributeError, Exception) as e:
-                        logger.debug(f"Could not access executor processes: {e}")
-                
+
+                # Clean up only the executor's own worker processes (not mp.active_children)
+                self._cleanup_executor_processes(executor)
+
             except Exception as e:
                 logger.error(f"Docling crashed: {pdf_file.name} - {e}")
                 executor.shutdown(wait=False, cancel_futures=True)
-                
-                # Clean up child processes on any exception
-                for child in mp.active_children():
-                    child.terminate()
-                    child.join(timeout=2)
+
+                # Clean up only the executor's own worker processes
+                self._cleanup_executor_processes(executor)
                     
         finally:
             # Ensure executor is shut down

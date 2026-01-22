@@ -8,7 +8,7 @@ Extractors serve as the entry point for information processing, converting raw d
 
 ## Architecture
 
-```
+```text
 extractors/
 ├── extractors_base.py       # Abstract base class and interfaces
 ├── extractors_docling.py    # IBM Docling for PDF/document extraction
@@ -85,21 +85,21 @@ Specialized extraction for LaTeX source files:
 from core.extractors import LaTeXExtractor
 
 extractor = LaTeXExtractor(
-    parse_math=True,  # Extract equations
-    parse_citations=True,  # Extract bibliography
-    resolve_commands=True  # Expand custom commands
+    use_pandoc=True  # Use pandoc for LaTeX to markdown conversion
 )
 
-# Extract from LaTeX
+# Extract from LaTeX (.tex, .gz, or .tar.gz)
 result = extractor.extract("paper.tex")
 
 # Access LaTeX-specific content
+# Equations are dicts with 'latex' and 'label' keys
 for eq in result.equations:
-    print(f"Equation: {eq.latex}")
-    print(f"Rendered: {eq.text}")
+    print(f"Equation: {eq.get('latex', str(eq))}")
+    print(f"Label: {eq.get('label')}")
 
-for cite in result.citations:
-    print(f"Citation: {cite.key} -> {cite.text}")
+# References (citations) are in result.references
+for ref in result.references:
+    print(f"Reference: {ref.get('key')} -> {ref.get('text')}")
 ```
 
 ### CodeExtractor with Tree-sitter
@@ -340,15 +340,15 @@ class CachedExtractor(DoclingExtractor):
     """Extractor with result caching."""
 
     @lru_cache(maxsize=100)
-    def _extract_cached(self, file_hash: str) -> ExtractionResult:
-        """Cache extraction by file hash."""
-        return super().extract(file_hash)
+    def _extract_cached(self, file_hash: str, file_path: str) -> ExtractionResult:
+        """Cache extraction by file hash (hash is cache key, path is for extraction)."""
+        return super().extract(file_path)
 
     def extract(self, file_path: str) -> ExtractionResult:
         """Extract with caching."""
         with open(file_path, 'rb') as f:
             file_hash = hashlib.sha256(f.read()).hexdigest()
-        return self._extract_cached(file_hash)
+        return self._extract_cached(file_hash, file_path)
 ```
 
 ## Configuration
@@ -496,8 +496,8 @@ def extract_with_fallback(file_path: str) -> ExtractionResult:
     """Extract with multiple fallback strategies."""
     strategies = [
         DoclingExtractor(),
-        RobustExtractor(),
-        OCRExtractor()
+        RobustExtractor(use_fallback=True),
+        DoclingExtractor(use_ocr=True)  # OCR as last resort
     ]
 
     for strategy in strategies:
@@ -508,7 +508,7 @@ def extract_with_fallback(file_path: str) -> ExtractionResult:
         except Exception as e:
             continue
 
-    raise ExtractionError(f"All strategies failed for {file_path}")
+    raise RuntimeError(f"All strategies failed for {file_path}")
 ```
 
 ### 4. Monitor Extraction Quality
@@ -518,12 +518,12 @@ def monitor_extraction(result: ExtractionResult) -> Dict:
     """Monitor extraction quality metrics."""
     return {
         "text_length": len(result.text),
-        "num_chunks": len(result.chunks),
         "num_equations": len(result.equations),
         "num_tables": len(result.tables),
-        "confidence": result.confidence,
-        "warnings": len(result.warnings),
-        "extraction_time": result.statistics.duration
+        "num_images": len(result.images),
+        "extraction_time": result.processing_time,
+        "has_error": result.error is not None,
+        "extractor": result.metadata.get("extractor", "unknown")
     }
 ```
 

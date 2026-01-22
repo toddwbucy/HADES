@@ -115,9 +115,12 @@ class DoclingExtractor(ExtractorBase):
         - Processing-time errors will attempt the fallback extractor if use_fallback is True; otherwise a RuntimeError is raised.
         
         Returns:
-            Dict[str, Any]: Extraction result. For text-reader paths the result contains a 'text' key and metadata described above.
-            For PDF extraction, the exact keys come from the underlying extractor but will include metadata with at least
-            'extractor', 'num_pages' (when available), 'processing_time', and 'pdf_path'.
+            ExtractionResult: Extraction result containing:
+            - text: Full extracted text content
+            - metadata: Dict with 'extractor', 'num_pages' (when available), 'processing_time', and 'pdf_path'
+            - tables: List of extracted table dicts (when extract_tables=True)
+            - equations: List of extracted equation dicts
+            - images: List of extracted figure dicts
         
         Raises:
             FileNotFoundError: If the provided path does not exist.

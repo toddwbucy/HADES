@@ -125,7 +125,11 @@ class LaTeXExtractor(ExtractorBase):
             return self._dict_to_result(self._empty_result(latex_path, str(e)))
     
     def _is_safe_tar_member(self, member: tarfile.TarInfo, target_path: Path) -> bool:
-        """Check if a tar member is safe to extract (no path traversal)."""
+        """Check if a tar member is safe to extract (no path traversal or symlinks)."""
+        # Reject symlinks and hardlinks (can escape target directory)
+        if member.issym() or member.islnk():
+            logger.debug(f"Rejecting symlink/hardlink tar member: {member.name}")
+            return False
         # Reject absolute paths
         if member.name.startswith('/') or member.name.startswith('\\'):
             return False

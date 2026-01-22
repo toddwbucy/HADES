@@ -65,9 +65,8 @@ def get_extractor(file_path: Union[str, Path, os.PathLike], **kwargs):
     if file_path_lower.endswith(('.py', '.js', '.ts', '.go', '.rs', '.java', '.c', '.cpp', '.h')):
         if CodeExtractor is not None:
             return CodeExtractor(**kwargs)
-        if TreeSitterExtractor is not None:
-            return TreeSitterExtractor(**kwargs)
-        raise ImportError("No code extractor available")
+        # TreeSitterExtractor does not implement ExtractorBase interface
+        raise ImportError("No code extractor available (CodeExtractor unavailable)")
 
     # Default to robust extractor for unknown types
     if RobustExtractor is not None:
