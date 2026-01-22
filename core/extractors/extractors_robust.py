@@ -151,6 +151,10 @@ class RobustExtractor(ExtractorBase):
         metadata.setdefault('pdf_path', pdf_path)
         metadata.setdefault('extractor', 'robust')
 
+        # Copy top-level processing_time into metadata if present
+        if 'processing_time' in data:
+            metadata['processing_time'] = data['processing_time']
+
         return ExtractionResult(
             text=data.get('full_text', data.get('text', '')),
             metadata=metadata,
