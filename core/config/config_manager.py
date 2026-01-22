@@ -2,17 +2,8 @@
 Centralized Configuration Management
 ===================================
 
-Theory Connection - Information Reconstructionism:
-The configuration manager serves as the central "obligatory passage point"
-(Actor-Network Theory) through which all system components access configuration.
-It optimizes the Conveyance Framework C = (W·R·H/T)·Ctx^α by maintaining
-configuration coherence across distributed processing components.
-
-The manager implements Context (Ctx) amplification through:
-- L = Local coherence via centralized validation
-- I = Instruction fit via component-specific configurations
-- A = Actionability via factory patterns and ready-to-use instances
-- G = Grounding via persistent configuration state and versioning
+Provides centralized configuration management for all system components
+with caching, validation, and factory patterns for efficient access.
 """
 
 from typing import Dict, Any, Optional, Type, TypeVar, Union, List
@@ -46,8 +37,7 @@ class ConfigRegistration:
     """
     Configuration registration metadata.
 
-    Theory Connection: Represents positioning in the WHERE dimension
-    of the configuration hierarchy, with scope determining influence range.
+    Tracks registered configuration types with their scope and access statistics.
     """
     name: str
     config_class: Type[BaseConfig]
@@ -68,9 +58,8 @@ class ConfigCache:
     """
     Thread-safe configuration cache with TTL support.
 
-    Theory Connection: Optimizes TIME dimension by reducing configuration
-    loading overhead while maintaining Context coherence through TTL-based
-    invalidation that prevents stale configuration drift.
+    Reduces configuration loading overhead through caching with
+    TTL-based invalidation to prevent stale configurations.
     """
 
     def __init__(self, default_ttl: timedelta = timedelta(minutes=30)):
@@ -192,17 +181,11 @@ class ConfigManager:
     """
     Centralized configuration management with factory patterns and caching.
 
-    Theory Connection - Conveyance Framework Optimization:
-    The manager maximizes C = (W·R·H/T)·Ctx^α through:
-
-    1. WHERE (R): Hierarchical scope management (global > module > component)
-    2. WHAT (W): Validated configuration quality through registration system
-    3. WHO (H): Access control and component isolation
-    4. TIME (T): Efficient loading with caching and factory patterns
-    5. Context (Ctx^α): Exponential amplification via centralized coherence
-
-    From Actor-Network Theory: Acts as an "immutable mobile" that maintains
-    stable configuration relationships across distributed system components.
+    Features:
+    - Hierarchical scope management (global > module > component > instance)
+    - Registration system with schema validation
+    - Thread-safe caching with TTL support
+    - Factory functions for complex initialization
     """
 
     _instance: Optional['ConfigManager'] = None
@@ -251,13 +234,10 @@ class ConfigManager:
         """
         Register a configuration type.
 
-        Theory Connection: Establishes WHERE positioning in configuration
-        hierarchy. Higher scopes have broader influence on Context amplification.
-
         Args:
             name: Configuration name
             config_class: Configuration class
-            scope: Configuration scope
+            scope: Configuration scope (determines hierarchy level)
             schema: Optional JSON schema for validation
             factory_func: Optional factory function for complex initialization
 
@@ -294,14 +274,13 @@ class ConfigManager:
         """
         Get configuration instance.
 
-        Theory Connection: Optimizes Conveyance through efficient Context
-        retrieval with caching (TIME optimization) while maintaining
-        semantic coherence (WHAT quality).
+        Retrieves configuration from cache or loads from sources.
+        Supports runtime overrides that are merged with base configuration.
 
         Args:
             name: Configuration name
             instance_id: Optional instance identifier for instance-scoped configs
-            force_reload: Force reload from sources
+            force_reload: Force reload from sources (bypasses cache)
             **overrides: Runtime configuration overrides
 
         Returns:

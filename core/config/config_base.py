@@ -2,21 +2,8 @@
 Base Configuration Classes
 ==========================
 
-Theory Connection - Information Reconstructionism:
-The configuration system embodies the WHERE dimension through hierarchical positioning
-of configuration sources (environment > processor > base). Configuration validation
-ensures CONTEXT components (L=local coherence, I=instruction fit, A=actionability,
-G=grounding) maintain consistent semantic relationships across processing phases.
-
-The Conveyance Framework C = (W·R·H/T)·Ctx^α applies directly:
-- WHERE (R): Configuration hierarchy and source positioning
-- WHAT (W): Schema validation ensuring semantic content quality
-- WHO (H): Access patterns and permission structures
-- TIME (T): Configuration loading and parsing efficiency
-- Context (Ctx): Exponential amplification of configuration coherence
-
-From Actor-Network Theory: Configuration acts as an "obligatory passage point"
-through which all system components must translate their requirements.
+Provides Pydantic-based configuration models with validation and serialization.
+Supports hierarchical configuration sources (environment > file > defaults).
 """
 
 from abc import ABC, abstractmethod
@@ -33,12 +20,7 @@ T = TypeVar('T', bound='BaseConfig')
 
 
 class ConfigError(Exception):
-    """
-    Configuration-related errors.
-
-    Theory Connection: Represents breakdown in Context coherence,
-    triggering zero-propagation gate where C = 0.
-    """
+    """Configuration-related errors."""
     pass
 
 
@@ -54,13 +36,8 @@ class BaseConfig(BaseModel, ABC):
     """
     Abstract base for all configuration models.
 
-    Theory Connection - Conveyance Framework:
-    Implements the Context (Ctx) component through validated configuration
-    that ensures L=local coherence, I=instruction fit, A=actionability, G=grounding.
-    Schema validation prevents configuration drift that would degrade Context^α amplification.
-
-    From Information Reconstructionism: Configuration represents the WHERE dimension
-    through hierarchical positioning and semantic relationships between components.
+    Provides Pydantic validation, serialization, and hierarchical merging.
+    Subclasses should implement validate_semantics() for domain-specific validation.
     """
 
     # Metadata fields
@@ -86,8 +63,7 @@ class BaseConfig(BaseModel, ABC):
         """
         Validate semantic consistency beyond schema validation.
 
-        Theory Connection: Ensures Context components maintain coherent
-        relationships that support exponential amplification (Ctx^α).
+        Override in subclasses to add domain-specific validation rules.
 
         Returns:
             List of validation error messages (empty if valid)
@@ -97,9 +73,6 @@ class BaseConfig(BaseModel, ABC):
     def validate_full(self) -> None:
         """
         Perform full validation including semantic checks.
-
-        Theory Connection: Prevents zero-propagation by ensuring
-        all Context dimensions maintain positive values.
 
         Raises:
             ConfigValidationError: If validation fails
@@ -238,9 +211,8 @@ class BaseConfig(BaseModel, ABC):
         """
         Merge with another configuration of the same type.
 
-        Theory Connection: Implements hierarchical Context composition
-        where higher-priority configurations override lower-priority ones
-        while maintaining semantic coherence.
+        Values from 'other' override values from 'self'. Nested dicts
+        are deep-merged.
 
         Args:
             other: Configuration to merge (higher priority)
@@ -282,23 +254,26 @@ class BaseConfig(BaseModel, ABC):
 
         return result
 
-    def get_context_score(self) -> float:
+    def get_completeness_score(self) -> float:
         """
-        Calculate Context component score for Conveyance Framework.
+        Calculate configuration completeness score.
 
-        Theory Connection: Quantifies Ctx = wL·L + wI·I + wA·A + wG·G
-        based on configuration completeness and semantic coherence.
+        Evaluates configuration quality based on:
+        - Local coherence (no validation errors)
+        - Field completeness (required fields present)
+        - Actionability (all fields have values)
+        - Grounding (source and version info present)
 
         Returns:
-            Context score between 0.0 and 1.0
+            Completeness score between 0.0 and 1.0
         """
         # Base implementation - subclasses should override
         semantic_errors = self.validate_semantics()
 
-        # L = Local coherence (no validation errors)
+        # Local coherence (no validation errors)
         local_coherence = 1.0 if not semantic_errors else max(0.0, 1.0 - len(semantic_errors) / 10)
 
-        # I = Instruction fit (all required fields present)
+        # Field completeness (all required fields present)
         # Handle both Pydantic v1 and v2 compatibility
         required_fields = []
         for field, field_info in self.__fields__.items():
@@ -311,33 +286,32 @@ class BaseConfig(BaseModel, ABC):
             if is_required:
                 required_fields.append(field)
 
-        # Calculate instruction fit, handling case where there are no required fields
+        # Calculate field completeness, handling case where there are no required fields
         if required_fields:
-            instruction_fit = sum(1.0 for field in required_fields
+            field_completeness = sum(1.0 for field in required_fields
                                 if getattr(self, field, None) is not None) / len(required_fields)
         else:
-            instruction_fit = 1.0  # Perfect fit if no fields are required
+            field_completeness = 1.0  # Perfect if no fields are required
 
-        # A = Actionability (configuration is complete and usable)
+        # Actionability (configuration is complete and usable)
         field_values = [getattr(self, field, None) for field in self.__fields__]
         actionability = sum(1.0 for value in field_values if value is not None) / len(field_values)
 
-        # G = Grounding (source and versioning information present)
+        # Grounding (source and versioning information present)
         grounding = 0.5 * (1.0 if self.source else 0.0) + 0.5 * (1.0 if self.config_version else 0.0)
 
-        # Equal weights (0.25 each) as specified in framework
-        context_score = 0.25 * (local_coherence + instruction_fit + actionability + grounding)
+        # Equal weights (0.25 each)
+        completeness_score = 0.25 * (local_coherence + field_completeness + actionability + grounding)
 
-        return min(1.0, max(0.0, context_score))
+        return min(1.0, max(0.0, completeness_score))
 
 
 class ProcessingConfig(BaseConfig):
     """
     Configuration for document processing operations.
 
-    Theory Connection: Implements processing pipeline Context (Ctx) with
-    specific focus on WHERE (file paths), WHAT (content processing),
-    WHO (worker allocation), and TIME (timeout/batch settings).
+    Covers worker allocation, batch processing, resource limits,
+    timeout settings, and GPU configuration.
     """
 
     # Worker configuration
@@ -412,9 +386,8 @@ class StorageConfig(BaseConfig):
     """
     Configuration for storage operations.
 
-    Theory Connection: Implements WHERE dimension through hierarchical
-    storage paths and access patterns. Ensures grounding (G) through
-    explicit path validation and connection parameters.
+    Covers database connection settings, file storage paths,
+    and connection parameters with validation.
     """
 
     # Database connection

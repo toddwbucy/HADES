@@ -2,21 +2,10 @@
 Core Configuration Module
 =========================
 
-Theory Connection - Information Reconstructionism:
-The configuration system implements hierarchical WHERE positioning through
-source priority resolution, ensuring Context coherence across system components.
-Configuration acts as the "obligatory passage point" (Actor-Network Theory)
-through which all components establish their semantic relationships.
-
-The module optimizes the Conveyance Framework C = (W·R·H/T)·Ctx^α by:
-- WHERE (R): Hierarchical configuration sources and scope management
-- WHAT (W): Schema validation ensuring content quality
-- WHO (H): Access patterns and component isolation
-- TIME (T): Efficient loading with caching and factory patterns
-- Context (Ctx^α): Exponential amplification through validation and coherence
+Provides hierarchical, validated configuration management for HADES components.
 
 Key Components:
-- BaseConfig: Abstract configuration foundation with validation
+- BaseConfig: Abstract configuration foundation with Pydantic validation
 - ConfigLoader: Hierarchical source resolution with schema validation
 - ConfigManager: Centralized management with caching and factory patterns
 - Built-in configs: ProcessingConfig, StorageConfig for common patterns
@@ -80,9 +69,6 @@ def get_config(name: str, instance_id: Optional[str] = None, **overrides):
     """
     Convenience function to get configuration from global manager.
 
-    Theory Connection: Provides efficient access to Context-validated
-    configurations with minimal TIME overhead through global manager caching.
-
     Args:
         name: Configuration name
         instance_id: Optional instance identifier
@@ -117,9 +103,6 @@ def register_config(name: str, config_class, scope: ConfigScope = ConfigScope.CO
 def create_config_schema(config_class) -> dict:
     """
     Generate JSON schema from Pydantic configuration class.
-
-    Theory Connection: Ensures WHAT dimension quality through
-    schema-based validation that maintains Context coherence.
 
     Args:
         config_class: Pydantic configuration class

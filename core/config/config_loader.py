@@ -2,16 +2,9 @@
 Configuration Loader with Schema Validation
 ===========================================
 
-Theory Connection - Information Reconstructionism:
-The configuration loading system implements hierarchical WHERE positioning
-through source priority (environment > local > base). Schema validation
-ensures Context coherence by preventing configuration drift that would
-degrade the exponential amplification factor (Ctx^α).
-
-From Conveyance Framework: Loading efficiency represents the TIME dimension,
-while validation quality represents WHAT. The loader acts as a translation
-mechanism in Actor-Network Theory, converting external representations
-into internal semantic structures.
+Provides hierarchical configuration loading with source priority
+(environment > local > base) and schema validation to prevent
+configuration drift.
 """
 
 from typing import Dict, Any, Optional, Union, List, Type, TypeVar, Tuple
@@ -41,8 +34,7 @@ class ConfigSource:
     """
     Configuration source metadata.
 
-    Theory Connection: Represents positioning in the WHERE dimension,
-    with priority determining hierarchical influence on final Context.
+    Tracks file path, format, and priority for hierarchical loading.
     """
     path: Path
     format: ConfigFormat
@@ -67,8 +59,7 @@ class ConfigSchema:
     """
     Configuration schema validator.
 
-    Theory Connection: Ensures Context components maintain semantic
-    relationships. Schema violations trigger zero-propagation where C = 0.
+    Validates configuration data against JSON schema definitions.
     """
 
     def __init__(self, schema_dict: Dict[str, Any]):
@@ -141,15 +132,11 @@ class ConfigLoader:
     """
     Hierarchical configuration loader with schema validation.
 
-    Theory Connection - Conveyance Framework:
-    Implements efficient loading (TIME dimension) with hierarchical
-    source resolution (WHERE dimension). Schema validation ensures
-    WHAT quality, while access controls represent WHO dimension.
-
-    The loader optimizes for C = (W·R·H/T)·Ctx^α by:
-    - Minimizing load time (T) through caching and lazy evaluation
-    - Maximizing context coherence (Ctx) through validation
-    - Supporting hierarchical positioning (R) through source priorities
+    Features:
+    - Hierarchical source resolution (environment > local > base)
+    - Schema validation for configuration integrity
+    - File caching to minimize repeated disk access
+    - Support for YAML and JSON formats
     """
 
     def __init__(self, base_dir: Optional[Path] = None):
@@ -178,8 +165,8 @@ class ConfigLoader:
         """
         Discover configuration sources in priority order.
 
-        Theory Connection: Implements WHERE dimension through hierarchical
-        source discovery. Priority determines influence on final Context.
+        Searches current directory, home directory, and base directory
+        for configuration files in both YAML and JSON formats.
 
         Args:
             config_name: Configuration name (without extension)
@@ -336,12 +323,9 @@ class ConfigLoader:
         """
         Load configuration using hierarchical source resolution.
 
-        Theory Connection: Implements full Conveyance Framework optimization:
-        - WHERE (R): Hierarchical source positioning
-        - WHAT (W): Schema validation for content quality
-        - WHO (H): Access control through file permissions
-        - TIME (T): Efficient loading with caching
-        - Context (Ctx): Exponential amplification through validation
+        Merges configuration from multiple sources in priority order:
+        1. Files (lowest to highest priority based on location)
+        2. Environment variables (highest priority)
 
         Args:
             config_name: Configuration name
