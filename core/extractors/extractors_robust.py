@@ -36,7 +36,22 @@ def _extract_with_docling(pdf_path: str, use_ocr: bool, extract_tables: bool) ->
             extract_tables=extract_tables,
             use_fallback=False  # Don't use fallback here, we handle it at higher level
         )
-        return extractor.extract(pdf_path)
+        result = extractor.extract(pdf_path)
+        # Convert ExtractionResult to dict for subprocess return
+        # Check if it's an ExtractionResult (has 'text' attribute) and convert
+        if hasattr(result, 'text'):
+            return {
+                'full_text': result.text,
+                'text': result.text,
+                'metadata': result.metadata,
+                'tables': result.tables,
+                'equations': result.equations,
+                'images': result.images,
+                'error': result.error,
+                'processing_time': result.processing_time
+            }
+        # If already a dict, return as-is
+        return result
     except Exception as e:
         return {'error': str(e)}
 

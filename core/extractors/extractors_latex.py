@@ -67,43 +67,49 @@ class LaTeXExtractor(ExtractorBase):
 
     def extract(self, latex_path: Union[str, Path], **kwargs) -> ExtractionResult:
         """
-        Extract content from LaTeX source archive.
-        
+        Extract content from LaTeX source file or archive.
+
         Args:
-            latex_path: Path to .gz file containing LaTeX source
-            
+            latex_path: Path to .tex, .gz, or .tar.gz file containing LaTeX source
+
         Returns:
-            Dictionary containing:
-            - full_text: Complete text content (LaTeX or markdown)
-            - structures: Extracted structures (equations, tables, citations)
+            ExtractionResult containing:
+            - text: Complete text content (LaTeX or markdown)
             - metadata: Processing metadata
+            - equations, tables, references: Extracted structures
         """
         latex_path = Path(latex_path)
-        
+
         if not latex_path.exists():
             raise FileNotFoundError(f"LaTeX source not found: {latex_path}")
-        
+
         start_time = datetime.now()
-        
+
+        # Fast path: detect plain .tex files (not compressed)
+        suffix_lower = latex_path.suffix.lower()
+        if suffix_lower == '.tex':
+            # Plain uncompressed .tex file
+            return self._dict_to_result(self._extract_from_plain_tex(latex_path, start_time))
+
+        # For .gz files, try to detect if gzipped or not
         try:
             # First check if it's a tar.gz or just a plain gzipped file
             with gzip.open(latex_path, 'rb') as gz:
                 # Try to read first few bytes to detect format
                 initial_bytes = gz.read(512)
                 gz.seek(0)  # Reset for actual reading
-                
-                # Check if it's a tar archive (tar magic bytes)
+
                 # Check if it's a tar archive (tar magic bytes at offset 257)
                 # In a tar file, 'ustar' appears at bytes 257-261 of the header
                 is_tar = len(initial_bytes) >= 262 and initial_bytes[257:262] == b'ustar'
-                
+
                 # If not tar, check if it looks like LaTeX
                 if not is_tar:
                     try:
                         # Try to decode as text
                         text_sample = initial_bytes.decode('utf-8', errors='ignore')
                         # Check for common LaTeX patterns
-                        is_latex = ('\\documentclass' in text_sample or 
+                        is_latex = ('\\documentclass' in text_sample or
                                   '\\begin{document}' in text_sample or
                                   '\\section' in text_sample or
                                   '\\usepackage' in text_sample)
@@ -111,7 +117,7 @@ class LaTeXExtractor(ExtractorBase):
                         is_latex = False
                 else:
                     is_latex = False
-            
+
             # Handle based on file type
             if is_tar or not is_latex:
                 # Extract from gzipped tar archive (original code path)
@@ -119,7 +125,11 @@ class LaTeXExtractor(ExtractorBase):
             else:
                 # Handle plain gzipped .tex file
                 return self._dict_to_result(self._extract_from_plain_gz(latex_path, start_time))
-                
+
+        except gzip.BadGzipFile:
+            # Not a valid gzip file - try as plain text
+            logger.debug(f"Not a gzip file, trying as plain text: {latex_path}")
+            return self._dict_to_result(self._extract_from_plain_tex(latex_path, start_time))
         except Exception as e:
             logger.error(f"LaTeX extraction failed for {latex_path}: {e}")
             return self._dict_to_result(self._empty_result(latex_path, str(e)))
@@ -296,7 +306,68 @@ class LaTeXExtractor(ExtractorBase):
         except Exception as e:
             logger.error(f"Failed to extract plain gzipped LaTeX from {latex_path}: {e}")
             return self._empty_result(latex_path, str(e))
-    
+
+    def _extract_from_plain_tex(self, latex_path: Path, start_time: datetime) -> Dict[str, Any]:
+        """
+        Extract from plain uncompressed .tex file.
+
+        Handles plain LaTeX files that are not gzipped or archived.
+        """
+        try:
+            # Read the LaTeX file directly
+            with open(latex_path, 'r', encoding='utf-8', errors='ignore') as f:
+                latex_content = f.read()
+
+            if not latex_content:
+                logger.warning(f"Empty LaTeX content from {latex_path}")
+                return self._empty_result(latex_path, "Empty LaTeX file")
+
+            # Extract structured content
+            structures = {
+                'equations': self._extract_equations(latex_content),
+                'tables': self._extract_tables(latex_content),
+                'citations': self._extract_citations(latex_content),
+                'sections': self._extract_sections(latex_content)
+            }
+
+            # Convert with Pandoc if enabled
+            pandoc_error = None
+            full_text = latex_content
+
+            if self.use_pandoc:
+                full_text_converted, pandoc_error = self._convert_to_markdown(latex_path)
+                if full_text_converted:
+                    full_text = full_text_converted
+
+            duration = (datetime.now() - start_time).total_seconds()
+
+            metadata = {
+                'extractor': 'latex',
+                'extraction_type': 'plain.tex',
+                'main_file': latex_path.name,
+                'num_tex_files': 1,
+                'has_bibliography': False,
+                'processing_time': duration,
+                'latex_path': str(latex_path)
+            }
+
+            # Add Pandoc error if conversion failed
+            if pandoc_error:
+                metadata['pandoc_error'] = pandoc_error
+
+            logger.info(f"Successfully extracted from plain LaTeX: {latex_path.name}")
+
+            return {
+                'full_text': full_text,
+                'latex_source': latex_content,
+                'structures': structures,
+                'metadata': metadata
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to extract plain LaTeX from {latex_path}: {e}")
+            return self._empty_result(latex_path, str(e))
+
     def _extract_equations(self, latex: str) -> List[Dict[str, Any]]:
         """Extract all equations from LaTeX source."""
         equations = []

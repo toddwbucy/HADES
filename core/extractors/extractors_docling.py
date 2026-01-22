@@ -136,23 +136,23 @@ class DoclingExtractor(ExtractorBase):
         file_size = pdf_path.stat().st_size
         if file_size == 0:
             # More specific error message based on file type
-            if pdf_path.suffix in ['.txt', '.text', '.md']:
+            if pdf_path.suffix.lower() in ['.txt', '.text', '.md']:
                 raise RuntimeError(f"Text file is empty: {pdf_path}")
             else:
                 raise RuntimeError(f"File is empty: {pdf_path}")
-        
+
         # Check file type and handle appropriately
         pdf_path_obj = Path(pdf_path)
-        
+
         # For text files, handle directly (useful for testing)
-        if pdf_path_obj.suffix in ['.txt', '.text', '.md']:
+        if pdf_path_obj.suffix.lower() in ['.txt', '.text', '.md']:
             try:
                 with open(pdf_path, 'r', encoding='utf-8') as f:
                     text = f.read()
-                
+
                 if not text.strip():
                     raise RuntimeError(f"Text file is empty: {pdf_path}")
-                
+
                 return self._dict_to_result({
                     'text': text,
                     'tables': [],
@@ -163,9 +163,9 @@ class DoclingExtractor(ExtractorBase):
                         'page_count': 1,
                         'extractor': 'text_reader',
                         'pdf_path': str(pdf_path),
-                        'processing_time': 0.0
-                    },
-                    'version': 'text_reader'
+                        'processing_time': 0.0,
+                        'version': 'text_reader'
+                    }
                 })
             except (IOError, UnicodeDecodeError) as e:
                 raise RuntimeError(f"Cannot read text file: {pdf_path}, error: {e}") from e
