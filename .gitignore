@@ -2,6 +2,9 @@
 CLAUDE.md
 .claude/
 
+# Local planning
+MIGRATION_PLAN.md
+
 # Python
 __pycache__/
 *.py[cod]
