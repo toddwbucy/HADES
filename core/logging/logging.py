@@ -7,10 +7,75 @@ Centralized logging configuration using structlog for structured JSON logging.
 
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
+import tempfile
 import threading
 
 import structlog
+
+
+def _get_log_directory() -> Path:
+    """
+    Get a writable log directory.
+
+    Priority:
+    1. LOG_DIR environment variable
+    2. Current working directory / logs
+    3. System temp directory / hades_logs
+
+    Returns:
+        Path to writable log directory
+    """
+    # Try LOG_DIR env var first
+    if env_log_dir := os.environ.get("LOG_DIR"):
+        log_dir = Path(env_log_dir)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            if os.access(log_dir, os.W_OK):
+                return log_dir
+        except OSError:
+            pass
+
+    # Try current working directory
+    try:
+        log_dir = Path.cwd() / "logs"
+        log_dir.mkdir(exist_ok=True)
+        if os.access(log_dir, os.W_OK):
+            return log_dir
+    except OSError:
+        pass
+
+    # Fall back to temp directory
+    log_dir = Path(tempfile.gettempdir()) / "hades_logs"
+    log_dir.mkdir(exist_ok=True)
+    return log_dir
+
+
+def _validate_log_level(log_level: str) -> int:
+    """
+    Validate and convert log level string to numeric value.
+
+    Args:
+        log_level: Log level name (case-insensitive)
+
+    Returns:
+        Numeric logging level
+
+    Raises:
+        ValueError: If log_level is not a valid logging level name
+    """
+    level_name = str(log_level).upper()
+
+    # Check against known level names
+    valid_levels = {"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"}
+    if level_name not in valid_levels:
+        raise ValueError(
+            f"Invalid log level: '{log_level}'. "
+            f"Must be one of: {', '.join(sorted(valid_levels))}"
+        )
+
+    return getattr(logging, level_name)
 
 # Global flag and lock for thread-safe initialization
 _logging_initialized = False
@@ -49,13 +114,15 @@ class LogManager:
             if _logging_initialized:
                 return
 
-            # Setup log directory
-            log_dir = Path(__file__).parent.parent / "logs"
-            log_dir.mkdir(exist_ok=True)
+            # Validate and convert log level
+            numeric_level = _validate_log_level(log_level)
+
+            # Setup log directory (configurable, with safe fallbacks)
+            log_dir = _get_log_directory()
 
             # Configure Python logging
             logging.basicConfig(
-                level=getattr(logging, log_level),
+                level=numeric_level,
                 format='%(message)s'
             )
 
@@ -68,7 +135,7 @@ class LogManager:
                 maxBytes=10_485_760,
                 backupCount=5
             )
-            main_handler.setLevel(getattr(logging, log_level))
+            main_handler.setLevel(numeric_level)
             handlers.append(main_handler)
 
             # Error log file (10MB, keep 3 backups)
