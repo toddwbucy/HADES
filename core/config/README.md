@@ -8,7 +8,7 @@ This module embodies configuration as an "obligatory passage point" (Actor-Netwo
 
 ## Architecture
 
-```
+```text
 config/
 ├── config_base.py      # Abstract base classes and validation
 ├── config_loader.py    # YAML/JSON configuration loading

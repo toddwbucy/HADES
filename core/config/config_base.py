@@ -104,12 +104,8 @@ class BaseConfig(BaseModel, ABC):
         Raises:
             ConfigValidationError: If validation fails
         """
-        try:
-            # Pydantic validation is automatic
-            pass
-        except ValidationError as e:
-            raise ConfigValidationError("Schema validation failed",
-                                      [f"{err['loc']}: {err['msg']}" for err in e.errors])
+        # Note: Pydantic schema validation occurs automatically at __init__.
+        # This method focuses on semantic validation that goes beyond schema.
 
         # Semantic validation
         semantic_errors = self.validate_semantics()

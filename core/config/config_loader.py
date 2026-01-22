@@ -279,7 +279,6 @@ class ConfigLoader:
             Configuration data from environment
         """
         config: Dict[str, Any] = {}
-        prefix_lower = prefix.lower()
 
         for key, value in os.environ.items():
             if key.startswith(prefix):

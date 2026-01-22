@@ -19,6 +19,8 @@ from typing import Dict, Any, Optional, Type, TypeVar, Union, List
 from pathlib import Path
 import threading
 import logging
+import json
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -319,7 +321,9 @@ class ConfigManager:
         if instance_id:
             cache_key = f"{name}:{instance_id}"
         if overrides:
-            override_hash = hash(frozenset(overrides.items()))
+            # Use JSON for stable hashing of potentially nested overrides
+            override_str = json.dumps(overrides, sort_keys=True, default=str)
+            override_hash = hashlib.md5(override_str.encode()).hexdigest()[:8]
             cache_key = f"{cache_key}:{override_hash}"
 
         # Check cache

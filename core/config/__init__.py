@@ -131,7 +131,11 @@ def create_config_schema(config_class) -> dict:
         >>> schema = create_config_schema(ProcessingConfig)
         >>> config_manager._loader.register_schema('processing', schema)
     """
-    if hasattr(config_class, 'schema'):
+    # Pydantic v2 uses model_json_schema()
+    if hasattr(config_class, 'model_json_schema'):
+        return config_class.model_json_schema()
+    # Pydantic v1 fallback uses schema()
+    elif hasattr(config_class, 'schema'):
         return config_class.schema()
     else:
         # Fallback for non-Pydantic classes
