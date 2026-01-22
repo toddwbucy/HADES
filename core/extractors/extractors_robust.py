@@ -215,8 +215,9 @@ class RobustExtractor(ExtractorBase):
             
             try:
                 result = future.result(timeout=self.timeout)
-                
-                if result and 'error' not in result:
+
+                # Check value of error key (may be None for success)
+                if result and not result.get('error'):
                     logger.debug(f"Docling extraction successful: {pdf_file.name}")
                     return self._dict_to_result(result, pdf_path)
                 else:
