@@ -116,9 +116,18 @@ class RobustExtractor(ExtractorBase):
             **kwargs: Additional options
         """
         super().__init__(config)
-        self.use_ocr = kwargs.get('use_ocr', use_ocr)
-        self.extract_tables = kwargs.get('extract_tables', extract_tables)
-        self.timeout = kwargs.get('timeout', timeout)
+
+        # Honor config values first, then kwargs, then explicit defaults
+        if config is not None:
+            self.use_ocr = kwargs.get('use_ocr', config.ocr_enabled)
+            self.extract_tables = kwargs.get('extract_tables', config.extract_tables)
+            self.timeout = kwargs.get('timeout', config.timeout_seconds)
+        else:
+            self.use_ocr = kwargs.get('use_ocr', use_ocr)
+            self.extract_tables = kwargs.get('extract_tables', extract_tables)
+            self.timeout = kwargs.get('timeout', timeout)
+
+        # use_fallback has no config equivalent, use kwargs or default
         self.use_fallback = kwargs.get('use_fallback', use_fallback)
 
         logger.info(f"Initialized RobustExtractor (timeout: {self.timeout}s, fallback: {self.use_fallback})")
@@ -133,16 +142,22 @@ class RobustExtractor(ExtractorBase):
         if data is None:
             return ExtractionResult(
                 text='',
-                metadata={'pdf_path': pdf_path},
+                metadata={'pdf_path': pdf_path, 'extractor': 'robust'},
                 error='Extraction failed'
             )
+
+        # Build metadata ensuring pdf_path and extractor are always present
+        metadata = data.get('metadata') or {}
+        metadata.setdefault('pdf_path', pdf_path)
+        metadata.setdefault('extractor', 'robust')
+
         return ExtractionResult(
             text=data.get('full_text', data.get('text', '')),
-            metadata=data.get('metadata', {'extractor': data.get('extractor', 'robust')}),
+            metadata=metadata,
             tables=data.get('tables', []),
             equations=data.get('equations', []),
             images=data.get('images', []),
-            processing_time=data.get('metadata', {}).get('processing_time', 0.0)
+            processing_time=metadata.get('processing_time', 0.0)
         )
 
     def _cleanup_executor_processes(self, executor: ProcessPoolExecutor) -> None:
