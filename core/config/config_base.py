@@ -180,16 +180,20 @@ class BaseConfig(BaseModel, ABC):
     @classmethod
     def from_file(cls: Type[T], file_path: Union[str, Path]) -> T:
         """
-        Load configuration from file.
+        Load configuration from a JSON file.
+
+        Note: This method only supports JSON format. For YAML files or
+        hierarchical configuration loading, use ConfigManager.load_config()
+        instead.
 
         Args:
-            file_path: Path to configuration file
+            file_path: Path to JSON configuration file
 
         Returns:
-            Configuration instance
+            Configuration instance with source set to the file path
 
         Raises:
-            ConfigValidationError: If file cannot be loaded or validated
+            ConfigValidationError: If file cannot be read or JSON is invalid
         """
         path = Path(file_path)
         if not path.exists():
@@ -433,6 +437,7 @@ class StorageConfig(BaseConfig):
 
     password: str = Field(
         default="",
+        exclude=True,  # Exclude from serialization to prevent exposure
         description="Database password"
     )
 
