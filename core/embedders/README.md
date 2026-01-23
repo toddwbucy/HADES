@@ -45,26 +45,26 @@ State-of-the-art embedder with late chunking support:
 
 ```python
 from core.embedders import JinaV4Embedder
+from core.embedders.embedders_base import EmbeddingConfig
 
 # Initialize with configuration
-embedder = JinaV4Embedder(
+config = EmbeddingConfig(
     model_name="jinaai/jina-embeddings-v4",
     device="cuda",
     use_fp16=True,  # Memory efficient
-    trust_remote_code=True
 )
+embedder = JinaV4Embedder(config)
 
 # Single text embedding
 text = "Neural networks enable semantic understanding of text"
-vector = embedder.embed([text])[0]  # Shape: (1024,) or (2048,)
+vector = embedder.embed_single(text)  # Shape: (2048,)
 
-# Batch embedding with late chunking
+# Batch embedding
 documents = ["Long document 1...", "Long document 2..."]
-vectors = embedder.embed_batch(
-    documents,
-    batch_size=24,
-    late_chunking=True  # Process full docs before chunking
-)
+vectors = embedder.embed_texts(documents, batch_size=24)
+
+# Late chunking for long documents (returns ChunkWithEmbedding list)
+chunks = embedder.embed_with_late_chunking("Very long document text...")
 ```
 
 ### EmbedderFactory
@@ -106,7 +106,7 @@ embedder = JinaV4Embedder(config)
 ```
 
 - **Dimensions**: 1024 (Jina model exposes both 1024- and 2048-dimension adapters)
-- **Max Sequence**: 8192 tokens (configurable via `EmbeddersConfig`)
+- **Max Sequence**: 8192 tokens (configurable via `EmbeddingConfig`)
 
 ### Jina V4 (2048-dimension mode)
 
@@ -167,15 +167,17 @@ vectors = [chunk.embedding for chunk in chunks]
 
 ```python
 from core.embedders import JinaV4Embedder
+from core.embedders.embedders_base import EmbeddingConfig
 
 # Initialize
-embedder = JinaV4Embedder(device="cuda")
+config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cuda")
+embedder = JinaV4Embedder(config)
 
 # Embed single text
 text = "Vector embeddings enable semantic similarity search"
-vector = embedder.embed([text])[0]
+vector = embedder.embed_single(text)
 
-print(f"Shape: {vector.shape}")  # (1024,) or (2048,)
+print(f"Shape: {vector.shape}")  # (2048,)
 print(f"Norm: {np.linalg.norm(vector):.4f}")  # Normalized to ~1.0
 ```
 
@@ -186,43 +188,43 @@ print(f"Norm: {np.linalg.norm(vector):.4f}")  # Normalized to ~1.0
 texts = load_documents()  # List of 1000 documents
 
 # Process in optimized batches
-embeddings = embedder.embed_batch(
-    texts,
-    batch_size=32,  # GPU memory dependent
-    show_progress=True
-)
+embeddings = embedder.embed_texts(texts, batch_size=32)
 
 print(f"Processed {len(texts)} documents")
-print(f"Embeddings shape: {embeddings.shape}")  # (1000, 1024)
+print(f"Embeddings shape: {embeddings.shape}")  # (1000, 2048)
 ```
 
 ### Memory-Efficient Processing
 
 ```python
+from core.embedders.embedders_base import EmbeddingConfig
+
 # Use FP16 for reduced memory
-embedder = JinaV4Embedder(
+config = EmbeddingConfig(
+    model_name="jinaai/jina-embeddings-v4",
     device="cuda",
-    use_fp16=True  # 40% memory reduction
+    use_fp16=True,  # 40% memory reduction
+    batch_size=64  # Larger batches with FP16
 )
+embedder = JinaV4Embedder(config)
 
 # Process large batches
 large_batch = ["text"] * 100
-embeddings = embedder.embed_batch(
-    large_batch,
-    batch_size=64  # Larger batches with FP16
-)
+embeddings = embedder.embed_texts(large_batch)
 ```
 
 ### Pipeline Integration
 
 ```python
 from core.embedders import JinaV4Embedder
+from core.embedders.embedders_base import EmbeddingConfig
 from core.extractors import DoclingExtractor
 from core.database import ArangoClient
 
 # Complete pipeline
 extractor = DoclingExtractor()
-embedder = JinaV4Embedder(device="cuda", use_fp16=True)
+config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cuda", use_fp16=True)
+embedder = JinaV4Embedder(config)
 db = ArangoClient()
 
 # Process document
@@ -230,10 +232,7 @@ content = extractor.extract("paper.pdf")
 chunks = content.get_chunks()
 
 # Generate embeddings
-embeddings = embedder.embed_batch(
-    [chunk.text for chunk in chunks],
-    batch_size=32
-)
+embeddings = embedder.embed_texts([chunk.text for chunk in chunks], batch_size=32)
 
 # Store in database
 for chunk, embedding in zip(chunks, embeddings):
@@ -250,13 +249,17 @@ for chunk, embedding in zip(chunks, embeddings):
 ### GPU Utilization
 
 ```python
+from core.embedders.embedders_base import EmbeddingConfig
+
 # Optimize for GPU memory
-embedder = JinaV4Embedder(
+config = EmbeddingConfig(
+    model_name="jinaai/jina-embeddings-v4",
     device="cuda:0",
     batch_size=32,  # Tune based on GPU memory
     use_fp16=True,  # Reduce memory usage
     max_seq_length=8192  # Limit sequence length
 )
+embedder = JinaV4Embedder(config)
 
 # Monitor GPU usage
 import torch
@@ -266,17 +269,18 @@ print(f"GPU Memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 ### Multi-GPU Support
 
 ```python
-# Distribute across multiple GPUs
-embedder = JinaV4Embedder(
-    device="cuda",  # Auto-selects available GPU
-    data_parallel=True  # Use DataParallel for multiple GPUs
-)
+from core.embedders.embedders_base import EmbeddingConfig
 
-# Process large dataset
-embeddings = embedder.embed_batch(
-    large_dataset,
+# Distribute across multiple GPUs
+config = EmbeddingConfig(
+    model_name="jinaai/jina-embeddings-v4",
+    device="cuda",  # Auto-selects available GPU
     batch_size=128  # Larger batch for multi-GPU
 )
+embedder = JinaV4Embedder(config)
+
+# Process large dataset
+embeddings = embedder.embed_texts(large_dataset)
 ```
 
 ### Caching Strategy
@@ -285,21 +289,23 @@ embeddings = embedder.embed_batch(
 from functools import lru_cache
 import hashlib
 
-class CachedEmbedder(JinaV4Embedder):
-    """Embedder with caching for repeated texts."""
+class CachedEmbedder:
+    """Wrapper that adds caching to any embedder."""
 
-    @lru_cache(maxsize=10000)
-    def _cached_embed(self, text_hash: str) -> np.ndarray:
-        """Cache embeddings by text hash."""
-        return super().embed([text_hash])[0]
+    def __init__(self, embedder: JinaV4Embedder):
+        self.embedder = embedder
+        self._cache: Dict[str, np.ndarray] = {}
 
-    def embed(self, texts: List[str]) -> np.ndarray:
-        """Embed with caching."""
-        embeddings = []
-        for text in texts:
-            text_hash = hashlib.md5(text.encode()).hexdigest()
-            embeddings.append(self._cached_embed(text_hash))
-        return np.array(embeddings)
+    def embed_single(self, text: str) -> np.ndarray:
+        """Embed with caching using text hash as key."""
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        if text_hash not in self._cache:
+            self._cache[text_hash] = self.embedder.embed_single(text)
+        return self._cache[text_hash]
+
+    def embed_texts(self, texts: List[str]) -> np.ndarray:
+        """Embed multiple texts with caching."""
+        return np.array([self.embed_single(text) for text in texts])
 ```
 
 ## Configuration
@@ -339,16 +345,19 @@ export USE_FP16=true
 ### Common Issues
 
 ```python
-from core.embedders import EmbeddingError
+from core.embedders import JinaV4Embedder
+from core.embedders.embedders_base import EmbeddingConfig
 
 try:
-    embedder = JinaV4Embedder(device="cuda")
-    embeddings = embedder.embed(texts)
+    config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cuda")
+    embedder = JinaV4Embedder(config)
+    embeddings = embedder.embed_texts(texts)
 except torch.cuda.OutOfMemoryError:
     # Reduce batch size or use CPU
-    embedder = JinaV4Embedder(device="cpu", batch_size=8)
-    embeddings = embedder.embed(texts)
-except EmbeddingError as e:
+    config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cpu", batch_size=8)
+    embedder = JinaV4Embedder(config)
+    embeddings = embedder.embed_texts(texts)
+except Exception as e:
     print(f"Embedding failed: {e}")
     # Implement fallback strategy
 ```
@@ -397,17 +406,11 @@ def validate_embeddings(embeddings: np.ndarray) -> bool:
 ### 1. Choose Appropriate Model
 
 ```python
-# For general use
-embedder = JinaV4Embedder(
-    model_name="jinaai/jina-embeddings-v4",
-    dimensions=1024
-)
+from core.embedders.embedders_base import EmbeddingConfig
 
-# For high precision
-embedder = JinaV4Embedder(
-    model_name="jinaai/jina-embeddings-v4",
-    dimensions=2048
-)
+# Jina V4 uses 2048 dimensions by default
+config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cuda")
+embedder = JinaV4Embedder(config)
 ```
 
 ### 2. Optimize Batch Size
@@ -418,7 +421,7 @@ def find_optimal_batch_size(embedder, sample_texts):
     for batch_size in [8, 16, 32, 64, 128]:
         try:
             embedder.batch_size = batch_size
-            _ = embedder.embed_batch(sample_texts[:batch_size])
+            _ = embedder.embed_texts(sample_texts[:batch_size])
             print(f"Batch size {batch_size} works")
         except torch.cuda.OutOfMemoryError:
             print(f"Batch size {batch_size} too large")
@@ -431,9 +434,10 @@ def find_optimal_batch_size(embedder, sample_texts):
 ```python
 # Always use late chunking for documents > 2000 tokens
 if len(tokenizer.encode(document)) > 2000:
-    embeddings = embedder.embed_with_late_chunking(document)
+    chunks = embedder.embed_with_late_chunking(document)
+    embeddings = [chunk.embedding for chunk in chunks]
 else:
-    embeddings = embedder.embed([document])
+    embeddings = [embedder.embed_single(document)]
 ```
 
 ### 4. Monitor Resource Usage
@@ -462,27 +466,31 @@ def monitor_resources():
 
 ```python
 import pytest
+import numpy as np
 from core.embedders import JinaV4Embedder
+from core.embedders.embedders_base import EmbeddingConfig
 
 def test_embedding_dimensions():
     """Test embedding dimensions."""
-    embedder = JinaV4Embedder(dimensions=1024)
+    config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cpu")
+    embedder = JinaV4Embedder(config)
     text = "Test text"
-    embedding = embedder.embed([text])[0]
+    embedding = embedder.embed_single(text)
 
-    assert embedding.shape == (1024,)
+    assert embedding.shape == (2048,)  # Jina V4 uses 2048 dimensions
     assert np.allclose(np.linalg.norm(embedding), 1.0, atol=0.1)
 
 def test_batch_consistency():
     """Test batch processing consistency."""
-    embedder = JinaV4Embedder()
+    config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cpu")
+    embedder = JinaV4Embedder(config)
     texts = ["Text 1", "Text 2", "Text 3"]
 
     # Single processing
-    single = np.array([embedder.embed([t])[0] for t in texts])
+    single = np.array([embedder.embed_single(t) for t in texts])
 
     # Batch processing
-    batch = embedder.embed_batch(texts, batch_size=3)
+    batch = embedder.embed_texts(texts, batch_size=3)
 
     assert np.allclose(single, batch, atol=1e-5)
 ```
@@ -499,8 +507,11 @@ embeddings = model.encode(texts)
 
 # New approach
 from core.embedders import JinaV4Embedder
-embedder = JinaV4Embedder()
-embeddings = embedder.embed_batch(texts)
+from core.embedders.embedders_base import EmbeddingConfig
+
+config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cuda")
+embedder = JinaV4Embedder(config)
+embeddings = embedder.embed_texts(texts)
 ```
 
 ### From OpenAI Embeddings
@@ -515,8 +526,11 @@ response = openai.Embedding.create(
 
 # New approach
 from core.embedders import JinaV4Embedder
-embedder = JinaV4Embedder()
-embeddings = embedder.embed_batch(texts)
+from core.embedders.embedders_base import EmbeddingConfig
+
+config = EmbeddingConfig(model_name="jinaai/jina-embeddings-v4", device="cuda")
+embedder = JinaV4Embedder(config)
+embeddings = embedder.embed_texts(texts)
 # Better performance, lower cost, local processing
 ```
 

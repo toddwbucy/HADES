@@ -69,8 +69,8 @@ class EmbedderFactory:
         if config is None:
             config = EmbeddingConfig(model_name=model_name, **kwargs)
 
-        # Determine embedder type based on model name
-        embedder_type = cls._determine_embedder_type(model_name)
+        # Determine embedder type based on config's model name (not the param)
+        embedder_type = cls._determine_embedder_type(config.model_name)
 
         if embedder_type not in cls._embedders:
             # Try to import and register on-demand

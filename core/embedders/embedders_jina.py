@@ -57,55 +57,69 @@ class JinaV4Embedder(EmbedderBase):
     MAX_TOKENS = 32768  # Jina v4's context window
     EMBEDDING_DIM = 2048
     
-    def __init__(self, config: Optional[Union[EmbeddingConfig, Dict[str, Any]]] = None) -> None:
+    def __init__(self, config: Optional[Union[EmbeddingConfig, Dict[str, Any]]] = None, **kwargs: Any) -> None:
         """
         Initialize Jina v4 embedder with late chunking support.
 
         Args:
             config: EmbeddingConfig object or dict/None for defaults
+            **kwargs: Additional configuration overrides
         """
-        # Handle both old-style params and new config object
+        # Build config dict from various input formats
+        config_dict: Dict[str, Any] = {}
+
         if config is None:
-            config = {}
-        elif hasattr(config, 'device'):
-            # It's an EmbeddingConfig object - extract ALL values
-            old_config = config
-            config = {
-                'device': getattr(old_config, 'device', 'cuda'),
-                'use_fp16': getattr(old_config, 'use_fp16', True),
-                'batch_size': getattr(old_config, 'batch_size', 128),
-                'chunk_size_tokens': getattr(old_config, 'chunk_size_tokens', 500),
-                'chunk_overlap_tokens': getattr(old_config, 'chunk_overlap_tokens', 200),
-                'model_name': getattr(old_config, 'model_name', 'jinaai/jina-embeddings-v4'),
-                'normalize_embeddings': getattr(old_config, 'normalize_embeddings', True)
+            config_dict = {}
+        elif isinstance(config, EmbeddingConfig):
+            # Extract values from EmbeddingConfig object
+            config_dict = {
+                'device': config.device,
+                'use_fp16': config.use_fp16,
+                'batch_size': config.batch_size,
+                'chunk_size_tokens': config.chunk_size_tokens,
+                'chunk_overlap_tokens': config.chunk_overlap_tokens,
+                'model_name': config.model_name,
+                'max_seq_length': config.max_seq_length,
             }
-        elif not isinstance(config, dict):
+        elif isinstance(config, dict):
+            config_dict = config.copy()
+        else:
             # Old-style single param (device)
-            config = {'device': str(config)}  # type: ignore[unreachable]
+            config_dict = {'device': str(config)}
 
-        # Remove config_path handling since we have the config already
-        device = None
-        use_fp16 = None
-        chunk_size_tokens = None
-        chunk_overlap_tokens = None
-        # Config is already processed above, no need to load from file
+        # Apply kwargs overrides
+        config_dict.update(kwargs)
 
-        # Determine default device based on CUDA availability
-        default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Determine device with hard CPU fallback
+        requested_device = config_dict.get('device', 'cuda')
+        if requested_device.startswith('cuda') and not torch.cuda.is_available():
+            logger.warning("CUDA requested but not available, forcing CPU fallback")
+            self.device = 'cpu'
+        else:
+            self.device = requested_device
 
-        # Set parameters with config as defaults, overridable by arguments
-        self.device = device or config.get('device', default_device)
-        self.model_name = config.get('model_name', 'jinaai/jina-embeddings-v4')
+        self.model_name = config_dict.get('model_name', 'jinaai/jina-embeddings-v4')
+        self.batch_size = config_dict.get('batch_size', 128)  # Default to 128 for better throughput
 
-        # Log if we had to fallback to CPU
-        if config.get('device', default_device) == 'cuda' and not torch.cuda.is_available():
-            logger.warning("CUDA requested but not available, falling back to CPU")
-        self.batch_size = config.get('batch_size', 128)  # Default to 128 for better throughput
-        # Chunk size set to handle most abstracts without chunking, but chunk when needed
-        self.chunk_size_tokens = chunk_size_tokens or config.get('chunk_size_tokens', 500)  # Most abstracts < 500 tokens
-        self.chunk_overlap_tokens = chunk_overlap_tokens or config.get('chunk_overlap_tokens', 200)
-        use_fp16 = use_fp16 if use_fp16 is not None else config.get('use_fp16', True)
-        
+        # Create proper EmbeddingConfig for base class
+        base_config = EmbeddingConfig(
+            model_name=self.model_name,
+            device=self.device,
+            batch_size=self.batch_size,
+            max_seq_length=config_dict.get('max_seq_length', self.MAX_TOKENS),
+            use_fp16=config_dict.get('use_fp16', True),
+            chunk_size_tokens=config_dict.get('chunk_size_tokens', 500),
+            chunk_overlap_tokens=config_dict.get('chunk_overlap_tokens', 200),
+        )
+
+        # Initialize base class
+        super().__init__(base_config)
+
+        # Set chunking parameters from config
+        self.chunk_size_tokens = config_dict.get('chunk_size_tokens', 500)
+        self.chunk_overlap_tokens = config_dict.get('chunk_overlap_tokens', 200)
+        use_fp16 = config_dict.get('use_fp16', True)
+
         # Load model with appropriate dtype
         # Check if device starts with "cuda" to handle cuda:0, cuda:1, etc.
         dtype = torch.float16 if (use_fp16 and self.device.startswith("cuda")) else torch.float32
