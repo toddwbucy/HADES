@@ -71,7 +71,7 @@ class ProcessingConfig:
     # Chunking settings
     chunk_size_tokens: int = 1000
     chunk_overlap_tokens: int = 200
-    chunking_strategy: str = "late"  # 'late', 'semantic', 'fixed'
+    chunking_strategy: str = "late"  # 'late', 'semantic', 'sliding', 'sliding_window', 'token', 'traditional'
     max_chunk_size: int = 8192
 
     # Processing settings
@@ -250,17 +250,28 @@ class DocumentProcessor:
                 embedding_time = time.time() - embedding_start
                 chunking_time = 0.0
             elif strategy in ("semantic", "sliding", "sliding_window", "token"):
-                # Use ChunkingStrategyFactory for supported strategies
+                # Use ChunkingStrategyFactory with strategy-specific kwargs
                 chunking_start = time.time()
-                chunker = ChunkingStrategyFactory.create_strategy(
-                    strategy,
-                    chunk_size=self.config.chunk_size_tokens,
-                    chunk_overlap=self.config.chunk_overlap_tokens,
-                    max_chunk_size=self.config.chunk_size_tokens,
-                    min_chunk_size=self.config.chunk_overlap_tokens,
-                    window_size=self.config.chunk_size_tokens,
-                    step_size=self.config.chunk_size_tokens - self.config.chunk_overlap_tokens,
-                )
+                if strategy == "token":
+                    chunker = ChunkingStrategyFactory.create_strategy(
+                        strategy,
+                        chunk_size=self.config.chunk_size_tokens,
+                        chunk_overlap=self.config.chunk_overlap_tokens,
+                    )
+                elif strategy == "semantic":
+                    chunker = ChunkingStrategyFactory.create_strategy(
+                        strategy,
+                        max_chunk_size=self.config.chunk_size_tokens,
+                        min_chunk_size=self.config.chunk_overlap_tokens,
+                        respect_sentences=True,
+                        respect_paragraphs=True,
+                    )
+                else:  # sliding or sliding_window
+                    chunker = ChunkingStrategyFactory.create_strategy(
+                        strategy,
+                        window_size=self.config.chunk_size_tokens,
+                        step_size=self.config.chunk_size_tokens - self.config.chunk_overlap_tokens,
+                    )
                 text_chunks = chunker.create_chunks(extraction_result.full_text)
                 # Convert TextChunk to dict format expected by _embed_chunks
                 chunks = [
