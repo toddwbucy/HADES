@@ -47,12 +47,21 @@ class ArangoHttp2Config:
 
 
 class ArangoHttp2Client:
-    """HTTP/2 ArangoDB client supporting Unix sockets or network transport."""
+    """ArangoDB client supporting Unix sockets or network transport.
+
+    Protocol note: HTTP/2 requires TLS/ALPN negotiation in standard deployments.
+    Over Unix domain sockets (UDS) with cleartext HTTP, connections will use
+    HTTP/1.1 unless the server supports HTTP/2 prior-knowledge (h2c). This is
+    acceptable for local connections where the performance difference is minimal.
+    Network connections over HTTPS can negotiate HTTP/2 via ALPN.
+    """
 
     def __init__(self, config: ArangoHttp2Config) -> None:
         self._config = config
 
-        # Use Unix socket transport if socket_path is provided, otherwise network
+        # Use Unix socket transport if socket_path is provided, otherwise network.
+        # Note: UDS with http:// base_url will use HTTP/1.1 (no TLS/ALPN for HTTP/2).
+        # This is fine for local connections; network+HTTPS can use HTTP/2.
         if config.socket_path:
             transport = httpx.HTTPTransport(
                 uds=config.socket_path,
@@ -73,6 +82,8 @@ class ArangoHttp2Client:
         if config.username and config.password:
             auth = (config.username, config.password)
 
+        # http2=True enables HTTP/2 when available (HTTPS with ALPN).
+        # For UDS/cleartext, httpx gracefully falls back to HTTP/1.1.
         self._client = httpx.Client(
             http2=True,
             base_url=config.base_url,

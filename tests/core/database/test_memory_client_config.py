@@ -1,8 +1,8 @@
 """Tests for ArangoDB memory client configuration and transport selection."""
 
 import os
-from typing import Any
-from unittest.mock import patch, MagicMock
+from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 
@@ -12,14 +12,14 @@ from core.database.arango.memory_client import (
     ArangoMemoryClientConfig,
     resolve_memory_config,
 )
-from core.database.arango.optimized_client import ArangoHttp2Config, ArangoHttp2Client
+from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 from core.database.database_factory import DatabaseFactory
 
 
 class DummyHttp2Client:
     """Minimal stand-in for ArangoHttp2Client used in tests."""
 
-    instances: list["DummyHttp2Client"] = []
+    instances: ClassVar[list["DummyHttp2Client"]] = []
 
     def __init__(self, config: Any):
         self.config = config
@@ -150,16 +150,17 @@ class TestArangoMemoryClientConfig:
 # =============================================================================
 
 
+@pytest.mark.usefixtures("clean_env")
 class TestResolveMemoryConfig:
     """Tests for resolve_memory_config function."""
 
-    def test_requires_password(self, clean_env, monkeypatch):
+    def test_requires_password(self, monkeypatch):
         """Should raise ValueError if ARANGO_PASSWORD is not set."""
         monkeypatch.delenv("ARANGO_PASSWORD", raising=False)
         with pytest.raises(ValueError, match="password required"):
             resolve_memory_config()
 
-    def test_explicit_proxies_true(self, clean_env):
+    def test_explicit_proxies_true(self):
         """use_proxies=True should use proxy socket paths."""
         config = resolve_memory_config(use_proxies=True)
         assert config.read_socket is not None
@@ -167,7 +168,7 @@ class TestResolveMemoryConfig:
         assert "readonly" in config.read_socket or "hades" in config.read_socket
         assert "readwrite" in config.write_socket or "hades" in config.write_socket
 
-    def test_explicit_proxies_true_with_env_override(self, clean_env, monkeypatch):
+    def test_explicit_proxies_true_with_env_override(self, monkeypatch):
         """use_proxies=True should respect env socket overrides."""
         monkeypatch.setenv("ARANGO_RO_SOCKET", "/custom/ro.sock")
         monkeypatch.setenv("ARANGO_RW_SOCKET", "/custom/rw.sock")
@@ -176,7 +177,7 @@ class TestResolveMemoryConfig:
         assert config.read_socket == "/custom/ro.sock"
         assert config.write_socket == "/custom/rw.sock"
 
-    def test_explicit_proxies_false_with_socket(self, clean_env, monkeypatch):
+    def test_explicit_proxies_false_with_socket(self, monkeypatch):
         """use_proxies=False with ARANGO_SOCKET should use direct socket."""
         monkeypatch.setenv("ARANGO_SOCKET", "/direct/arango.sock")
 
@@ -184,14 +185,14 @@ class TestResolveMemoryConfig:
         assert config.read_socket == "/direct/arango.sock"
         assert config.write_socket == "/direct/arango.sock"
 
-    def test_explicit_proxies_false_no_socket_uses_network(self, clean_env):
+    def test_explicit_proxies_false_no_socket_uses_network(self):
         """use_proxies=False without sockets should use network (None)."""
         config = resolve_memory_config(use_proxies=False)
         assert config.read_socket is None
         assert config.write_socket is None
         assert "localhost" in config.base_url
 
-    def test_auto_detect_finds_proxy_sockets(self, clean_env):
+    def test_auto_detect_finds_proxy_sockets(self):
         """use_proxies=None should find proxy sockets if they exist."""
         with patch("os.path.exists") as mock_exists:
             # Proxy sockets exist
@@ -201,7 +202,7 @@ class TestResolveMemoryConfig:
             assert config.read_socket is not None
             assert "readonly" in config.read_socket or "hades" in config.read_socket
 
-    def test_auto_detect_falls_back_to_direct_socket(self, clean_env):
+    def test_auto_detect_falls_back_to_direct_socket(self):
         """use_proxies=None should fall back to direct socket if proxies don't exist."""
         with patch("os.path.exists") as mock_exists:
             # Only default ArangoDB socket exists
@@ -211,7 +212,7 @@ class TestResolveMemoryConfig:
             assert config.read_socket == "/run/arangodb3/arangodb.sock"
             assert config.write_socket == "/run/arangodb3/arangodb.sock"
 
-    def test_auto_detect_falls_back_to_network(self, clean_env):
+    def test_auto_detect_falls_back_to_network(self):
         """use_proxies=None should fall back to network if no sockets exist."""
         with patch("os.path.exists") as mock_exists:
             # No sockets exist
@@ -222,7 +223,7 @@ class TestResolveMemoryConfig:
             assert config.write_socket is None
             assert config.base_url is not None
 
-    def test_base_url_from_env(self, clean_env, monkeypatch):
+    def test_base_url_from_env(self, monkeypatch):
         """Should use ARANGO_HTTP_BASE_URL from environment."""
         monkeypatch.setenv("ARANGO_HTTP_BASE_URL", "http://arango.example.com:8529")
 
@@ -231,7 +232,7 @@ class TestResolveMemoryConfig:
 
         assert config.base_url == "http://arango.example.com:8529"
 
-    def test_timeout_from_env(self, clean_env, monkeypatch):
+    def test_timeout_from_env(self, monkeypatch):
         """Should parse timeout values from environment."""
         monkeypatch.setenv("ARANGO_CONNECT_TIMEOUT", "10.0")
         monkeypatch.setenv("ARANGO_READ_TIMEOUT", "60.0")
@@ -244,7 +245,7 @@ class TestResolveMemoryConfig:
         assert config.read_timeout == 60.0
         assert config.write_timeout == 120.0
 
-    def test_explicit_socket_path_overrides(self, clean_env):
+    def test_explicit_socket_path_overrides(self):
         """Explicit socket_path argument should override everything."""
         with patch("os.path.exists", return_value=False):
             config = resolve_memory_config(
@@ -306,10 +307,11 @@ class TestArangoHttp2ClientTransport:
 # =============================================================================
 
 
+@pytest.mark.usefixtures("clean_env")
 class TestDatabaseFactoryIntegration:
     """Integration tests for DatabaseFactory with new transport options."""
 
-    def test_get_arango_with_network_transport(self, clean_env, monkeypatch):
+    def test_get_arango_with_network_transport(self, monkeypatch):
         """DatabaseFactory.get_arango should work with network transport."""
         monkeypatch.setattr(memory_client_module, "ArangoHttp2Client", DummyHttp2Client)
 
@@ -329,7 +331,7 @@ class TestDatabaseFactoryIntegration:
         finally:
             client.close()
 
-    def test_get_arango_with_unix_socket(self, clean_env, monkeypatch):
+    def test_get_arango_with_unix_socket(self, monkeypatch):
         """DatabaseFactory.get_arango should work with Unix socket transport."""
         monkeypatch.setattr(memory_client_module, "ArangoHttp2Client", DummyHttp2Client)
 
@@ -347,7 +349,7 @@ class TestDatabaseFactoryIntegration:
         finally:
             client.close()
 
-    def test_get_arango_auto_detect(self, clean_env, monkeypatch):
+    def test_get_arango_auto_detect(self, monkeypatch):
         """DatabaseFactory.get_arango with use_proxies=None should auto-detect."""
         monkeypatch.setattr(memory_client_module, "ArangoHttp2Client", DummyHttp2Client)
 

@@ -175,31 +175,63 @@ def resolve_memory_config(
             write_socket = None
     else:
         # Auto-detect: check if proxy sockets exist, fall back to direct or network
-        candidate_ro = read_socket or env_ro or default_proxy_ro
-        candidate_rw = write_socket or env_rw or default_proxy_rw
+        # Honor explicitly provided sockets - only auto-detect for unspecified ones
+        explicit_read = read_socket is not None
+        explicit_write = write_socket is not None
 
-        if os.path.exists(candidate_ro) and os.path.exists(candidate_rw):
-            # Proxy sockets available
-            read_socket = candidate_ro
-            write_socket = candidate_rw
-        elif socket_path or env_direct:
-            # Fall back to direct socket
-            direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
-            if os.path.exists(direct_socket):
-                read_socket = direct_socket
-                write_socket = direct_socket
-            else:
-                # Direct socket doesn't exist, use network
-                read_socket = None
-                write_socket = None
-        elif os.path.exists(DEFAULT_ARANGO_SOCKET):
-            # Default ArangoDB socket exists
-            read_socket = DEFAULT_ARANGO_SOCKET
-            write_socket = DEFAULT_ARANGO_SOCKET
+        if explicit_read and explicit_write:
+            # Both explicitly provided - use them as-is
+            pass
+        elif explicit_read or explicit_write:
+            # One side explicit, auto-detect the other
+            # For the non-explicit side, try proxy -> direct -> network
+            for side, is_explicit, env_proxy, default_proxy in [
+                ("read", explicit_read, env_ro, default_proxy_ro),
+                ("write", explicit_write, env_rw, default_proxy_rw),
+            ]:
+                if is_explicit:
+                    continue
+                candidate = env_proxy or default_proxy
+                if os.path.exists(candidate):
+                    if side == "read":
+                        read_socket = candidate
+                    else:
+                        write_socket = candidate
+                elif socket_path or env_direct:
+                    direct = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+                    if os.path.exists(direct):
+                        if side == "read":
+                            read_socket = direct
+                        else:
+                            write_socket = direct
+                    # else: leave as None (network)
+                elif os.path.exists(DEFAULT_ARANGO_SOCKET):
+                    if side == "read":
+                        read_socket = DEFAULT_ARANGO_SOCKET
+                    else:
+                        write_socket = DEFAULT_ARANGO_SOCKET
+                # else: leave as None (network)
         else:
-            # No sockets available - use network transport
-            read_socket = None
-            write_socket = None
+            # Neither explicitly provided - full auto-detect
+            candidate_ro = env_ro or default_proxy_ro
+            candidate_rw = env_rw or default_proxy_rw
+
+            if os.path.exists(candidate_ro) and os.path.exists(candidate_rw):
+                # Proxy sockets available
+                read_socket = candidate_ro
+                write_socket = candidate_rw
+            elif socket_path or env_direct:
+                # Fall back to direct socket
+                direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+                if os.path.exists(direct_socket):
+                    read_socket = direct_socket
+                    write_socket = direct_socket
+                # else: leave as None (network)
+            elif os.path.exists(DEFAULT_ARANGO_SOCKET):
+                # Default ArangoDB socket exists
+                read_socket = DEFAULT_ARANGO_SOCKET
+                write_socket = DEFAULT_ARANGO_SOCKET
+            # else: leave as None (network)
 
     connect_timeout = connect_timeout if connect_timeout is not None else _parse_timeout(env.get("ARANGO_CONNECT_TIMEOUT"), 5.0)
     read_timeout = read_timeout if read_timeout is not None else _parse_timeout(env.get("ARANGO_READ_TIMEOUT"), 30.0)

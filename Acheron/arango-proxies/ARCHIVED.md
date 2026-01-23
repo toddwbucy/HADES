@@ -2,7 +2,7 @@
 
 This Go code was embedded in HADES but has been archived in favor of the standalone repository:
 
-**https://github.com/toddwbucy/arango-unix-proxy**
+**[arango-unix-proxy](https://github.com/toddwbucy/arango-unix-proxy)**
 
 ## Why Archived
 
