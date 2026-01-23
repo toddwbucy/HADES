@@ -8,8 +8,9 @@ with the previous gRPC client so existing code requires minimal changes.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Any
+from typing import Any
 
 import grpc
 from grpc import StatusCode
@@ -65,8 +66,8 @@ class ArangoMemoryClientConfig:
     username: str
     password: str
     base_url: str
-    read_socket: str
-    write_socket: str
+    read_socket: str | None  # None = use network transport
+    write_socket: str | None  # None = use network transport
     connect_timeout: float
     read_timeout: float
     write_timeout: float
@@ -143,7 +144,7 @@ def resolve_memory_config(
             raise ValueError("ArangoDB password required (set ARANGO_PASSWORD env var)")
 
     if base_url is None:
-        base_url = env.get("ARANGO_HTTP_BASE_URL", "http://localhost")
+        base_url = env.get("ARANGO_HTTP_BASE_URL", "http://localhost:8529")
 
     # Allow explicit sockets to override environment
     if socket_path:
@@ -154,19 +155,83 @@ def resolve_memory_config(
     env_rw = env.get("ARANGO_RW_SOCKET")
     env_direct = env.get("ARANGO_SOCKET")
 
-    proxies_requested = True if use_proxies is None else use_proxies
+    # Socket paths to check for auto-detection
+    default_proxy_ro = "/run/hades/readonly/arangod.sock"
+    default_proxy_rw = "/run/hades/readwrite/arangod.sock"
 
-    if proxies_requested:
-        default_ro = "/run/hades/readonly/arangod.sock"
-        default_rw = "/run/hades/readwrite/arangod.sock"
-
-        # The or-chains guarantee non-None values via defaults
-        read_socket = read_socket or env_ro or default_ro
-        write_socket = write_socket or env_rw or default_rw
+    if use_proxies is True:
+        # Explicitly requested proxies - use proxy sockets
+        read_socket = read_socket or env_ro or default_proxy_ro
+        write_socket = write_socket or env_rw or default_proxy_rw
+    elif use_proxies is False:
+        # Explicitly disabled proxies - use direct socket or network
+        if socket_path or env_direct:
+            direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+            read_socket = read_socket or direct_socket
+            write_socket = write_socket or direct_socket
+        else:
+            # No socket specified - use network (socket_path=None triggers HTTP transport)
+            read_socket = None
+            write_socket = None
     else:
-        direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
-        read_socket = read_socket or direct_socket
-        write_socket = write_socket or direct_socket
+        # Auto-detect: check if proxy sockets exist, fall back to direct or network
+        # Honor explicitly provided sockets - only auto-detect for unspecified ones
+        explicit_read = read_socket is not None
+        explicit_write = write_socket is not None
+
+        if explicit_read and explicit_write:
+            # Both explicitly provided - use them as-is
+            pass
+        elif explicit_read or explicit_write:
+            # One side explicit, auto-detect the other
+            # For the non-explicit side, try proxy -> direct -> network
+            for side, is_explicit, env_proxy, default_proxy in [
+                ("read", explicit_read, env_ro, default_proxy_ro),
+                ("write", explicit_write, env_rw, default_proxy_rw),
+            ]:
+                if is_explicit:
+                    continue
+                candidate = env_proxy or default_proxy
+                if os.path.exists(candidate):
+                    if side == "read":
+                        read_socket = candidate
+                    else:
+                        write_socket = candidate
+                elif socket_path or env_direct:
+                    direct = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+                    if os.path.exists(direct):
+                        if side == "read":
+                            read_socket = direct
+                        else:
+                            write_socket = direct
+                    # else: leave as None (network)
+                elif os.path.exists(DEFAULT_ARANGO_SOCKET):
+                    if side == "read":
+                        read_socket = DEFAULT_ARANGO_SOCKET
+                    else:
+                        write_socket = DEFAULT_ARANGO_SOCKET
+                # else: leave as None (network)
+        else:
+            # Neither explicitly provided - full auto-detect
+            candidate_ro = env_ro or default_proxy_ro
+            candidate_rw = env_rw or default_proxy_rw
+
+            if os.path.exists(candidate_ro) and os.path.exists(candidate_rw):
+                # Proxy sockets available
+                read_socket = candidate_ro
+                write_socket = candidate_rw
+            elif socket_path or env_direct:
+                # Fall back to direct socket
+                direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+                if os.path.exists(direct_socket):
+                    read_socket = direct_socket
+                    write_socket = direct_socket
+                # else: leave as None (network)
+            elif os.path.exists(DEFAULT_ARANGO_SOCKET):
+                # Default ArangoDB socket exists
+                read_socket = DEFAULT_ARANGO_SOCKET
+                write_socket = DEFAULT_ARANGO_SOCKET
+            # else: leave as None (network)
 
     connect_timeout = connect_timeout if connect_timeout is not None else _parse_timeout(env.get("ARANGO_CONNECT_TIMEOUT"), 5.0)
     read_timeout = read_timeout if read_timeout is not None else _parse_timeout(env.get("ARANGO_READ_TIMEOUT"), 30.0)
@@ -208,7 +273,7 @@ class ArangoMemoryClient:
             self._write_client.close()
         self._closed = True
 
-    def __enter__(self) -> "ArangoMemoryClient":  # pragma: no cover - helper
+    def __enter__(self) -> ArangoMemoryClient:  # pragma: no cover - helper
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - helper

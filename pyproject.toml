@@ -43,6 +43,7 @@ psycopg = {version = "^3.1.18", extras = ["binary"]}
 sqlalchemy = "^2.0.31"
 alembic = "^1.13.2"
 h2 = "^4.3.0"
+grpcio = "^1.75.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.5.0"
@@ -52,7 +53,6 @@ pytest = "^7.0.0"
 pytest-asyncio = "^0.21.0"
 types-tqdm = "*"
 types-pillow = "*"
-grpcio = "^1.75.0"
 grpcio-tools = "^1.75.0"
 
 [tool.poetry.extras]

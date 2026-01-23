@@ -36,8 +36,8 @@ class ArangoHttp2Config:
     """Configuration for the HTTP/2 client."""
 
     database: str = "_system"
-    socket_path: str = "/tmp/arangodb.sock"
-    base_url: str = "http://localhost"
+    socket_path: str | None = None  # None = use network (base_url), str = use Unix socket
+    base_url: str = "http://localhost:8529"
     username: str | None = None
     password: str | None = None
     connect_timeout: float = 5.0
@@ -47,14 +47,31 @@ class ArangoHttp2Config:
 
 
 class ArangoHttp2Client:
-    """Minimal HTTP/2 ArangoDB client speaking over Unix sockets."""
+    """ArangoDB client supporting Unix sockets or network transport.
+
+    Protocol note: HTTP/2 requires TLS/ALPN negotiation in standard deployments.
+    Over Unix domain sockets (UDS) with cleartext HTTP, connections will use
+    HTTP/1.1 unless the server supports HTTP/2 prior-knowledge (h2c). This is
+    acceptable for local connections where the performance difference is minimal.
+    Network connections over HTTPS can negotiate HTTP/2 via ALPN.
+    """
 
     def __init__(self, config: ArangoHttp2Config) -> None:
         self._config = config
-        transport = httpx.HTTPTransport(
-            uds=config.socket_path,
-            retries=0,
-        )
+
+        # Use Unix socket transport if socket_path is provided, otherwise network.
+        # Note: UDS with http:// base_url will use HTTP/1.1 (no TLS/ALPN for HTTP/2).
+        # This is fine for local connections; network+HTTPS can use HTTP/2.
+        if config.socket_path:
+            transport = httpx.HTTPTransport(
+                uds=config.socket_path,
+                retries=0,
+            )
+        else:
+            transport = httpx.HTTPTransport(
+                retries=0,
+            )
+
         timeout = httpx.Timeout(
             connect=config.connect_timeout,
             read=config.read_timeout,
@@ -65,6 +82,8 @@ class ArangoHttp2Client:
         if config.username and config.password:
             auth = (config.username, config.password)
 
+        # http2=True enables HTTP/2 when available (HTTPS with ALPN).
+        # For UDS/cleartext, httpx gracefully falls back to HTTP/1.1.
         self._client = httpx.Client(
             http2=True,
             base_url=config.base_url,
