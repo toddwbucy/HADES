@@ -106,9 +106,9 @@ CUDA_VISIBLE_DEVICES=0,1
    poetry shell
    ```
 
-4. **Install PHP dependencies**:
+4. **Install PHP dependencies** (triagens/arangodb is already in composer.json):
    ```bash
-   composer require triagens/arangodb
+   composer install
    ```
 
 5. **Configure environment**:

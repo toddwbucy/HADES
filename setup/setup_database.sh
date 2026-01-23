@@ -315,7 +315,7 @@ for username, password, permission in users:
     sys_db.update_permission(username=username, permission=permission, database=db_name)
     log(f"Granted {permission} on {db_name} to {username}")
 
-# Save credentials to config file
+# Save credentials to config file with restrictive permissions
 os.makedirs(config_dir, exist_ok=True)
 creds_file = os.path.join(config_dir, f"{db_name}.env")
 with open(creds_file, 'w') as f:
@@ -327,7 +327,10 @@ with open(creds_file, 'w') as f:
     f.write(f"export ARXIV_READER_USER={reader_user}\n")
     f.write(f"export ARXIV_READER_PASSWORD={reader_password}\n")
 
-log(f"Saved credentials to {creds_file}")
+# Restrict permissions so only owner can read/write credentials
+os.chmod(creds_file, 0o600)
+
+log(f"Saved credentials to {creds_file} (mode 0600)")
 print("Database setup completed successfully")
 SETUP_PY
 
