@@ -65,8 +65,8 @@ class ArangoMemoryClientConfig:
     username: str
     password: str
     base_url: str
-    read_socket: str
-    write_socket: str
+    read_socket: str | None  # None = use network transport
+    write_socket: str | None  # None = use network transport
     connect_timeout: float
     read_timeout: float
     write_timeout: float
@@ -143,7 +143,7 @@ def resolve_memory_config(
             raise ValueError("ArangoDB password required (set ARANGO_PASSWORD env var)")
 
     if base_url is None:
-        base_url = env.get("ARANGO_HTTP_BASE_URL", "http://localhost")
+        base_url = env.get("ARANGO_HTTP_BASE_URL", "http://localhost:8529")
 
     # Allow explicit sockets to override environment
     if socket_path:
@@ -154,19 +154,51 @@ def resolve_memory_config(
     env_rw = env.get("ARANGO_RW_SOCKET")
     env_direct = env.get("ARANGO_SOCKET")
 
-    proxies_requested = True if use_proxies is None else use_proxies
+    # Socket paths to check for auto-detection
+    default_proxy_ro = "/run/hades/readonly/arangod.sock"
+    default_proxy_rw = "/run/hades/readwrite/arangod.sock"
 
-    if proxies_requested:
-        default_ro = "/run/hades/readonly/arangod.sock"
-        default_rw = "/run/hades/readwrite/arangod.sock"
-
-        # The or-chains guarantee non-None values via defaults
-        read_socket = read_socket or env_ro or default_ro
-        write_socket = write_socket or env_rw or default_rw
+    if use_proxies is True:
+        # Explicitly requested proxies - use proxy sockets
+        read_socket = read_socket or env_ro or default_proxy_ro
+        write_socket = write_socket or env_rw or default_proxy_rw
+    elif use_proxies is False:
+        # Explicitly disabled proxies - use direct socket or network
+        if socket_path or env_direct:
+            direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+            read_socket = read_socket or direct_socket
+            write_socket = write_socket or direct_socket
+        else:
+            # No socket specified - use network (socket_path=None triggers HTTP transport)
+            read_socket = None
+            write_socket = None
     else:
-        direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
-        read_socket = read_socket or direct_socket
-        write_socket = write_socket or direct_socket
+        # Auto-detect: check if proxy sockets exist, fall back to direct or network
+        candidate_ro = read_socket or env_ro or default_proxy_ro
+        candidate_rw = write_socket or env_rw or default_proxy_rw
+
+        if os.path.exists(candidate_ro) and os.path.exists(candidate_rw):
+            # Proxy sockets available
+            read_socket = candidate_ro
+            write_socket = candidate_rw
+        elif socket_path or env_direct:
+            # Fall back to direct socket
+            direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
+            if os.path.exists(direct_socket):
+                read_socket = direct_socket
+                write_socket = direct_socket
+            else:
+                # Direct socket doesn't exist, use network
+                read_socket = None
+                write_socket = None
+        elif os.path.exists(DEFAULT_ARANGO_SOCKET):
+            # Default ArangoDB socket exists
+            read_socket = DEFAULT_ARANGO_SOCKET
+            write_socket = DEFAULT_ARANGO_SOCKET
+        else:
+            # No sockets available - use network transport
+            read_socket = None
+            write_socket = None
 
     connect_timeout = connect_timeout if connect_timeout is not None else _parse_timeout(env.get("ARANGO_CONNECT_TIMEOUT"), 5.0)
     read_timeout = read_timeout if read_timeout is not None else _parse_timeout(env.get("ARANGO_READ_TIMEOUT"), 30.0)

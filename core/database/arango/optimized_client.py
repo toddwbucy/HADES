@@ -36,8 +36,8 @@ class ArangoHttp2Config:
     """Configuration for the HTTP/2 client."""
 
     database: str = "_system"
-    socket_path: str = "/tmp/arangodb.sock"
-    base_url: str = "http://localhost"
+    socket_path: str | None = None  # None = use network (base_url), str = use Unix socket
+    base_url: str = "http://localhost:8529"
     username: str | None = None
     password: str | None = None
     connect_timeout: float = 5.0
@@ -47,14 +47,22 @@ class ArangoHttp2Config:
 
 
 class ArangoHttp2Client:
-    """Minimal HTTP/2 ArangoDB client speaking over Unix sockets."""
+    """HTTP/2 ArangoDB client supporting Unix sockets or network transport."""
 
     def __init__(self, config: ArangoHttp2Config) -> None:
         self._config = config
-        transport = httpx.HTTPTransport(
-            uds=config.socket_path,
-            retries=0,
-        )
+
+        # Use Unix socket transport if socket_path is provided, otherwise network
+        if config.socket_path:
+            transport = httpx.HTTPTransport(
+                uds=config.socket_path,
+                retries=0,
+            )
+        else:
+            transport = httpx.HTTPTransport(
+                retries=0,
+            )
+
         timeout = httpx.Timeout(
             connect=config.connect_timeout,
             read=config.read_timeout,
