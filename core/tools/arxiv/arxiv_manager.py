@@ -289,7 +289,7 @@ class ArXivManager:
             try:
                 entries_loaded = 0
                 truncated = False
-                with open(metadata_path) as f:
+                with open(metadata_path, encoding='utf-8', errors='replace') as f:
                     # ArXiv metadata is typically in JSON Lines format
                     for line in f:
                         if line.strip():
