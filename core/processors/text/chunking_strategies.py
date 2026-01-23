@@ -286,75 +286,98 @@ class SemanticChunking(ChunkingStrategy):
             List[TextChunk]: Ordered list of chunks covering the input text, each with start/end character positions, chunk_index, and metadata.
         """
         text = self._clean_text(text)
-        
+
         # Split into paragraphs
         paragraphs = self._split_paragraphs(text)
-        
+
+        # Separator between segments depends on respect_paragraphs
+        segment_separator = "\n\n" if self.respect_paragraphs else " "
+
         chunks: List[TextChunk] = []
         current_chunk_text = ""
         current_chunk_start = 0
-        
-        for para in paragraphs:
-            para_tokens = len(para.split())
-            
-            # If paragraph is too large, split it
-            if para_tokens > self.max_chunk_size:
-                # Flush current chunk if any
-                if current_chunk_text:
-                    chunks.append(self._create_chunk(
-                        current_chunk_text,
-                        current_chunk_start,
-                        len(chunks)
-                    ))
+
+        def flush_chunk() -> None:
+            """Flush current_chunk_text to chunks if non-empty and meets min_chunk_size."""
+            nonlocal current_chunk_text, current_chunk_start, chunks
+            if not current_chunk_text:
+                return
+            current_tokens = len(current_chunk_text.split())
+            # If chunk is too small and we have previous chunks, merge with previous
+            if current_tokens < self.min_chunk_size and chunks:
+                prev_chunk = chunks[-1]
+                merged_text = prev_chunk.text + segment_separator + current_chunk_text
+                # Only merge if combined doesn't exceed max
+                if len(merged_text.split()) <= self.max_chunk_size:
+                    chunks[-1] = self._create_chunk(
+                        merged_text,
+                        prev_chunk.start_char,
+                        prev_chunk.chunk_index
+                    )
                     current_chunk_start += len(current_chunk_text) + 1
                     current_chunk_text = ""
-                
-                # Split large paragraph into sentences
-                if self.respect_sentences:
-                    sentences = self._split_sentences(para)
-                    for sent in sentences:
-                        sent_tokens = len(sent.split())
-                        
-                        if len(current_chunk_text.split()) + sent_tokens > self.max_chunk_size:
-                            # Save current chunk
-                            if current_chunk_text:
-                                chunks.append(self._create_chunk(
-                                    current_chunk_text,
-                                    current_chunk_start,
-                                    len(chunks)
-                                ))
-                                current_chunk_start += len(current_chunk_text) + 1
-                            current_chunk_text = sent
-                        else:
-                            current_chunk_text = (current_chunk_text + " " + sent).strip()
-                else:
-                    # Force split at token boundary
-                    chunks.extend(self._force_split_text(para, current_chunk_start))
-                    current_chunk_start += len(para) + 1
-            
-            # If adding paragraph doesn't exceed limit, add it
-            elif len(current_chunk_text.split()) + para_tokens <= self.max_chunk_size:
-                current_chunk_text = (current_chunk_text + "\n\n" + para).strip()
-            
-            # Otherwise, save current chunk and start new one
-            else:
-                if current_chunk_text:
-                    chunks.append(self._create_chunk(
-                        current_chunk_text,
-                        current_chunk_start,
-                        len(chunks)
-                    ))
-                    current_chunk_start += len(current_chunk_text) + 1
-                current_chunk_text = para
-        
-        # Don't forget last chunk
-        if current_chunk_text:
+                    return
+            # Otherwise, create a new chunk
             chunks.append(self._create_chunk(
                 current_chunk_text,
                 current_chunk_start,
                 len(chunks)
             ))
-        
+            current_chunk_start += len(current_chunk_text) + 1
+            current_chunk_text = ""
+
+        for para in paragraphs:
+            para_tokens = len(para.split())
+
+            # If paragraph is too large, split it
+            if para_tokens > self.max_chunk_size:
+                # Flush current chunk if any
+                flush_chunk()
+
+                # Split large paragraph into sentences
+                if self.respect_sentences:
+                    sentences = self._split_sentences(para)
+                    for sent in sentences:
+                        sent_tokens = len(sent.split())
+
+                        if len(current_chunk_text.split()) + sent_tokens > self.max_chunk_size:
+                            # Save current chunk
+                            flush_chunk()
+                            current_chunk_text = sent
+                        else:
+                            current_chunk_text = (current_chunk_text + " " + sent).strip()
+                else:
+                    # Force split at token boundary, passing current chunk count as starting index
+                    forced_chunks = self._force_split_text(para, current_chunk_start, len(chunks))
+                    # Try to merge first forced chunk with previous if too small
+                    if forced_chunks and len(forced_chunks[0].text.split()) < self.min_chunk_size and chunks:
+                        prev_chunk = chunks[-1]
+                        merged_text = prev_chunk.text + segment_separator + forced_chunks[0].text
+                        if len(merged_text.split()) <= self.max_chunk_size:
+                            chunks[-1] = self._create_chunk(
+                                merged_text,
+                                prev_chunk.start_char,
+                                prev_chunk.chunk_index
+                            )
+                            forced_chunks = forced_chunks[1:]
+                            # Re-index remaining chunks
+                            for idx, fc in enumerate(forced_chunks):
+                                fc.chunk_index = len(chunks) + idx
+                    chunks.extend(forced_chunks)
+                    current_chunk_start += len(para) + 1
+
+            # If adding paragraph doesn't exceed limit, add it
+            elif len(current_chunk_text.split()) + para_tokens <= self.max_chunk_size:
+                current_chunk_text = (current_chunk_text + segment_separator + para).strip()
+
+            # Otherwise, save current chunk and start new one
+            else:
+                flush_chunk()
+                current_chunk_text = para
+
+        # Don't forget last chunk
+        flush_chunk()
+
         logger.info(f"Created {len(chunks)} semantic chunks from {len(paragraphs)} paragraphs")
         return chunks
     
@@ -382,38 +405,41 @@ class SemanticChunking(ChunkingStrategy):
         sentences = re.split(r'(?<=[.!?])\s+', text)
         return [s.strip() for s in sentences if s.strip()]
     
-    def _force_split_text(self, text: str, start_char: int) -> List[TextChunk]:
+    def _force_split_text(
+        self, text: str, start_char: int, starting_chunk_index: int = 0
+    ) -> List[TextChunk]:
         """
         Force-split an oversized text into consecutive TextChunk objects of at most `self.max_chunk_size` tokens.
-        
+
         The text is split on whitespace into words and rejoined into chunks of up to `max_chunk_size` words. `start_char` is used as the initial character offset for the first chunk; subsequent chunks' `start_char`/`end_char` are computed by advancing the offset by the length of the produced chunk text plus a single separating space. Character positions are therefore approximate and do not preserve original spacing or punctuation.
-        
+
         Parameters:
             text (str): The input text to split.
             start_char (int): Character index in the original document corresponding to the start of `text`.
-        
+            starting_chunk_index (int): Base index for chunk numbering; each chunk gets `starting_chunk_index + local_offset`.
+
         Returns:
-            List[TextChunk]: A list of TextChunk objects with metadata containing `strategy='semantic_forced_split'` and `token_count`. Chunk indices are zero-based and reflect the order of the produced chunks.
+            List[TextChunk]: A list of TextChunk objects with metadata containing `strategy='semantic_forced_split'` and `token_count`. Chunk indices continue from `starting_chunk_index`.
         """
         words = text.split()
         chunks: List[TextChunk] = []
-        
+
         for i in range(0, len(words), self.max_chunk_size):
             chunk_words = words[i:i + self.max_chunk_size]
             chunk_text = ' '.join(chunk_words)
-            
+
             chunks.append(TextChunk(
                 text=chunk_text,
                 start_char=start_char,
                 end_char=start_char + len(chunk_text),
-                chunk_index=len(chunks),
+                chunk_index=starting_chunk_index + len(chunks),
                 metadata={
                     'strategy': 'semantic_forced_split',
                     'token_count': len(chunk_words)
                 }
             ))
             start_char += len(chunk_text) + 1
-        
+
         return chunks
     
     def _create_chunk(self, text: str, start_char: int, index: int) -> TextChunk:
@@ -473,11 +499,15 @@ class SlidingWindowChunking(ChunkingStrategy):
         Raises:
             ValueError: If `step_size` is greater than `window_size`.
         """
-        self.window_size = window_size
-        self.step_size = step_size
-        
+        if window_size <= 0:
+            raise ValueError(f"window_size must be positive, got {window_size}")
+        if step_size <= 0:
+            raise ValueError(f"step_size must be positive, got {step_size}")
         if step_size > window_size:
             raise ValueError("Step size cannot be larger than window size")
+
+        self.window_size = window_size
+        self.step_size = step_size
     
     def create_chunks(self, text: str, **kwargs) -> List[TextChunk]:
         """

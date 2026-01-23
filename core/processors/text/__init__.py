@@ -15,8 +15,8 @@ from .chunking_strategies import (
 
 __all__ = [
     "ChunkingStrategy",
-    "TokenBasedChunking",
+    "ChunkingStrategyFactory",
     "SemanticChunking",
     "SlidingWindowChunking",
-    "ChunkingStrategyFactory"
+    "TokenBasedChunking",
 ]

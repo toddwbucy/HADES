@@ -9,6 +9,8 @@ while staying source-agnostic.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -43,6 +45,7 @@ warnings.filterwarnings(
 from core.embedders import EmbedderFactory, EmbeddingConfig, ChunkWithEmbedding
 from core.extractors import DoclingExtractor, LaTeXExtractor
 from core.extractors.extractors_base import ExtractorConfig as DoclingConfig
+from core.processors.text.chunking_strategies import ChunkingStrategyFactory
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +205,19 @@ class DocumentProcessor:
         self.embedding_model = model_name
 
         if self.config.use_ramfs_staging:
-            self.staging_dir = Path(self.config.staging_dir)
-            self.staging_dir.mkdir(parents=True, exist_ok=True)
+            # Create base directory if needed (parent only)
+            base_dir = Path(self.config.staging_dir)
+            base_dir.mkdir(parents=True, exist_ok=True)
+            # Create secure per-run subdirectory with O_EXCL-style uniqueness
+            secure_dir = tempfile.mkdtemp(dir=str(base_dir), prefix="staging-")
+            self.staging_dir = Path(secure_dir)
+            # Set strict permissions and validate
+            os.chmod(self.staging_dir, 0o700)
+            stat_info = os.lstat(self.staging_dir)
+            if os.path.islink(self.staging_dir):
+                raise RuntimeError(f"Staging directory is a symlink: {self.staging_dir}")
+            if stat_info.st_uid != os.getuid():
+                raise RuntimeError(f"Staging directory not owned by current user: {self.staging_dir}")
 
         logger.info("Initialized DocumentProcessor with config: %s", self.config)
 
@@ -229,35 +243,53 @@ class DocumentProcessor:
             extraction_result = self._extract_content(pdf_path, latex_path)
             extraction_time = time.time() - extraction_start
 
-            if self.config.chunking_strategy == "late":
+            strategy = self.config.chunking_strategy
+            if strategy == "late":
                 embedding_start = time.time()
                 chunks = self._create_late_chunks(extraction_result.full_text)
                 embedding_time = time.time() - embedding_start
                 chunking_time = 0.0
-            else:
+            elif strategy in ("semantic", "sliding", "sliding_window", "token"):
+                # Use ChunkingStrategyFactory for supported strategies
+                chunking_start = time.time()
+                chunker = ChunkingStrategyFactory.create_strategy(
+                    strategy,
+                    chunk_size=self.config.chunk_size_tokens,
+                    chunk_overlap=self.config.chunk_overlap_tokens,
+                    max_chunk_size=self.config.chunk_size_tokens,
+                    min_chunk_size=self.config.chunk_overlap_tokens,
+                    window_size=self.config.chunk_size_tokens,
+                    step_size=self.config.chunk_size_tokens - self.config.chunk_overlap_tokens,
+                )
+                text_chunks = chunker.create_chunks(extraction_result.full_text)
+                # Convert TextChunk to dict format expected by _embed_chunks
+                chunks = [
+                    {
+                        "text": tc.text,
+                        "start_char": tc.start_char,
+                        "end_char": tc.end_char,
+                        "chunk_index": tc.chunk_index,
+                        **tc.metadata,
+                    }
+                    for tc in text_chunks
+                ]
+                chunking_time = time.time() - chunking_start
+
+                embedding_start = time.time()
+                if chunks:
+                    chunks = self._embed_chunks(chunks)
+                embedding_time = time.time() - embedding_start
+            elif strategy == "traditional":
                 chunking_start = time.time()
                 chunks = self._create_traditional_chunks(extraction_result.full_text)
                 chunking_time = time.time() - chunking_start
 
-                if not chunks:
-                    logger.warning("No chunks produced for document %s. Document may be empty.", doc_id)
-                    return ProcessingResult(
-                        extraction=extraction_result,
-                        chunks=[],
-                        processing_metadata={"error": "No chunks produced"},
-                        total_processing_time=time.time() - start_time,
-                        extraction_time=extraction_time,
-                        chunking_time=chunking_time,
-                        embedding_time=0.0,
-                        success=False,
-                        errors=["Document produced no chunks"],
-                        warnings=["Empty or unprocessable document"],
-                    )
-
                 embedding_start = time.time()
-                if chunks and not isinstance(chunks[0], ChunkWithEmbedding):
+                if chunks:
                     chunks = self._embed_chunks(chunks)
                 embedding_time = time.time() - embedding_start
+            else:
+                raise ValueError(f"Unknown chunking strategy: {strategy}")
 
             if not chunks:
                 logger.warning("No chunks produced for document %s. Document may be empty.", doc_id)
@@ -333,11 +365,11 @@ class DocumentProcessor:
         has_latex = False
         if latex_path and latex_path.exists() and self.latex_extractor:
             try:
-                latex_source = latex_path.read_text(encoding="utf-8")
+                # Use the public extract API - pass the Path, get ExtractionResult
+                latex_extraction = self.latex_extractor.extract(latex_path)
                 has_latex = True
-                latex_equations = self.latex_extractor.extract_equations(latex_source)
-                if latex_equations:
-                    docling_result["equations"] = latex_equations
+                latex_source = latex_path.read_text(encoding="utf-8")
+                docling_result["equations"] = latex_extraction.equations or []
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to process LaTeX source: %s", exc)
 
@@ -392,9 +424,25 @@ class DocumentProcessor:
         if not tokens:
             return []
 
+        # Build token_positions: starting character index for each token
+        token_positions: List[int] = []
+        search_offset = 0
+        for token in tokens:
+            pos = text.find(token, search_offset)
+            if pos == -1:
+                # Fallback: approximate position
+                pos = search_offset
+            token_positions.append(pos)
+            search_offset = pos + len(token)
+
         for i in range(0, len(tokens), step):
             chunk_tokens = tokens[i : i + chunk_size]
             chunk_text = " ".join(chunk_tokens)
+            end_token_idx = min(i + chunk_size, len(tokens)) - 1
+
+            start_char = token_positions[i]
+            # end_char is start of last token + length of last token
+            end_char = token_positions[end_token_idx] + len(tokens[end_token_idx])
 
             chunks.append(
                 {
@@ -402,6 +450,8 @@ class DocumentProcessor:
                     "start_token": i,
                     "end_token": min(i + chunk_size, len(tokens)),
                     "chunk_index": len(chunks),
+                    "start_char": start_char,
+                    "end_char": end_char,
                 }
             )
 
@@ -454,7 +504,7 @@ class DocumentProcessor:
 
 __all__ = [
     "DocumentProcessor",
+    "ExtractionResult",
     "ProcessingConfig",
     "ProcessingResult",
-    "ExtractionResult",
 ]
