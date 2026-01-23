@@ -144,7 +144,6 @@ class ArXivValidator:
         # Handle old format (category/YYMMNNN)
         match = cls.OLD_ARXIV_ID_PATTERN.match(base_id)
         if match:
-            match.group(1)
             number = match.group(2)
             yymm = number[:4]
             return cls.PDF_BASE_PATH / yymm / f"{base_id.replace('/', '_')}.pdf"
@@ -539,6 +538,7 @@ class ArXivManager:
                 # Insert documents within the transaction
                 chunks_inserted = 0
                 embeddings_inserted = 0
+                structures_inserted = 0
 
                 if arxiv_doc:
                     self.db_client.insert_in_transaction(
@@ -561,25 +561,26 @@ class ArXivManager:
                     self.db_client.insert_in_transaction(
                         'arxiv_structures', structures_docs, transaction_id
                     )
-                    len(structures_docs)
+                    structures_inserted = len(structures_docs)
 
                 # Commit the transaction
                 self.db_client.commit_transaction(transaction_id)
 
                 logger.info(
-                    "Stored ArXiv paper %s (chunks=%s, embeddings=%s)",
+                    "Stored ArXiv paper %s (chunks=%d, embeddings=%d, structures=%d)",
                     paper_info.arxiv_id,
                     chunks_inserted,
                     embeddings_inserted,
+                    structures_inserted,
                 )
 
-            except Exception as commit_exc:
+            except Exception:
                 # Abort transaction on any error
                 try:
                     self.db_client.abort_transaction(transaction_id)
                 except Exception as abort_exc:
                     logger.warning("Failed to abort transaction: %s", abort_exc)
-                raise commit_exc
+                raise
 
         except Exception:
             logger.exception("Failed to store ArXiv paper %s", paper_info.arxiv_id)
