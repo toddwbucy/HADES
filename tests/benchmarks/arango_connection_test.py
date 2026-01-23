@@ -98,9 +98,9 @@ class Samples:
 
 
 def ensure_http2(response: httpx.Response) -> None:
-    if response.http_version not in {"HTTP/2", "HTTP/1.1"}:
+    if response.http_version != "HTTP/2":
         raise RuntimeError(
-            f"Unexpected HTTP version {response.http_version!r} for "
+            f"Expected HTTP/2 but got {response.http_version!r} for "
             f"{response.request.method} {response.request.url}"
         )
 
@@ -373,7 +373,8 @@ def benchmark_query(
             if not cursor_id:
                 raise RuntimeError("Cursor indicated hasMore but no id returned")
             follow_path = f"/_db/{config.database}/_api/cursor/{cursor_id}"
-            ft, fe, fbody = timed_stream(client, "PUT", follow_path)
+            _ft, fe, fbody = timed_stream(client, "PUT", follow_path)
+            del _ft  # TTFB for follow-up requests not tracked separately
             e2e_ms += fe
             data = json.loads(fbody)
             results.extend(data.get("result", []))
@@ -421,7 +422,7 @@ def main() -> None:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="HTTP base URL (default: http://localhost)")
     parser.add_argument("--collection", required=True, help="Collection name for operations")
     parser.add_argument("--key", action="append", help="Document key for GET benchmark (repeatable)")
-    parser.add_argument("--randomize-get", action="store_true", help="Append unique suffix to each GET key to bust caches")
+    parser.add_argument("--randomize-get", action="store_true", help="Randomly select keys instead of cycling sequentially")
     parser.add_argument("--iterations", type=int, default=5, help="Iterations per benchmark")
     parser.add_argument("--concurrency", type=int, default=1, help="Concurrent workers")
     parser.add_argument("--query", help="AQL query to benchmark")

@@ -1,15 +1,14 @@
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
-from core.workflows.workflow_base import WorkflowConfig
-from core.workflows.workflow_arxiv_single_pdf import ArxivSinglePDFWorkflow
-from core.processors.document_processor import ExtractionResult, ProcessingResult
 from core.embedders.embedders_jina import ChunkWithEmbedding
+from core.processors.document_processor import ExtractionResult, ProcessingResult
+from core.workflows.workflow_arxiv_single_pdf import ArxivSinglePDFWorkflow
+from core.workflows.workflow_base import WorkflowConfig
 
 
 @dataclass
@@ -30,23 +29,25 @@ class StubMetadata:
 class StubDownloadResult:
     success: bool
     arxiv_id: str
-    pdf_path: Optional[Path]
-    latex_path: Optional[Path]
-    metadata: Optional[StubMetadata]
-    error_message: Optional[str] = None
+    pdf_path: Path | None
+    latex_path: Path | None
+    metadata: StubMetadata | None
+    error_message: str | None = None
     file_size_bytes: int = 0
 
 
 class DummyAPIClient:
     def __init__(self, tmp_dir: Path) -> None:
         self.tmp_dir = tmp_dir
-        self.last_validated: Optional[str] = None
+        self.last_validated: str | None = None
 
     def validate_arxiv_id(self, arxiv_id: str) -> bool:
         self.last_validated = arxiv_id
         return True
 
-    def download_paper(self, arxiv_id: str, pdf_dir: Path, latex_dir: Optional[Path], force: bool) -> StubDownloadResult:
+    def download_paper(self, arxiv_id: str, pdf_dir: Path, latex_dir: Path | None, force: bool) -> StubDownloadResult:
+        # Silence linter warnings for unused parameters (required by interface)
+        _ = (latex_dir, force)
         pdf_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = pdf_dir / f"{arxiv_id}.pdf"
         pdf_path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
@@ -58,8 +59,8 @@ class DummyAPIClient:
             authors=["Author One"],
             categories=["cs.AI"],
             primary_category="cs.AI",
-            published=datetime.now(timezone.utc),
-            updated=datetime.now(timezone.utc),
+            published=datetime.now(UTC),
+            updated=datetime.now(UTC),
             has_pdf=True,
             has_latex=False,
         )
@@ -78,7 +79,7 @@ class DummyDocumentProcessor:
     def __init__(self) -> None:
         self.last_invocation = None
 
-    def process_document(self, pdf_path: Path, latex_path: Optional[Path], document_id: Optional[str]) -> ProcessingResult:
+    def process_document(self, pdf_path: Path, latex_path: Path | None, document_id: str | None) -> ProcessingResult:
         self.last_invocation = {
             "pdf_path": pdf_path,
             "latex_path": latex_path,
@@ -157,7 +158,7 @@ def test_execute_produces_llm_payload(tmp_path: Path) -> None:
     assert result.metadata["arxiv_id"] == "2310.08560"
 
     output_path = Path(result.metadata["output_path"])
-    with open(output_path, "r", encoding="utf-8") as handle:
+    with open(output_path, encoding="utf-8") as handle:
         payload = json.load(handle)
 
     assert payload["arxiv_id"] == "2310.08560"
