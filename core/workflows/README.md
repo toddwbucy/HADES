@@ -4,7 +4,7 @@ Base classes and utilities for orchestrating document processing pipelines with 
 
 ## Architecture
 
-```
+```text
 workflows/
 ├── workflow_base.py       # Abstract base class for workflows
 ├── workflow_pdf.py        # Simple PDF processing workflow
@@ -165,10 +165,10 @@ class MyWorkflow(WorkflowBase):
             config.name
         )
 
-    def validate_inputs(self, input_dir: str = None, **kwargs) -> bool:
-        return input_dir is not None
+    def validate_inputs(self, items: list = None, **kwargs) -> bool:
+        return items is not None and len(items) > 0
 
-    def execute(self, input_dir: str, **kwargs) -> WorkflowResult:
+    def execute(self, items: list, **kwargs) -> WorkflowResult:
         start_time = datetime.now()
         processed = 0
         failed = 0

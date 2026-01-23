@@ -38,8 +38,8 @@ class ArangoStorageManager:
         Returns:
             ArangoDB database connection
         """
-        # Create connection key from config
-        connection_key = f"{config.host}:{config.port}/{config.database}"
+        # Create connection key from config (include username for credential isolation)
+        connection_key = f"{config.username}@{config.host}:{config.port}/{config.database}"
 
         # Return cached connection if available
         if connection_key in cls._connections:

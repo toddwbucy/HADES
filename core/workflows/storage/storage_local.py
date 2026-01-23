@@ -56,7 +56,7 @@ class LocalStorage(StorageBase):
 
         try:
             payload = {"data": data}
-            if metadata:
+            if metadata is not None:
                 payload["metadata"] = metadata
 
             # Atomic write: temp file + rename
