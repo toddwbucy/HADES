@@ -1,0 +1,38 @@
+# Minimal ArXiv Search - Should definitely work
+# Single category, recent year, no keywords
+
+search:
+  # Just 2024
+  start_year: 2024
+  end_year: 2024
+  
+  # Single category
+  categories:
+    - cs.LG    # Machine Learning only
+  
+  # No keywords
+  keywords: []
+  
+  # Sampling configuration
+  sampling:
+    # Small target
+    target_count: 1000
+    
+    cap_mode: per-year
+    per_year_cap: 1000
+    
+  # Additional filters
+  filters:
+    require_pdf: true
+    require_abstract: false
+
+# Output configuration  
+output:
+  base_dir: data/arxiv_collections
+  write_monthly_lists: false
+  write_stats: true
+  write_with_pdf_list: true
+  write_missing_pdf_list: false
+  prefix: arxiv_minimal
+  timestamp_format: "%Y%m%d_%H%M%S"
+  update_symlinks: true

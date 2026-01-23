@@ -1,0 +1,57 @@
+# Practical ArXiv Search Configuration
+# Balanced for good results without timing out
+
+search:
+  # Focus on recent years with most relevant papers
+  start_year: 2020
+  end_year: 2024
+  
+  # Core ML/AI categories only
+  categories:
+    - cs.LG    # Machine Learning
+    - cs.AI    # Artificial Intelligence
+    - cs.CL    # Computation and Language (for LLMs)
+  
+  # Simplified keywords - just the most important ones
+  keywords: |
+    transformer | "language model" | GPT | BERT | 
+    "neural network" | "deep learning" | 
+    RAG | "Retrieval Augmented Generation" |
+    diffusion | "vision transformer"
+  
+  # Sampling configuration
+  sampling:
+    # Realistic target
+    target_count: 5000
+    
+    # How to distribute the cap
+    cap_mode: per-year
+    
+    # 1000 papers per year across 5 years = 5000 total
+    per_year_cap: 1000
+    
+  # Additional filters
+  filters:
+    # Only include papers with local PDFs available
+    require_pdf: true
+    
+    # Skip abstract requirement for speed
+    require_abstract: false
+
+# Output configuration  
+output:
+  # Base directory for output files
+  base_dir: data/arxiv_collections
+  
+  # Output options
+  write_monthly_lists: false   # Skip for speed
+  write_stats: true
+  write_with_pdf_list: true
+  write_missing_pdf_list: false
+  
+  # File naming
+  prefix: arxiv_practical
+  timestamp_format: "%Y%m%d_%H%M%S"
+  
+  # Update symlinks to latest files
+  update_symlinks: true

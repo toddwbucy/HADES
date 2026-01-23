@@ -1,0 +1,71 @@
+# ArXiv Metadata Processing Pipeline Configuration
+# =================================================
+#
+# Processes the complete ArXiv metadata dataset (2.8M records)
+# Creates metadata, abstract chunks, and embeddings in ArangoDB
+
+# Data Source Configuration
+metadata_file: "/bulk-store/arxiv-data/metadata/arxiv-kaggle-latest.json"
+max_records: null  # Process all records (set to integer for testing)
+
+# Processing Configuration
+batch_size: 1000  # Records per batch
+embedding_batch_size: 128  # Optimal for Jina v4 with SentenceTransformers
+
+# Database Configuration
+drop_collections: false  # Set to true for clean start
+arango_host: "http://192.168.1.69:8529"
+arango_database: "academy_store"
+arango_username: "root"
+# Password from ARANGO_PASSWORD environment variable
+
+# Collection Names
+metadata_collection: "arxiv_metadata"
+chunks_collection: "arxiv_abstract_chunks"
+embeddings_collection: "arxiv_abstract_embeddings"
+
+# Embedder Configuration
+embedder_model: "jinaai/jina-embeddings-v4"
+use_fp16: true  # Memory efficiency
+chunk_size_tokens: 512
+chunk_overlap_tokens: 128
+
+# GPU Configuration
+use_gpu: true
+gpu_device: "cuda:0"  # Or cuda:1 for second GPU
+
+# Checkpoint Configuration
+checkpoint_interval: 10000  # Save every 10k records
+resume_from_checkpoint: true
+
+# Performance Monitoring
+monitor_interval: 100  # Report every 100 batches
+target_throughput: 48.0  # Papers per second
+
+# Validation
+validate_embeddings: true
+expected_embedding_dim: 2048  # Jina v4 dimension
+
+# Test Configuration (override for testing)
+test:
+  max_records: 1000
+  batch_size: 100
+  checkpoint_interval: 500
+  drop_collections: true
+  monitor_interval: 10
+
+# Production Configuration (for full 2.8M dataset)
+production:
+  max_records: null
+  batch_size: 5000
+  embedding_batch_size: 256
+  checkpoint_interval: 50000
+  monitor_interval: 1000
+
+# Development Configuration
+development:
+  max_records: 100
+  batch_size: 10
+  checkpoint_interval: 50
+  monitor_interval: 5
+  drop_collections: true

@@ -1,0 +1,28 @@
+postgres:
+  # DSN should be provided via environment variable POSTGRES_DSN
+  # Format: postgresql://username:password@host:port/database
+  dsn: "${POSTGRES_DSN:-postgresql://localhost:5432/arxiv}"
+  schema: "public"
+  statement_timeout_ms: 3600000  # 60 minutes for complex queries
+  pool_size: 5
+  max_overflow: 10
+
+snapshot:
+  path: "/bulk-store/arxiv-data/metadata/arxiv-metadata-oai-snapshot.json"
+  batch_size: 5000
+
+oai:
+  base_url: "https://export.arxiv.org/oai2"
+  metadata_prefix: "arXiv"
+  rate_limit_rps: 2.0
+  initial_backoff_ms: 100
+  max_backoff_ms: 5000
+  max_retries: 5
+
+artifacts:
+  # Multiple patterns to accommodate local layouts
+  pdf_globs:
+    - "/bulk-store/arxiv-data/pdf/*/*.pdf"
+    - "/bulk-store/arxiv-data/latex/*/*.pdf"
+  latex_globs:
+    - "/bulk-store/arxiv-data/latex/**/*.tex"
