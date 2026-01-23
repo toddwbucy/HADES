@@ -5,15 +5,11 @@ ArXiv Metadata Processing Configuration
 
 Configuration for processing the complete ArXiv metadata dataset.
 Extends BaseConfig with proper validation and semantic checks.
-
-Theory Connection (Conveyance Framework):
-Configuration ensures Context (Ctx) coherence through validation,
-preventing zero-propagation by maintaining all dimensions > 0.
 """
 
 from pathlib import Path
 
-from pydantic import Field, validator
+from pydantic import Field, ValidationInfo, field_validator
 
 from core.config.config_base import BaseConfig
 
@@ -22,8 +18,7 @@ class ArxivMetadataConfig(BaseConfig):
     """
     Configuration for ArXiv metadata processing workflow.
 
-    Implements semantic validation to ensure all Conveyance dimensions
-    remain positive (W, R, H > 0, T < ∞) to prevent zero-propagation.
+    Implements semantic validation to ensure configuration consistency.
     """
 
     # Data source configuration
@@ -163,16 +158,18 @@ class ArxivMetadataConfig(BaseConfig):
         description="Expected embedding dimension for Jina v4"
     )
 
-    @validator('chunk_overlap_tokens')
-    def validate_overlap(cls, v, values):
+    @field_validator('chunk_overlap_tokens')
+    @classmethod
+    def validate_overlap(cls, v: int, info: ValidationInfo) -> int:
         """Ensure overlap is less than chunk size."""
-        chunk_size = values.get('chunk_size_tokens', 512)
+        chunk_size = info.data.get('chunk_size_tokens', 512)
         if v >= chunk_size:
             raise ValueError(f"Overlap ({v}) must be less than chunk size ({chunk_size})")
         return v
 
-    @validator('metadata_file')
-    def validate_metadata_file(cls, v):
+    @field_validator('metadata_file')
+    @classmethod
+    def validate_metadata_file(cls, v: Path) -> Path:
         """Ensure metadata file exists."""
         if not v.exists():
             raise ValueError(f"Metadata file not found: {v}")
@@ -181,12 +178,6 @@ class ArxivMetadataConfig(BaseConfig):
     def validate_semantics(self) -> list[str]:
         """
         Validate semantic consistency of configuration.
-
-        Ensures all Conveyance dimensions remain positive:
-        - W (WHAT): Valid embedder model
-        - R (WHERE): Valid database configuration
-        - H (WHO): Valid GPU/CPU settings
-        - T (TIME): Reasonable batch sizes for throughput
 
         Returns:
             List of validation errors (empty if valid)
@@ -227,6 +218,8 @@ class ArxivMetadataConfig(BaseConfig):
         Returns:
             Configuration dictionary
         """
+        # Use configured staging_path, defaulting to a temp directory if not set
+        staging = self.staging_path if self.staging_path else Path("/tmp/arxiv_metadata_staging")
         return {
             "name": "arxiv_metadata_workflow",
             "batch_size": self.batch_size,
@@ -234,7 +227,7 @@ class ArxivMetadataConfig(BaseConfig):
             "use_gpu": self.use_gpu,
             "checkpoint_enabled": self.resume_from_checkpoint,
             "checkpoint_interval": self.checkpoint_interval,
-            "staging_path": Path("/tmp/arxiv_metadata_staging"),
+            "staging_path": staging,
             "timeout_seconds": 3600  # 1 hour timeout
         }
 
@@ -252,10 +245,17 @@ class ArxivMetadataConfig(BaseConfig):
         import yaml
 
         # Load default configuration
-        default_path = Path(__file__).parent.parent.parent / "core/config/workflows/arxiv_metadata_default.yaml"
+        # Path(__file__) = core/tools/arxiv/arxiv_metadata_config.py
+        # .parent = core/tools/arxiv/
+        # .parent = core/tools/
+        # .parent = core/
+        # Then we need config/workflows/... relative to core/
+        default_path = Path(__file__).parent.parent.parent / "config/workflows/arxiv_metadata_default.yaml"
 
-        with open(default_path) as f:
-            config_dict = yaml.safe_load(f)
+        config_dict: dict = {}
+        if default_path.exists():
+            with open(default_path) as f:
+                config_dict = yaml.safe_load(f) or {}
 
         # Apply overrides if provided
         if override_path and override_path.exists():

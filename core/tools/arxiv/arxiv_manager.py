@@ -501,55 +501,61 @@ class ArXivManager:
                     'updated_at': now_iso,
                 })
 
-            transaction_action = """
-function (params) {
-  const db = require('@arangodb').db;
-  const papers = params.papers || [];
-  const chunks = params.chunks || [];
-  const embeddings = params.embeddings || [];
-  const structures = params.structures || [];
+            # Use Stream Transaction for atomic inserts
+            write_collections = [
+                'arxiv_metadata',
+                'arxiv_abstract_chunks',
+                'arxiv_abstract_embeddings',
+                'arxiv_structures'
+            ]
 
-  if (papers.length) {
-    db.arxiv_metadata.insert(papers, { overwriteMode: 'replace' });
-  }
-  if (chunks.length) {
-    db.arxiv_abstract_chunks.insert(chunks, { overwriteMode: 'replace' });
-  }
-  if (embeddings.length) {
-    db.arxiv_abstract_embeddings.insert(embeddings, { overwriteMode: 'replace' });
-  }
-  if (structures.length) {
-    db.arxiv_structures.insert(structures, { overwriteMode: 'replace' });
-  }
+            transaction_id = self.db_client.begin_transaction(write=write_collections)
 
-  return {
-    papers: papers.length,
-    chunks: chunks.length,
-    embeddings: embeddings.length,
-    structures: structures.length
-  };
-}
-"""
+            try:
+                # Insert documents within the transaction
+                chunks_inserted = 0
+                embeddings_inserted = 0
 
-            transaction_params = {
-                'papers': [arxiv_doc],
-                'chunks': chunk_docs,
-                'embeddings': embedding_docs,
-                'structures': structures_docs,
-            }
+                if arxiv_doc:
+                    self.db_client.insert_in_transaction(
+                        'arxiv_metadata', [arxiv_doc], transaction_id
+                    )
 
-            result_summary = self.db_client.execute_transaction(
-                write=['arxiv_metadata', 'arxiv_abstract_chunks', 'arxiv_abstract_embeddings', 'arxiv_structures'],
-                action=transaction_action,
-                params=transaction_params,
-            )
+                if chunk_docs:
+                    self.db_client.insert_in_transaction(
+                        'arxiv_abstract_chunks', chunk_docs, transaction_id
+                    )
+                    chunks_inserted = len(chunk_docs)
 
-            logger.info(
-                "Stored ArXiv paper %s (chunks=%s, embeddings=%s)",
-                paper_info.arxiv_id,
-                result_summary.get('chunks'),
-                result_summary.get('embeddings'),
-            )
+                if embedding_docs:
+                    self.db_client.insert_in_transaction(
+                        'arxiv_abstract_embeddings', embedding_docs, transaction_id
+                    )
+                    embeddings_inserted = len(embedding_docs)
+
+                if structures_docs:
+                    self.db_client.insert_in_transaction(
+                        'arxiv_structures', structures_docs, transaction_id
+                    )
+                    len(structures_docs)
+
+                # Commit the transaction
+                self.db_client.commit_transaction(transaction_id)
+
+                logger.info(
+                    "Stored ArXiv paper %s (chunks=%s, embeddings=%s)",
+                    paper_info.arxiv_id,
+                    chunks_inserted,
+                    embeddings_inserted,
+                )
+
+            except Exception as commit_exc:
+                # Abort transaction on any error
+                try:
+                    self.db_client.abort_transaction(transaction_id)
+                except Exception as abort_exc:
+                    logger.warning("Failed to abort transaction: %s", abort_exc)
+                raise commit_exc
 
         except Exception:
             logger.exception("Failed to store ArXiv paper %s", paper_info.arxiv_id)

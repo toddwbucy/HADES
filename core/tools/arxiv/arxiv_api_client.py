@@ -23,6 +23,19 @@ from requests.adapters import HTTPAdapter
 logger = logging.getLogger(__name__)
 
 
+def normalize_arxiv_id(arxiv_id: str) -> str:
+    """
+    Normalize ArXiv ID by stripping version suffix.
+
+    Args:
+        arxiv_id: ArXiv ID possibly with version suffix (e.g., 2308.12345v1)
+
+    Returns:
+        Normalized ID without version suffix (e.g., 2308.12345)
+    """
+    return re.sub(r'v\d+$', '', arxiv_id)
+
+
 @dataclass
 class ArXivMetadata:
     """Structured representation of ArXiv paper metadata."""
@@ -219,21 +232,25 @@ class ArXivAPIClient:
     def _parse_entry(self, entry: ET.Element) -> ArXivMetadata:
         """Parse XML entry into ArXivMetadata object"""
 
-        # Extract basic fields
-        id_url = entry.find('.//{http://www.w3.org/2005/Atom}id').text
-        arxiv_id = id_url.split('/')[-1]  # Extract ID from URL
+        # Extract basic fields with null checks
+        id_elem = entry.find('.//{http://www.w3.org/2005/Atom}id')
+        id_url = id_elem.text if id_elem is not None and id_elem.text else ""
+        arxiv_id = id_url.split('/')[-1] if id_url else ""  # Extract ID from URL
 
-        title = entry.find('.//{http://www.w3.org/2005/Atom}title').text.strip()
+        title_elem = entry.find('.//{http://www.w3.org/2005/Atom}title')
+        title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
         title = re.sub(r'\s+', ' ', title)  # Normalize whitespace
 
-        abstract = entry.find('.//{http://www.w3.org/2005/Atom}summary').text.strip()
+        abstract_elem = entry.find('.//{http://www.w3.org/2005/Atom}summary')
+        abstract = abstract_elem.text.strip() if abstract_elem is not None and abstract_elem.text else ""
         abstract = re.sub(r'\s+', ' ', abstract)  # Normalize whitespace
 
-        # Extract authors
+        # Extract authors with null checks
         authors = []
         for author in entry.findall('.//{http://www.w3.org/2005/Atom}author'):
-            name = author.find('.//{http://www.w3.org/2005/Atom}name').text
-            authors.append(name.strip())
+            name_elem = author.find('.//{http://www.w3.org/2005/Atom}name')
+            if name_elem is not None and name_elem.text:
+                authors.append(name_elem.text.strip())
 
         # Extract categories
         categories = []
@@ -248,12 +265,23 @@ class ArXivAPIClient:
         if not primary_category and categories:
             primary_category = categories[0]
 
-        # Extract dates
-        published_str = entry.find('.//{http://www.w3.org/2005/Atom}published').text
-        updated_str = entry.find('.//{http://www.w3.org/2005/Atom}updated').text
+        # Extract dates with null checks
+        published_elem = entry.find('.//{http://www.w3.org/2005/Atom}published')
+        updated_elem = entry.find('.//{http://www.w3.org/2005/Atom}updated')
 
-        published = datetime.fromisoformat(published_str.replace('Z', '+00:00'))
-        updated = datetime.fromisoformat(updated_str.replace('Z', '+00:00'))
+        published_str = published_elem.text if published_elem is not None and published_elem.text else None
+        updated_str = updated_elem.text if updated_elem is not None and updated_elem.text else None
+
+        # Parse dates, defaulting to epoch if not available
+        if published_str:
+            published = datetime.fromisoformat(published_str.replace('Z', '+00:00'))
+        else:
+            published = datetime.fromtimestamp(0)
+
+        if updated_str:
+            updated = datetime.fromisoformat(updated_str.replace('Z', '+00:00'))
+        else:
+            updated = published  # Default to published date
 
         # Extract optional fields
         doi = None
@@ -486,7 +514,7 @@ class ArXivAPIClient:
             arxiv_ids: List of ArXiv IDs
 
         Returns:
-            Dictionary mapping ArXiv ID to metadata (None if failed)
+            Dictionary mapping normalized ArXiv ID to metadata (None if failed)
         """
         results: dict[str, ArXivMetadata | None] = {}
 
@@ -494,6 +522,8 @@ class ArXivAPIClient:
         batch_size = 10
         for i in range(0, len(arxiv_ids), batch_size):
             batch = arxiv_ids[i:i + batch_size]
+            # Normalize batch IDs for comparison
+            batch_normalized = {normalize_arxiv_id(aid): aid for aid in batch}
 
             try:
                 # Query multiple papers at once
@@ -511,21 +541,23 @@ class ArXivAPIClient:
                 for entry in entries:
                     try:
                         metadata = self._parse_entry(entry)
-                        results[metadata.arxiv_id] = metadata
+                        # Use normalized ID as key for consistent lookup
+                        normalized_id = normalize_arxiv_id(metadata.arxiv_id)
+                        results[normalized_id] = metadata
                     except Exception as e:
                         logger.error(f"Failed to parse entry: {e}")
 
-                # Mark missing papers as None
-                for arxiv_id in batch:
-                    if arxiv_id not in results:
-                        results[arxiv_id] = None
-                        logger.warning(f"No metadata found for {arxiv_id}")
+                # Mark missing papers as None using normalized IDs
+                for normalized_id in batch_normalized:
+                    if normalized_id not in results:
+                        results[normalized_id] = None
+                        logger.warning(f"No metadata found for {batch_normalized[normalized_id]}")
 
             except Exception as e:
                 logger.error(f"Batch metadata fetch failed for batch {i//batch_size + 1}: {e}")
-                # Mark entire batch as failed
-                for arxiv_id in batch:
-                    results[arxiv_id] = None
+                # Mark entire batch as failed using normalized IDs
+                for normalized_id in batch_normalized:
+                    results[normalized_id] = None
 
         logger.info(f"Fetched metadata for {len([r for r in results.values() if r])} out of {len(arxiv_ids)} papers")
         return results

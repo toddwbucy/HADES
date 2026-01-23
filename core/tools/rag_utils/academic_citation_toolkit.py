@@ -308,17 +308,20 @@ class ArangoCitationStorage(CitationStorage):
         and to upsert on unique-key conflicts. It returns True on successful storage
         and False on failure.
 
-        Currently implemented as a placeholder that does not perform any persistence
-        and always returns True.
-
         Parameters:
             citations (List[InTextCitation]): List of in-text citation dataclass instances to store.
 
         Returns:
-            bool: True if storage succeeded (placeholder currently always returns True), False on error.
+            bool: True if storage succeeded, False on error.
+
+        Raises:
+            NotImplementedError: This method is not yet implemented.
         """
-        # Implementation similar to bibliography storage
-        return True
+        raise NotImplementedError(
+            "store_citations is not yet implemented. "
+            "This method must accept List[InTextCitation] and persist/upsert records "
+            "to the 'citations' collection, similar to store_bibliography."
+        )
 
 class JSONCitationStorage(CitationStorage):
     """Citation storage to JSON files."""
@@ -544,8 +547,8 @@ class UniversalBibliographyExtractor:
             arxiv_match = re.search(r'arXiv:(\d{4}\.\d{4,5})', entry_text, re.IGNORECASE)
             arxiv_id = arxiv_match.group(1) if arxiv_match else None
 
-            # Extract DOI
-            doi_match = re.search(r'doi:?\s*([10]\.\d+/[^\s,]+)', entry_text, re.IGNORECASE)
+            # Extract DOI (DOI format: 10.xxxxx/suffix)
+            doi_match = re.search(r'doi:?\s*(10\.\d+/[^\s,]+)', entry_text, re.IGNORECASE)
             doi = doi_match.group(1) if doi_match else None
 
             # Extract PubMed ID
@@ -697,9 +700,14 @@ class UniversalCitationExtractor:
         Returns:
             List[InTextCitation]: A list of discovered in-text citations. If no citations are found, returns an empty list. The method does not raise on missing data; unresolved citations have `bibliography_ref = None` and a lower confidence.
         """
-        # Implementation for extracting [1], [2], (Author, Year) citations
-        # and mapping them to bibliography entries
-        pass
+        # TODO: Implement in-text citation extraction
+        # This should scan paper text for patterns like [1], [2], (Author, Year)
+        # and map them to the provided bibliography_entries
+        logger.warning(
+            "extract_citations is not yet implemented for paper %s; returning empty list",
+            paper_id
+        )
+        return []
 
 # Factory functions for easy setup
 def create_arxiv_citation_toolkit(arango_client) -> tuple[UniversalBibliographyExtractor, ArangoCitationStorage]:

@@ -13,10 +13,16 @@ batch_size: 1000  # Records per batch
 embedding_batch_size: 128  # Optimal for Jina v4 with SentenceTransformers
 
 # Database Configuration
+# NOTE: These are defaults. Override with environment variables:
+#   ARANGO_HOST - ArangoDB server URL (default: http://localhost:8529)
+#   ARANGO_USERNAME - ArangoDB username (default: root)
+#   ARANGO_PASSWORD - ArangoDB password (required)
+#   ARANGO_DATABASE - Database name (default: academy_store)
+# For production, use a dedicated service account instead of 'root'.
 drop_collections: false  # Set to true for clean start
-arango_host: "http://192.168.1.69:8529"
-arango_database: "academy_store"
-arango_username: "root"
+arango_host: ${ARANGO_HOST:-http://localhost:8529}
+arango_database: ${ARANGO_DATABASE:-academy_store}
+arango_username: ${ARANGO_USERNAME:-root}
 # Password from ARANGO_PASSWORD environment variable
 
 # Collection Names

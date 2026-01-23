@@ -367,6 +367,113 @@ class ArangoMemoryClient:
         except ArangoHttpError as exc:  # pragma: no cover - thin wrapper
             raise self._wrap_error(exc) from exc
 
+    def begin_transaction(
+        self,
+        *,
+        write: Sequence[str],
+        read: Sequence[str] | None = None,
+        exclusive: Sequence[str] | None = None,
+        wait_for_sync: bool | None = None,
+        lock_timeout: int | None = None,
+    ) -> str:
+        """
+        Begin a Stream Transaction.
+
+        Args:
+            write: Collections to lock for write access
+            read: Collections to lock for read access
+            exclusive: Collections to lock exclusively
+            wait_for_sync: Wait for sync to disk
+            lock_timeout: Lock timeout in seconds
+
+        Returns:
+            Transaction ID string
+        """
+        payload: dict[str, Any] = {
+            "collections": {
+                "write": list(write),
+            },
+        }
+
+        if read:
+            payload["collections"]["read"] = list(read)
+        if exclusive:
+            payload["collections"]["exclusive"] = list(exclusive)
+        if wait_for_sync is not None:
+            payload["waitForSync"] = bool(wait_for_sync)
+        if lock_timeout is not None:
+            payload["lockTimeout"] = lock_timeout
+
+        path = f"/_db/{self._config.database}/_api/transaction/begin"
+        try:
+            result = self._write_client.request("POST", path, json=payload)
+            return result.get("result", {}).get("id", "")
+        except ArangoHttpError as exc:
+            raise self._wrap_error(exc) from exc
+
+    def commit_transaction(self, transaction_id: str) -> dict[str, Any]:
+        """
+        Commit a Stream Transaction.
+
+        Args:
+            transaction_id: Transaction ID from begin_transaction
+
+        Returns:
+            Transaction result
+        """
+        path = f"/_db/{self._config.database}/_api/transaction/{transaction_id}"
+        try:
+            return self._write_client.request("PUT", path)
+        except ArangoHttpError as exc:
+            raise self._wrap_error(exc) from exc
+
+    def abort_transaction(self, transaction_id: str) -> dict[str, Any]:
+        """
+        Abort a Stream Transaction.
+
+        Args:
+            transaction_id: Transaction ID from begin_transaction
+
+        Returns:
+            Abort result
+        """
+        path = f"/_db/{self._config.database}/_api/transaction/{transaction_id}"
+        try:
+            return self._write_client.request("DELETE", path)
+        except ArangoHttpError as exc:
+            raise self._wrap_error(exc) from exc
+
+    def insert_in_transaction(
+        self,
+        collection: str,
+        documents: list[dict[str, Any]],
+        transaction_id: str,
+        *,
+        overwrite: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Insert documents within a Stream Transaction.
+
+        Args:
+            collection: Collection name
+            documents: Documents to insert
+            transaction_id: Transaction ID
+            overwrite: If True, overwrite existing documents
+
+        Returns:
+            Insert result
+        """
+        path = f"/_db/{self._config.database}/_api/document/{collection}"
+        params: dict[str, Any] = {"overwriteMode": "replace" if overwrite else "conflict"}
+        headers = {"x-arango-trx-id": transaction_id}
+
+        try:
+            return self._write_client.request(
+                "POST", path, json=documents, params=params, headers=headers
+            )
+        except ArangoHttpError as exc:
+            raise self._wrap_error(exc) from exc
+
     def drop_collections(self, names: Iterable[str], *, ignore_missing: bool = True) -> None:
         for name in names:
             path = f"/_db/{self._config.database}/_api/collection/{name}"
