@@ -82,7 +82,7 @@ Managed via Composer (`composer.json`):
 ## Environment Variables
 
 Required in `.env`:
-```
+```bash
 ARANGO_PASSWORD=your_password
 CUDA_VISIBLE_DEVICES=0,1
 ```
