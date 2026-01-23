@@ -1,43 +1,50 @@
 """
-Storage Backends for Workflows
+Storage Backends for Workflows.
 
-Provides different storage backends for workflow outputs including
-local filesystem, S3, and RamFS for high-speed staging.
+Provides storage backends for workflow outputs including
+local filesystem and ArangoDB utilities.
 """
 
-try:
-    from .storage_local import StorageManager as LocalStorage
-except ImportError:
-    LocalStorage = None  # type: ignore[misc]
-
-try:
-    from .storage_s3 import S3Storage
-except ImportError:
-    S3Storage = None
-
-try:
-    from .storage_ramfs import RamFSStorage
-except ImportError:
-    RamFSStorage = None
-
-# Import base class
 from .storage_base import StorageBase
+from .storage_local import LocalStorage
+
+# Lazy imports for optional backends
+_lazy_imports = {
+    "ArangoStorageManager": (".storage_arango", "ArangoStorageManager"),
+    "S3Storage": (".storage_s3", "S3Storage"),
+    "RamFSStorage": (".storage_ramfs", "RamFSStorage"),
+}
 
 
 def __getattr__(name: str):
-    if name == "LocalStorage" and LocalStorage is None:
-        raise ImportError(
-            "LocalStorage backend is unavailable. Install optional dependencies or select a supported backend."
-        )
-    if name == "S3Storage" and S3Storage is None:
-        raise ImportError("S3Storage backend is unavailable. Install boto3 to enable it.")
-    if name == "RamFSStorage" and RamFSStorage is None:
-        raise ImportError("RamFSStorage backend is unavailable. POSIX shared memory support missing.")
-    raise AttributeError(name)
+    """Lazy import optional storage backends."""
+    if name in _lazy_imports:
+        module_path, class_name = _lazy_imports[name]
+        try:
+            import importlib
+            module = importlib.import_module(module_path, package=__name__)
+            return getattr(module, class_name)
+        except ImportError as e:
+            if name == "ArangoStorageManager":
+                raise ImportError(
+                    "ArangoStorageManager requires python-arango. "
+                    "Install with: pip install python-arango"
+                ) from e
+            elif name == "S3Storage":
+                raise ImportError(
+                    "S3Storage requires boto3. Install with: pip install boto3"
+                ) from e
+            elif name == "RamFSStorage":
+                raise ImportError(
+                    "RamFSStorage requires POSIX shared memory support."
+                ) from e
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
-    'LocalStorage',
-    'RamFSStorage',
-    'S3Storage',
-    'StorageBase',
+    "StorageBase",
+    "LocalStorage",
+    "ArangoStorageManager",
+    "S3Storage",
+    "RamFSStorage",
 ]

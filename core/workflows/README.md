@@ -12,7 +12,8 @@ workflows/
 │   └── state_manager.py   # StateManager and CheckpointManager
 ├── storage/               # Storage abstractions
 │   ├── storage_base.py    # Abstract storage interface
-│   └── storage_local.py   # Local filesystem storage
+│   ├── storage_local.py   # Local filesystem storage (implements StorageBase)
+│   └── storage_arango.py  # ArangoDB connection utilities
 └── __init__.py
 ```
 
@@ -105,6 +106,32 @@ from core.workflows.storage import LocalStorage
 storage = LocalStorage("/data/workflow_output")
 storage.store("result_001", {"chunks": [...], "embeddings": [...]})
 data = storage.retrieve("result_001")
+
+# With metadata
+storage.store("result_002", data, metadata={"source": "arxiv"})
+metadata = storage.get_metadata("result_002")
+
+# List and filter keys
+all_keys = storage.list_keys()
+filtered = storage.list_keys(prefix="result_")
+```
+
+### ArangoStorageManager
+
+ArangoDB connection utilities (lazy-loaded, requires `python-arango`):
+
+```python
+from core.workflows.storage import ArangoStorageManager
+
+# Get database connection
+db = ArangoStorageManager.get_connection(config)
+
+# Ensure collections exist
+ArangoStorageManager.ensure_collection(db, "documents")
+ArangoStorageManager.ensure_collection(db, "edges", edge=True)
+
+# Create indexes
+ArangoStorageManager.create_index(db, "documents", "persistent", ["title"])
 ```
 
 ## Configuration

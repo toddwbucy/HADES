@@ -1,162 +1,185 @@
-"""
-Storage Management
-==================
+"""Local Filesystem Storage Backend.
 
-Database connection management and utilities.
+Implements StorageBase with filesystem semantics for workflow outputs.
 """
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
-from arango import ArangoClient
-from arango.database import StandardDatabase
+from .storage_base import StorageBase
 
 logger = logging.getLogger(__name__)
 
 
-class StorageManager:
+class LocalStorage(StorageBase):
     """
-    Manage database connections and provide storage utilities.
+    Filesystem-based storage backend implementing StorageBase.
 
-    Features:
-    - Connection pooling
-    - Automatic retry logic
-    - Collection management
-    - Index management
+    Stores workflow outputs as JSON files in a directory structure.
+    Supports atomic writes via temp file + rename pattern.
     """
 
-    # Cache connections to avoid recreating
-    _connections: dict[str, StandardDatabase] = {}
-
-    @classmethod
-    def get_connection(cls, config: Any) -> StandardDatabase:
+    def __init__(self, base_path: str | Path, config: dict[str, Any] | None = None):
         """
-        Get or create a database connection.
+        Initialize local filesystem storage.
 
         Args:
-            config: Database configuration object
+            base_path: Root directory for storage
+            config: Optional configuration
+        """
+        super().__init__(config)
+        self.base_path = Path(base_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _key_to_path(self, key: str) -> Path:
+        """Convert a storage key to a file path."""
+        # Sanitize key to prevent directory traversal
+        safe_key = key.replace("..", "_").replace("/", "_").replace("\\", "_")
+        return self.base_path / f"{safe_key}.json"
+
+    def store(self, key: str, data: Any, metadata: dict[str, Any] | None = None) -> bool:
+        """
+        Store data with the given key.
+
+        Args:
+            key: Storage key/identifier
+            data: Data to store (must be JSON-serializable)
+            metadata: Optional metadata (stored alongside data)
 
         Returns:
-            ArangoDB database connection
+            True if successful, False otherwise
         """
-        # Create connection key from config
-        connection_key = f"{config.host}:{config.port}/{config.database}"
-
-        # Return cached connection if available
-        if connection_key in cls._connections:
-            return cls._connections[connection_key]
-
-        # Create new connection
-        client = ArangoClient(hosts=f"http://{config.host}:{config.port}")
-
-        # Connect to system database first
-        sys_db = client.db(
-            '_system',
-            username=config.username,
-            password=config.password
-        )
-
-        # Create database if it doesn't exist
-        if not sys_db.has_database(config.database):
-            sys_db.create_database(config.database)
-            logger.info(f"Created database: {config.database}")
-
-        # Connect to target database
-        db = client.db(
-            config.database,
-            username=config.username,
-            password=config.password
-        )
-
-        # Cache the connection
-        cls._connections[connection_key] = db
-
-        logger.info(f"Connected to database: {connection_key}")
-        return db
-
-    @staticmethod
-    def ensure_collection(db: StandardDatabase, name: str,
-                         edge: bool = False, **kwargs) -> None:
-        """
-        Ensure a collection exists.
-
-        Args:
-            db: Database connection
-            name: Collection name
-            edge: Whether this is an edge collection
-            **kwargs: Additional collection parameters
-        """
-        if not db.has_collection(name):
-            if edge:
-                db.create_collection(name, edge=True, **kwargs)
-            else:
-                db.create_collection(name, **kwargs)
-            logger.info(f"Created {'edge' if edge else 'document'} collection: {name}")
-
-    @staticmethod
-    def create_index(db: StandardDatabase, collection: str,
-                    index_type: str, fields: list, **kwargs) -> None:
-        """
-        Create an index on a collection.
-
-        Args:
-            db: Database connection
-            collection: Collection name
-            index_type: Type of index (persistent, geo, fulltext, etc.)
-            fields: Fields to index
-            **kwargs: Additional index parameters
-        """
-        coll = db.collection(collection)
+        file_path = self._key_to_path(key)
+        temp_path = file_path.with_suffix(".tmp")
 
         try:
-            if index_type == "persistent":
-                coll.add_persistent_index(fields=fields, **kwargs)
-            elif index_type == "geo":
-                coll.add_geo_index(fields=fields, **kwargs)
-            elif index_type == "fulltext":
-                coll.add_fulltext_index(fields=fields, **kwargs)
-            elif index_type == "hash":
-                coll.add_hash_index(fields=fields, **kwargs)
-            elif index_type == "skiplist":
-                coll.add_skiplist_index(fields=fields, **kwargs)
-            else:
-                logger.warning(f"Unknown index type: {index_type}")
-                return
+            payload = {"data": data}
+            if metadata:
+                payload["metadata"] = metadata
 
-            logger.info(f"Created {index_type} index on {collection}.{fields}")
-        except Exception as e:
-            # Index might already exist
-            if "duplicate" not in str(e).lower():
-                logger.error(f"Failed to create index: {e}")
+            # Atomic write: temp file + rename
+            with open(temp_path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
 
-    @staticmethod
-    def verify_vector_support(db: StandardDatabase) -> bool:
-        """
-        Check if the database supports vector indexes.
-
-        Args:
-            db: Database connection
-
-        Returns:
-            True if vector indexes are supported
-        """
-        try:
-            version_info = db.version()
-            if isinstance(version_info, dict):
-                version_str = version_info.get('server_version', '0.0.0')
-            else:
-                version_str = version_info
-
-            major, minor = map(int, version_str.split('.')[:2])
-
-            # Vector indexes require ArangoDB 3.11+
-            if (major, minor) >= (3, 11):
-                logger.info(f"ArangoDB {version_str} supports vector indexes")
-                return True
-            else:
-                logger.warning(f"ArangoDB {version_str} does not support vector indexes")
-                return False
+            temp_path.replace(file_path)
+            logger.debug(f"Stored key '{key}' to {file_path}")
+            return True
 
         except Exception as e:
-            logger.error(f"Failed to verify vector support: {e}")
+            logger.error(f"Failed to store key '{key}': {e}")
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
             return False
+
+    def retrieve(self, key: str) -> Any | None:
+        """
+        Retrieve data for the given key.
+
+        Args:
+            key: Storage key/identifier
+
+        Returns:
+            Stored data or None if not found
+        """
+        file_path = self._key_to_path(key)
+
+        if not file_path.exists():
+            return None
+
+        try:
+            with open(file_path) as f:
+                payload = json.load(f)
+            return payload.get("data")
+        except Exception as e:
+            logger.error(f"Failed to retrieve key '{key}': {e}")
+            return None
+
+    def exists(self, key: str) -> bool:
+        """
+        Check if key exists in storage.
+
+        Args:
+            key: Storage key/identifier
+
+        Returns:
+            True if exists, False otherwise
+        """
+        return self._key_to_path(key).exists()
+
+    def delete(self, key: str) -> bool:
+        """
+        Delete data for the given key.
+
+        Args:
+            key: Storage key/identifier
+
+        Returns:
+            True if successful, False otherwise
+        """
+        file_path = self._key_to_path(key)
+
+        if not file_path.exists():
+            return False
+
+        try:
+            file_path.unlink()
+            logger.debug(f"Deleted key '{key}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete key '{key}': {e}")
+            return False
+
+    def list_keys(self, prefix: str | None = None) -> list[str]:
+        """
+        List all keys in storage.
+
+        Args:
+            prefix: Optional prefix to filter keys
+
+        Returns:
+            List of storage keys
+        """
+        keys = []
+        for file_path in self.base_path.glob("*.json"):
+            key = file_path.stem
+            if prefix is None or key.startswith(prefix):
+                keys.append(key)
+        return sorted(keys)
+
+    def get_metadata(self, key: str) -> dict[str, Any] | None:
+        """
+        Retrieve metadata for the given key.
+
+        Args:
+            key: Storage key/identifier
+
+        Returns:
+            Metadata dict or None if not found
+        """
+        file_path = self._key_to_path(key)
+
+        if not file_path.exists():
+            return None
+
+        try:
+            with open(file_path) as f:
+                payload = json.load(f)
+            return payload.get("metadata")
+        except Exception as e:
+            logger.error(f"Failed to retrieve metadata for key '{key}': {e}")
+            return None
+
+    @property
+    def storage_type(self) -> str:
+        """Get the type of storage backend."""
+        return "local_filesystem"
+
+    @property
+    def supports_metadata(self) -> bool:
+        """Whether this backend supports metadata."""
+        return True

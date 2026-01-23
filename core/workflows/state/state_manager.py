@@ -88,8 +88,6 @@ class StateManager:
         Returns:
             True if save successful
         """
-        self.state['last_save'] = datetime.now().isoformat()
-
         # Write to temp file first
         temp_file = self.state_file.with_suffix('.tmp')
 
@@ -99,6 +97,9 @@ class StateManager:
 
             # Atomic rename
             temp_file.replace(self.state_file)
+
+            # Only update last_save after successful write
+            self.state['last_save'] = datetime.now().isoformat()
             return True
 
         except Exception as e:
@@ -244,19 +245,19 @@ class CheckpointManager:
 
     def is_processed(self, item: str) -> bool:
         """Check if an item has been processed."""
-        return item in self.processed
+        return str(item) in self.processed
 
     def mark_processed(self, item: str):
         """Mark an item as processed."""
-        self.processed.add(item)
+        self.processed.add(str(item))
 
     def mark_many_processed(self, items: list):
         """Mark multiple items as processed."""
-        self.processed.update(items)
+        self.processed.update(str(item) for item in items)
 
     def get_unprocessed(self, items: list) -> list:
         """Filter a list to only unprocessed items."""
-        return [item for item in items if item not in self.processed]
+        return [item for item in items if str(item) not in self.processed]
 
     def clear(self):
         """Clear all checkpoints."""
