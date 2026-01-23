@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 import time
 import warnings
@@ -50,6 +51,17 @@ from core.processors.text.chunking_strategies import ChunkingStrategyFactory
 logger = logging.getLogger(__name__)
 
 
+def _get_default_staging_dir() -> str:
+    """Return a portable default staging directory path.
+
+    Uses /dev/shm on Linux if available (RAM-backed), otherwise falls back
+    to the system temp directory.
+    """
+    if os.path.exists("/dev/shm") and os.path.isdir("/dev/shm"):
+        return "/dev/shm/document_staging"
+    return os.path.join(tempfile.gettempdir(), "document_staging")
+
+
 @dataclass
 class ProcessingConfig:
     """Configuration for generic document processing."""
@@ -82,7 +94,7 @@ class ProcessingConfig:
     # Performance settings
     cache_embeddings: bool = True
     use_ramfs_staging: bool = True
-    staging_dir: str = "/dev/shm/document_staging"
+    staging_dir: str = field(default_factory=_get_default_staging_dir)
 
 
 @dataclass
@@ -204,22 +216,49 @@ class DocumentProcessor:
         self.embedder = EmbedderFactory.create(model_name=model_name, config=embed_config)
         self.embedding_model = model_name
 
+        # Initialize staging directory management
+        self._staging_tempdir: Optional[tempfile.TemporaryDirectory] = None
+        self.staging_dir: Optional[Path] = None
+
         if self.config.use_ramfs_staging:
             # Create base directory if needed (parent only)
             base_dir = Path(self.config.staging_dir)
             base_dir.mkdir(parents=True, exist_ok=True)
-            # Create secure per-run subdirectory with O_EXCL-style uniqueness
-            secure_dir = tempfile.mkdtemp(dir=str(base_dir), prefix="staging-")
-            self.staging_dir = Path(secure_dir)
+            # Create secure per-run subdirectory using TemporaryDirectory for auto-cleanup
+            self._staging_tempdir = tempfile.TemporaryDirectory(
+                dir=str(base_dir), prefix="staging-"
+            )
+            self.staging_dir = Path(self._staging_tempdir.name)
             # Set strict permissions and validate
             os.chmod(self.staging_dir, 0o700)
             stat_info = os.lstat(self.staging_dir)
             if os.path.islink(self.staging_dir):
+                self._staging_tempdir.cleanup()
                 raise RuntimeError(f"Staging directory is a symlink: {self.staging_dir}")
             if stat_info.st_uid != os.getuid():
+                self._staging_tempdir.cleanup()
                 raise RuntimeError(f"Staging directory not owned by current user: {self.staging_dir}")
 
         logger.info("Initialized DocumentProcessor with config: %s", self.config)
+
+    def cleanup(self) -> None:
+        """Clean up staging directory and other resources.
+
+        Call this when done processing to release disk space. Also called
+        automatically by __del__ if not explicitly invoked.
+        """
+        if self._staging_tempdir is not None:
+            try:
+                self._staging_tempdir.cleanup()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to cleanup staging directory: %s", exc)
+            finally:
+                self._staging_tempdir = None
+                self.staging_dir = None
+
+    def __del__(self) -> None:
+        """Ensure staging directory is cleaned up on garbage collection."""
+        self.cleanup()
 
     def process_document(
         self,
@@ -469,18 +508,27 @@ class DocumentProcessor:
         return chunks
 
     def _embed_chunks(self, chunks: List[Dict[str, Any]]) -> List[ChunkWithEmbedding]:
+        if not chunks:
+            return []
+
+        # Batch all texts in a single embed call for efficiency
+        texts = [chunk["text"] for chunk in chunks]
+        embeddings = self.embedder.embed_texts(texts, batch_size=len(texts))
+
+        # Build ChunkWithEmbedding instances from chunks and embeddings
         embedded_chunks: List[ChunkWithEmbedding] = []
+        zero_vector = np.zeros(self.config.embedding_dim, dtype=np.float32)
 
         for i, chunk in enumerate(chunks):
-            embeddings = self.embedder.embed_texts([chunk["text"]], batch_size=1)
-            embedding = embeddings[0] if embeddings else None
+            # Get embedding or substitute zero vector if missing
+            raw_embedding = embeddings[i] if i < len(embeddings) else None
 
-            if embedding is not None:
-                embedding_array = np.asarray(embedding, dtype=np.float32)
+            if raw_embedding is not None:
+                embedding_array = np.asarray(raw_embedding, dtype=np.float32)
                 if embedding_array.ndim != 1:
                     embedding_array = embedding_array.reshape(-1)
             else:
-                embedding_array = np.zeros(self.config.embedding_dim, dtype=np.float32)
+                embedding_array = zero_vector.copy()
 
             embedded_chunks.append(
                 ChunkWithEmbedding(
