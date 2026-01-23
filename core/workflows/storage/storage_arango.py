@@ -45,8 +45,19 @@ class ArangoStorageManager:
         if connection_key in cls._connections:
             return cls._connections[connection_key]
 
-        # Create new connection
-        client = ArangoClient(hosts=f"http://{config.host}:{config.port}")
+        # Build URL with configurable scheme (default to https for security)
+        scheme = getattr(config, "scheme", None) or "https"
+        hosts_url = f"{scheme}://{config.host}:{config.port}"
+
+        # Support SSL verification override (True, False, or path to CA bundle)
+        verify_override = getattr(config, "verify_override", None)
+
+        # Create new connection with optional SSL verification settings
+        client_kwargs: dict[str, Any] = {"hosts": hosts_url}
+        if verify_override is not None:
+            client_kwargs["verify_override"] = verify_override
+
+        client = ArangoClient(**client_kwargs)
 
         # Connect to system database first
         sys_db = client.db(

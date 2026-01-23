@@ -182,9 +182,9 @@ class MyWorkflow(WorkflowBase):
                 self.process_item(item)
                 processed += 1
 
-                # Periodic checkpoint
+                # Periodic checkpoint (save i+1 so next run starts after this item)
                 if processed % self.config.checkpoint_interval == 0:
-                    self.state.set_checkpoint("last_index", i)
+                    self.state.set_checkpoint("last_index", i + 1)
                     self.state.save()
             except Exception as e:
                 failed += 1

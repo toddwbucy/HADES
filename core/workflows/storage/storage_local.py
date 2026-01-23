@@ -7,6 +7,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 from .storage_base import StorageBase
 
@@ -34,10 +35,16 @@ class LocalStorage(StorageBase):
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _key_to_path(self, key: str) -> Path:
-        """Convert a storage key to a file path."""
-        # Sanitize key to prevent directory traversal
-        safe_key = key.replace("..", "_").replace("/", "_").replace("\\", "_")
+        """Convert a storage key to a file path using percent-encoding."""
+        # Percent-encode key to create safe, reversible filename
+        # safe='' encodes all special characters including path separators
+        safe_key = quote(key, safe="")
         return self.base_path / f"{safe_key}.json"
+
+    def _path_to_key(self, file_path: Path) -> str:
+        """Convert a file path back to the original storage key."""
+        # Decode percent-encoded filename back to original key
+        return unquote(file_path.stem)
 
     def store(self, key: str, data: Any, metadata: dict[str, Any] | None = None) -> bool:
         """
@@ -146,7 +153,8 @@ class LocalStorage(StorageBase):
         """
         keys = []
         for file_path in self.base_path.glob("*.json"):
-            key = file_path.stem
+            # Decode percent-encoded filename back to original key
+            key = self._path_to_key(file_path)
             if prefix is None or key.startswith(prefix):
                 keys.append(key)
         return sorted(keys)
