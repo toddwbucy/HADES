@@ -21,15 +21,29 @@ use ArangoDBClient\UpdatePolicy;
 // Get operation from command line
 $operation = $argv[1] ?? 'test';
 
+// Validate ARANGO_PASSWORD before proceeding
+$arangoPassword = getenv('ARANGO_PASSWORD');
+if ($arangoPassword === false || $arangoPassword === '') {
+    echo json_encode([
+        'status' => 'error',
+        'type' => 'Configuration',
+        'message' => 'ARANGO_PASSWORD environment variable is required but not set or empty'
+    ], JSON_PRETTY_PRINT) . "\n";
+    exit(1);
+}
+
+// Store endpoint for later reference
+$endpoint = 'tcp://localhost:8529';
+
 // Configuration - try TCP first, then we'll fix Unix socket permissions
 $connectionOptions = [
     // TODO: Fix Unix socket permissions, for now use TCP
     // ConnectionOptions::OPTION_ENDPOINT => 'unix:///tmp/arangodb.sock',
-    ConnectionOptions::OPTION_ENDPOINT => 'tcp://localhost:8529',
+    ConnectionOptions::OPTION_ENDPOINT => $endpoint,
     ConnectionOptions::OPTION_DATABASE => 'arxiv_repository',
     ConnectionOptions::OPTION_AUTH_TYPE => 'Basic',
     ConnectionOptions::OPTION_AUTH_USER => 'root',
-    ConnectionOptions::OPTION_AUTH_PASSWD => getenv('ARANGO_PASSWORD') ?: '',
+    ConnectionOptions::OPTION_AUTH_PASSWD => $arangoPassword,
     ConnectionOptions::OPTION_CONNECTION => 'Keep-Alive',
     ConnectionOptions::OPTION_TIMEOUT => 30,
     ConnectionOptions::OPTION_RECONNECT => true,
@@ -136,12 +150,26 @@ try {
             $json = file_get_contents('php://stdin');
             $data = json_decode($json, true);
 
-            if (!$data) {
-                throw new \Exception("Invalid JSON input");
+            // Robust JSON error handling
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new \Exception("Invalid JSON input: " . json_last_error_msg());
             }
 
-            $collectionName = $data['collection'] ?? 'arxiv_metadata';
-            $documents = $data['documents'] ?? [];
+            // Validate required keys exist
+            if (!isset($data['collection'])) {
+                throw new \Exception("Missing required key 'collection' in JSON input");
+            }
+            if (!isset($data['documents']) || !is_array($data['documents'])) {
+                throw new \Exception("Missing or invalid 'documents' array in JSON input");
+            }
+
+            $collectionName = $data['collection'];
+            $documents = $data['documents'];
+
+            // Sanitize collection name - only allow alphanumeric and underscore
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $collectionName)) {
+                throw new \Exception("Invalid collection name: must contain only alphanumeric characters and underscores, and start with a letter or underscore");
+            }
 
             $documentHandler = new DocumentHandler($connection);
             $inserted = 0;
@@ -161,15 +189,20 @@ try {
                 $trx = new \ArangoDBClient\Transaction($connection);
                 $trx->addWrite($collectionName);
 
-                // Build batch insert action
+                // Build batch insert action with parameterized collection access
+                // Use db._collection() for safe collection lookup instead of direct property access
                 $docsJson = json_encode(array_map(function($doc) {
                     return $doc->getAll();
                 }, $batchDocs));
 
+                // Escape collection name for use in JS string literal (already validated above)
+                $safeCollectionName = addslashes($collectionName);
                 $action = "function () {
                     var db = require('@arangodb').db;
                     var docs = $docsJson;
-                    return db.$collectionName.save(docs);
+                    var col = db._collection('$safeCollectionName');
+                    if (!col) { throw new Error('Collection not found: $safeCollectionName'); }
+                    return col.save(docs);
                 }";
 
                 $trx->setAction($action);
@@ -196,7 +229,7 @@ try {
             $collectionHandler = new CollectionHandler($connection);
             $collections = ['arxiv_metadata', 'arxiv_abstract_embeddings', 'arxiv_abstract_chunks', 'arxiv_structures'];
             $stats = [
-                'connection' => 'unix:///tmp/arangodb.sock',
+                'connection' => $endpoint,  // Use actual configured endpoint
                 'database' => 'arxiv_repository',
                 'collections' => []
             ];

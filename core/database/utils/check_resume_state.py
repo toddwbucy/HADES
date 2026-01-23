@@ -153,6 +153,9 @@ def main() -> None:
             database="arxiv_repository",
             password=password,
         )
+    except ValueError as exc:
+        print(f"ERROR: Configuration error: {exc}", file=sys.stderr)
+        sys.exit(2)
     except MemoryServiceError as exc:
         print(f"ERROR: Unable to initialise memory service: {exc.details()}", file=sys.stderr)
         sys.exit(2)

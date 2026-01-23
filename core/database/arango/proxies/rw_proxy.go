@@ -5,8 +5,23 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
+	"regexp"
 )
+
+// API endpoint patterns for strict matching
+// Format: ^(/_db/[^/]+)?/<endpoint>(/.*)?$
+var (
+	apiImportPattern     = regexp.MustCompile(`^(/_db/[^/]+)?/_api/import(/.*)?$`)
+	apiDocumentPattern   = regexp.MustCompile(`^(/_db/[^/]+)?/_api/document(/.*)?$`)
+	apiCollectionPattern = regexp.MustCompile(`^(/_db/[^/]+)?/_api/collection(/.*)?$`)
+	apiIndexPattern      = regexp.MustCompile(`^(/_db/[^/]+)?/_api/index(/.*)?$`)
+)
+
+// matchAPIEndpoint checks if the path matches a specific API endpoint pattern
+// using anchored regex to prevent prefix/suffix/embedded path confusion
+func matchAPIEndpoint(path string, pattern *regexp.Regexp) bool {
+	return pattern.MatchString(path)
+}
 
 func RunReadWriteProxy() error {
 	listenSocket := getEnv("LISTEN_SOCKET", defaultRWListenSocket)
@@ -42,11 +57,17 @@ func allowReadWrite(r *http.Request, peek BodyPeeker) error {
 	path := r.URL.Path
 	switch r.Method {
 	case http.MethodPost:
-		if isCursorPath(path) || strings.Contains(path, "/_api/import") || strings.Contains(path, "/_api/document") || strings.Contains(path, "/_api/collection") || strings.Contains(path, "/_api/index") {
+		if isCursorPath(path) ||
+			matchAPIEndpoint(path, apiImportPattern) ||
+			matchAPIEndpoint(path, apiDocumentPattern) ||
+			matchAPIEndpoint(path, apiCollectionPattern) ||
+			matchAPIEndpoint(path, apiIndexPattern) {
 			return nil
 		}
 	case http.MethodPut, http.MethodPatch, http.MethodDelete:
-		if strings.Contains(path, "/_api/document") || strings.Contains(path, "/_api/collection") || strings.Contains(path, "/_api/index") {
+		if matchAPIEndpoint(path, apiDocumentPattern) ||
+			matchAPIEndpoint(path, apiCollectionPattern) ||
+			matchAPIEndpoint(path, apiIndexPattern) {
 			return nil
 		}
 	}

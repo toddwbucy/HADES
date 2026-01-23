@@ -160,15 +160,9 @@ def resolve_memory_config(
         default_ro = "/run/hades/readonly/arangod.sock"
         default_rw = "/run/hades/readwrite/arangod.sock"
 
+        # The or-chains guarantee non-None values via defaults
         read_socket = read_socket or env_ro or default_ro
         write_socket = write_socket or env_rw or default_rw
-
-        # If only one socket could be resolved, mirror it so we still have a
-        # functioning configuration instead of passing ``None`` into httpx.
-        if read_socket is None:
-            read_socket = write_socket or default_ro
-        if write_socket is None:
-            write_socket = read_socket or default_rw
     else:
         direct_socket = socket_path or env_direct or DEFAULT_ARANGO_SOCKET
         read_socket = read_socket or direct_socket
