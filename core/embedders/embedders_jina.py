@@ -190,9 +190,17 @@ class JinaV4Embedder(EmbedderBase):
                 # Use Jina's encode method if available
                 if hasattr(self.model, 'encode'):
                     # Jina v4 with encode method
-                    # logger.debug(f"Using model.encode for batch of {len(batch)} texts")
-                    # Jina v4 uses 'retrieval' not 'retrieval.passage'
-                    jina_task = 'retrieval' if 'retrieval' in task else task
+                    # Map task to Jina v4 task labels, preserving query-specific adapters
+                    # Jina v4 supports: 'retrieval', 'retrieval.query', 'text-matching', etc.
+                    if task == 'retrieval.query' or task.startswith('retrieval.'):
+                        # Preserve exact retrieval sub-tasks (e.g., retrieval.query)
+                        jina_task = task
+                    elif 'retrieval' in task:
+                        # Generic retrieval tasks fall back to 'retrieval'
+                        jina_task = 'retrieval'
+                    else:
+                        # Pass through other tasks as-is
+                        jina_task = task
                     embeddings = self.model.encode(
                         batch,
                         task=jina_task

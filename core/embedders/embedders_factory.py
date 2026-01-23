@@ -65,9 +65,22 @@ class EmbedderFactory:
         Raises:
             ValueError: If no suitable embedder found
         """
-        # Create config if not provided
+        # Create or merge config with kwargs
         if config is None:
             config = EmbeddingConfig(model_name=model_name, **kwargs)
+        elif kwargs:
+            # Merge kwargs as overrides into the provided config
+            config_dict = {
+                'model_name': config.model_name,
+                'device': config.device,
+                'batch_size': config.batch_size,
+                'max_seq_length': config.max_seq_length,
+                'use_fp16': config.use_fp16,
+                'chunk_size_tokens': config.chunk_size_tokens,
+                'chunk_overlap_tokens': config.chunk_overlap_tokens,
+            }
+            config_dict.update(kwargs)
+            config = EmbeddingConfig(**config_dict)
 
         # Determine embedder type based on config's model name (not the param)
         embedder_type = cls._determine_embedder_type(config.model_name)
