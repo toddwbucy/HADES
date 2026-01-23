@@ -24,7 +24,7 @@ composer --version
 
 ### 3. Install ArangoDB PHP Driver
 ```bash
-cd ~/olympus/HADES-Lab
+cd /path/to/HADES
 composer install
 ```
 
@@ -44,8 +44,8 @@ PHP script that provides database operations:
 - `bulk_insert` - Bulk document insertion
 - `stats` - Get database statistics
 
-### `/core/database/arango/unix_client.py`
-Python client that attempted Unix socket connection (doesn't work due to python-arango limitations)
+### `/core/database/arango/optimized_client.py`
+Python HTTP/2 client with Unix socket support (the preferred approach for high-performance connections)
 
 ## Usage
 

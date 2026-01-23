@@ -106,7 +106,6 @@ echo -e "\n6. Setting up environment variables..."
 if [ ! -f ".env" ]; then
     cat > .env.template << 'EOF'
 # Database Configuration
-PGPASSWORD=your-postgres-password
 ARANGO_PASSWORD=your-arango-password
 ARANGO_HOST=localhost
 ARANGO_PORT=8529
@@ -114,10 +113,6 @@ ARANGO_PORT=8529
 # GPU Configuration
 CUDA_VISIBLE_DEVICES=0,1
 USE_GPU=true
-
-# API Keys (if needed)
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
 
 # Paths
 ARXIV_DATA_PATH=/bulk-store/arxiv-data

@@ -233,8 +233,105 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Run the simplified Python setup script from project root
-if python3 "$PROJECT_ROOT/dev-utils/setup_arxiv_database_simple.py" "${PYTHON_ARGS[@]}"; then
+# Run inline Python setup script
+python3 - "${PYTHON_ARGS[@]}" <<'SETUP_PY'
+import os
+import sys
+import json
+
+from arango import ArangoClient
+from arango.exceptions import DatabaseCreateError, CollectionCreateError, UserCreateError
+
+# Get configuration from environment
+db_name = os.environ.get('DB_NAME', 'arxiv_repository')
+root_password = os.environ.get('ROOT_PASSWORD', '')
+connection_url = os.environ.get('CONNECTION_URL', 'http://localhost:8529')
+collections_json = os.environ.get('COLLECTIONS_JSON', '[]')
+
+admin_user = os.environ.get('DB_ADMIN_USER', 'arxiv_admin')
+admin_password = os.environ.get('DB_ADMIN_PASSWORD', '')
+writer_user = os.environ.get('DB_WRITER_USER', 'arxiv_writer')
+writer_password = os.environ.get('DB_WRITER_PASSWORD', '')
+reader_user = os.environ.get('DB_READER_USER', 'arxiv_reader')
+reader_password = os.environ.get('DB_READER_PASSWORD', '')
+
+config_dir = os.environ.get('CONFIG_DIR', 'config')
+
+drop_existing = '--drop-existing' in sys.argv
+quiet_mode = '--quiet' in sys.argv
+
+def log(msg):
+    if not quiet_mode:
+        print(msg)
+
+# Parse collections
+collections = json.loads(collections_json)
+
+# Connect to ArangoDB
+log(f"Connecting to ArangoDB at {connection_url}...")
+client = ArangoClient(hosts=connection_url)
+sys_db = client.db('_system', username='root', password=root_password)
+
+# Create or get database
+if sys_db.has_database(db_name):
+    if drop_existing:
+        log(f"Dropping existing database: {db_name}")
+        sys_db.delete_database(db_name)
+        sys_db.create_database(db_name)
+        log(f"Recreated database: {db_name}")
+    else:
+        log(f"Database {db_name} already exists")
+else:
+    sys_db.create_database(db_name)
+    log(f"Created database: {db_name}")
+
+# Connect to the database
+db = client.db(db_name, username='root', password=root_password)
+
+# Create collections
+for coll_name in collections:
+    if not db.has_collection(coll_name):
+        db.create_collection(coll_name)
+        log(f"Created collection: {coll_name}")
+    else:
+        log(f"Collection {coll_name} already exists")
+
+# Create users
+users = [
+    (admin_user, admin_password, 'rw'),
+    (writer_user, writer_password, 'rw'),
+    (reader_user, reader_password, 'ro'),
+]
+
+for username, password, permission in users:
+    try:
+        sys_db.create_user(username=username, password=password)
+        log(f"Created user: {username}")
+    except UserCreateError:
+        sys_db.update_user(username=username, password=password)
+        log(f"Updated user: {username}")
+
+    # Grant permissions
+    sys_db.update_permission(username=username, permission=permission, database=db_name)
+    log(f"Granted {permission} on {db_name} to {username}")
+
+# Save credentials to config file
+os.makedirs(config_dir, exist_ok=True)
+creds_file = os.path.join(config_dir, f"{db_name}.env")
+with open(creds_file, 'w') as f:
+    f.write(f"export ARXIV_DB_NAME={db_name}\n")
+    f.write(f"export ARXIV_ADMIN_USER={admin_user}\n")
+    f.write(f"export ARXIV_ADMIN_PASSWORD={admin_password}\n")
+    f.write(f"export ARXIV_WRITER_USER={writer_user}\n")
+    f.write(f"export ARXIV_WRITER_PASSWORD={writer_password}\n")
+    f.write(f"export ARXIV_READER_USER={reader_user}\n")
+    f.write(f"export ARXIV_READER_PASSWORD={reader_password}\n")
+
+log(f"Saved credentials to {creds_file}")
+print("Database setup completed successfully")
+SETUP_PY
+
+if [ $? -eq 0 ]; then
     print_success "Database setup completed successfully"
 else
     print_error "Database setup failed"
@@ -281,7 +378,7 @@ print_info "Testing database connection..."
 
 python3 <<'PY'
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 from core.database.database_factory import DatabaseFactory
 from core.database.arango import MemoryServiceError
@@ -332,7 +429,7 @@ try:
             """,
             params={
                 "key": "_test_permission",
-                "ts": datetime.utcnow().isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
             },
             wait_for_sync=True,
         )

@@ -10,14 +10,12 @@ if [ ! -d ".git" ]; then
     echo "Initializing git repository..."
     git init
     git add .
-    git commit -m "Initial commit: ACID-compliant ArXiv pipeline achieving 6.8 papers/min
+    git commit -m "Initial commit: High-speed ArangoDB-backed RAG system
 
-- Full ACID compliance verified
-- Phase-separated architecture (extraction/embedding)
-- Dual GPU processing with NVLink
-- PostgreSQL + ArangoDB hybrid storage
-- Jina v4 embeddings with late chunking
-- Mathematical framework: C = (W·R·H)/T · Ctx^α"
+- HTTP/2 Unix socket connections for optimal performance
+- Jina V4 embeddings with late chunking
+- Docling PDF extraction
+- ACID-compliant document processing"
     echo "✓ Git repository initialized"
 else
     echo "✓ Git repository already initialized"
@@ -32,13 +30,11 @@ echo "4. Run: git push -u origin main"
 echo ""
 echo "5. Add repository secrets in GitHub settings:"
 echo "   - ARANGO_PASSWORD"
-echo "   - PGPASSWORD"
 echo ""
 echo "6. Install dependencies locally:"
 echo "   poetry install"
 echo ""
 echo "7. Set environment variables:"
-echo "   export PGPASSWORD='your_password'"
 echo "   export ARANGO_PASSWORD='your_password'"
 echo "   export CUDA_VISIBLE_DEVICES=0,1"
 echo ""

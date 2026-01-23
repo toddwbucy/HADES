@@ -184,8 +184,8 @@ fi
 
 # Create necessary directories
 print_info "Creating necessary directories..."
-mkdir -p tools/arxiv/logs
-mkdir -p tools/arxiv/checkpoints
+mkdir -p logs
+mkdir -p checkpoints
 mkdir -p experiments/datasets
 print_success "Directories created"
 
@@ -194,14 +194,15 @@ print_info "Creating environment template..."
 cat > .env.template << 'EOF'
 # ArangoDB Configuration
 ARANGO_PASSWORD=your_password_here
-ARANGO_HOST=192.168.1.69
+ARANGO_HOST=localhost
 
 # GPU Configuration
 CUDA_VISIBLE_DEVICES=0,1  # Adjust based on your GPU setup
 USE_GPU=true
 
-# Optional: SQLite cache location
-SQLITE_CACHE=/bulk-store/arxiv-cache.db
+# Optional: Paths
+ARXIV_DATA_PATH=/bulk-store/arxiv-data
+STAGING_PATH=/dev/shm/acid_staging
 EOF
 
 if [ ! -f .env ]; then
@@ -224,11 +225,10 @@ echo
 echo "2. Activate the Poetry environment:"
 echo "   poetry shell"
 echo
-echo "3. Run the ACID pipeline:"
-echo "   cd tools/arxiv/pipelines"
-echo "   python arxiv_pipeline.py --config ../configs/acid_pipeline_phased.yaml --count 10"
+echo "3. Verify the environment:"
+echo "   python setup/verify_environment.py"
 echo
-echo "4. Monitor processing:"
-echo "   tail -f tools/arxiv/logs/acid_phased.log"
+echo "4. Verify database connection:"
+echo "   python setup/verify_storage.py"
 echo
 print_success "Setup complete! Happy processing!"

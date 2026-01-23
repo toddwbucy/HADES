@@ -125,6 +125,6 @@ CUDA_VISIBLE_DEVICES=0,1
 
 ## Notes
 
-- PHP is required because python-arango cannot use Unix sockets
-- The PHP bridge (`core/database/arango/php_unix_bridge.php`) handles all database operations
-- See `setup/php_arango_setup.md` for detailed PHP setup instructions
+- The primary database client is `core/database/arango/optimized_client.py` which uses HTTP/2 with Unix sockets
+- PHP bridge (`core/database/arango/php_unix_bridge.php`) is an optional alternative for database operations
+- See `setup/php_arango_setup.md` for PHP setup instructions if needed
