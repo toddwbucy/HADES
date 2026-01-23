@@ -252,18 +252,26 @@ class ArXivAPIClient:
             if name_elem is not None and name_elem.text:
                 authors.append(name_elem.text.strip())
 
-        # Extract categories
+        # Extract categories - filter out None values
         categories = []
         primary_category = None
 
         for category in entry.findall('.//{http://arxiv.org/schemas/atom}primary_category'):
-            primary_category = category.get('term')
+            term = category.get('term')
+            if term is not None:
+                primary_category = term
 
         for category in entry.findall('.//{http://arxiv.org/schemas/atom}category'):
-            categories.append(category.get('term'))
+            term = category.get('term')
+            if term is not None:
+                categories.append(term)
 
-        if not primary_category and categories:
-            primary_category = categories[0]
+        # Ensure primary_category is never None - fall back to first category or empty string
+        if not primary_category:
+            if categories:
+                primary_category = categories[0]
+            else:
+                primary_category = ""  # Safe default to satisfy type constraint
 
         # Extract dates with null checks
         published_elem = entry.find('.//{http://www.w3.org/2005/Atom}published')

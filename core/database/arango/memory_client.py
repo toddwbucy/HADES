@@ -410,11 +410,11 @@ class ArangoMemoryClient:
             transaction_id = result.get("result", {}).get("id", "")
             if not transaction_id:
                 # No transaction ID returned - fail fast with context
-                error_msg = f"Failed to begin transaction: no ID returned. Response: {result}"
+                error_msg = "Failed to begin transaction: no ID returned"
                 raise ArangoHttpError(
                     status_code=500,
                     message=error_msg,
-                    error_code=0,
+                    details={"response": result},
                 )
             return transaction_id
         except ArangoHttpError as exc:

@@ -272,7 +272,9 @@ class ArangoCitationStorage(CitationStorage):
         Persist a list of BibliographyEntry objects into the ArangoDB `bibliography_entries` collection.
 
         If `entries` is empty this is a no-op and returns True. Each entry is stored as a document with a generated `_key` of the form
-        `{source_paper_id}_{entry_number or 'unknown'}`. Documents are inserted; on unique-key conflicts the existing document is updated. Returns True on successful completion, or False if an error occurs while accessing or writing to the database.
+        `{source_paper_id}_{entry_number}` when entry_number is present, or `{source_paper_id}_unknown_{idx}` when entry_number is falsy
+        to ensure unique keys per entry. Documents are inserted; on unique-key conflicts the existing document is updated.
+        Returns True on successful completion, or False if an error occurs while accessing or writing to the database.
         """
         if not entries:
             return True
@@ -280,9 +282,15 @@ class ArangoCitationStorage(CitationStorage):
         try:
             bibliography_collection = self.db.collection('bibliography_entries')
 
-            for entry in entries:
+            for idx, entry in enumerate(entries):
+                # Generate unique _key - use entry_number if available, otherwise use index for uniqueness
+                if entry.entry_number:
+                    entry_key = f"{entry.source_paper_id}_{entry.entry_number}"
+                else:
+                    entry_key = f"{entry.source_paper_id}_unknown_{idx}"
+
                 doc = {
-                    '_key': f"{entry.source_paper_id}_{entry.entry_number or 'unknown'}",
+                    '_key': entry_key,
                     'source_paper_id': entry.source_paper_id,
                     'entry_number': entry.entry_number,
                     'raw_text': entry.raw_text,

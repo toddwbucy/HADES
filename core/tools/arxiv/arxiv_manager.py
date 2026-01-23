@@ -238,7 +238,9 @@ class ArXivManager:
     def __init__(
         self,
         processing_config: ProcessingConfig | None = None,
-        arango_config: dict[str, Any] | None = None
+        arango_config: dict[str, Any] | None = None,
+        max_metadata_entries: int | None = 100000,
+        enable_metadata_cache: bool = True,
     ):
         """
         Create a new ArXivManager, wiring the document processor, optional ArangoDB manager, validator, and metadata cache.
@@ -248,6 +250,9 @@ class ArXivManager:
         Parameters:
             processing_config: Optional configuration forwarded to DocumentProcessor (affects parsing/embedding behavior).
             arango_config: Optional ArangoDB connection/configuration; when omitted, database-backed storage is disabled.
+            max_metadata_entries: Maximum number of metadata entries to cache in memory (None for unlimited).
+                Default is 100000 to prevent OOM with full ArXiv snapshot (~2.8M records).
+            enable_metadata_cache: If False, skip preloading metadata cache entirely. Default is True.
         """
         # Initialize generic processor
         self.processor = DocumentProcessor(processing_config)
@@ -261,9 +266,11 @@ class ArXivManager:
         # Initialize validator
         self.validator = ArXivValidator()
 
-        # Load metadata if available
+        # Load metadata if available and enabled
         self.metadata_cache: dict[str, Any] = {}
-        self._load_metadata_cache()
+        self._max_metadata_entries = max_metadata_entries
+        if enable_metadata_cache:
+            self._load_metadata_cache()
 
         logger.info("Initialized ArXivManager")
 
@@ -274,21 +281,36 @@ class ArXivManager:
         Reads the file at ArXivValidator.METADATA_PATH, parses each non-empty line as JSON,
         and stores each paper object keyed by its 'id' field into self.metadata_cache.
         Blank lines are ignored. If the file is missing the method does nothing.
+        Loading stops after max_metadata_entries (if set) to prevent OOM.
         Any exceptions raised while reading or parsing the snapshot are caught and result
         in a logged warning; the exception is not propagated.
         """
         metadata_path = ArXivValidator.METADATA_PATH
         if metadata_path.exists():
             try:
+                entries_loaded = 0
+                truncated = False
                 with open(metadata_path) as f:
                     # ArXiv metadata is typically in JSON Lines format
                     for line in f:
                         if line.strip():
+                            # Check memory bound before loading more entries
+                            if self._max_metadata_entries is not None and entries_loaded >= self._max_metadata_entries:
+                                truncated = True
+                                break
                             paper = json.loads(line)
                             arxiv_id = paper.get('id', '')
                             if arxiv_id:
                                 self.metadata_cache[arxiv_id] = paper
-                logger.info(f"Loaded metadata for {len(self.metadata_cache)} papers")
+                                entries_loaded += 1
+
+                if truncated:
+                    logger.info(
+                        f"Loaded metadata for {len(self.metadata_cache)} papers "
+                        f"(truncated at {self._max_metadata_entries} entries to prevent OOM)"
+                    )
+                else:
+                    logger.info(f"Loaded metadata for {len(self.metadata_cache)} papers")
             except Exception as e:
                 logger.warning(f"Failed to load metadata cache: {e}")
 
