@@ -1,0 +1,52 @@
+#!/bin/bash
+# ============================================================
+# Database Setup Configuration Example
+# ============================================================
+# Copy this file to setup_database.config and customize
+# Then source it before running setup_database.sh:
+#   source setup_database.config
+#   ./setup_database.sh
+# ============================================================
+
+# Database Configuration
+export ARXIV_DB_NAME="arxiv_repository"
+export ARXIV_DB_HOST="http://localhost:8529"
+
+# User Configuration
+export ARXIV_ADMIN_USER="arxiv_admin"
+export ARXIV_WRITER_USER="arxiv_writer"
+export ARXIV_READER_USER="arxiv_reader"
+
+# Password Configuration (optional - will auto-generate if not set)
+# export ARXIV_ADMIN_PASSWORD="your_secure_admin_password"
+# export ARXIV_WRITER_PASSWORD="your_secure_writer_password"
+# export ARXIV_READER_PASSWORD="your_secure_reader_password"
+
+# Configuration Directory
+export CONFIG_DIR="config"
+
+# ============================================================
+# Advanced Configuration Examples
+# ============================================================
+
+# Example 1: Development environment with simple passwords
+# export ARXIV_ADMIN_PASSWORD="admin123"
+# export ARXIV_WRITER_PASSWORD="writer123"
+# export ARXIV_READER_PASSWORD="reader123"
+
+# Example 2: Production environment with strong passwords
+# export ARXIV_ADMIN_PASSWORD="$(openssl rand -base64 32)"
+# export ARXIV_WRITER_PASSWORD="$(openssl rand -base64 32)"
+# export ARXIV_READER_PASSWORD="$(openssl rand -base64 32)"
+
+# Example 3: Different database name for testing
+# export ARXIV_DB_NAME="arxiv_test"
+# export CONFIG_DIR="config/test"
+
+# Example 4: Remote ArangoDB server
+# export ARXIV_DB_HOST="http://192.168.1.100:8529"
+
+# Example 5: Custom user names
+# export ARXIV_ADMIN_USER="arxiv_dba"
+# export ARXIV_WRITER_USER="arxiv_processor"
+# export ARXIV_READER_USER="arxiv_monitor"
