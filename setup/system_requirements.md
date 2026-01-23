@@ -91,8 +91,8 @@ CUDA_VISIBLE_DEVICES=0,1
 
 1. **Clone repository**:
    ```bash
-   git clone https://github.com/yourusername/HADES-Lab.git
-   cd HADES-Lab
+   git clone https://github.com/toddwbucy/HADES.git
+   cd HADES
    ```
 
 2. **Run setup script**:
