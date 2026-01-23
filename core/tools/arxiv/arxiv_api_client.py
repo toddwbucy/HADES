@@ -380,7 +380,8 @@ class ArXivAPIClient:
         pdf_path = pdf_subdir / pdf_filename
 
         latex_path = None
-        if latex_dir and metadata.has_latex:
+        if latex_dir:
+            # Attempt LaTeX download whenever latex_dir is provided
             latex_subdir = latex_dir / year_month
             latex_subdir.mkdir(parents=True, exist_ok=True)
             latex_filename = f"{arxiv_id.replace('/', '_')}.tar.gz"
@@ -444,43 +445,62 @@ class ArXivAPIClient:
                 error_message=f"PDF download failed: {str(e)}"
             )
 
-        # Download LaTeX if available and requested
-        if latex_path and metadata.has_latex:
+        # Download LaTeX if latex_dir was provided
+        if latex_path:
             try:
                 logger.info(f"Downloading LaTeX for {arxiv_id}")
                 latex_url = f"{self.latex_base_url}/{arxiv_id}"
 
-                response = self._make_request(latex_url, stream=True)
-                bytes_written = 0
-                try:
-                    with open(latex_path, 'wb') as outfile:
-                        for chunk in response.iter_content(chunk_size=65536):
-                            if chunk:
-                                outfile.write(chunk)
-                                bytes_written += len(chunk)
-                finally:
+                # Use session directly to check status before streaming
+                self._enforce_rate_limit()
+                response = self.session.get(
+                    latex_url, stream=True, timeout=self.timeout, allow_redirects=True
+                )
+
+                # Handle 404 gracefully - LaTeX source may not exist
+                if response.status_code == 404:
+                    logger.info(f"LaTeX source not available for {arxiv_id} (404)")
                     response.close()
-
-                content_length = response.headers.get('Content-Length')
-                if content_length:
+                    latex_path = None
+                elif response.status_code != 200:
+                    # Non-200 and non-404 is an error
+                    response.close()
+                    raise requests.exceptions.HTTPError(
+                        f"LaTeX download failed with status {response.status_code}"
+                    )
+                else:
+                    # Stream the response
+                    bytes_written = 0
                     try:
-                        expected = int(content_length)
-                    except ValueError:
-                        expected = None
-                    else:
-                        if expected != bytes_written:
-                            latex_path.unlink(missing_ok=True)
-                            raise OSError(
-                                f"Incomplete LaTeX download: expected {expected} bytes, got {bytes_written}"
-                            )
+                        with open(latex_path, 'wb') as outfile:
+                            for chunk in response.iter_content(chunk_size=65536):
+                                if chunk:
+                                    outfile.write(chunk)
+                                    bytes_written += len(chunk)
+                    finally:
+                        response.close()
 
-                logger.info(f"Downloaded LaTeX: {latex_path}")
+                    content_length = response.headers.get('Content-Length')
+                    if content_length:
+                        try:
+                            expected = int(content_length)
+                        except ValueError:
+                            expected = None
+                        else:
+                            if expected != bytes_written:
+                                latex_path.unlink(missing_ok=True)
+                                raise OSError(
+                                    f"Incomplete LaTeX download: expected {expected} bytes, got {bytes_written}"
+                                )
+
+                    logger.info(f"Downloaded LaTeX: {latex_path}")
 
             except Exception as e:
                 logger.warning(f"Failed to download LaTeX for {arxiv_id}: {e}")
                 # Don't fail the entire operation if LaTeX fails
                 try:
-                    latex_path.unlink(missing_ok=True)
+                    if latex_path:
+                        latex_path.unlink(missing_ok=True)
                 except OSError:
                     pass
                 latex_path = None

@@ -407,7 +407,16 @@ class ArangoMemoryClient:
         path = f"/_db/{self._config.database}/_api/transaction/begin"
         try:
             result = self._write_client.request("POST", path, json=payload)
-            return result.get("result", {}).get("id", "")
+            transaction_id = result.get("result", {}).get("id", "")
+            if not transaction_id:
+                # No transaction ID returned - fail fast with context
+                error_msg = f"Failed to begin transaction: no ID returned. Response: {result}"
+                raise ArangoHttpError(
+                    status_code=500,
+                    message=error_msg,
+                    error_code=0,
+                )
+            return transaction_id
         except ArangoHttpError as exc:
             raise self._wrap_error(exc) from exc
 

@@ -82,7 +82,9 @@ class ArXivValidator:
 
     # ArXiv ID patterns
     ARXIV_ID_PATTERN = re.compile(r'^(\d{4})\.(\d{4,5})(v\d+)?$')
-    OLD_ARXIV_ID_PATTERN = re.compile(r'^([a-z\-\.]+)\/(\d{7})(v\d+)?$')
+    # Old format: archive/YYMMNNN or archive.CC/YYMMNNN where CC is subject class
+    # Examples: hep-th/9901001, cs/9901001, math.GT/0309136, cond-mat/9901001
+    OLD_ARXIV_ID_PATTERN = re.compile(r'^([a-z][a-z\-]*(?:\.[A-Z]{2})?)\/(\d{7})(v\d+)?$')
 
     # Base paths for ArXiv data
     PDF_BASE_PATH = Path('/bulk-store/arxiv-data/pdf')

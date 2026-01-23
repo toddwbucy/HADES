@@ -167,9 +167,20 @@ class FileSystemDocumentProvider(DocumentProvider):
 
         If the file is found and readable, returns its contents as a UTF-8 string.
         If the file cannot be opened or read, logs the error and returns None.
+        Rejects document_id values that would escape the base_path via path traversal.
         """
+        from pathlib import Path
+
         try:
-            file_path = f"{self.base_path}/{document_id}.txt"
+            # Construct path safely using pathlib
+            base_path = Path(self.base_path).resolve()
+            file_path = (base_path / f"{document_id}.txt").resolve()
+
+            # Prevent path traversal attacks - ensure file is within base_path
+            if not str(file_path).startswith(str(base_path)):
+                logger.error(f"Path traversal attempt detected for document_id: {document_id}")
+                return None
+
             with open(file_path, encoding='utf-8') as f:
                 return f.read()
         except Exception as e:
@@ -234,9 +245,10 @@ class ArangoCitationStorage(CitationStorage):
 
     def __init__(self, arango_client, db_name: str = 'academy_store', username: str | None = None):
         """
-        Initialize the ArangoDocumentProvider and establish a connection to the ArangoDB database.
+        Initialize the ArangoCitationStorage and establish a connection to the ArangoDB database.
 
         Parameters:
+            arango_client: ArangoDB client instance for database operations.
             db_name (str): Name of the ArangoDB database to connect to (default: 'academy_store').
             username (str | None): Optional username to authenticate with; if omitted, the `ARANGO_USERNAME`
                 environment variable is used (defaults to 'root' when that variable is not set).
@@ -681,9 +693,10 @@ class UniversalCitationExtractor:
 
     def __init__(self, document_provider: DocumentProvider):
         """
-        Initialize the UniversalBibliographyExtractor with a document provider.
+        Initialize the UniversalCitationExtractor with a document provider.
 
-        The provider is used to fetch full paper text and text chunks for bibliography section detection and entry parsing.
+        The provider is used to fetch full paper text and text chunks for
+        in-text citation detection and bibliography entry matching.
         """
         self.document_provider = document_provider
 
@@ -758,13 +771,16 @@ def main():
     - Side effects: network access to ArangoDB, console output, and storage writes via the
       chosen CitationStorage implementation.
     """
-    import os
-
     from arango import ArangoClient
 
-    # Test with our ArXiv setup
-    os.getenv('ARANGO_PASSWORD')
-    client = ArangoClient(hosts='http://192.168.1.69:8529')
+    # Read connection config from environment
+    arango_host = os.environ.get('ARANGO_HOST', 'http://localhost:8529')
+    arango_password = os.environ.get('ARANGO_PASSWORD')
+    if not arango_password:
+        raise ValueError("ARANGO_PASSWORD environment variable required")
+
+    # Create client using environment-configured host
+    client = ArangoClient(hosts=arango_host)
 
     extractor, storage = create_arxiv_citation_toolkit(client)
 
