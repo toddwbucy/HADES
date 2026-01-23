@@ -8,8 +8,9 @@ with the previous gRPC client so existing code requires minimal changes.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Any
+from typing import Any
 
 import grpc
 from grpc import StatusCode
@@ -240,7 +241,7 @@ class ArangoMemoryClient:
             self._write_client.close()
         self._closed = True
 
-    def __enter__(self) -> "ArangoMemoryClient":  # pragma: no cover - helper
+    def __enter__(self) -> ArangoMemoryClient:  # pragma: no cover - helper
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - helper
