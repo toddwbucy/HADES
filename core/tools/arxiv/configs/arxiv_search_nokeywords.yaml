@@ -1,0 +1,57 @@
+# ArXiv Search Configuration - No Keywords for Faster Query
+# Same as main config but without keyword search to avoid timeout
+
+search:
+  # Time range for paper selection
+  start_year: 2012
+  end_year: 2025
+  
+  # ArXiv categories to include
+  categories:
+    - cs.LG    # Machine Learning
+    - cs.CL    # Computation and Language  
+    - cs.CV    # Computer Vision
+    - cs.AI    # Artificial Intelligence
+    - stat.ML  # Statistics - Machine Learning
+    - cs.NE    # Neural and Evolutionary Computing
+    - cs.IR    # Information Retrieval
+  
+  # No keywords for faster query
+  keywords: ""
+  
+  # Sampling configuration
+  sampling:
+    # Target number of papers to collect
+    target_count: 10000
+    
+    # How to distribute the cap
+    cap_mode: per-year
+    
+    # Max papers per year
+    per_year_cap: 770
+    
+  # Additional filters
+  filters:
+    # Only include papers with local PDFs available
+    require_pdf: true
+    
+    # Only include papers with abstracts
+    require_abstract: false
+
+# Output configuration  
+output:
+  # Base directory for output files
+  base_dir: data/arxiv_collections
+  
+  # Output options
+  write_monthly_lists: false   # Skip for speed
+  write_stats: true
+  write_with_pdf_list: false
+  write_missing_pdf_list: false
+  
+  # File naming
+  prefix: arxiv_ids_nokeywords
+  timestamp_format: "%Y%m%d_%H%M%S"
+  
+  # Update symlinks to latest files
+  update_symlinks: true

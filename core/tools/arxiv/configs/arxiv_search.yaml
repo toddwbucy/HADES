@@ -1,0 +1,90 @@
+# ArXiv Search Configuration
+# This file defines search parameters for generating paper lists from PostgreSQL database
+
+search:
+  # Time range for paper selection
+  start_year: 2012
+  end_year: 2025
+  
+  # ArXiv categories to include
+  # See https://arxiv.org/category_taxonomy for full list
+  categories:
+    - cs.LG    # Machine Learning
+    - cs.CL    # Computation and Language  
+    - cs.CV    # Computer Vision
+    - cs.AI    # Artificial Intelligence
+    - stat.ML  # Statistics - Machine Learning
+    # Add more categories as needed:
+    - cs.NE    # Neural and Evolutionary Computing
+    - cs.IR    # Information Retrieval
+    # - cs.RO    # Robotics
+  
+  # Full-text search keywords (PostgreSQL tsquery format)
+  # Uses | for OR, & for AND, quotes for phrases
+  # See https://www.postgresql.org/docs/current/textsearch-controls.html
+  keywords: |
+    attention | transformer | "neural network" | "deep learning" | "RAG" | 
+    diffusion | VAE | GAN | "vision transformer" | BERT | GPT | T5 | XLNet | ELECTRA |
+    "language model" | "encoder decoder" | "cross attention" | "multi head attention" |
+    "positional encoding" | "knowledge distillation" | quantization | pruning |
+    "neural architecture search" | hyperparameter | "few shot" | "zero shot" |
+    "federated learning" | "meta learning" | "representation learning" | "Retrieval Augmented Generation" |
+    "graph neural" | GNN | "graph network" | "image segmentation" | "object detection" |
+    "pose estimation" | SLAM | "text summarization" | "machine translation" |
+    "reinforcement learning" | "imitation learning" | "self supervised" |
+    "contrastive learning" | "curriculum learning" | "continual learning"
+  
+  # Sampling configuration
+  sampling:
+    # Target number of papers to collect
+    target_count: 10000
+    
+    # How to distribute the cap: 'per-year' or 'per-month'
+    cap_mode: per-year
+    
+    # Optional: Override auto-calculated caps
+    per_year_cap: 770  # Max papers per year
+    # per_month_cap: 20   # Max papers per month
+    
+    # Random seed for reproducible sampling (optional)
+    # random_seed: 42
+    
+  # Additional filters
+  filters:
+    # Only include papers with local PDFs available
+    require_pdf: true
+    
+    # Only include papers with abstracts
+    require_abstract: true
+    
+    # Additional year constraints (overrides start_year/end_year if set)
+    # min_year: 2015
+    # max_year: 2024
+    
+    # Exclude specific ArXiv IDs (optional)
+    # exclude_ids:
+    #   - "2301.00001"
+    #   - "2301.00002"
+
+# Output configuration  
+output:
+  # Base directory for output files
+  base_dir: data/arxiv_collections
+  
+  # Output options
+  write_monthly_lists: true    # Create per-month ID lists
+  write_stats: true            # Generate statistics JSON
+  write_with_pdf_list: true    # Separate list of IDs with PDFs
+  write_missing_pdf_list: true # List of IDs without PDFs
+  
+  # File naming
+  prefix: arxiv_ids
+  timestamp_format: "%Y%m%d_%H%M%S"
+  
+  # Update symlinks to latest files
+  update_symlinks: true
+
+# Database configuration override (optional)
+# If not specified, uses tools/arxiv/configs/db.yaml
+# database:
+#   config_path: tools/arxiv/configs/db.yaml

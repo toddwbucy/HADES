@@ -1,0 +1,232 @@
+# ACID Pipeline Configuration - Phase-Separated Architecture
+# Eliminates GPU resource competition by separating extraction and embedding phases
+
+# ArangoDB Configuration
+# NOTE: These are defaults. Override with environment variables:
+#   ARANGO_HOST - ArangoDB server URL (default: http://localhost:8529)
+#   ARANGO_USERNAME - ArangoDB username (default: root)
+#   ARANGO_PASSWORD - ArangoDB password (required)
+#   ARANGO_DATABASE - Database name (default: academy_store)
+# For production, use a dedicated service account instead of 'root'.
+arango:
+  host: ${ARANGO_HOST:-http://localhost:8529}
+  database: ${ARANGO_DATABASE:-academy_store}
+  username: ${ARANGO_USERNAME:-root}
+  # password provided via environment variable ARANGO_PASSWORD
+
+# Phase-Separated Processing Configuration
+phases:
+  # Phase 1: EXTRACTION (GPU-accelerated)
+  extraction:
+    workers: 32  # 16 per GPU with 48 cores available
+    memory_per_worker_gb: 4  # 32*4 = 128GB, still within 251GB total
+    timeout_seconds: 120
+    gpu_devices: [0, 1]  # Both A6000s for extraction
+    workers_per_gpu: 16  # 16 workers per GPU (16×2=32)
+    
+    # Docling settings (GPU-accelerated)
+    docling:
+      use_ocr: false  # Keep false for speed unless needed
+      extract_tables: true
+      extract_equations: true
+      extract_images: true
+      use_fallback: true
+      max_file_size_mb: 50
+      batch_size: 24  # Increased from 4 - process more PDFs per worker batch
+      use_gpu: true  # Enable GPU acceleration
+  
+  # Phase 2: EMBEDDING (GPU-only)
+  embedding:
+    workers: 8  # Target ~7-8GB VRAM usage per worker
+    gpu_devices: [0, 1]  # Both A6000s
+    workers_per_gpu: 4  # 4 workers per GPU - should be stable with cleanup
+    
+    # Jina v4 settings
+    jina:
+      model_name: 'jinaai/jina-embeddings-v4'
+      device: 'cuda'
+      use_fp16: true
+      chunk_size_tokens: 1000
+      chunk_overlap_tokens: 200
+      max_context_length: 32768
+      batch_size: 24  # Can use larger batches without competition
+
+# Staging Configuration (RamFS)
+staging:
+  directory: '/dev/shm/acid_staging'  # RamFS location (32GB available)
+  max_size_gb: 28  # Leave some headroom
+  cleanup_on_start: true
+  cleanup_on_complete: true
+  compression: false  # RamFS is already fast
+
+# Processing Configuration
+processing:
+  # Source configuration
+  source: 'local'  # 'local', 'rag', or 'specific_list'
+  count: 1000  # Default number of papers
+  
+  # Local source settings
+  local:
+    pdf_dir: '/bulk-store/arxiv-data/pdf'
+    pattern: '*/*.pdf'  # YYMM/arxiv_id.pdf structure
+    sort: 'name'  # Process alphabetically (earliest first)
+  
+  # RAG source settings
+  rag:
+    paper_ids:
+      - '2005.11401'  # RAG: Retrieval-Augmented Generation
+      - '2301.00303'  # Self-RAG
+      - '2302.00083'  # Active RAG
+      - '2310.11511'  # RAG survey
+      - '2312.10997'  # Graph RAG
+      - '2402.05123'  # Corrective RAG
+      - '2401.15884'  # RAG Fusion
+      - '2312.06648'  # Chain-of-Note
+      - '2311.09210'  # RAPTOR
+      - '2310.06117'  # REST
+      # Add more RAG papers as needed
+  
+  # Specific list source
+  specific_list:
+    arxiv_ids:
+      - '1301.3781'  # word2vec
+      - '1405.4053'  # doc2vec  
+      - '1803.09473' # code2vec
+
+# Performance Configuration
+performance:
+  # Phase transition
+  transition_delay_seconds: 5  # Wait between phases for cleanup
+  
+  # Memory management
+  memory_limit_gb: 64
+  staging_memory_limit_gb: 28
+  
+  # GPU management (Both phases now)
+  gpu_memory_fraction: 0.90  # Slightly lower to prevent OOM with dual use
+  clear_gpu_between_phases: true
+  gpu_memory_cleanup_interval: 50  # Clean GPU memory every N papers
+  
+  # Monitoring
+  monitor_interval: 5
+  log_memory_stats: true
+  log_phase_transitions: true
+
+# Checkpoint Configuration
+checkpoint:
+  enabled: auto  # auto, true, false (auto enables for 500+ documents)
+  auto_threshold: 500  # Auto-enable checkpoint for runs > this size
+  save_interval: 100   # Save checkpoint every N documents
+  file: 'acid_phased_checkpoint.json'
+  save_after_extraction: true  # Save after Phase 1
+  save_after_embedding: true   # Save after Phase 2
+  
+  # Recovery options
+  resume_from_staging: true  # Can resume Phase 2 if Phase 1 complete
+  validate_staging: true      # Check staged files before Phase 2
+
+# Logging Configuration
+logging:
+  level: 'INFO'
+  console: true
+  file: '../logs/acid_phased.log'
+  
+  # Phase-specific logs
+  extraction_log: '../logs/acid_extraction_phase.log'
+  embedding_log: '../logs/acid_embedding_phase.log'
+  
+  # Reporting
+  show_phase_stats: true
+  show_memory_usage: true
+  report_every: 10  # Report progress every N papers
+
+# Output Configuration
+output:
+  save_results: true
+  results_file: 'acid_phased_results.json'
+  generate_report: true
+  report_file: 'acid_phased_report.md'
+  
+  # Phase-specific metrics
+  track_extraction_time: true
+  track_embedding_time: true
+  track_staging_size: true
+  track_gpu_utilization: true
+
+# SQLite Index Configuration
+sqlite:
+  enabled: true
+  database_file: 'acid_phased_index.db'
+  
+  # Index essential fields
+  index_fields:
+    - 'arxiv_id'
+    - 'pdf_path'
+    - 'extraction_timestamp'
+    - 'embedding_timestamp'
+    - 'num_chunks'
+    - 'phase_completed'
+  
+  # Track phase status
+  phase_tracking: true
+
+# Validation Configuration
+validation:
+  # Phase 1 validation
+  validate_extraction: true
+  min_text_length: 100  # Minimum extracted text
+  require_title: true
+  require_abstract: false  # Some papers may not have
+  
+  # Phase 2 validation
+  validate_embeddings: true
+  embedding_dimensions: 2048
+  min_chunks: 1
+  max_chunks: 500
+  
+  # Staging validation
+  validate_json: true
+  max_staged_file_size_mb: 50
+
+# Resource Monitoring
+monitoring:
+  # Phase-specific monitoring
+  track_extraction_metrics:
+    - 'cpu_percent'
+    - 'memory_percent'
+    - 'papers_per_minute'
+    - 'staging_size_mb'
+  
+  track_embedding_metrics:
+    - 'gpu_utilization'
+    - 'gpu_memory_used'
+    - 'chunks_per_second'
+    - 'papers_per_minute'
+  
+  # Alerts
+  memory_warning_percent: 80
+  memory_critical_percent: 95
+  staging_warning_gb: 25
+  staging_critical_gb: 30
+  
+  # Performance tracking
+  log_throughput: true
+  throughput_window: 60  # seconds
+
+# Phase Optimization Settings
+optimization:
+  # Extraction phase
+  extraction:
+    prefetch_pdfs: false  # Load on demand
+    cache_extractors: true  # Reuse Docling instances
+    parallel_latex_parsing: true
+  
+  # Embedding phase
+  embedding:
+    batch_loading: true  # Load multiple JSONs at once
+    dynamic_batching: true  # Adjust batch size based on GPU memory
+    mixed_precision: true  # Use fp16 for efficiency
+  
+  # Transition
+  compress_staging: false  # RamFS is fast enough
+  verify_staging_integrity: true  # Check JSONs before Phase 2
