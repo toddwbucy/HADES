@@ -10,8 +10,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Union, Type, TypeVar
 from pathlib import Path
 import json
-from pydantic import BaseModel, Field, ValidationError
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from datetime import datetime, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,17 +45,17 @@ class BaseConfig(BaseModel, ABC):
     created_at: Optional[datetime] = Field(default=None, description="Configuration creation timestamp")
     source: Optional[str] = Field(default=None, description="Configuration source identifier")
 
-    class Config:
-        """Pydantic configuration."""
-        extra = "forbid"  # Strict validation
-        validate_assignment = True
-        use_enum_values = True
-        arbitrary_types_allowed = False
+    model_config = ConfigDict(
+        extra="forbid",  # Strict validation
+        validate_assignment=True,
+        use_enum_values=True,
+        arbitrary_types_allowed=False,
+    )
 
     def __init__(self, **data):
         # Set creation timestamp if not provided
         if 'created_at' not in data:
-            data['created_at'] = datetime.utcnow()
+            data['created_at'] = datetime.now(timezone.utc)
         super().__init__(**data)
 
     @abstractmethod
@@ -92,7 +92,7 @@ class BaseConfig(BaseModel, ABC):
         Returns:
             Configuration as dictionary
         """
-        return self.dict(exclude_none=True)
+        return self.model_dump(exclude_none=True)
 
     def to_json(self, indent: int = 2) -> str:
         """
@@ -104,7 +104,7 @@ class BaseConfig(BaseModel, ABC):
         Returns:
             Configuration as JSON string
         """
-        return self.json(exclude_none=True, indent=indent)
+        return self.model_dump_json(exclude_none=True, indent=indent)
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
