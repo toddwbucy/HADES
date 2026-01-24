@@ -207,7 +207,7 @@ def mock_embedder():
                 # Generate embedding with stable hash
                 seed = self._stable_seed(chunk_text)
                 rng = np.random.default_rng(seed)
-                embedding = rng.random(2048).astype(np.float32)
+                embedding = rng.random(self.embedding_dim).astype(np.float32)
                 embedding = embedding / np.linalg.norm(embedding)
 
                 chunks.append(
@@ -242,7 +242,7 @@ def mock_extractor():
         def __init__(self):
             self.supported_formats = [".pdf"]
 
-        def extract(self, file_path: str | Path) -> ExtractionResult:
+        def extract(self, file_path: str | Path, **_kwargs) -> ExtractionResult:
             """Return mock extraction result."""
             return ExtractionResult(
                 text="This is mock extracted text from the document. "

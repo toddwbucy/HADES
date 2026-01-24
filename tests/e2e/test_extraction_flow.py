@@ -153,10 +153,14 @@ class TestDoclingExtractorInterface:
         # Mock the Docling converter (Docling v2 uses result.output and convert_single)
         mock_converter = MagicMock()
         mock_result = MagicMock()
+        # Set status for _extract_with_docling's status check
+        mock_result.status = MagicMock()
+        mock_result.status.name = "SUCCESS"
         mock_result.output = MagicMock()
         mock_result.output.export_to_markdown.return_value = "Extracted text"
         mock_result.output.tables = []
         mock_result.output.pictures = []
+        mock_result.output.figures = []
         mock_converter.convert_single.return_value = mock_result
         mock_converter_cls.return_value = mock_converter
 
