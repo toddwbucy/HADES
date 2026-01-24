@@ -64,7 +64,8 @@ class TestJinaV4Embedder:
         # This test downloads the model - only run when explicitly enabled
         embedder = jina_embedder_class()
         assert embedder is not None
-        assert embedder.embedding_dim > 0
+        # JinaV4Embedder exposes EMBEDDING_DIM via the embedding_dimension property
+        assert embedder.embedding_dimension > 0
 
 
 class TestMockedEmbedder:
