@@ -122,14 +122,14 @@ class TestDoclingExtractorInterface:
         class MockStatus(Enum):
             SUCCESS = "success"
 
-        # Mock the Docling converter properly
+        # Mock the Docling converter properly (Docling v2 uses result.output)
         mock_converter = MagicMock()
         mock_result = MagicMock()
         mock_result.status = MockStatus.SUCCESS
-        mock_result.document = MagicMock()
-        mock_result.document.export_to_markdown.return_value = "Extracted text content"
-        mock_result.document.tables = []
-        mock_result.document.pictures = []
+        mock_result.output = MagicMock()
+        mock_result.output.export_to_markdown.return_value = "Extracted text content"
+        mock_result.output.tables = []
+        mock_result.output.pictures = []
         mock_converter.convert_single.return_value = mock_result
         mock_converter_cls.return_value = mock_converter
 
@@ -150,14 +150,14 @@ class TestDoclingExtractorInterface:
         from core.extractors.extractors_base import ExtractionResult
         from core.extractors.extractors_docling import DoclingExtractor
 
-        # Mock the Docling converter
+        # Mock the Docling converter (Docling v2 uses result.output and convert_single)
         mock_converter = MagicMock()
         mock_result = MagicMock()
-        mock_result.document = MagicMock()
-        mock_result.document.export_to_markdown.return_value = "Extracted text"
-        mock_result.document.tables = []
-        mock_result.document.pictures = []
-        mock_converter.convert.return_value = mock_result
+        mock_result.output = MagicMock()
+        mock_result.output.export_to_markdown.return_value = "Extracted text"
+        mock_result.output.tables = []
+        mock_result.output.pictures = []
+        mock_converter.convert_single.return_value = mock_result
         mock_converter_cls.return_value = mock_converter
 
         extractor = DoclingExtractor(use_ocr=False, extract_tables=False)

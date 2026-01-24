@@ -188,6 +188,7 @@ class RobustExtractor(ExtractorBase):
         Returns:
             ExtractionResult object
         """
+        _ = kwargs  # Reserved for future options
         pdf_path = str(pdf_path)
         pdf_file = Path(pdf_path)
         if not pdf_file.exists():

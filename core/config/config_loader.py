@@ -250,11 +250,11 @@ class ConfigLoader:
             return data
 
         except yaml.YAMLError as e:
-            raise ConfigError(f"Invalid YAML in {file_path}: {e}")
+            raise ConfigError(f"Invalid YAML in {file_path}: {e}") from e
         except json.JSONDecodeError as e:
-            raise ConfigError(f"Invalid JSON in {file_path}: {e}")
+            raise ConfigError(f"Invalid JSON in {file_path}: {e}") from e
         except OSError as e:
-            raise ConfigError(f"Cannot read {file_path}: {e}")
+            raise ConfigError(f"Cannot read {file_path}: {e}") from e
 
     def load_environment(self, prefix: str = "HADES_") -> dict[str, Any]:
         """

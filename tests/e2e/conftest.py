@@ -1,5 +1,6 @@
 """Fixtures for end-to-end tests."""
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -164,12 +165,21 @@ def mock_embedder():
         def __init__(self):
             self.embedding_dim = 2048
 
+        @staticmethod
+        def _stable_seed(value: str) -> int:
+            """Generate stable seed from string using hashlib (deterministic across runs)."""
+            return int.from_bytes(
+                hashlib.blake2b(value.encode("utf-8"), digest_size=4).digest(),
+                "little",
+            )
+
         def embed_texts(self, texts: list[str], batch_size: int = 32) -> list[np.ndarray]:
             """Return mock embeddings based on text content."""
+            _ = batch_size  # Silence ARG002
             embeddings = []
             for text in texts:
-                # Generate deterministic embedding based on text hash
-                seed = hash(text) % (2**32)
+                # Generate deterministic embedding based on stable text hash
+                seed = self._stable_seed(text)
                 rng = np.random.default_rng(seed)
                 embedding = rng.random(self.embedding_dim).astype(np.float32)
                 # Normalize to unit vector
@@ -194,8 +204,8 @@ def mock_embedder():
                 start_char = sum(len(w) + 1 for w in words[:i])
                 end_char = start_char + len(chunk_text)
 
-                # Generate embedding
-                seed = hash(chunk_text) % (2**32)
+                # Generate embedding with stable hash
+                seed = self._stable_seed(chunk_text)
                 rng = np.random.default_rng(seed)
                 embedding = rng.random(2048).astype(np.float32)
                 embedding = embedding / np.linalg.norm(embedding)

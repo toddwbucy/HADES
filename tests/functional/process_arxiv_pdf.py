@@ -139,21 +139,22 @@ def process_pdf(pdf_path: Path, config: ProcessingConfig) -> dict:
     print(f"  Processing PDF: {pdf_path.name}")
     start_time = time.time()
 
-    result = processor.process_document(pdf_path)
+    try:
+        result = processor.process_document(pdf_path)
 
-    elapsed = time.time() - start_time
-    print(f"  Processing completed in {elapsed:.1f}s")
-    print(f"    - Success: {result.success}")
-    print(f"    - Chunks: {len(result.chunks)}")
-    print(f"    - Extraction time: {result.extraction_time:.1f}s")
-    print(f"    - Embedding time: {result.embedding_time:.1f}s")
+        elapsed = time.time() - start_time
+        print(f"  Processing completed in {elapsed:.1f}s")
+        print(f"    - Success: {result.success}")
+        print(f"    - Chunks: {len(result.chunks)}")
+        print(f"    - Extraction time: {result.extraction_time:.1f}s")
+        print(f"    - Embedding time: {result.embedding_time:.1f}s")
 
-    if result.errors:
-        print(f"    - Errors: {result.errors}")
+        if result.errors:
+            print(f"    - Errors: {result.errors}")
 
-    processor.cleanup()
-
-    return result
+        return result
+    finally:
+        processor.cleanup()
 
 
 def store_in_arango(

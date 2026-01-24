@@ -17,7 +17,7 @@ Extension Guide for Future Models:
 """
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from .embedders_base import EmbedderBase, EmbeddingConfig
 
@@ -33,7 +33,7 @@ class EmbedderFactory:
     """
 
     # Registry of available embedders
-    _embedders: dict[str, type] = {}
+    _embedders: ClassVar[dict[str, type[EmbedderBase]]] = {}
 
     @classmethod
     def register(cls, name: str, embedder_class: type):

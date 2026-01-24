@@ -127,6 +127,7 @@ class DoclingExtractor(ExtractorBase):
             RuntimeError: For empty files, invalid PDF header, unreadable files, text read failures, extraction failures,
                           or when Docling is unavailable and fallback is disabled.
         """
+        _ = kwargs  # Reserved for future options
         pdf_path = Path(pdf_path)
 
         if not pdf_path.exists():

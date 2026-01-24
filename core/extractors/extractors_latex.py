@@ -113,7 +113,7 @@ class LaTeXExtractor(ExtractorBase):
                                   '\\begin{document}' in text_sample or
                                   '\\section' in text_sample or
                                   '\\usepackage' in text_sample)
-                    except:
+                    except Exception:
                         is_latex = False
                 else:
                     is_latex = False
