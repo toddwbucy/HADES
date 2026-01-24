@@ -291,7 +291,10 @@ class BaseConfig(BaseModel, ABC):
 
         # Actionability (configuration is complete and usable)
         field_values = [getattr(self, field, None) for field in self.__class__.model_fields]
-        actionability = sum(1.0 for value in field_values if value is not None) / len(field_values)
+        if field_values:
+            actionability = sum(1.0 for value in field_values if value is not None) / len(field_values)
+        else:
+            actionability = 1.0  # Perfect if no fields defined
 
         # Grounding (source and versioning information present)
         grounding = 0.5 * (1.0 if self.source else 0.0) + 0.5 * (1.0 if self.config_version else 0.0)

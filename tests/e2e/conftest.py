@@ -238,7 +238,7 @@ def mock_extractor():
                 text="This is mock extracted text from the document. "
                 "It contains multiple sentences for testing purposes. "
                 "The extraction was successful.",
-                metadata={"extractor": "mock", "num_pages": 1},
+                metadata={"extractor": "mock", "num_pages": 1, "source": str(file_path)},
                 tables=[],
                 equations=[],
                 images=[],

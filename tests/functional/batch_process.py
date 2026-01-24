@@ -11,6 +11,9 @@ import sys
 import time
 from pathlib import Path
 
+# Maximum time per PDF in seconds (10 minutes)
+PROCESS_TIMEOUT = 600
+
 
 def main():
     if len(sys.argv) < 2:
@@ -36,23 +39,29 @@ def main():
         print("-" * 40)
 
         start = time.time()
-        result = subprocess.run(
-            ["poetry", "run", "python", "tests/functional/process_arxiv_pdf.py", str(pdf_path)],
-            capture_output=True,
-            text=True,
-        )
-        elapsed = time.time() - start
+        try:
+            result = subprocess.run(
+                ["poetry", "run", "python", "tests/functional/process_arxiv_pdf.py", str(pdf_path)],
+                capture_output=True,
+                text=True,
+                timeout=PROCESS_TIMEOUT,
+            )
+            elapsed = time.time() - start
 
-        if result.returncode == 0:
-            print(f"✓ Success in {elapsed:.1f}s")
-            results.append((pdf, True, f"{elapsed:.1f}s"))
-        else:
-            print(f"✗ Failed after {elapsed:.1f}s")
-            # Print last few lines of error
-            stderr_lines = result.stderr.strip().split('\n')
-            for line in stderr_lines[-5:]:
-                print(f"  {line}")
-            results.append((pdf, False, result.stderr[-200:] if result.stderr else "Unknown error"))
+            if result.returncode == 0:
+                print(f"✓ Success in {elapsed:.1f}s")
+                results.append((pdf, True, f"{elapsed:.1f}s"))
+            else:
+                print(f"✗ Failed after {elapsed:.1f}s")
+                # Print last few lines of error
+                stderr_lines = result.stderr.strip().split('\n')
+                for line in stderr_lines[-5:]:
+                    print(f"  {line}")
+                results.append((pdf, False, result.stderr[-200:] if result.stderr else "Unknown error"))
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start
+            print(f"✗ Timed out after {elapsed:.1f}s (limit: {PROCESS_TIMEOUT}s)")
+            results.append((pdf, False, f"Timeout after {PROCESS_TIMEOUT}s"))
 
     total_elapsed = time.time() - total_start
 

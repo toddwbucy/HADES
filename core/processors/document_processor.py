@@ -181,8 +181,18 @@ class DocumentProcessor:
             extract_equations=self.config.extract_equations,
             extract_images=self.config.extract_images,
         )
-        self.docling_extractor = DoclingExtractor(docling_config)  # type: ignore[misc]
-        self.latex_extractor = LaTeXExtractor() if self.config.extract_equations else None  # type: ignore[misc]
+        # DoclingExtractor/LaTeXExtractor are typed as Optional[Type] in __init__.py
+        # due to conditional imports, but are guaranteed non-None when imported successfully
+        if DoclingExtractor is None:
+            raise ImportError("DoclingExtractor not available - install docling package")
+        self.docling_extractor = DoclingExtractor(docling_config)
+
+        if self.config.extract_equations:
+            if LaTeXExtractor is None:
+                raise ImportError("LaTeXExtractor not available")
+            self.latex_extractor = LaTeXExtractor()
+        else:
+            self.latex_extractor = None
 
         embedder_type = (self.config.embedder_type or "jina").lower()
         model_name = self.config.embedding_model or "jinaai/jina-embeddings-v4"

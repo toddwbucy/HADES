@@ -12,16 +12,16 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import re
 import sys
 import time
 import urllib.request
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+import defusedxml.ElementTree as ET
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -53,7 +53,7 @@ def extract_arxiv_id(filename: str) -> str:
 
 def fetch_arxiv_metadata(arxiv_id: str) -> ArxivMetadata:
     """Fetch metadata from arxiv API."""
-    url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
+    url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
     print(f"  Fetching metadata from: {url}")
 
     with urllib.request.urlopen(url, timeout=30) as response:
@@ -133,7 +133,7 @@ def generate_document_key(arxiv_id: str) -> str:
 
 def process_pdf(pdf_path: Path, config: ProcessingConfig) -> dict:
     """Process PDF through DocumentProcessor."""
-    print(f"  Initializing DocumentProcessor...")
+    print("  Initializing DocumentProcessor...")
     processor = DocumentProcessor(config)
 
     print(f"  Processing PDF: {pdf_path.name}")
@@ -225,7 +225,7 @@ def store_in_arango(
             UPDATE @doc
             IN arxiv_papers
         ''', bind_vars={'key': doc_key, 'doc': paper_doc})
-        print(f"    ✓ Paper stored")
+        print("    ✓ Paper stored")
     except Exception as e:
         print(f"    Error: {e}")
         return False
@@ -265,7 +265,7 @@ def verify_storage(arxiv_id: str, client: ArangoHttp2Client) -> bool:
     ''')
 
     if not result:
-        print(f"    ✗ Paper not found")
+        print("    ✗ Paper not found")
         return False
     print(f"    ✓ Paper found: {result[0]}")
 
@@ -280,7 +280,7 @@ def verify_storage(arxiv_id: str, client: ArangoHttp2Client) -> bool:
     ''')
 
     if not result:
-        print(f"    ✗ Embedding not found")
+        print("    ✗ Embedding not found")
         return False
     print(f"    ✓ Embedding found: {result[0]}")
 
@@ -294,14 +294,20 @@ def main():
     parser.add_argument("--device", default="cuda", help="Device for embeddings (cuda/cpu)")
     args = parser.parse_args()
 
+    # Check for required password unless dry-run
+    if not args.dry_run and not os.environ.get('ARANGO_PASSWORD'):
+        print("Error: ARANGO_PASSWORD environment variable not set")
+        print("Set it with: export ARANGO_PASSWORD='your_password'")
+        sys.exit(1)
+
     pdf_path = Path(args.pdf_path)
     if not pdf_path.exists():
         print(f"Error: PDF not found: {pdf_path}")
         sys.exit(1)
 
-    print(f"=" * 60)
+    print("=" * 60)
     print(f"Processing: {pdf_path.name}")
-    print(f"=" * 60)
+    print("=" * 60)
 
     # Step 1: Extract arxiv ID and fetch metadata
     print("\n[1/4] Fetching arxiv metadata...")
@@ -347,26 +353,26 @@ def main():
 
     client = ArangoHttp2Client(arango_config)
 
-    success = store_in_arango(metadata, result, client, dry_run=args.dry_run)
+    try:
+        success = store_in_arango(metadata, result, client, dry_run=args.dry_run)
 
-    if not success:
-        print("Error: Failed to store in database")
+        if not success:
+            print("Error: Failed to store in database")
+            sys.exit(1)
+
+        # Step 4: Verify
+        if not args.dry_run:
+            print("\n[4/4] Verifying storage...")
+            verify_storage(arxiv_id, client)
+
+        print("\n" + "=" * 60)
+        print("✓ Processing complete!")
+        print(f"  Arxiv ID: {arxiv_id}")
+        print(f"  Chunks: {len(result.chunks)}")
+        print(f"  Total time: {result.total_processing_time:.1f}s")
+        print("=" * 60)
+    finally:
         client.close()
-        sys.exit(1)
-
-    # Step 4: Verify
-    if not args.dry_run:
-        print("\n[4/4] Verifying storage...")
-        verify_storage(arxiv_id, client)
-
-    client.close()
-
-    print("\n" + "=" * 60)
-    print("✓ Processing complete!")
-    print(f"  Arxiv ID: {arxiv_id}")
-    print(f"  Chunks: {len(result.chunks)}")
-    print(f"  Total time: {result.total_processing_time:.1f}s")
-    print("=" * 60)
 
 
 if __name__ == "__main__":

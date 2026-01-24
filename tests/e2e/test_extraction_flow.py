@@ -3,6 +3,7 @@
 Tests the PDF extraction using real extractors where possible.
 """
 
+import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -59,7 +60,7 @@ class TestRobustExtractor:
     """Test the RobustExtractor with fallback capabilities."""
 
     @pytest.mark.skipif(
-        not Path("/home/todd/git/HADES/core/extractors/extractors_robust.py").exists(),
+        importlib.util.find_spec("core.extractors.extractors_robust") is None,
         reason="RobustExtractor not available",
     )
     def test_robust_extractor_with_timeout(self, sample_pdf: Path) -> None:
@@ -80,7 +81,7 @@ class TestRobustExtractor:
         assert hasattr(result, "text") or hasattr(result, "full_text")
 
     @pytest.mark.skipif(
-        not Path("/home/todd/git/HADES/core/extractors/extractors_robust.py").exists(),
+        importlib.util.find_spec("core.extractors.extractors_robust") is None,
         reason="RobustExtractor not available",
     )
     def test_robust_extractor_fallback(self, sample_pdf: Path) -> None:
@@ -202,7 +203,7 @@ End of document.
         assert LaTeXExtractor is not None
 
     @pytest.mark.skipif(
-        not Path("/home/todd/git/HADES/core/extractors/extractors_latex.py").exists(),
+        importlib.util.find_spec("core.extractors.extractors_latex") is None,
         reason="LaTeXExtractor not available",
     )
     def test_latex_extractor_extracts_equations(self, sample_latex: Path) -> None:

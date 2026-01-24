@@ -29,7 +29,7 @@ class TestLocalStorage:
         """LocalStorage should create base directory on init."""
         storage_path = tmp_path / "new_storage"
         LocalStorage(storage_path)
-        assert storage_path.exists()
+        assert storage_path.is_dir()
 
     def test_storage_type_property(self, storage: LocalStorage) -> None:
         """storage_type property should return correct type."""

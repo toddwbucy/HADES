@@ -1,7 +1,7 @@
 """Unit tests for core.config.config_base module."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import Field
@@ -83,7 +83,7 @@ class TestBaseConfig:
 
     def test_created_at_can_be_provided(self) -> None:
         """created_at can be explicitly provided."""
-        timestamp = datetime(2024, 1, 1, 12, 0, 0)
+        timestamp = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         config = ConcreteConfig(created_at=timestamp)
         assert config.created_at == timestamp
 
@@ -157,7 +157,7 @@ class TestBaseConfigSerialization:
         """to_dict should exclude None values."""
         config = ConcreteConfig(source=None)
         d = config.to_dict()
-        assert "source" not in d or d.get("source") is not None
+        assert "source" not in d
 
     def test_to_json(self) -> None:
         """to_json should return valid JSON string."""
