@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import os
 import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 # Ensure project root on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -13,9 +13,8 @@ project_root_str = str(PROJECT_ROOT)
 if project_root_str not in sys.path:
     sys.path.insert(0, project_root_str)
 
-from core.database.database_factory import DatabaseFactory
 from core.database.arango import MemoryServiceError
-
+from core.database.database_factory import DatabaseFactory
 
 EMBEDDABLE_ABSTRACT_MIN_LEN = 655
 
@@ -86,7 +85,7 @@ def _print_recent_activity(db) -> None:
     """Show metadata records processed in the last minute."""
     print("\nRecent Activity (last minute)")
     print("-" * 60)
-    since = datetime.now(timezone.utc) - timedelta(minutes=1)
+    since = datetime.now(UTC) - timedelta(minutes=1)
     since_ms = int(since.timestamp() * 1000)
     try:
         result = db.execute_query(

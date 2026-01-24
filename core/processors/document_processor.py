@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import tempfile
 import time
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 
@@ -43,7 +42,8 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from core.embedders import EmbedderFactory, EmbeddingConfig, ChunkWithEmbedding
+from core.embedders import EmbedderFactory, EmbeddingConfig
+from core.embedders.embedders_jina import ChunkWithEmbedding
 from core.extractors import DoclingExtractor, LaTeXExtractor
 from core.extractors.extractors_base import ExtractorConfig as DoclingConfig
 from core.processors.text.chunking_strategies import ChunkingStrategyFactory
@@ -78,7 +78,7 @@ class ProcessingConfig:
     embedder_type: str = "jina"
     embedding_dim: int = 2048
     use_fp16: bool = True
-    device: Optional[str] = None
+    device: str | None = None
 
     # Chunking settings
     chunk_size_tokens: int = 1000
@@ -102,12 +102,12 @@ class ExtractionResult:
     """Raw extraction output prior to chunking or embedding."""
 
     full_text: str
-    tables: List[Dict[str, Any]] = field(default_factory=list)
-    equations: List[Dict[str, Any]] = field(default_factory=list)
-    images: List[Dict[str, Any]] = field(default_factory=list)
-    figures: List[Dict[str, Any]] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    latex_source: Optional[str] = None
+    tables: list[dict[str, Any]] = field(default_factory=list)
+    equations: list[dict[str, Any]] = field(default_factory=list)
+    images: list[dict[str, Any]] = field(default_factory=list)
+    figures: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    latex_source: str | None = None
     has_latex: bool = False
     extraction_time: float = 0.0
     extractor_version: str = ""
@@ -118,17 +118,17 @@ class ProcessingResult:
     """Complete result from document processing."""
 
     extraction: ExtractionResult
-    chunks: List[ChunkWithEmbedding]
-    processing_metadata: Dict[str, Any]
+    chunks: list[ChunkWithEmbedding]
+    processing_metadata: dict[str, Any]
     total_processing_time: float
     extraction_time: float
     chunking_time: float
     embedding_time: float
     success: bool = True
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the processing result."""
 
         return {
@@ -172,7 +172,7 @@ class ProcessingResult:
 class DocumentProcessor:
     """Source-agnostic document processor leveraging Docling and late chunking."""
 
-    def __init__(self, config: Optional[ProcessingConfig] = None):
+    def __init__(self, config: ProcessingConfig | None = None):
         self.config = config or ProcessingConfig()
 
         docling_config = DoclingConfig(
@@ -181,8 +181,18 @@ class DocumentProcessor:
             extract_equations=self.config.extract_equations,
             extract_images=self.config.extract_images,
         )
+        # DoclingExtractor/LaTeXExtractor are typed as Optional[Type] in __init__.py
+        # due to conditional imports, but are guaranteed non-None when imported successfully
+        if DoclingExtractor is None:
+            raise ImportError("DoclingExtractor not available - install docling package")
         self.docling_extractor = DoclingExtractor(docling_config)
-        self.latex_extractor = LaTeXExtractor() if self.config.extract_equations else None
+
+        if self.config.extract_equations:
+            if LaTeXExtractor is None:
+                raise ImportError("LaTeXExtractor not available")
+            self.latex_extractor = LaTeXExtractor()
+        else:
+            self.latex_extractor = None
 
         embedder_type = (self.config.embedder_type or "jina").lower()
         model_name = self.config.embedding_model or "jinaai/jina-embeddings-v4"
@@ -217,8 +227,8 @@ class DocumentProcessor:
         self.embedding_model = model_name
 
         # Initialize staging directory management
-        self._staging_tempdir: Optional[tempfile.TemporaryDirectory] = None
-        self.staging_dir: Optional[Path] = None
+        self._staging_tempdir: tempfile.TemporaryDirectory | None = None
+        self.staging_dir: Path | None = None
 
         if self.config.use_ramfs_staging:
             # Create base directory if needed (parent only)
@@ -247,9 +257,10 @@ class DocumentProcessor:
         Call this when done processing to release disk space. Also called
         automatically by __del__ if not explicitly invoked.
         """
-        if self._staging_tempdir is not None:
+        staging_tempdir = getattr(self, "_staging_tempdir", None)
+        if staging_tempdir is not None:
             try:
-                self._staging_tempdir.cleanup()
+                staging_tempdir.cleanup()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to cleanup staging directory: %s", exc)
             finally:
@@ -262,13 +273,13 @@ class DocumentProcessor:
 
     def process_document(
         self,
-        pdf_path: Union[str, Path],
-        latex_path: Optional[Union[str, Path]] = None,
-        document_id: Optional[str] = None,
+        pdf_path: str | Path,
+        latex_path: str | Path | None = None,
+        document_id: str | None = None,
     ) -> ProcessingResult:
         start_time = time.time()
-        errors: List[str] = []
-        warnings: List[str] = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         pdf_path = Path(pdf_path)
         if latex_path:
@@ -366,7 +377,7 @@ class DocumentProcessor:
                 "chunk_overlap_tokens": self.config.chunk_overlap_tokens,
                 "document_id": doc_id,
                 "source_path": str(pdf_path),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "chunk_count": len(chunks),
                 "has_latex": extraction_result.has_latex,
                 "has_tables": len(extraction_result.tables) > 0,
@@ -405,7 +416,7 @@ class DocumentProcessor:
     def _extract_content(
         self,
         pdf_path: Path,
-        latex_path: Optional[Path] = None,
+        latex_path: Path | None = None,
     ) -> ExtractionResult:
         start_time = time.time()
 
@@ -413,39 +424,39 @@ class DocumentProcessor:
 
         latex_source = None
         has_latex = False
+        equations = docling_result.equations or []
+
         if latex_path and latex_path.exists() and self.latex_extractor:
             try:
                 # Use the public extract API - pass the Path, get ExtractionResult
                 latex_extraction = self.latex_extractor.extract(latex_path)
                 has_latex = True
                 latex_source = latex_path.read_text(encoding="utf-8")
-                docling_result["equations"] = latex_extraction.equations or []
+                equations = latex_extraction.equations or []
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to process LaTeX source: %s", exc)
 
-        full_text = (
-            docling_result.get("full_text", "")
-            or docling_result.get("text", "")
-            or docling_result.get("markdown", "")
-        )
+        # Access ExtractionResult fields as attributes
+        full_text = docling_result.text or ""
+        extractor_version = docling_result.metadata.get("version", "unknown") if docling_result.metadata else "unknown"
 
         return ExtractionResult(
             full_text=full_text,
-            tables=docling_result.get("tables", []),
-            equations=docling_result.get("equations", []),
-            images=docling_result.get("images", []),
-            figures=docling_result.get("figures", []),
-            metadata=docling_result.get("metadata", {}),
+            tables=docling_result.tables or [],
+            equations=equations,
+            images=docling_result.images or [],
+            figures=[],  # Not in base ExtractionResult
+            metadata=docling_result.metadata or {},
             latex_source=latex_source,
             has_latex=has_latex,
             extraction_time=time.time() - start_time,
-            extractor_version=docling_result.get("version", "unknown"),
+            extractor_version=extractor_version,
         )
 
-    def _create_late_chunks(self, text: str) -> List[ChunkWithEmbedding]:
+    def _create_late_chunks(self, text: str) -> list[ChunkWithEmbedding]:
         return self.embedder.embed_with_late_chunking(text)
 
-    def _create_traditional_chunks(self, text: str) -> List[Dict[str, Any]]:
+    def _create_traditional_chunks(self, text: str) -> list[dict[str, Any]]:
         chunk_size = self.config.chunk_size_tokens
         overlap = self.config.chunk_overlap_tokens
 
@@ -468,14 +479,14 @@ class DocumentProcessor:
                 "Ensure chunk_size_tokens > chunk_overlap_tokens." % step,
             )
 
-        chunks: List[Dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
         tokens = text.split()
 
         if not tokens:
             return []
 
         # Build token_positions: starting character index for each token
-        token_positions: List[int] = []
+        token_positions: list[int] = []
         search_offset = 0
         for token in tokens:
             pos = text.find(token, search_offset)
@@ -507,7 +518,7 @@ class DocumentProcessor:
 
         return chunks
 
-    def _embed_chunks(self, chunks: List[Dict[str, Any]]) -> List[ChunkWithEmbedding]:
+    def _embed_chunks(self, chunks: list[dict[str, Any]]) -> list[ChunkWithEmbedding]:
         if not chunks:
             return []
 
@@ -516,7 +527,7 @@ class DocumentProcessor:
         embeddings = self.embedder.embed_texts(texts, batch_size=len(texts))
 
         # Build ChunkWithEmbedding instances from chunks and embeddings
-        embedded_chunks: List[ChunkWithEmbedding] = []
+        embedded_chunks: list[ChunkWithEmbedding] = []
         zero_vector = np.zeros(self.config.embedding_dim, dtype=np.float32)
 
         for i, chunk in enumerate(chunks):
@@ -548,10 +559,10 @@ class DocumentProcessor:
 
     def process_batch(
         self,
-        document_paths: List[Tuple[Path, Optional[Path]]],
-        document_ids: Optional[List[str]] = None,
-    ) -> List[ProcessingResult]:
-        results: List[ProcessingResult] = []
+        document_paths: list[tuple[Path, Path | None]],
+        document_ids: list[str] | None = None,
+    ) -> list[ProcessingResult]:
+        results: list[ProcessingResult] = []
 
         for i, (pdf_path, latex_path) in enumerate(document_paths):
             doc_id = document_ids[i] if document_ids and i < len(document_ids) else None

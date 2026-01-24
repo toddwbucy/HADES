@@ -8,9 +8,10 @@ preserving semantic relationships for similarity search.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any, Union
-import numpy as np
 from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
 
 
 @dataclass
@@ -21,8 +22,8 @@ class EmbeddingConfig:
     batch_size: int = 32
     max_seq_length: int = 8192
     use_fp16: bool = True
-    chunk_size_tokens: Optional[int] = None
-    chunk_overlap_tokens: Optional[int] = None
+    chunk_size_tokens: int | None = None
+    chunk_overlap_tokens: int | None = None
 
 
 class EmbedderBase(ABC):
@@ -33,7 +34,7 @@ class EmbedderBase(ABC):
     to ensure consistency across different models and approaches.
     """
 
-    def __init__(self, config: Optional[EmbeddingConfig] = None):
+    def __init__(self, config: EmbeddingConfig | None = None):
         """
         Initialize embedder with configuration.
 
@@ -44,9 +45,9 @@ class EmbedderBase(ABC):
 
     @abstractmethod
     def embed_texts(self,
-                    texts: List[str],
+                    texts: list[str],
                     task: str = "retrieval",
-                    batch_size: Optional[int] = None) -> np.ndarray:
+                    batch_size: int | None = None) -> np.ndarray:
         """
         Embed a list of texts.
 
@@ -77,8 +78,8 @@ class EmbedderBase(ABC):
         pass
 
     def embed_queries(self,
-                     queries: List[str],
-                     batch_size: Optional[int] = None) -> np.ndarray:
+                     queries: list[str],
+                     batch_size: int | None = None) -> np.ndarray:
         """
         Embed search queries (convenience method).
 
@@ -92,8 +93,8 @@ class EmbedderBase(ABC):
         return self.embed_texts(queries, task="retrieval", batch_size=batch_size)
 
     def embed_documents(self,
-                       documents: List[str],
-                       batch_size: Optional[int] = None) -> np.ndarray:
+                       documents: list[str],
+                       batch_size: int | None = None) -> np.ndarray:
         """
         Embed documents for retrieval (convenience method).
 
@@ -123,12 +124,33 @@ class EmbedderBase(ABC):
         """Whether this embedder supports late chunking."""
         return False
 
+    def embed_with_late_chunking(self, text: str) -> list[Any]:
+        """
+        Embed text using late chunking strategy.
+
+        Late chunking embeds the full document first, then extracts chunk
+        embeddings from the encoded representation, preserving document context.
+
+        Args:
+            text: Full document text to process
+
+        Returns:
+            List of ChunkWithEmbedding objects (or equivalent)
+
+        Raises:
+            NotImplementedError: If embedder doesn't support late chunking
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support late chunking. "
+            "Use embed_texts() with pre-chunked text instead."
+        )
+
     @property
     def supports_multimodal(self) -> bool:
         """Whether this embedder supports multimodal inputs."""
         return False
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """
         Get information about the model.
 

@@ -13,28 +13,9 @@ Key Components:
 
 from typing import Optional
 
-from .config_base import (
-    BaseConfig,
-    ProcessingConfig,
-    StorageConfig,
-    ConfigError,
-    ConfigValidationError
-)
-
-from .config_loader import (
-    ConfigLoader,
-    ConfigFormat,
-    ConfigSource,
-    ConfigSchema
-)
-
-from .config_manager import (
-    ConfigManager,
-    ConfigScope,
-    ConfigCache,
-    ConfigRegistration,
-    config_manager
-)
+from .config_base import BaseConfig, ConfigError, ConfigValidationError, ProcessingConfig, StorageConfig
+from .config_loader import ConfigFormat, ConfigLoader, ConfigSchema, ConfigSource
+from .config_manager import ConfigCache, ConfigManager, ConfigRegistration, ConfigScope, config_manager
 
 # Version information
 __version__ = "1.0.0"
@@ -65,7 +46,7 @@ __all__ = [
 ]
 
 
-def get_config(name: str, instance_id: Optional[str] = None, **overrides):
+def get_config(name: str, instance_id: str | None = None, **overrides):
     """
     Convenience function to get configuration from global manager.
 

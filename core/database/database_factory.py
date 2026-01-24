@@ -8,7 +8,7 @@ Supports automatic connection type selection and configuration.
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.database.arango import ArangoMemoryClient, resolve_memory_config
 
@@ -28,18 +28,18 @@ class DatabaseFactory:
         cls,
         database: str = "academy_store",
         username: str = "root",
-        password: Optional[str] = None,
+        password: str | None = None,
         host: str = "localhost",
         port: int = 8529,
-        use_unix: Optional[bool] = None,
-        base_url: Optional[str] = None,
-        socket_path: Optional[str] = None,
-        read_socket: Optional[str] = None,
-        write_socket: Optional[str] = None,
-        use_proxies: Optional[bool] = None,
-        connect_timeout: Optional[float] = None,
-        read_timeout: Optional[float] = None,
-        write_timeout: Optional[float] = None,
+        use_unix: bool | None = None,
+        base_url: str | None = None,
+        socket_path: str | None = None,
+        read_socket: str | None = None,
+        write_socket: str | None = None,
+        use_proxies: bool | None = None,
+        connect_timeout: float | None = None,
+        read_timeout: float | None = None,
+        write_timeout: float | None = None,
         **_: Any,
     ) -> ArangoMemoryClient:
         """Return the optimized ArangoDB memory client.
@@ -88,7 +88,7 @@ class DatabaseFactory:
     def get_postgres(cls,
                     database: str = "arxiv",
                     username: str = "postgres",
-                    password: Optional[str] = None,
+                    password: str | None = None,
                     host: str = "localhost",
                     port: int = 5432,
                     **kwargs) -> Any:
@@ -144,15 +144,15 @@ class DatabaseFactory:
         *,
         database: str = "arxiv_repository",
         username: str = "root",
-        password: Optional[str] = None,
-        socket_path: Optional[str] = None,
-        read_socket: Optional[str] = None,
-        write_socket: Optional[str] = None,
-        use_proxies: Optional[bool] = None,
-        base_url: Optional[str] = None,
-        connect_timeout: Optional[float] = None,
-        read_timeout: Optional[float] = None,
-        write_timeout: Optional[float] = None,
+        password: str | None = None,
+        socket_path: str | None = None,
+        read_socket: str | None = None,
+        write_socket: str | None = None,
+        use_proxies: bool | None = None,
+        base_url: str | None = None,
+        connect_timeout: float | None = None,
+        read_timeout: float | None = None,
+        write_timeout: float | None = None,
     ) -> ArangoMemoryClient:
         """Return the optimized ArangoDB memory client.
 
@@ -199,7 +199,7 @@ class DatabaseFactory:
                   host: str = "localhost",
                   port: int = 6379,
                   db: int = 0,
-                  password: Optional[str] = None,
+                  password: str | None = None,
                   **kwargs) -> Any:
         """
         Get Redis connection.
@@ -282,11 +282,11 @@ class DatabaseFactory:
     @staticmethod
     def _build_postgres_conn_string(**kwargs) -> str:
         """Build PostgreSQL connection string from kwargs."""
-        from typing import Dict, Any
+        from typing import Any
 
         # Normalize keys to libpq names
         key_map = {"database": "dbname", "username": "user"}
-        mapped: Dict[str, Any] = {}
+        mapped: dict[str, Any] = {}
 
         for key, value in kwargs.items():
             if value is None:

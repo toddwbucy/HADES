@@ -8,36 +8,49 @@ import os
 from pathlib import Path
 from typing import Union
 
-from .extractors_base import ExtractorBase, ExtractorConfig, ExtractionResult
+from .extractors_base import ExtractionResult, ExtractorBase, ExtractorConfig
 
-# Import extractors
-try:
-    from .extractors_docling import DoclingExtractor
-except ImportError:
-    DoclingExtractor = None  # type: ignore[misc]
+# Import extractors - use Optional types for conditional imports
+from typing import Optional, Type
 
-try:
-    from .extractors_latex import LaTeXExtractor
-except ImportError:
-    LaTeXExtractor = None  # type: ignore[misc]
+DoclingExtractor: Optional[Type] = None
+LaTeXExtractor: Optional[Type] = None
+CodeExtractor: Optional[Type] = None
+TreeSitterExtractor: Optional[Type] = None
+RobustExtractor: Optional[Type] = None
 
 try:
-    from .extractors_code import CodeExtractor
+    from .extractors_docling import DoclingExtractor as _DoclingExtractor
+    DoclingExtractor = _DoclingExtractor
 except ImportError:
-    CodeExtractor = None  # type: ignore[misc]
+    pass
 
 try:
-    from .extractors_treesitter import TreeSitterExtractor
+    from .extractors_latex import LaTeXExtractor as _LaTeXExtractor
+    LaTeXExtractor = _LaTeXExtractor
 except ImportError:
-    TreeSitterExtractor = None  # type: ignore[misc]
+    pass
 
 try:
-    from .extractors_robust import RobustExtractor
+    from .extractors_code import CodeExtractor as _CodeExtractor
+    CodeExtractor = _CodeExtractor
 except ImportError:
-    RobustExtractor = None  # type: ignore[misc]
+    pass
+
+try:
+    from .extractors_treesitter import TreeSitterExtractor as _TreeSitterExtractor
+    TreeSitterExtractor = _TreeSitterExtractor
+except ImportError:
+    pass
+
+try:
+    from .extractors_robust import RobustExtractor as _RobustExtractor
+    RobustExtractor = _RobustExtractor
+except ImportError:
+    pass
 
 
-def get_extractor(file_path: Union[str, Path, os.PathLike], **kwargs):
+def get_extractor(file_path: str | Path | os.PathLike, **kwargs):
     """
     Get an appropriate extractor for a file.
 

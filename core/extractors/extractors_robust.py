@@ -7,15 +7,12 @@ Provides resilience against segfaults and extraction failures.
 """
 
 import logging
-import signal
-import time
-import os
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
-from concurrent.futures import ProcessPoolExecutor, TimeoutError
 import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, TimeoutError
+from pathlib import Path
+from typing import Any
 
-from .extractors_base import ExtractorBase, ExtractorConfig, ExtractionResult
+from .extractors_base import ExtractionResult, ExtractorBase, ExtractorConfig
 
 try:
     import fitz  # PyMuPDF
@@ -28,7 +25,7 @@ from .extractors_docling import DoclingExtractor
 logger = logging.getLogger(__name__)
 
 
-def _extract_with_docling(pdf_path: str, use_ocr: bool, extract_tables: bool) -> Dict[str, Any]:
+def _extract_with_docling(pdf_path: str, use_ocr: bool, extract_tables: bool) -> dict[str, Any]:
     """Extract using Docling (runs in subprocess)."""
     try:
         extractor = DoclingExtractor(
@@ -50,29 +47,29 @@ def _extract_with_docling(pdf_path: str, use_ocr: bool, extract_tables: bool) ->
                 'error': result.error,
                 'processing_time': result.processing_time
             }
-        # If already a dict, return as-is
-        return result
+        # If already a dict, return as-is (shouldn't happen with current API)
+        return result  # type: ignore[return-value]
     except Exception as e:
         return {'error': str(e)}
 
 
-def _extract_with_pymupdf(pdf_path: str) -> Optional[Dict[str, Any]]:
+def _extract_with_pymupdf(pdf_path: str) -> dict[str, Any] | None:
     """Fallback extraction using PyMuPDF."""
     if not PYMUPDF_AVAILABLE:
         return None
-        
+
     try:
         with fitz.open(pdf_path) as doc:
             text_parts = []
             num_pages = len(doc)
-            
+
             for page_num, page in enumerate(doc):
                 page_text = page.get_text()
                 if page_text.strip():
                     text_parts.append(f"--- Page {page_num + 1} ---\n{page_text}")
-            
+
             full_text = "\n\n".join(text_parts)
-            
+
             return {
                 'full_text': full_text,
                 'text': full_text,
@@ -97,7 +94,7 @@ class RobustExtractor(ExtractorBase):
 
     def __init__(
         self,
-        config: Optional[ExtractorConfig] = None,
+        config: ExtractorConfig | None = None,
         use_ocr: bool = False,
         extract_tables: bool = True,
         timeout: int = 30,
@@ -133,11 +130,11 @@ class RobustExtractor(ExtractorBase):
         logger.info(f"Initialized RobustExtractor (timeout: {self.timeout}s, fallback: {self.use_fallback})")
 
     @property
-    def supported_formats(self) -> List[str]:
+    def supported_formats(self) -> list[str]:
         """Get list of supported file formats."""
         return ['.pdf']
 
-    def _dict_to_result(self, data: Optional[Dict[str, Any]], pdf_path: str) -> ExtractionResult:
+    def _dict_to_result(self, data: dict[str, Any] | None, pdf_path: str) -> ExtractionResult:
         """Convert internal dict format to ExtractionResult."""
         if data is None:
             return ExtractionResult(
@@ -180,7 +177,7 @@ class RobustExtractor(ExtractorBase):
         except (AttributeError, Exception) as e:
             logger.debug(f"Could not access executor processes: {e}")
 
-    def extract(self, pdf_path: Union[str, Path], **kwargs) -> ExtractionResult:
+    def extract(self, pdf_path: str | Path, **kwargs) -> ExtractionResult:  # type: ignore[override]
         """
         Extract text and structures from PDF with timeout protection.
 
@@ -191,6 +188,7 @@ class RobustExtractor(ExtractorBase):
         Returns:
             ExtractionResult object
         """
+        _ = kwargs  # Reserved for future options
         pdf_path = str(pdf_path)
         pdf_file = Path(pdf_path)
         if not pdf_file.exists():
@@ -200,15 +198,15 @@ class RobustExtractor(ExtractorBase):
                 metadata={'pdf_path': pdf_path},
                 error=f"PDF not found: {pdf_path}"
             )
-        
+
         # Try Docling with timeout
         logger.debug(f"Attempting Docling extraction: {pdf_file.name}")
-        
+
         executor = ProcessPoolExecutor(
             max_workers=1,
             mp_context=mp.get_context('spawn')
         )
-        
+
         try:
             future = executor.submit(
                 _extract_with_docling,
@@ -216,7 +214,7 @@ class RobustExtractor(ExtractorBase):
                 self.use_ocr,
                 self.extract_tables
             )
-            
+
             try:
                 result = future.result(timeout=self.timeout)
 
@@ -226,7 +224,7 @@ class RobustExtractor(ExtractorBase):
                     return self._dict_to_result(result, pdf_path)
                 else:
                     logger.warning(f"Docling extraction failed: {pdf_file.name}")
-                    
+
             except TimeoutError:
                 logger.warning(f"Docling timeout after {self.timeout}s: {pdf_file.name}")
                 # Cancel the future and shutdown executor
@@ -242,13 +240,13 @@ class RobustExtractor(ExtractorBase):
 
                 # Clean up only the executor's own worker processes
                 self._cleanup_executor_processes(executor)
-                    
+
         finally:
             # Ensure executor is shut down
             executor.shutdown(wait=False)
             # Clear executor reference
-            executor = None
-        
+            executor = None  # type: ignore[assignment]
+
         # Try fallback if enabled
         if self.use_fallback and PYMUPDF_AVAILABLE:
             logger.info(f"Using PyMuPDF fallback: {pdf_file.name}")
@@ -260,7 +258,7 @@ class RobustExtractor(ExtractorBase):
             error='Extraction failed and fallback disabled'
         )
 
-    def extract_batch(self, pdf_paths: List[Union[str, Path]], **kwargs) -> List[ExtractionResult]:
+    def extract_batch(self, pdf_paths: list[str | Path], **kwargs) -> list[ExtractionResult]:  # type: ignore[override]
         """
         Extract from multiple PDFs.
 

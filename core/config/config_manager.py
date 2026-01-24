@@ -6,18 +6,18 @@ Provides centralized configuration management for all system components
 with caching, validation, and factory patterns for efficient access.
 """
 
-from typing import Dict, Any, Optional, Type, TypeVar, Union, List
-from pathlib import Path
-import threading
-import logging
-import json
 import hashlib
+import json
+import logging
+import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Optional, TypeVar
 
 from .config_base import BaseConfig, ConfigError, ProcessingConfig, StorageConfig
-from .config_loader import ConfigLoader, ConfigFormat
+from .config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -40,17 +40,17 @@ class ConfigRegistration:
     Tracks registered configuration types with their scope and access statistics.
     """
     name: str
-    config_class: Type[BaseConfig]
+    config_class: type[BaseConfig]
     scope: ConfigScope
-    schema: Optional[Dict[str, Any]] = None
-    factory_func: Optional[callable] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    last_accessed: Optional[datetime] = None
+    schema: dict[str, Any] | None = None
+    factory_func: Callable | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_accessed: datetime | None = None
     access_count: int = 0
 
     def update_access(self):
         """Update access statistics."""
-        self.last_accessed = datetime.utcnow()
+        self.last_accessed = datetime.now(UTC)
         self.access_count += 1
 
 
@@ -69,13 +69,13 @@ class ConfigCache:
         Args:
             default_ttl: Default time-to-live for cached configurations
         """
-        self._cache: Dict[str, Any] = {}
-        self._timestamps: Dict[str, datetime] = {}
-        self._ttl: Dict[str, timedelta] = {}
+        self._cache: dict[str, Any] = {}
+        self._timestamps: dict[str, datetime] = {}
+        self._ttl: dict[str, timedelta] = {}
         self._lock = threading.RLock()
         self.default_ttl = default_ttl
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """
         Get cached configuration.
 
@@ -96,7 +96,7 @@ class ConfigCache:
 
             return self._cache[key]
 
-    def set(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
+    def set(self, key: str, value: Any, ttl: timedelta | None = None) -> None:
         """
         Set cached configuration.
 
@@ -107,7 +107,7 @@ class ConfigCache:
         """
         with self._lock:
             self._cache[key] = value
-            self._timestamps[key] = datetime.utcnow()
+            self._timestamps[key] = datetime.now(UTC)
             self._ttl[key] = ttl or self.default_ttl
 
     def invalidate(self, key: str) -> bool:
@@ -146,7 +146,7 @@ class ConfigCache:
                 self._remove_key(key)
             return len(expired_keys)
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """
         Get cache statistics.
 
@@ -168,7 +168,7 @@ class ConfigCache:
 
         timestamp = self._timestamps[key]
         ttl = self._ttl.get(key, self.default_ttl)
-        return datetime.utcnow() - timestamp > ttl
+        return datetime.now(UTC) - timestamp > ttl
 
     def _remove_key(self, key: str) -> None:
         """Remove key from all cache structures."""
@@ -205,7 +205,7 @@ class ConfigManager:
             return
 
         self._initialized = True
-        self._registrations: Dict[str, ConfigRegistration] = {}
+        self._registrations: dict[str, ConfigRegistration] = {}
         self._loader = ConfigLoader()
         self._cache = ConfigCache()
         self._scope_hierarchy = {
@@ -227,10 +227,10 @@ class ConfigManager:
 
     def register(self,
                 name: str,
-                config_class: Type[T],
+                config_class: type[T],
                 scope: ConfigScope = ConfigScope.COMPONENT,
-                schema: Optional[Dict[str, Any]] = None,
-                factory_func: Optional[callable] = None) -> None:
+                schema: dict[str, Any] | None = None,
+                factory_func: Callable | None = None) -> None:
         """
         Register a configuration type.
 
@@ -268,7 +268,7 @@ class ConfigManager:
 
     def get(self,
            name: str,
-           instance_id: Optional[str] = None,
+           instance_id: str | None = None,
            force_reload: bool = False,
            **overrides) -> BaseConfig:
         """
@@ -343,8 +343,8 @@ class ConfigManager:
 
     def get_or_create(self,
                      name: str,
-                     config_class: Type[T],
-                     instance_id: Optional[str] = None,
+                     config_class: type[T],
+                     instance_id: str | None = None,
                      **kwargs) -> T:
         """
         Get existing configuration or create with default values.
@@ -375,7 +375,7 @@ class ConfigManager:
 
             return config_instance
 
-    def invalidate(self, name: str, instance_id: Optional[str] = None) -> None:
+    def invalidate(self, name: str, instance_id: str | None = None) -> None:
         """
         Invalidate cached configuration.
 
@@ -396,7 +396,7 @@ class ConfigManager:
         self._cache.clear()
         logger.debug("Invalidated all cached configurations")
 
-    def list_registrations(self) -> List[str]:
+    def list_registrations(self) -> list[str]:
         """
         List all registered configuration names.
 
@@ -405,7 +405,7 @@ class ConfigManager:
         """
         return list(self._registrations.keys())
 
-    def get_registration_info(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_registration_info(self, name: str) -> dict[str, Any] | None:
         """
         Get registration information.
 
@@ -430,7 +430,7 @@ class ConfigManager:
             'access_count': registration.access_count
         }
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """
         Get configuration manager statistics.
 

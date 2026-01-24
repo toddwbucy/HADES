@@ -16,8 +16,9 @@ Extension Guide for Future Models:
 4. Update _determine_embedder_type for model name detection
 """
 
-from typing import Optional, Dict, Any
 import logging
+from typing import Any, ClassVar
+
 from .embedders_base import EmbedderBase, EmbeddingConfig
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class EmbedderFactory:
     """
 
     # Registry of available embedders
-    _embedders: Dict[str, type] = {}
+    _embedders: ClassVar[dict[str, type[EmbedderBase]]] = {}
 
     @classmethod
     def register(cls, name: str, embedder_class: type):
@@ -49,7 +50,7 @@ class EmbedderFactory:
     @classmethod
     def create(cls,
               model_name: str = "jinaai/jina-embeddings-v4",
-              config: Optional[EmbeddingConfig] = None,
+              config: EmbeddingConfig | None = None,
               **kwargs) -> EmbedderBase:
         """
         Create an embedder instance.
@@ -155,7 +156,7 @@ class EmbedderFactory:
             logger.error(f"Failed to import {embedder_type} embedder: {e}")
 
     @classmethod
-    def list_available(cls) -> Dict[str, Any]:
+    def list_available(cls) -> dict[str, Any]:
         """
         List available embedders.
 

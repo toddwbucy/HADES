@@ -8,11 +8,22 @@ and storage phases while managing state and error recovery.
 
 from .workflow_base import WorkflowBase, WorkflowConfig, WorkflowResult
 
-# Import PDF workflow if available
+# Import PDF workflow components if available
+from typing import Optional, Type
+
+DocumentProcessor: Optional[Type] = None
+ProcessingConfig: Optional[Type] = None
+ProcessingResult: Optional[Type] = None
+
 try:
-    from .workflow_pdf import PDFWorkflow
+    from .workflow_pdf import DocumentProcessor as _DocumentProcessor
+    from .workflow_pdf import ProcessingConfig as _ProcessingConfig
+    from .workflow_pdf import ProcessingResult as _ProcessingResult
+    DocumentProcessor = _DocumentProcessor
+    ProcessingConfig = _ProcessingConfig
+    ProcessingResult = _ProcessingResult
 except ImportError:
-    PDFWorkflow = None  # type: ignore[misc]
+    pass
 
 # State management
 from .state import CheckpointManager, StateManager
@@ -23,5 +34,7 @@ __all__ = [
     'WorkflowResult',
     'StateManager',
     'CheckpointManager',
-    'PDFWorkflow',
+    'DocumentProcessor',
+    'ProcessingConfig',
+    'ProcessingResult',
 ]

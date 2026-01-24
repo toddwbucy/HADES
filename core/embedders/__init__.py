@@ -9,12 +9,19 @@ from .embedders_base import EmbedderBase, EmbeddingConfig
 from .embedders_factory import EmbedderFactory
 
 # Auto-register available embedders
+from typing import Optional, Type
+
+JinaV4Embedder: Optional[Type] = None
+ChunkWithEmbedding: Optional[Type] = None
+
 try:
-    from .embedders_jina import JinaV4Embedder, ChunkWithEmbedding
-    EmbedderFactory.register("jina", JinaV4Embedder)
+    from .embedders_jina import ChunkWithEmbedding as _ChunkWithEmbedding
+    from .embedders_jina import JinaV4Embedder as _JinaV4Embedder
+    JinaV4Embedder = _JinaV4Embedder
+    ChunkWithEmbedding = _ChunkWithEmbedding
+    EmbedderFactory.register("jina", _JinaV4Embedder)
 except ImportError:
-    JinaV4Embedder = None  # type: ignore[misc]
-    ChunkWithEmbedding = None  # type: ignore[misc]
+    pass
 
 # Backward compatibility exports
 __all__ = [
