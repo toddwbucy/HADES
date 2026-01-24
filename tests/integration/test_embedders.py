@@ -16,9 +16,13 @@ class TestEmbedderFactory:
         # EmbedderFactory uses _embedders for registry
         assert hasattr(EmbedderFactory, "_embedders")
 
+    @pytest.mark.skipif(
+        os.environ.get("SKIP_MODEL_TESTS", "1") == "1",
+        reason="Model tests skipped (set SKIP_MODEL_TESTS=0 to enable)",
+    )
     def test_create_returns_embedder_base_instance(self) -> None:
         """create() should return EmbedderBase instance when dependencies available."""
-        # Exercise real factory logic - skip only if model dependencies unavailable
+        # Exercise real factory logic - downloads models, so skipped by default
         try:
             # Use default Jina model to test real factory registration/creation
             embedder = EmbedderFactory.create()
