@@ -2,16 +2,16 @@
 
 from .document_processor import (
     DocumentProcessor,
+    ExtractionResult,
     ProcessingConfig,
     ProcessingResult,
-    ExtractionResult,
 )
 from .text.chunking_strategies import (
     ChunkingStrategy,
     ChunkingStrategyFactory,
     SemanticChunking,
-    TokenBasedChunking,
     SlidingWindowChunking,
+    TokenBasedChunking,
 )
 
 __all__ = [

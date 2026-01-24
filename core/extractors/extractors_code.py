@@ -9,10 +9,10 @@ for Jina v4 coding LoRA embeddings.
 
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Any
 
+from .extractors_base import ExtractionResult, ExtractorBase, ExtractorConfig
 from .extractors_treesitter import TreeSitterExtractor
-from .extractors_base import ExtractorBase, ExtractorConfig, ExtractionResult
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,8 @@ class CodeExtractor(ExtractorBase):
     Transforms source code into processable text while preserving
     semantic structure through Tree-sitter integration.
     """
-    
-    def __init__(self, config: Optional[ExtractorConfig] = None, use_tree_sitter: bool = True):
+
+    def __init__(self, config: ExtractorConfig | None = None, use_tree_sitter: bool = True):
         """
         Initialize the CodeExtractor instance.
 
@@ -53,10 +53,10 @@ class CodeExtractor(ExtractorBase):
             '.yaml': '#',
             '.yml': '#'
         }
-        
+
         # Initialize Tree-sitter extractor
         self.use_tree_sitter = use_tree_sitter
-        self.tree_sitter: Optional[TreeSitterExtractor]
+        self.tree_sitter: TreeSitterExtractor | None
         if use_tree_sitter:
             try:
                 self.tree_sitter = TreeSitterExtractor()
@@ -68,8 +68,8 @@ class CodeExtractor(ExtractorBase):
         else:
             self.tree_sitter = None
             logger.info("Initialized CodeExtractor without Tree-sitter")
-    
-    def extract(self, file_path: Union[str, Path], **kwargs) -> ExtractionResult:
+
+    def extract(self, file_path: str | Path, **kwargs) -> ExtractionResult:
         """
         Extracts text and basic metadata from a code file for embedding generation.
         
@@ -90,7 +90,7 @@ class CodeExtractor(ExtractorBase):
             Optional[Dict[str, Any]]: The extraction result dictionary on success; None if the file does not exist or extraction fails.
         """
         file_path = Path(file_path)
-        
+
         if not file_path.exists():
             logger.warning(f"File not found: {file_path}")
             return ExtractionResult(
@@ -101,7 +101,7 @@ class CodeExtractor(ExtractorBase):
 
         try:
             # Read file content
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(file_path, encoding='utf-8', errors='ignore') as f:
                 content = f.read()
 
             # Extract Tree-sitter symbols if available
@@ -162,8 +162,8 @@ class CodeExtractor(ExtractorBase):
                 metadata={"file_path": str(file_path)},
                 error=f"Unexpected error: {str(e)}"
             )
-    
-    def _extract_metadata(self, content: str, file_path: Path) -> Dict[str, Any]:
+
+    def _extract_metadata(self, content: str, file_path: Path) -> dict[str, Any]:
         """
         Compute basic metadata for a source code file.
         
@@ -183,7 +183,7 @@ class CodeExtractor(ExtractorBase):
         The counts are simple heuristics (line-based or substring matches) intended for lightweight metadata and may over- or under-count in complex code constructs.
         """
         lines = content.splitlines()
-        
+
         metadata = {
             'line_count': len(lines),
             'char_count': len(content),
@@ -192,23 +192,23 @@ class CodeExtractor(ExtractorBase):
             'function_count': 0,
             'class_count': 0
         }
-        
+
         # Language-specific analysis
         ext = file_path.suffix.lower()
-        
+
         if ext == '.py':
             # Python-specific analysis
             metadata['has_docstring'] = '"""' in content or "'''" in content
             metadata['import_count'] = sum(1 for line in lines if line.strip().startswith(('import ', 'from ')))
             metadata['function_count'] = sum(1 for line in lines if line.strip().startswith('def '))
             metadata['class_count'] = sum(1 for line in lines if line.strip().startswith('class '))
-            
+
         elif ext in ['.js', '.ts', '.jsx', '.tsx']:
             # JavaScript/TypeScript analysis
             metadata['import_count'] = sum(1 for line in lines if 'import ' in line or 'require(' in line)
             metadata['function_count'] = content.count('function ') + content.count('=>')
             metadata['class_count'] = sum(1 for line in lines if line.strip().startswith('class '))
-            
+
         elif ext == '.java':
             # Java analysis
             metadata['import_count'] = sum(1 for line in lines if line.strip().startswith('import '))
@@ -217,8 +217,8 @@ class CodeExtractor(ExtractorBase):
         return metadata
 
     def extract_batch(self,
-                     file_paths: List[Union[str, Path]],
-                     **kwargs) -> List[ExtractionResult]:
+                     file_paths: list[str | Path],
+                     **kwargs) -> list[ExtractionResult]:
         """
         Extract content from multiple code files.
 
@@ -235,7 +235,7 @@ class CodeExtractor(ExtractorBase):
         return results
 
     @property
-    def supported_formats(self) -> List[str]:
+    def supported_formats(self) -> list[str]:
         """Get list of supported file formats."""
         return [
             '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',

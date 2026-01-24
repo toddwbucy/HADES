@@ -7,11 +7,11 @@ Extractors transform raw documents into structured information for
 downstream processing and embedding generation.
 """
 
+import logging
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any, Union
 from dataclasses import dataclass, field
 from pathlib import Path
-import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +20,14 @@ logger = logging.getLogger(__name__)
 class ExtractionResult:
     """Result of document extraction."""
     text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    chunks: List[Dict[str, Any]] = field(default_factory=list)
-    equations: List[Dict[str, Any]] = field(default_factory=list)
-    tables: List[Dict[str, Any]] = field(default_factory=list)
-    images: List[Dict[str, Any]] = field(default_factory=list)
-    code_blocks: List[Dict[str, Any]] = field(default_factory=list)
-    references: List[Dict[str, Any]] = field(default_factory=list)
-    error: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    chunks: list[dict[str, Any]] = field(default_factory=list)
+    equations: list[dict[str, Any]] = field(default_factory=list)
+    tables: list[dict[str, Any]] = field(default_factory=list)
+    images: list[dict[str, Any]] = field(default_factory=list)
+    code_blocks: list[dict[str, Any]] = field(default_factory=list)
+    references: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
     processing_time: float = 0.0
 
 
@@ -42,7 +42,7 @@ class ExtractorConfig:
     extract_images: bool = True
     extract_code: bool = True
     extract_references: bool = True
-    max_pages: Optional[int] = None
+    max_pages: int | None = None
     ocr_enabled: bool = False
 
 
@@ -54,7 +54,7 @@ class ExtractorBase(ABC):
     to ensure consistency across different document types and approaches.
     """
 
-    def __init__(self, config: Optional[ExtractorConfig] = None):
+    def __init__(self, config: ExtractorConfig | None = None):
         """
         Initialize extractor with configuration.
 
@@ -65,7 +65,7 @@ class ExtractorBase(ABC):
 
     @abstractmethod
     def extract(self,
-               file_path: Union[str, Path],
+               file_path: str | Path,
                **kwargs) -> ExtractionResult:
         """
         Extract content from a document.
@@ -81,8 +81,8 @@ class ExtractorBase(ABC):
 
     @abstractmethod
     def extract_batch(self,
-                     file_paths: List[Union[str, Path]],
-                     **kwargs) -> List[ExtractionResult]:
+                     file_paths: list[str | Path],
+                     **kwargs) -> list[ExtractionResult]:
         """
         Extract content from multiple documents.
 
@@ -95,7 +95,7 @@ class ExtractorBase(ABC):
         """
         pass
 
-    def validate_file(self, file_path: Union[str, Path]) -> bool:
+    def validate_file(self, file_path: str | Path) -> bool:
         """
         Validate that a file can be processed.
 
@@ -119,7 +119,7 @@ class ExtractorBase(ABC):
 
     @property
     @abstractmethod
-    def supported_formats(self) -> List[str]:
+    def supported_formats(self) -> list[str]:
         """Get list of supported file formats."""
         pass
 
@@ -138,7 +138,7 @@ class ExtractorBase(ABC):
         """Whether this extractor supports OCR."""
         return False
 
-    def get_extractor_info(self) -> Dict[str, Any]:
+    def get_extractor_info(self) -> dict[str, Any]:
         """
         Get information about the extractor.
 

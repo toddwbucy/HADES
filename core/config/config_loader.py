@@ -7,14 +7,15 @@ Provides hierarchical configuration loading with source priority
 configuration drift.
 """
 
-from typing import Dict, Any, Optional, Union, List, Type, TypeVar, Tuple
-from pathlib import Path
-import yaml
 import json
-import os
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any, TypeVar
+
+import yaml
 
 from .config_base import BaseConfig, ConfigError, ConfigValidationError
 
@@ -48,10 +49,10 @@ class ConfigSource:
         if self.exists:
             try:
                 # Test readability
-                with open(self.path, 'r', encoding='utf-8') as f:
+                with open(self.path, encoding='utf-8') as f:
                     f.read(1)
                 self.readable = True
-            except (IOError, OSError, PermissionError):
+            except (OSError, PermissionError):
                 self.readable = False
 
 
@@ -62,7 +63,7 @@ class ConfigSchema:
     Validates configuration data against JSON schema definitions.
     """
 
-    def __init__(self, schema_dict: Dict[str, Any]):
+    def __init__(self, schema_dict: dict[str, Any]):
         """
         Initialize schema validator.
 
@@ -71,7 +72,7 @@ class ConfigSchema:
         """
         self.schema = schema_dict
 
-    def validate(self, config_data: Dict[str, Any]) -> List[str]:
+    def validate(self, config_data: dict[str, Any]) -> list[str]:
         """
         Validate configuration data against schema.
 
@@ -112,7 +113,7 @@ class ConfigSchema:
         Returns:
             True if type matches
         """
-        type_map: Dict[str, Union[type, Tuple[type, ...]]] = {
+        type_map: dict[str, type | tuple[type, ...]] = {
             'string': str,
             'integer': int,
             'number': (int, float),
@@ -139,7 +140,7 @@ class ConfigLoader:
     - Support for YAML and JSON formats
     """
 
-    def __init__(self, base_dir: Optional[Path] = None):
+    def __init__(self, base_dir: Path | None = None):
         """
         Initialize configuration loader.
 
@@ -147,10 +148,10 @@ class ConfigLoader:
             base_dir: Base directory for configuration files
         """
         self.base_dir = Path(base_dir) if base_dir else Path.cwd()
-        self._cache: Dict[str, Dict[str, Any]] = {}
-        self._schemas: Dict[str, ConfigSchema] = {}
+        self._cache: dict[str, dict[str, Any]] = {}
+        self._schemas: dict[str, ConfigSchema] = {}
 
-    def register_schema(self, name: str, schema_dict: Dict[str, Any]) -> None:
+    def register_schema(self, name: str, schema_dict: dict[str, Any]) -> None:
         """
         Register a configuration schema.
 
@@ -161,7 +162,7 @@ class ConfigLoader:
         self._schemas[name] = ConfigSchema(schema_dict)
         logger.debug(f"Registered configuration schema: {name}")
 
-    def discover_sources(self, config_name: str) -> List[ConfigSource]:
+    def discover_sources(self, config_name: str) -> list[ConfigSource]:
         """
         Discover configuration sources in priority order.
 
@@ -193,8 +194,8 @@ class ConfigLoader:
         config_variants = [
             (f"{config_name}.yaml", ConfigFormat.YAML),
             (f"{config_name}.json", ConfigFormat.JSON),
-            (f"config.yaml", ConfigFormat.YAML),
-            (f"config.json", ConfigFormat.JSON),
+            ("config.yaml", ConfigFormat.YAML),
+            ("config.json", ConfigFormat.JSON),
         ]
 
         for search_path, base_priority in search_paths:
@@ -213,7 +214,7 @@ class ConfigLoader:
 
         return sources
 
-    def load_file(self, file_path: Path, format_type: ConfigFormat) -> Dict[str, Any]:
+    def load_file(self, file_path: Path, format_type: ConfigFormat) -> dict[str, Any]:
         """
         Load configuration from file.
 
@@ -233,7 +234,7 @@ class ConfigLoader:
             return self._cache[cache_key]
 
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, encoding='utf-8') as f:
                 content = f.read()
 
             if format_type == ConfigFormat.YAML:
@@ -252,10 +253,10 @@ class ConfigLoader:
             raise ConfigError(f"Invalid YAML in {file_path}: {e}")
         except json.JSONDecodeError as e:
             raise ConfigError(f"Invalid JSON in {file_path}: {e}")
-        except (IOError, OSError) as e:
+        except OSError as e:
             raise ConfigError(f"Cannot read {file_path}: {e}")
 
-    def load_environment(self, prefix: str = "HADES_") -> Dict[str, Any]:
+    def load_environment(self, prefix: str = "HADES_") -> dict[str, Any]:
         """
         Load configuration from environment variables.
 
@@ -265,7 +266,7 @@ class ConfigLoader:
         Returns:
             Configuration data from environment
         """
-        config: Dict[str, Any] = {}
+        config: dict[str, Any] = {}
 
         for key, value in os.environ.items():
             if key.startswith(prefix):
@@ -287,7 +288,7 @@ class ConfigLoader:
         return config
 
     @staticmethod
-    def _convert_env_value(value: str) -> Union[str, int, float, bool]:
+    def _convert_env_value(value: str) -> str | int | float | bool:
         """
         Convert environment variable string to appropriate type.
 
@@ -317,8 +318,8 @@ class ConfigLoader:
 
     def load_hierarchical(self,
                          config_name: str,
-                         config_class: Type[T],
-                         schema_name: Optional[str] = None,
+                         config_class: type[T],
+                         schema_name: str | None = None,
                          env_prefix: str = "HADES_") -> T:
         """
         Load configuration using hierarchical source resolution.
@@ -343,7 +344,7 @@ class ConfigLoader:
         logger.info(f"Loading hierarchical configuration: {config_name}")
 
         # Start with empty base configuration
-        merged_config: Dict[str, Any] = {}
+        merged_config: dict[str, Any] = {}
 
         # 1. Load from files (lowest to highest priority)
         sources = self.discover_sources(config_name)
@@ -392,7 +393,7 @@ class ConfigLoader:
             raise ConfigError(f"Failed to create {config_name} configuration: {e}") from e
 
     @staticmethod
-    def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         """
         Deep merge two configuration dictionaries.
 
@@ -420,7 +421,7 @@ class ConfigLoader:
         self._cache.clear()
         logger.debug("Configuration cache cleared")
 
-    def get_cache_info(self) -> Dict[str, Any]:
+    def get_cache_info(self) -> dict[str, Any]:
         """
         Get cache information.
 

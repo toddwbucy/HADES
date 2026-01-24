@@ -7,10 +7,10 @@ for documents. These processors work on the text content after extraction.
 
 from .chunking_strategies import (
     ChunkingStrategy,
-    TokenBasedChunking,
+    ChunkingStrategyFactory,
     SemanticChunking,
     SlidingWindowChunking,
-    ChunkingStrategyFactory
+    TokenBasedChunking,
 )
 
 __all__ = [
