@@ -247,25 +247,26 @@ class TestDocumentProcessorInit:
 class TestDocumentProcessorMethods:
     """Tests for DocumentProcessor methods."""
 
-    @pytest.fixture
-    def mock_processor(self) -> DocumentProcessor:
-        """Create processor with mocked components."""
-        with patch("core.processors.document_processor.DoclingExtractor") as mock_docling:
-            mock_docling.return_value = MagicMock()
-            processor = DocumentProcessor()
-            return processor
-
-    def test_has_process_document_method(self, mock_processor: DocumentProcessor) -> None:
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_has_process_document_method(self, mock_docling: MagicMock) -> None:
         """DocumentProcessor should have process_document method."""
-        assert hasattr(mock_processor, "process_document")
-        assert callable(mock_processor.process_document)
+        mock_docling.return_value = MagicMock()
+        processor = DocumentProcessor()
+        assert hasattr(processor, "process_document")
+        assert callable(processor.process_document)
 
-    def test_has_process_batch_method(self, mock_processor: DocumentProcessor) -> None:
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_has_process_batch_method(self, mock_docling: MagicMock) -> None:
         """DocumentProcessor should have process_batch method."""
-        assert hasattr(mock_processor, "process_batch")
-        assert callable(mock_processor.process_batch)
+        mock_docling.return_value = MagicMock()
+        processor = DocumentProcessor()
+        assert hasattr(processor, "process_batch")
+        assert callable(processor.process_batch)
 
-    def test_has_cleanup_method(self, mock_processor: DocumentProcessor) -> None:
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_has_cleanup_method(self, mock_docling: MagicMock) -> None:
         """DocumentProcessor should have cleanup method."""
-        assert hasattr(mock_processor, "cleanup")
-        assert callable(mock_processor.cleanup)
+        mock_docling.return_value = MagicMock()
+        processor = DocumentProcessor()
+        assert hasattr(processor, "cleanup")
+        assert callable(processor.cleanup)

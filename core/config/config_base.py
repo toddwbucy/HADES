@@ -6,13 +6,14 @@ Provides Pydantic-based configuration models with validation and serialization.
 Supports hierarchical configuration sources (environment > file > defaults).
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Union, Type, TypeVar
-from pathlib import Path
 import json
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from datetime import datetime, timezone
 import logging
+from abc import ABC, abstractmethod
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, TypeVar
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class ConfigError(Exception):
 class ConfigValidationError(ConfigError):
     """Configuration validation errors."""
 
-    def __init__(self, message: str, errors: List[str]):
+    def __init__(self, message: str, errors: list[str]):
         self.errors = errors
         super().__init__(f"{message}: {'; '.join(errors)}")
 
@@ -42,8 +43,8 @@ class BaseConfig(BaseModel, ABC):
 
     # Metadata fields
     config_version: str = Field(default="1.0", description="Configuration schema version")
-    created_at: Optional[datetime] = Field(default=None, description="Configuration creation timestamp")
-    source: Optional[str] = Field(default=None, description="Configuration source identifier")
+    created_at: datetime | None = Field(default=None, description="Configuration creation timestamp")
+    source: str | None = Field(default=None, description="Configuration source identifier")
 
     model_config = ConfigDict(
         extra="forbid",  # Strict validation
@@ -55,11 +56,11 @@ class BaseConfig(BaseModel, ABC):
     def __init__(self, **data):
         # Set creation timestamp if not provided
         if 'created_at' not in data:
-            data['created_at'] = datetime.now(timezone.utc)
+            data['created_at'] = datetime.now(UTC)
         super().__init__(**data)
 
     @abstractmethod
-    def validate_semantics(self) -> List[str]:
+    def validate_semantics(self) -> list[str]:
         """
         Validate semantic consistency beyond schema validation.
 
@@ -85,7 +86,7 @@ class BaseConfig(BaseModel, ABC):
         if semantic_errors:
             raise ConfigValidationError("Semantic validation failed", semantic_errors)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """
         Convert to dictionary format.
 
@@ -107,7 +108,7 @@ class BaseConfig(BaseModel, ABC):
         return self.model_dump_json(exclude_none=True, indent=indent)
 
     @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+    def from_dict(cls: type[T], data: dict[str, Any]) -> T:
         """
         Create configuration from dictionary.
 
@@ -131,7 +132,7 @@ class BaseConfig(BaseModel, ABC):
             ) from e
 
     @classmethod
-    def from_json(cls: Type[T], json_str: str) -> T:
+    def from_json(cls: type[T], json_str: str) -> T:
         """
         Create configuration from JSON string.
 
@@ -151,7 +152,7 @@ class BaseConfig(BaseModel, ABC):
             raise ConfigValidationError("Invalid JSON format", [str(e)]) from e
 
     @classmethod
-    def from_file(cls: Type[T], file_path: Union[str, Path]) -> T:
+    def from_file(cls: type[T], file_path: str | Path) -> T:
         """
         Load configuration from a JSON file.
 
@@ -173,17 +174,17 @@ class BaseConfig(BaseModel, ABC):
             raise ConfigValidationError(f"Configuration file not found: {path}", [])
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 content = f.read()
 
             instance = cls.from_json(content)
             instance.source = str(path)
             return instance
 
-        except (IOError, OSError) as e:
+        except OSError as e:
             raise ConfigValidationError(f"Failed to read configuration file: {path}", [str(e)]) from e
 
-    def save_to_file(self, file_path: Union[str, Path]) -> None:
+    def save_to_file(self, file_path: str | Path) -> None:
         """
         Save configuration to file.
 
@@ -204,7 +205,7 @@ class BaseConfig(BaseModel, ABC):
             self.source = str(path)
             logger.info(f"Configuration saved to {path}")
 
-        except (IOError, OSError) as e:
+        except OSError as e:
             raise ConfigError(f"Failed to save configuration to {path}: {e}") from e
 
     def merge(self: T, other: T) -> T:
@@ -231,7 +232,7 @@ class BaseConfig(BaseModel, ABC):
         return self.__class__.from_dict(merged_data)
 
     @staticmethod
-    def _deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         """
         Deep merge two dictionaries.
 
@@ -274,17 +275,12 @@ class BaseConfig(BaseModel, ABC):
         local_coherence = 1.0 if not semantic_errors else max(0.0, 1.0 - len(semantic_errors) / 10)
 
         # Field completeness (all required fields present)
-        # Handle both Pydantic v1 and v2 compatibility
         required_fields = []
-        for field, field_info in self.__fields__.items():
-            # Check if field is required (compatible with both Pydantic versions)
-            is_required = (
-                getattr(field_info, 'required', False) or  # Pydantic v1
-                (hasattr(field_info, 'is_required') and field_info.is_required()) or  # Pydantic v2 method
-                (field_info.default is None and field_info.default_factory is None)  # Fallback check
-            )
+        for field_name, field_info in self.__class__.model_fields.items():
+            # Check if field is required (Pydantic v2)
+            is_required = field_info.is_required()
             if is_required:
-                required_fields.append(field)
+                required_fields.append(field_name)
 
         # Calculate field completeness, handling case where there are no required fields
         if required_fields:
@@ -294,7 +290,7 @@ class BaseConfig(BaseModel, ABC):
             field_completeness = 1.0  # Perfect if no fields are required
 
         # Actionability (configuration is complete and usable)
-        field_values = [getattr(self, field, None) for field in self.__fields__]
+        field_values = [getattr(self, field, None) for field in self.__class__.model_fields]
         actionability = sum(1.0 for value in field_values if value is not None) / len(field_values)
 
         # Grounding (source and versioning information present)
@@ -331,7 +327,7 @@ class ProcessingConfig(BaseConfig):
     )
 
     # Resource limits
-    memory_limit_gb: Optional[float] = Field(
+    memory_limit_gb: float | None = Field(
         default=None,
         ge=0.1,
         description="Memory limit in GB"
@@ -349,12 +345,12 @@ class ProcessingConfig(BaseConfig):
         description="Enable GPU acceleration"
     )
 
-    gpu_devices: Optional[List[int]] = Field(
+    gpu_devices: list[int] | None = Field(
         default=None,
         description="GPU device IDs to use"
     )
 
-    def validate_semantics(self) -> List[str]:
+    def validate_semantics(self) -> list[str]:
         """
         Validate processing configuration semantics.
 
@@ -421,12 +417,12 @@ class StorageConfig(BaseConfig):
     )
 
     # File storage paths
-    pdf_directory: Optional[Path] = Field(
+    pdf_directory: Path | None = Field(
         default=None,
         description="Directory containing PDF files"
     )
 
-    staging_directory: Optional[Path] = Field(
+    staging_directory: Path | None = Field(
         default=None,
         description="Temporary staging directory"
     )
@@ -444,7 +440,7 @@ class StorageConfig(BaseConfig):
         description="Maximum connection retry attempts"
     )
 
-    def validate_semantics(self) -> List[str]:
+    def validate_semantics(self) -> list[str]:
         """
         Validate storage configuration semantics.
 

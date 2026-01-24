@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import tempfile
 import time
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 
@@ -43,7 +42,7 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from core.embedders import EmbedderFactory, EmbeddingConfig, ChunkWithEmbedding
+from core.embedders import ChunkWithEmbedding, EmbedderFactory, EmbeddingConfig
 from core.extractors import DoclingExtractor, LaTeXExtractor
 from core.extractors.extractors_base import ExtractorConfig as DoclingConfig
 from core.processors.text.chunking_strategies import ChunkingStrategyFactory
@@ -78,7 +77,7 @@ class ProcessingConfig:
     embedder_type: str = "jina"
     embedding_dim: int = 2048
     use_fp16: bool = True
-    device: Optional[str] = None
+    device: str | None = None
 
     # Chunking settings
     chunk_size_tokens: int = 1000
@@ -102,12 +101,12 @@ class ExtractionResult:
     """Raw extraction output prior to chunking or embedding."""
 
     full_text: str
-    tables: List[Dict[str, Any]] = field(default_factory=list)
-    equations: List[Dict[str, Any]] = field(default_factory=list)
-    images: List[Dict[str, Any]] = field(default_factory=list)
-    figures: List[Dict[str, Any]] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    latex_source: Optional[str] = None
+    tables: list[dict[str, Any]] = field(default_factory=list)
+    equations: list[dict[str, Any]] = field(default_factory=list)
+    images: list[dict[str, Any]] = field(default_factory=list)
+    figures: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    latex_source: str | None = None
     has_latex: bool = False
     extraction_time: float = 0.0
     extractor_version: str = ""
@@ -118,17 +117,17 @@ class ProcessingResult:
     """Complete result from document processing."""
 
     extraction: ExtractionResult
-    chunks: List[ChunkWithEmbedding]
-    processing_metadata: Dict[str, Any]
+    chunks: list[ChunkWithEmbedding]
+    processing_metadata: dict[str, Any]
     total_processing_time: float
     extraction_time: float
     chunking_time: float
     embedding_time: float
     success: bool = True
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the processing result."""
 
         return {
@@ -172,7 +171,7 @@ class ProcessingResult:
 class DocumentProcessor:
     """Source-agnostic document processor leveraging Docling and late chunking."""
 
-    def __init__(self, config: Optional[ProcessingConfig] = None):
+    def __init__(self, config: ProcessingConfig | None = None):
         self.config = config or ProcessingConfig()
 
         docling_config = DoclingConfig(
@@ -217,8 +216,8 @@ class DocumentProcessor:
         self.embedding_model = model_name
 
         # Initialize staging directory management
-        self._staging_tempdir: Optional[tempfile.TemporaryDirectory] = None
-        self.staging_dir: Optional[Path] = None
+        self._staging_tempdir: tempfile.TemporaryDirectory | None = None
+        self.staging_dir: Path | None = None
 
         if self.config.use_ramfs_staging:
             # Create base directory if needed (parent only)
@@ -247,7 +246,7 @@ class DocumentProcessor:
         Call this when done processing to release disk space. Also called
         automatically by __del__ if not explicitly invoked.
         """
-        if self._staging_tempdir is not None:
+        if getattr(self, "_staging_tempdir", None) is not None:
             try:
                 self._staging_tempdir.cleanup()
             except Exception as exc:  # noqa: BLE001
@@ -262,13 +261,13 @@ class DocumentProcessor:
 
     def process_document(
         self,
-        pdf_path: Union[str, Path],
-        latex_path: Optional[Union[str, Path]] = None,
-        document_id: Optional[str] = None,
+        pdf_path: str | Path,
+        latex_path: str | Path | None = None,
+        document_id: str | None = None,
     ) -> ProcessingResult:
         start_time = time.time()
-        errors: List[str] = []
-        warnings: List[str] = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         pdf_path = Path(pdf_path)
         if latex_path:
@@ -366,7 +365,7 @@ class DocumentProcessor:
                 "chunk_overlap_tokens": self.config.chunk_overlap_tokens,
                 "document_id": doc_id,
                 "source_path": str(pdf_path),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "chunk_count": len(chunks),
                 "has_latex": extraction_result.has_latex,
                 "has_tables": len(extraction_result.tables) > 0,
@@ -405,7 +404,7 @@ class DocumentProcessor:
     def _extract_content(
         self,
         pdf_path: Path,
-        latex_path: Optional[Path] = None,
+        latex_path: Path | None = None,
     ) -> ExtractionResult:
         start_time = time.time()
 
@@ -442,10 +441,10 @@ class DocumentProcessor:
             extractor_version=docling_result.get("version", "unknown"),
         )
 
-    def _create_late_chunks(self, text: str) -> List[ChunkWithEmbedding]:
+    def _create_late_chunks(self, text: str) -> list[ChunkWithEmbedding]:
         return self.embedder.embed_with_late_chunking(text)
 
-    def _create_traditional_chunks(self, text: str) -> List[Dict[str, Any]]:
+    def _create_traditional_chunks(self, text: str) -> list[dict[str, Any]]:
         chunk_size = self.config.chunk_size_tokens
         overlap = self.config.chunk_overlap_tokens
 
@@ -468,14 +467,14 @@ class DocumentProcessor:
                 "Ensure chunk_size_tokens > chunk_overlap_tokens." % step,
             )
 
-        chunks: List[Dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
         tokens = text.split()
 
         if not tokens:
             return []
 
         # Build token_positions: starting character index for each token
-        token_positions: List[int] = []
+        token_positions: list[int] = []
         search_offset = 0
         for token in tokens:
             pos = text.find(token, search_offset)
@@ -507,7 +506,7 @@ class DocumentProcessor:
 
         return chunks
 
-    def _embed_chunks(self, chunks: List[Dict[str, Any]]) -> List[ChunkWithEmbedding]:
+    def _embed_chunks(self, chunks: list[dict[str, Any]]) -> list[ChunkWithEmbedding]:
         if not chunks:
             return []
 
@@ -516,7 +515,7 @@ class DocumentProcessor:
         embeddings = self.embedder.embed_texts(texts, batch_size=len(texts))
 
         # Build ChunkWithEmbedding instances from chunks and embeddings
-        embedded_chunks: List[ChunkWithEmbedding] = []
+        embedded_chunks: list[ChunkWithEmbedding] = []
         zero_vector = np.zeros(self.config.embedding_dim, dtype=np.float32)
 
         for i, chunk in enumerate(chunks):
@@ -548,10 +547,10 @@ class DocumentProcessor:
 
     def process_batch(
         self,
-        document_paths: List[Tuple[Path, Optional[Path]]],
-        document_ids: Optional[List[str]] = None,
-    ) -> List[ProcessingResult]:
-        results: List[ProcessingResult] = []
+        document_paths: list[tuple[Path, Path | None]],
+        document_ids: list[str] | None = None,
+    ) -> list[ProcessingResult]:
+        results: list[ProcessingResult] = []
 
         for i, (pdf_path, latex_path) in enumerate(document_paths):
             doc_id = document_ids[i] if document_ids and i < len(document_ids) else None
