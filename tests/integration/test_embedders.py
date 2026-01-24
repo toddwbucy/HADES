@@ -1,7 +1,7 @@
 """Integration tests for embedders."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,17 +17,17 @@ class TestEmbedderFactory:
         assert hasattr(EmbedderFactory, "_embedders")
 
     def test_create_returns_embedder_base_instance(self) -> None:
-        """create() should return EmbedderBase instance."""
-        # This test will be skipped if model loading fails (no GPU/model)
+        """create() should return EmbedderBase instance when dependencies available."""
+        # Exercise real factory logic - skip only if model dependencies unavailable
         try:
-            with patch.object(EmbedderFactory, "create") as mock_create:
-                mock_embedder = MagicMock(spec=EmbedderBase)
-                mock_create.return_value = mock_embedder
-
-                embedder = EmbedderFactory.create("test")
-                assert embedder is not None
-        except Exception:
-            pytest.skip("Embedder creation requires model download")
+            # Use default Jina model to test real factory registration/creation
+            embedder = EmbedderFactory.create()
+            assert embedder is not None
+            assert isinstance(embedder, EmbedderBase)
+        except (ImportError, ValueError) as e:
+            # ImportError: model dependencies not installed
+            # ValueError: no embedder registered (dependencies missing)
+            pytest.skip(f"Embedder dependencies not available: {e}")
 
 
 class TestJinaV4Embedder:
