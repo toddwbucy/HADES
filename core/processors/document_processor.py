@@ -42,7 +42,8 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from core.embedders import ChunkWithEmbedding, EmbedderFactory, EmbeddingConfig
+from core.embedders import EmbedderFactory, EmbeddingConfig
+from core.embedders.embedders_jina import ChunkWithEmbedding
 from core.extractors import DoclingExtractor, LaTeXExtractor
 from core.extractors.extractors_base import ExtractorConfig as DoclingConfig
 from core.processors.text.chunking_strategies import ChunkingStrategyFactory
@@ -180,8 +181,8 @@ class DocumentProcessor:
             extract_equations=self.config.extract_equations,
             extract_images=self.config.extract_images,
         )
-        self.docling_extractor = DoclingExtractor(docling_config)
-        self.latex_extractor = LaTeXExtractor() if self.config.extract_equations else None
+        self.docling_extractor = DoclingExtractor(docling_config)  # type: ignore[misc]
+        self.latex_extractor = LaTeXExtractor() if self.config.extract_equations else None  # type: ignore[misc]
 
         embedder_type = (self.config.embedder_type or "jina").lower()
         model_name = self.config.embedding_model or "jinaai/jina-embeddings-v4"
@@ -246,9 +247,10 @@ class DocumentProcessor:
         Call this when done processing to release disk space. Also called
         automatically by __del__ if not explicitly invoked.
         """
-        if getattr(self, "_staging_tempdir", None) is not None:
+        staging_tempdir = getattr(self, "_staging_tempdir", None)
+        if staging_tempdir is not None:
             try:
-                self._staging_tempdir.cleanup()
+                staging_tempdir.cleanup()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to cleanup staging directory: %s", exc)
             finally:
@@ -412,33 +414,33 @@ class DocumentProcessor:
 
         latex_source = None
         has_latex = False
+        equations = docling_result.equations or []
+
         if latex_path and latex_path.exists() and self.latex_extractor:
             try:
                 # Use the public extract API - pass the Path, get ExtractionResult
                 latex_extraction = self.latex_extractor.extract(latex_path)
                 has_latex = True
                 latex_source = latex_path.read_text(encoding="utf-8")
-                docling_result["equations"] = latex_extraction.equations or []
+                equations = latex_extraction.equations or []
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to process LaTeX source: %s", exc)
 
-        full_text = (
-            docling_result.get("full_text", "")
-            or docling_result.get("text", "")
-            or docling_result.get("markdown", "")
-        )
+        # Access ExtractionResult fields as attributes
+        full_text = docling_result.text or ""
+        extractor_version = docling_result.metadata.get("version", "unknown") if docling_result.metadata else "unknown"
 
         return ExtractionResult(
             full_text=full_text,
-            tables=docling_result.get("tables", []),
-            equations=docling_result.get("equations", []),
-            images=docling_result.get("images", []),
-            figures=docling_result.get("figures", []),
-            metadata=docling_result.get("metadata", {}),
+            tables=docling_result.tables or [],
+            equations=equations,
+            images=docling_result.images or [],
+            figures=[],  # Not in base ExtractionResult
+            metadata=docling_result.metadata or {},
             latex_source=latex_source,
             has_latex=has_latex,
             extraction_time=time.time() - start_time,
-            extractor_version=docling_result.get("version", "unknown"),
+            extractor_version=extractor_version,
         )
 
     def _create_late_chunks(self, text: str) -> list[ChunkWithEmbedding]:

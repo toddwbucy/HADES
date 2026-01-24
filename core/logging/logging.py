@@ -6,11 +6,11 @@ Centralized logging configuration using structlog for structured JSON logging.
 """
 
 import logging
-from logging.handlers import RotatingFileHandler
 import os
-from pathlib import Path
 import tempfile
 import threading
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import structlog
 
@@ -110,9 +110,9 @@ class LogManager:
 
         # Thread-safe initialization
         with _init_lock:
-            # Double-check after acquiring lock
+            # Double-check after acquiring lock (necessary for thread safety)
             if _logging_initialized:
-                return
+                return  # type: ignore[unreachable]
 
             # Validate and convert log level
             numeric_level = _validate_log_level(log_level)
