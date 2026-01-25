@@ -1,6 +1,6 @@
 # HADES
 
-**High-speed ArangoDB-backed Dimensional Embedding System**
+## High-speed ArangoDB-backed Dimensional Embedding System
 
 A production-grade semantic knowledge base for academic papers. HADES transforms documents into vector embeddings with late chunking, stores them in ArangoDB via HTTP/2 Unix socket connections, and provides fast semantic search over millions of papers.
 
@@ -127,7 +127,7 @@ Error:
 
 ## Architecture
 
-```
+```text
 PDF/ArXiv → Extractor → Late Chunking → Jina V4 Embedder → ArangoDB (HTTP/2)
                                               ↓
                                     Semantic Search ← Query
@@ -260,7 +260,7 @@ poetry run python -m compileall core
 
 ## Project Structure
 
-```
+```text
 hades/
 ├── core/
 │   ├── cli/              # CLI commands and output formatting
