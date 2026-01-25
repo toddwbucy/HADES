@@ -64,7 +64,11 @@ def arxiv_search(
 
         response = search_arxiv(query, max_results, categories, start_time)
         print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
 
+    except typer.Exit:
+        raise
     except Exception as e:
         response = error_response(
             command="arxiv.search",
@@ -88,7 +92,11 @@ def arxiv_info(
 
         response = get_paper_info(arxiv_id, start_time)
         print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
 
+    except typer.Exit:
+        raise
     except Exception as e:
         response = error_response(
             command="arxiv.info",
@@ -265,7 +273,11 @@ def list_papers(
 
         response = list_stored_papers(limit, category, start_time)
         print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
 
+    except typer.Exit:
+        raise
     except Exception as e:
         response = error_response(
             command="list",
@@ -287,7 +299,11 @@ def stats() -> None:
 
         response = get_stats(start_time)
         print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
 
+    except typer.Exit:
+        raise
     except Exception as e:
         response = error_response(
             command="stats",
@@ -311,7 +327,11 @@ def check(
 
         response = check_paper_exists(arxiv_id, start_time)
         print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
 
+    except typer.Exit:
+        raise
     except Exception as e:
         response = error_response(
             command="check",

@@ -250,8 +250,10 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
-            # Normalize paper ID
-            sanitized_id = arxiv_id.replace(".", "_").replace("/", "_")
+            # Normalize paper ID (strip version suffix like "v1", "v2")
+            import re
+            base_id = re.sub(r"v\d+$", "", arxiv_id)
+            sanitized_id = base_id.replace(".", "_").replace("/", "_")
 
             # Try to get the document
             try:

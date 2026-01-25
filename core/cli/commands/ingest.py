@@ -51,7 +51,7 @@ def ingest_papers(
 
     if pdf_paths:
         for pdf_path in pdf_paths:
-            result = _ingest_local_pdf(pdf_path, config, force)
+            result = _ingest_local_pdf(pdf_path, config)
             results.append(result)
 
     # Summarize results
@@ -167,7 +167,7 @@ def _ingest_arxiv_paper(arxiv_id: str, config: Any, force: bool) -> dict[str, An
         client.close()
 
 
-def _ingest_local_pdf(pdf_path: str, config: Any, force: bool) -> dict[str, Any]:
+def _ingest_local_pdf(pdf_path: str, config: Any) -> dict[str, Any]:
     """Ingest a local PDF file."""
     progress(f"Ingesting local PDF: {pdf_path}")
 

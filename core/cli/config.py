@@ -40,7 +40,7 @@ def get_config() -> CLIConfig:
     Optional environment variables:
         ARANGO_HOST: ArangoDB host (default: localhost)
         ARANGO_PORT: ArangoDB port (default: 8529)
-        HADES_DATABASE: Database name (default: hades)
+        HADES_DATABASE: Database name (default: arxiv_datastore)
         ARANGO_RO_SOCKET: Read-only Unix socket path
         ARANGO_RW_SOCKET: Read-write Unix socket path
         HADES_PDF_PATH: Base path for PDF storage

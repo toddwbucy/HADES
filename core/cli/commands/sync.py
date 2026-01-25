@@ -66,6 +66,15 @@ def sync_abstracts(
     else:
         start_date = datetime.now() - timedelta(days=7)
 
+    # Validate batch_size
+    if batch_size <= 0:
+        return error_response(
+            command="sync",
+            code=ErrorCode.CONFIG_ERROR,
+            message="batch_size must be >= 1",
+            start_time=start_time,
+        )
+
     progress(f"Syncing abstracts from {start_date.strftime('%Y-%m-%d')}...")
 
     try:
@@ -276,8 +285,9 @@ def _filter_existing(
                 "FOR doc IN arxiv_papers RETURN doc.arxiv_id"
             )
             existing_ids.update(r for r in results if r)
-        except Exception:
-            pass
+        except Exception as e:
+            # Collection may not exist yet - treat as empty
+            progress(f"Note: Could not query existing papers: {e}")
 
         # Filter out existing (strip version suffix for comparison)
         new_papers = []
@@ -394,28 +404,28 @@ def _embed_and_store_abstracts(
                     "title_embedding": [],  # Empty to match existing schema
                 })
 
-            # Insert documents (ignore duplicates)
+            # Insert documents (skip duplicates - they raise unique constraint errors)
             try:
-                # Use insert with overwrite mode to handle duplicates
+                duplicates = 0
                 for doc in paper_docs:
                     try:
                         client.insert_documents("arxiv_papers", [doc])
                     except Exception:
-                        pass  # Skip duplicates
+                        duplicates += 1  # Likely duplicate key
 
                 for doc in abstract_docs:
                     try:
                         client.insert_documents("arxiv_abstracts", [doc])
                     except Exception:
-                        pass
+                        pass  # Skip if exists
 
                 for doc in embedding_docs:
                     try:
                         client.insert_documents("arxiv_embeddings", [doc])
                     except Exception:
-                        pass
+                        pass  # Skip if exists
 
-                synced += len(batch)
+                synced += len(batch) - duplicates
             except Exception as e:
                 progress(f"Warning: Failed to store batch: {e}")
 
