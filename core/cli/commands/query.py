@@ -112,8 +112,10 @@ def get_paper_chunks(
         client = ArangoHttp2Client(client_config)
 
         try:
-            # Normalize paper ID for lookup
-            sanitized_id = paper_id.replace(".", "_").replace("/", "_")
+            # Normalize paper ID for lookup (strip version suffix like "v1", "v2")
+            import re
+            base_id = re.sub(r"v\d+$", "", paper_id)
+            sanitized_id = base_id.replace(".", "_").replace("/", "_")
 
             # Query chunks for this paper
             aql = """
@@ -233,8 +235,9 @@ def _search_embeddings(
             """
             chunk_results = client.query(aql_chunks)
             all_embeddings.extend(chunk_results or [])
-        except Exception:
-            pass
+        except Exception as e:
+            # Collection may not exist - continue with other sources
+            progress(f"Note: Could not query full paper chunks: {e}")
 
         # Search synced abstracts (from sync command)
         try:
@@ -255,8 +258,9 @@ def _search_embeddings(
             """
             abstract_results = client.query(aql_abstracts)
             all_embeddings.extend(abstract_results or [])
-        except Exception:
-            pass
+        except Exception as e:
+            # Collection may not exist - continue with other sources
+            progress(f"Note: Could not query synced abstracts: {e}")
 
         if not all_embeddings:
             return []

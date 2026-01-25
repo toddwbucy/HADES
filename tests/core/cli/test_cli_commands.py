@@ -1,10 +1,7 @@
 """Tests for CLI commands using mocked dependencies."""
 
-import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from core.cli.commands.arxiv import _metadata_to_dict, get_paper_info, search_arxiv
 from core.cli.output import ErrorCode
@@ -21,7 +18,6 @@ class TestArxivSearch:
         mock_client_class.return_value = mock_client
 
         # Mock the API response
-        mock_entry = MagicMock()
         mock_metadata = MagicMock()
         mock_metadata.arxiv_id = "2401.12345"
         mock_metadata.title = "Test Paper"

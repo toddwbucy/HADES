@@ -3,8 +3,6 @@
 import json
 import time
 
-import pytest
-
 from core.cli.output import (
     CLIResponse,
     ErrorCode,

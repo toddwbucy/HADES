@@ -67,10 +67,17 @@ def get_config() -> CLIConfig:
     else:
         device = "cpu"
 
+    # Parse port with validation
+    port_str = os.environ.get("ARANGO_PORT", "8529")
+    try:
+        arango_port = int(port_str)
+    except ValueError as e:
+        raise ValueError(f"ARANGO_PORT must be a number, got: {port_str}") from e
+
     return CLIConfig(
         arango_password=password,
         arango_host=os.environ.get("ARANGO_HOST", "localhost"),
-        arango_port=int(os.environ.get("ARANGO_PORT", "8529")),
+        arango_port=arango_port,
         arango_database=os.environ.get("HADES_DATABASE", "arxiv_datastore"),
         arango_ro_socket=os.environ.get("ARANGO_RO_SOCKET"),
         arango_rw_socket=os.environ.get("ARANGO_RW_SOCKET"),
