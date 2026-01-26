@@ -337,6 +337,74 @@ def abstract_similar(
         raise typer.Exit(1) from None
 
 
+@abstract_app.command("refine")
+def abstract_refine(
+    query: str = typer.Argument(..., help="Original search query", metavar="QUERY"),
+    positive: list[str] = typer.Option(
+        ..., "--positive", "-p", help="Relevant paper IDs (positive exemplars)"
+    ),
+    negative: list[str] = typer.Option(
+        None, "--negative", "-x", help="Irrelevant paper IDs (negative exemplars)"
+    ),
+    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
+    alpha: float = typer.Option(1.0, "--alpha", help="Weight for original query (default 1.0)"),
+    beta: float = typer.Option(0.75, "--beta", help="Weight for positive exemplars (default 0.75)"),
+    gamma: float = typer.Option(0.15, "--gamma", help="Weight for negative exemplars (default 0.15)"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+) -> None:
+    """Refine search using relevance feedback (Rocchio algorithm).
+
+    After an initial search, mark relevant papers as positive exemplars to
+    refine the query. The refined search uses a weighted combination of
+    the original query and the exemplar embeddings.
+
+    Rocchio formula: q' = α*query + β*mean(positive) - γ*mean(negative)
+
+    Examples:
+        # Refine with positive exemplars only
+        hades abstract refine "transformer attention" -p 2401.12345 -p 2401.67890
+
+        # Refine with both positive and negative exemplars
+        hades abstract refine "neural embeddings" -p 2401.12345 -x 2402.99999
+
+        # Custom weights for more aggressive refinement
+        hades abstract refine "late chunking" -p 2401.12345 --alpha 0.5 --beta 1.0
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.abstract import refine_search
+
+        response = refine_search(
+            query=query,
+            positive_ids=positive,
+            limit=limit,
+            start_time=start_time,
+            negative_ids=negative,
+            category=category,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+        )
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="abstract.refine",
+            code=ErrorCode.SEARCH_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 # =============================================================================
 # Ingest Commands
 # =============================================================================

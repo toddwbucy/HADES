@@ -5,8 +5,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from core.cli.commands.abstract import (
+    _compute_rocchio_centroid,
     find_similar,
     ingest_from_abstract,
+    refine_search,
     search_abstracts,
     search_abstracts_bulk,
 )
@@ -551,3 +553,215 @@ class TestBulkSearch:
         mock_search.assert_called_once()
         call_args = mock_search.call_args
         assert call_args[1]["category_filter"] == "cs.AI"
+
+
+class TestRefineSearch:
+    """Tests for relevance feedback / refine search command."""
+
+    @patch("core.cli.commands.abstract._get_paper_info")
+    @patch("core.cli.commands.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.abstract._compute_rocchio_centroid")
+    @patch("core.cli.commands.abstract._get_multiple_paper_embeddings")
+    @patch("core.cli.commands.abstract._get_query_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_refine_returns_results(
+        self,
+        mock_get_config,
+        mock_get_query_emb,
+        mock_get_paper_embs,
+        mock_rocchio,
+        mock_search,
+        mock_get_info,
+    ):
+        """Test successful refine search."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_query_emb.return_value = np.ones(2048)
+        mock_get_paper_embs.return_value = [np.ones(2048) * 0.5]
+        mock_rocchio.return_value = np.ones(2048) * 0.8
+
+        mock_search.return_value = (
+            [
+                {
+                    "arxiv_id": "2401.99999",
+                    "title": "Refined Result",
+                    "similarity": 0.92,
+                    "abstract": "...",
+                    "categories": ["cs.AI"],
+                    "local": False,
+                    "local_chunks": None,
+                }
+            ],
+            100000,
+        )
+
+        mock_get_info.return_value = {"title": "Positive Exemplar"}
+
+        response = refine_search(
+            query="transformer attention",
+            positive_ids=["2401.12345"],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is True
+        assert response.command == "abstract.refine"
+        assert response.data["mode"] == "relevance_feedback"
+        assert len(response.data["positive_exemplars"]) == 1
+        assert len(response.data["results"]) == 1
+
+    @patch("core.cli.commands.abstract.get_config")
+    def test_refine_rejects_empty_positive_ids(self, mock_get_config):
+        """Test refine rejects empty positive exemplars."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        response = refine_search(
+            query="test",
+            positive_ids=[],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "positive exemplar" in response.error["message"].lower()
+
+    @patch("core.cli.commands.abstract._get_multiple_paper_embeddings")
+    @patch("core.cli.commands.abstract._get_query_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_refine_handles_missing_papers(
+        self, mock_get_config, mock_get_query_emb, mock_get_paper_embs
+    ):
+        """Test refine handles when no positive papers found."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_query_emb.return_value = np.ones(2048)
+        mock_get_paper_embs.return_value = []  # No papers found
+
+        response = refine_search(
+            query="test",
+            positive_ids=["9999.99999"],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.PAPER_NOT_FOUND.value
+
+    @patch("core.cli.commands.abstract.get_config")
+    def test_refine_handles_config_error(self, mock_get_config):
+        """Test refine handles config errors."""
+        mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
+
+        response = refine_search(
+            query="test",
+            positive_ids=["2401.12345"],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+
+    @patch("core.cli.commands.abstract._get_paper_info")
+    @patch("core.cli.commands.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.abstract._compute_rocchio_centroid")
+    @patch("core.cli.commands.abstract._get_multiple_paper_embeddings")
+    @patch("core.cli.commands.abstract._get_query_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_refine_passes_weights_to_rocchio(
+        self,
+        mock_get_config,
+        mock_get_query_emb,
+        mock_get_paper_embs,
+        mock_rocchio,
+        mock_search,
+        mock_get_info,
+    ):
+        """Test that custom weights are passed to Rocchio computation."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_query_emb.return_value = np.ones(2048)
+        mock_get_paper_embs.return_value = [np.ones(2048)]
+        mock_rocchio.return_value = np.ones(2048)
+        mock_search.return_value = ([], 0)
+        mock_get_info.return_value = {"title": "Test"}
+
+        refine_search(
+            query="test",
+            positive_ids=["2401.12345"],
+            limit=10,
+            start_time=0,
+            alpha=0.5,
+            beta=1.0,
+            gamma=0.25,
+        )
+
+        # Verify Rocchio was called with custom weights
+        mock_rocchio.assert_called_once()
+        call_kwargs = mock_rocchio.call_args[1]
+        assert call_kwargs["alpha"] == 0.5
+        assert call_kwargs["beta"] == 1.0
+        assert call_kwargs["gamma"] == 0.25
+
+
+class TestRocchioCentroid:
+    """Tests for Rocchio centroid computation."""
+
+    def test_rocchio_with_positive_only(self):
+        """Test Rocchio with only positive exemplars."""
+        query = np.array([1.0, 0.0, 0.0])
+        positive = [np.array([0.0, 1.0, 0.0])]
+
+        result = _compute_rocchio_centroid(query, positive, alpha=1.0, beta=1.0)
+
+        # q' = 1.0 * [1,0,0] + 1.0 * [0,1,0] = [1,1,0]
+        expected = np.array([1.0, 1.0, 0.0])
+        np.testing.assert_array_almost_equal(result, expected)
+
+    def test_rocchio_with_negative(self):
+        """Test Rocchio with positive and negative exemplars."""
+        query = np.array([1.0, 0.0, 0.0])
+        positive = [np.array([0.0, 1.0, 0.0])]
+        negative = [np.array([0.0, 0.0, 1.0])]
+
+        result = _compute_rocchio_centroid(
+            query, positive, negative, alpha=1.0, beta=1.0, gamma=1.0
+        )
+
+        # q' = 1.0 * [1,0,0] + 1.0 * [0,1,0] - 1.0 * [0,0,1] = [1,1,-1]
+        expected = np.array([1.0, 1.0, -1.0])
+        np.testing.assert_array_almost_equal(result, expected)
+
+    def test_rocchio_averages_multiple_positives(self):
+        """Test Rocchio averages multiple positive exemplars."""
+        query = np.array([1.0, 0.0])
+        positive = [
+            np.array([0.0, 2.0]),
+            np.array([0.0, 4.0]),
+        ]
+
+        result = _compute_rocchio_centroid(query, positive, alpha=1.0, beta=1.0)
+
+        # mean(positive) = [0, 3]
+        # q' = 1.0 * [1,0] + 1.0 * [0,3] = [1,3]
+        expected = np.array([1.0, 3.0])
+        np.testing.assert_array_almost_equal(result, expected)
+
+    def test_rocchio_respects_weights(self):
+        """Test Rocchio respects alpha and beta weights."""
+        query = np.array([2.0, 0.0])
+        positive = [np.array([0.0, 2.0])]
+
+        result = _compute_rocchio_centroid(query, positive, alpha=0.5, beta=0.25)
+
+        # q' = 0.5 * [2,0] + 0.25 * [0,2] = [1,0.5]
+        expected = np.array([1.0, 0.5])
+        np.testing.assert_array_almost_equal(result, expected)
