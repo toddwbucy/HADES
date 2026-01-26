@@ -429,3 +429,45 @@ class DoclingExtractor(ExtractorBase):
                 ))
 
         return results
+
+    def cleanup(self) -> None:
+        """Release GPU memory by unloading the converter and its models.
+
+        Call this after extraction is complete and before loading other
+        GPU-intensive models (like embedders) to free VRAM.
+        """
+        import gc
+
+        if hasattr(self, 'converter') and self.converter is not None:
+            logger.info("Cleaning up DoclingExtractor - releasing converter")
+            try:
+                # Try to move models to CPU first if possible
+                import torch
+                if torch.cuda.is_available():
+                    # Docling's DocumentConverter may have internal models
+                    # Try to access and move them to CPU
+                    if hasattr(self.converter, '_pipeline'):
+                        pipeline = self.converter._pipeline
+                        for attr_name in dir(pipeline):
+                            attr = getattr(pipeline, attr_name, None)
+                            if hasattr(attr, 'to') and callable(attr.to):
+                                try:
+                                    attr.to('cpu')
+                                except Exception:
+                                    pass
+            except Exception as e:
+                logger.debug(f"Could not move converter models to CPU: {e}")
+
+            del self.converter
+            self.converter = None
+
+        # Force garbage collection
+        gc.collect()
+
+        # Clear CUDA cache if available
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass

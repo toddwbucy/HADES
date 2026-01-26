@@ -265,6 +265,9 @@ def _filter_existing(
     """Filter out papers that already exist in the database."""
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
+    if not papers:
+        return []
+
     # Use read-write socket - cursor operations require write access
     arango_config = get_arango_config(config, read_only=False)
     client_config = ArangoHttp2Config(
@@ -278,19 +281,27 @@ def _filter_existing(
     client = ArangoHttp2Client(client_config)
 
     try:
-        # Get all existing arxiv_ids from arxiv_papers
-        existing_ids = set()
+        # Build list of base IDs to check (strip version suffixes)
+        check_ids = []
+        for p in papers:
+            arxiv_id = p["arxiv_id"]
+            base_id = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
+            check_ids.append(base_id)
 
+        # Query only for the specific IDs we're checking (not all 2.8M!)
+        # This avoids chunked transfer encoding issues with large result sets
+        existing_ids = set()
         try:
             results = client.query(
-                "FOR doc IN arxiv_papers RETURN doc.arxiv_id"
+                "FOR doc IN arxiv_papers FILTER doc.arxiv_id IN @ids RETURN doc.arxiv_id",
+                bind_vars={"ids": check_ids},
             )
             existing_ids.update(r for r in results if r)
         except Exception as e:
             # Collection may not exist yet - treat as empty
             progress(f"Note: Could not query existing papers: {e}")
 
-        # Filter out existing (strip version suffix for comparison)
+        # Filter out existing
         new_papers = []
         for p in papers:
             arxiv_id = p["arxiv_id"]

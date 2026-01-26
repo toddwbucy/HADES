@@ -194,6 +194,8 @@ class DocumentProcessor:
         else:
             self.latex_extractor = None
 
+        # Store embedder config for lazy loading - don't load the model yet
+        # This allows us to unload extraction models before loading embedder
         embedder_type = (self.config.embedder_type or "jina").lower()
         model_name = self.config.embedding_model or "jinaai/jina-embeddings-v4"
         if model_name.lower() in {"jina-v4", "jinaai/jina-v4"}:
@@ -206,7 +208,7 @@ class DocumentProcessor:
             )
             model_name = "sentence-transformers/all-mpnet-base-v2"
 
-        embed_config = EmbeddingConfig(
+        self._embed_config = EmbeddingConfig(
             model_name=model_name,
             device=self.config.device or "cuda",
             batch_size=self.config.batch_size,
@@ -214,17 +216,10 @@ class DocumentProcessor:
             chunk_size_tokens=self.config.chunk_size_tokens,
             chunk_overlap_tokens=self.config.chunk_overlap_tokens,
         )
-
-        if embedder_type in {"sentence", "sentence-transformers"}:
-            logger.warning(
-                "SentenceTransformersEmbedder is deprecated and will be removed after migration; "
-                "routing to JinaV4Embedder fallback.",
-            )
-        elif embedder_type not in {"jina", "transformer"}:
-            logger.warning("Unknown embedder_type '%s'; defaulting to JinaV4Embedder", embedder_type)
-
-        self.embedder = EmbedderFactory.create(model_name=model_name, config=embed_config)
+        self._embedder_type = embedder_type
         self.embedding_model = model_name
+        # Embedder will be lazy-loaded when needed
+        self._embedder = None
 
         # Initialize staging directory management
         self._staging_tempdir: tempfile.TemporaryDirectory | None = None
@@ -251,6 +246,29 @@ class DocumentProcessor:
 
         logger.info("Initialized DocumentProcessor with config: %s", self.config)
 
+    @property
+    def embedder(self):
+        """Lazy-load the embedder only when first needed.
+
+        This ensures we don't have both the extraction VLM models and
+        embedding models loaded simultaneously, which would exceed GPU memory.
+        """
+        if self._embedder is None:
+            logger.info("Lazy-loading embedder: %s", self.embedding_model)
+            if self._embedder_type in {"sentence", "sentence-transformers"}:
+                logger.warning(
+                    "SentenceTransformersEmbedder is deprecated and will be removed after migration; "
+                    "routing to JinaV4Embedder fallback.",
+                )
+            elif self._embedder_type not in {"jina", "transformer"}:
+                logger.warning("Unknown embedder_type '%s'; defaulting to JinaV4Embedder", self._embedder_type)
+
+            self._embedder = EmbedderFactory.create(
+                model_name=self.embedding_model,
+                config=self._embed_config,
+            )
+        return self._embedder
+
     def cleanup(self) -> None:
         """Clean up staging directory and other resources.
 
@@ -271,6 +289,56 @@ class DocumentProcessor:
         """Ensure staging directory is cleaned up on garbage collection."""
         self.cleanup()
 
+    def _clear_gpu_memory(self, unload_extractor: bool = True) -> None:
+        """Clear CUDA cache to free GPU memory between processing phases.
+
+        This is essential when processing large documents where the extraction
+        VLM models (8GB+) need to release memory before embedding starts.
+
+        Args:
+            unload_extractor: If True, also unload the Docling extractor's models
+                to fully free GPU memory. The extractor will be lazily reloaded
+                if needed for batch processing.
+        """
+        try:
+            import gc
+
+            import torch
+
+            # Unload Docling's VLM models by calling its cleanup method
+            # This releases ~8GB of VRAM that would otherwise stay allocated
+            if unload_extractor and hasattr(self, "docling_extractor") and self.docling_extractor is not None:
+                logger.info("Unloading Docling extractor to free VLM memory")
+
+                # Use the extractor's cleanup method if available
+                if hasattr(self.docling_extractor, "cleanup"):
+                    self.docling_extractor.cleanup()
+
+                del self.docling_extractor
+                self.docling_extractor = None
+
+            # Also clear the latex extractor if present
+            if hasattr(self, "latex_extractor") and self.latex_extractor is not None:
+                del self.latex_extractor
+                self.latex_extractor = None
+
+            if torch.cuda.is_available():
+                # Run garbage collection to release Python references
+                gc.collect()
+                # Clear CUDA cache
+                torch.cuda.empty_cache()
+                # Run GC again after cache clear
+                gc.collect()
+                # Synchronize to ensure all operations complete
+                torch.cuda.synchronize()
+
+                # Log memory status
+                allocated = torch.cuda.memory_allocated() / 1024**3
+                reserved = torch.cuda.memory_reserved() / 1024**3
+                logger.info(f"GPU memory after clearing: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        except Exception as exc:
+            logger.warning("Could not clear CUDA cache: %s", exc)
+
     def process_document(
         self,
         pdf_path: str | Path,
@@ -288,10 +356,22 @@ class DocumentProcessor:
         doc_id = document_id or pdf_path.stem
         logger.info("Processing document: %s", doc_id)
 
+        # Configure CUDA memory allocation for better fragmentation handling
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # This helps with memory fragmentation on smaller GPUs
+                os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        except Exception:
+            pass
+
         try:
             extraction_start = time.time()
             extraction_result = self._extract_content(pdf_path, latex_path)
             extraction_time = time.time() - extraction_start
+
+            # Clear CUDA cache after extraction to free VLM memory before embedding
+            self._clear_gpu_memory()
 
             strategy = self.config.chunking_strategy
             if strategy == "late":
@@ -522,9 +602,11 @@ class DocumentProcessor:
         if not chunks:
             return []
 
-        # Batch all texts in a single embed call for efficiency
+        # Use configured batch size to avoid OOM on large documents
+        # Default batch_size=1 may be too conservative, but batch_size=len(texts) is dangerous
         texts = [chunk["text"] for chunk in chunks]
-        embeddings = self.embedder.embed_texts(texts, batch_size=len(texts))
+        batch_size = min(self.config.batch_size or 8, 32)  # Cap at 32 to avoid OOM
+        embeddings = self.embedder.embed_texts(texts, batch_size=batch_size)
 
         # Build ChunkWithEmbedding instances from chunks and embeddings
         embedded_chunks: list[ChunkWithEmbedding] = []
