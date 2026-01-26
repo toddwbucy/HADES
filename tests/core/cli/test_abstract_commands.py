@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from core.cli.commands.abstract import find_similar, ingest_from_abstract, search_abstracts
+from core.cli.commands.abstract import (
+    find_similar,
+    ingest_from_abstract,
+    search_abstracts,
+    search_abstracts_bulk,
+)
 from core.cli.output import ErrorCode
 
 
@@ -417,3 +422,132 @@ class TestFindSimilar:
 
         assert response.success is False
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+
+
+class TestBulkSearch:
+    """Tests for bulk search command."""
+
+    @patch("core.cli.commands.abstract._search_abstract_embeddings_bulk")
+    @patch("core.cli.commands.abstract._get_bulk_query_embeddings")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_bulk_search_returns_results(
+        self, mock_get_config, mock_get_embeddings, mock_search
+    ):
+        """Test successful bulk search."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_embeddings.return_value = np.zeros((2, 2048))
+
+        mock_search.return_value = (
+            {
+                "query1": [
+                    {
+                        "arxiv_id": "2401.12345",
+                        "title": "Paper 1",
+                        "similarity": 0.95,
+                        "abstract": "...",
+                        "categories": ["cs.AI"],
+                        "local": False,
+                        "local_chunks": None,
+                    }
+                ],
+                "query2": [
+                    {
+                        "arxiv_id": "2401.67890",
+                        "title": "Paper 2",
+                        "similarity": 0.90,
+                        "abstract": "...",
+                        "categories": ["cs.LG"],
+                        "local": True,
+                        "local_chunks": 42,
+                    }
+                ],
+            },
+            100000,
+        )
+
+        response = search_abstracts_bulk(
+            queries=["query1", "query2"],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is True
+        assert response.command == "abstract.search-bulk"
+        assert response.data["query_count"] == 2
+        assert "query1" in response.data["results_by_query"]
+        assert "query2" in response.data["results_by_query"]
+        assert response.data["total_searched"] == 100000
+
+    @patch("core.cli.commands.abstract.get_config")
+    def test_bulk_search_rejects_empty_queries(self, mock_get_config):
+        """Test bulk search rejects empty queries list."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        response = search_abstracts_bulk(
+            queries=[],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "empty" in response.error["message"]
+
+    @patch("core.cli.commands.abstract.get_config")
+    def test_bulk_search_rejects_invalid_limit(self, mock_get_config):
+        """Test bulk search rejects invalid limit."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        response = search_abstracts_bulk(
+            queries=["test"],
+            limit=0,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "limit" in response.error["message"]
+
+    @patch("core.cli.commands.abstract.get_config")
+    def test_bulk_search_handles_config_error(self, mock_get_config):
+        """Test bulk search handles config errors."""
+        mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
+
+        response = search_abstracts_bulk(
+            queries=["test"],
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+
+    @patch("core.cli.commands.abstract._search_abstract_embeddings_bulk")
+    @patch("core.cli.commands.abstract._get_bulk_query_embeddings")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_bulk_search_passes_category_filter(
+        self, mock_get_config, mock_get_embeddings, mock_search
+    ):
+        """Test that category filter is passed through."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_embeddings.return_value = np.zeros((1, 2048))
+        mock_search.return_value = ({"test": []}, 0)
+
+        search_abstracts_bulk(
+            queries=["test"],
+            limit=10,
+            start_time=0,
+            category="cs.AI",
+        )
+
+        mock_search.assert_called_once()
+        call_args = mock_search.call_args
+        assert call_args[1]["category_filter"] == "cs.AI"

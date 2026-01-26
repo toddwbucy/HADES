@@ -587,3 +587,299 @@ def _hybrid_rerank(
     # Sort by combined score descending
     reranked.sort(key=lambda x: x[0], reverse=True)
     return reranked
+
+
+def search_abstracts_bulk(
+    queries: list[str],
+    limit: int,
+    start_time: float,
+    category: str | None = None,
+) -> CLIResponse:
+    """Search abstracts with multiple queries in a single optimized pass.
+
+    This is more efficient than calling search_abstracts() multiple times because:
+    - Embedder model is loaded once (not N times)
+    - Single pass over 2.8M embeddings (not N passes)
+    - Uses matrix multiplication for batch similarity computation
+
+    Args:
+        queries: List of search query texts
+        limit: Maximum number of results per query
+        start_time: Start time for duration calculation
+        category: Optional arxiv category filter (e.g., "cs.AI")
+
+    Returns:
+        CLIResponse with results grouped by query
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="abstract.search-bulk",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    if not queries:
+        return error_response(
+            command="abstract.search-bulk",
+            code=ErrorCode.CONFIG_ERROR,
+            message="queries list must not be empty",
+            start_time=start_time,
+        )
+
+    if limit <= 0:
+        return error_response(
+            command="abstract.search-bulk",
+            code=ErrorCode.CONFIG_ERROR,
+            message="limit must be >= 1",
+            start_time=start_time,
+        )
+
+    progress(f"Generating embeddings for {len(queries)} queries...")
+
+    try:
+        # Generate all query embeddings in one batch
+        query_embeddings = _get_bulk_query_embeddings(queries, config)
+
+        progress(f"Searching {limit} results per query across {len(queries)} queries...")
+
+        # Single-pass search for all queries
+        results_by_query, total_processed = _search_abstract_embeddings_bulk(
+            query_embeddings,
+            queries,
+            limit,
+            config,
+            category_filter=category,
+        )
+
+        return success_response(
+            command="abstract.search-bulk",
+            data={
+                "queries": queries,
+                "results_by_query": results_by_query,
+                "total_searched": total_processed,
+                "query_count": len(queries),
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="abstract.search-bulk",
+            code=ErrorCode.QUERY_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
+def _get_bulk_query_embeddings(texts: list[str], config: Any) -> np.ndarray:
+    """Generate embeddings for multiple query texts in one batch.
+
+    Args:
+        texts: List of query texts
+        config: CLI configuration
+
+    Returns:
+        Array of shape (num_queries, embedding_dim)
+    """
+    from core.embedders.embedders_jina import JinaV4Embedder
+
+    embedder = JinaV4Embedder(
+        config={
+            "device": config.device,
+            "use_fp16": True,
+        }
+    )
+
+    embeddings = embedder.embed_texts(texts, task="retrieval")
+    return np.array(embeddings, dtype=np.float32)
+
+
+def _search_abstract_embeddings_bulk(
+    query_embeddings: np.ndarray,
+    queries: list[str],
+    limit: int,
+    config: Any,
+    category_filter: str | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    """Search abstract embeddings with multiple queries in a single pass.
+
+    Uses matrix multiplication for efficient batch similarity computation.
+    Maintains separate heaps for each query's top-k results.
+
+    Args:
+        query_embeddings: Array of shape (num_queries, embedding_dim)
+        queries: Original query texts (for result attribution)
+        limit: Number of results per query
+        config: CLI configuration
+        category_filter: Optional category to filter by
+
+    Returns:
+        Tuple of (results dict keyed by query, total_processed count)
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    arango_config = get_arango_config(config, read_only=True)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        num_queries = len(queries)
+
+        # Normalize all query embeddings at once
+        norms = np.linalg.norm(query_embeddings, axis=1, keepdims=True) + 1e-8
+        query_norms = query_embeddings / norms
+
+        # Separate heap for each query: heap[i] = [(similarity, arxiv_id, {}), ...]
+        top_results: list[list[tuple[float, str, dict]]] = [[] for _ in range(num_queries)]
+
+        batch_size = 10000
+        offset = 0
+        total_processed = 0
+
+        # Build category filter if specified (use bind variable to prevent injection)
+        category_clause = ""
+        category_bind: dict[str, str] = {}
+        if category_filter:
+            category_clause = """
+                LET paper = DOCUMENT(CONCAT("arxiv_papers/", emb._key))
+                FILTER paper != null AND @category_filter IN paper.categories
+            """
+            category_bind = {"category_filter": category_filter}
+
+        progress(f"Processing embeddings in batches of {batch_size}...")
+
+        while True:
+            aql = f"""
+                FOR emb IN arxiv_embeddings
+                    {category_clause}
+                    LIMIT @offset, @batch_size
+                    RETURN {{
+                        arxiv_id: emb.arxiv_id,
+                        embedding: emb.combined_embedding
+                    }}
+            """
+
+            try:
+                batch = client.query(
+                    aql,
+                    bind_vars={"offset": offset, "batch_size": batch_size, **category_bind},
+                )
+            except Exception as e:
+                if "chunked" in str(e).lower() or "501" in str(e):
+                    progress(f"Reducing batch size due to: {e}")
+                    batch_size = batch_size // 2
+                    if batch_size < 1000:
+                        raise RuntimeError("Batch size too small, cannot process") from e
+                    continue
+                raise
+
+            if not batch:
+                break
+
+            # Build embedding matrix for this batch
+            batch_embeddings = []
+            batch_arxiv_ids = []
+            for item in batch:
+                if item.get("embedding") is not None:
+                    batch_embeddings.append(item["embedding"])
+                    batch_arxiv_ids.append(item.get("arxiv_id", ""))
+
+            if batch_embeddings:
+                # Convert to numpy and normalize
+                emb_matrix = np.array(batch_embeddings, dtype=np.float32)
+                emb_norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True) + 1e-8
+                emb_matrix_norm = emb_matrix / emb_norms
+
+                # Compute all similarities at once: (num_queries, batch_size)
+                similarities = query_norms @ emb_matrix_norm.T
+
+                # Update heaps for each query
+                for q_idx in range(num_queries):
+                    for b_idx, arxiv_id in enumerate(batch_arxiv_ids):
+                        sim = float(similarities[q_idx, b_idx])
+
+                        if len(top_results[q_idx]) < limit:
+                            heapq.heappush(top_results[q_idx], (sim, arxiv_id, {"similarity": sim}))
+                        elif sim > top_results[q_idx][0][0]:
+                            heapq.heapreplace(top_results[q_idx], (sim, arxiv_id, {"similarity": sim}))
+
+            total_processed += len(batch)
+            offset += batch_size
+
+            if total_processed % 100000 < batch_size:
+                progress(f"Processed {total_processed:,} embeddings...")
+
+            if len(batch) < batch_size:
+                break
+
+        progress(f"Processed {total_processed:,} total embeddings")
+
+        # Collect all unique arxiv_ids for metadata fetch
+        all_arxiv_ids = set()
+        for heap in top_results:
+            for _, arxiv_id, _ in heap:
+                all_arxiv_ids.add(arxiv_id)
+
+        # Fetch metadata for all results
+        metadata_map: dict[str, dict] = {}
+        if all_arxiv_ids:
+            abstracts_aql = """
+                FOR id IN @ids
+                    LET key = SUBSTITUTE(SUBSTITUTE(id, ".", "_"), "/", "_")
+                    LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", key))
+                    LET paper = DOCUMENT(CONCAT("arxiv_papers/", key))
+                    LET local = DOCUMENT(CONCAT("arxiv_metadata/", key))
+                    RETURN {
+                        arxiv_id: id,
+                        title: abstract.title,
+                        abstract: abstract.abstract,
+                        categories: paper.categories,
+                        local: local != null,
+                        local_chunks: local.num_chunks
+                    }
+            """
+            metadata = client.query(abstracts_aql, bind_vars={"ids": list(all_arxiv_ids)})
+            metadata_map = {m["arxiv_id"]: m for m in metadata if m}
+
+        # Build results dict keyed by query
+        results_by_query: dict[str, list[dict[str, Any]]] = {}
+
+        for q_idx, query in enumerate(queries):
+            heap_results = sorted(top_results[q_idx], key=lambda x: x[0], reverse=True)
+            results = []
+
+            for sim, arxiv_id, extra in heap_results:
+                meta = metadata_map.get(arxiv_id, {})
+
+                abstract_text = meta.get("abstract", "") or ""
+                if len(abstract_text) > 300:
+                    abstract_snippet = abstract_text[:300].rsplit(" ", 1)[0] + "..."
+                else:
+                    abstract_snippet = abstract_text
+
+                results.append({
+                    "arxiv_id": arxiv_id,
+                    "title": meta.get("title"),
+                    "similarity": round(extra.get("similarity", sim), 4),
+                    "abstract": abstract_snippet,
+                    "categories": meta.get("categories", []),
+                    "local": meta.get("local", False),
+                    "local_chunks": meta.get("local_chunks"),
+                })
+
+            results_by_query[query] = results
+
+        return results_by_query, total_processed
+
+    finally:
+        client.close()
