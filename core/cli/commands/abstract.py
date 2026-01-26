@@ -68,7 +68,7 @@ def search_abstracts(
         progress(f"Searching {limit} most similar abstracts ({search_mode})...")
 
         # Search the abstract embeddings
-        results = _search_abstract_embeddings(
+        results, total_processed = _search_abstract_embeddings(
             query_embedding,
             limit,
             config,
@@ -82,7 +82,7 @@ def search_abstracts(
                 "query": query,
                 "mode": "hybrid" if hybrid else "semantic",
                 "results": results,
-                "total_searched": results[0]["total_searched"] if results else 0,
+                "total_searched": total_processed,
             },
             start_time=start_time,
         )
@@ -180,7 +180,7 @@ def find_similar(
         progress(f"Searching {limit} most similar papers...")
 
         # Search using the paper's embedding (add 1 to limit since we'll exclude the source paper)
-        results = _search_abstract_embeddings(
+        results, total_processed = _search_abstract_embeddings(
             paper_embedding,
             limit + 1,
             config,
@@ -202,7 +202,7 @@ def find_similar(
                     "title": source_info.get("title") if source_info else None,
                 },
                 "results": results,
-                "total_searched": results[0]["total_searched"] if results else 0,
+                "total_searched": total_processed,
             },
             start_time=start_time,
         )
@@ -225,8 +225,15 @@ def _get_paper_embedding(arxiv_id: str, config: Any) -> np.ndarray | None:
 
     Returns:
         The paper's embedding vector, or None if not found
+
+    Raises:
+        ArangoHttpError: For non-404 database errors (5xx, connection issues, etc.)
     """
-    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+    from core.database.arango.optimized_client import (
+        ArangoHttp2Client,
+        ArangoHttp2Config,
+        ArangoHttpError,
+    )
 
     arango_config = get_arango_config(config, read_only=True)
     client_config = ArangoHttp2Config(
@@ -244,15 +251,16 @@ def _get_paper_embedding(arxiv_id: str, config: Any) -> np.ndarray | None:
         base_id = re.sub(r"v\d+$", "", arxiv_id)
         key = base_id.replace(".", "_").replace("/", "_")
 
-        # Try to fetch the embedding
+        # Fetch the embedding - only catch 404 (document not found)
         try:
             doc = client.get_document("arxiv_embeddings", key)
             if doc and doc.get("combined_embedding"):
                 return np.array(doc["combined_embedding"], dtype=np.float32)
-        except Exception:
-            pass
-
-        return None
+            return None
+        except ArangoHttpError as e:
+            if e.status_code == 404:
+                return None
+            raise  # Re-raise non-404 errors (5xx, auth issues, etc.)
 
     finally:
         client.close()
@@ -267,8 +275,15 @@ def _get_paper_info(arxiv_id: str, config: Any) -> dict[str, Any] | None:
 
     Returns:
         Dict with paper info, or None if not found
+
+    Raises:
+        ArangoHttpError: For non-404 database errors (5xx, connection issues, etc.)
     """
-    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+    from core.database.arango.optimized_client import (
+        ArangoHttp2Client,
+        ArangoHttp2Config,
+        ArangoHttpError,
+    )
 
     arango_config = get_arango_config(config, read_only=True)
     client_config = ArangoHttp2Config(
@@ -285,6 +300,7 @@ def _get_paper_info(arxiv_id: str, config: Any) -> dict[str, Any] | None:
         base_id = re.sub(r"v\d+$", "", arxiv_id)
         key = base_id.replace(".", "_").replace("/", "_")
 
+        # Fetch the paper info - only catch 404 (document not found)
         try:
             doc = client.get_document("arxiv_abstracts", key)
             if doc:
@@ -293,10 +309,11 @@ def _get_paper_info(arxiv_id: str, config: Any) -> dict[str, Any] | None:
                     "title": doc.get("title"),
                     "abstract": doc.get("abstract"),
                 }
-        except Exception:
-            pass
-
-        return None
+            return None
+        except ArangoHttpError as e:
+            if e.status_code == 404:
+                return None
+            raise  # Re-raise non-404 errors (5xx, auth issues, etc.)
 
     finally:
         client.close()
@@ -324,7 +341,7 @@ def _search_abstract_embeddings(
     category_filter: str | None = None,
     hybrid_query: str | None = None,
     exclude_arxiv_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     """Search abstract embeddings with batched processing.
 
     Processes 2.8M embeddings in batches to avoid memory issues.
@@ -339,7 +356,7 @@ def _search_abstract_embeddings(
         exclude_arxiv_id: ArXiv ID to exclude from results (for similar search)
 
     Returns:
-        List of results with similarity scores and local status
+        Tuple of (results list, total_processed count)
     """
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
@@ -496,7 +513,6 @@ def _search_abstract_embeddings(
                     "categories": meta.get("categories", []),
                     "local": meta.get("local", False),
                     "local_chunks": meta.get("local_chunks"),
-                    "total_searched": total_processed,
                 }
 
                 # Add hybrid scores if present
@@ -506,7 +522,7 @@ def _search_abstract_embeddings(
 
                 results.append(result_entry)
 
-        return results
+        return results, total_processed
 
     finally:
         client.close()

@@ -25,18 +25,20 @@ class TestAbstractSearch:
 
         mock_get_embedding.return_value = np.zeros(2048)
 
-        mock_search.return_value = [
-            {
-                "arxiv_id": "2401.12345",
-                "title": "Test Paper",
-                "similarity": 0.95,
-                "abstract": "Test abstract...",
-                "categories": ["cs.AI"],
-                "local": False,
-                "local_chunks": None,
-                "total_searched": 100000,
-            }
-        ]
+        mock_search.return_value = (
+            [
+                {
+                    "arxiv_id": "2401.12345",
+                    "title": "Test Paper",
+                    "similarity": 0.95,
+                    "abstract": "Test abstract...",
+                    "categories": ["cs.AI"],
+                    "local": False,
+                    "local_chunks": None,
+                }
+            ],
+            100000,  # total_processed
+        )
 
         # Execute
         response = search_abstracts(
@@ -96,7 +98,7 @@ class TestAbstractSearch:
         mock_get_config.return_value = mock_config
 
         mock_get_embedding.return_value = np.zeros(2048)
-        mock_search.return_value = []
+        mock_search.return_value = ([], 0)
 
         search_abstracts(
             query="test query",
@@ -169,28 +171,29 @@ class TestSearchResultsFormat:
         mock_get_embedding.return_value = np.zeros(2048)
 
         # One local, one not local
-        mock_search.return_value = [
-            {
-                "arxiv_id": "2401.12345",
-                "title": "Local Paper",
-                "similarity": 0.95,
-                "abstract": "...",
-                "categories": ["cs.AI"],
-                "local": True,
-                "local_chunks": 47,
-                "total_searched": 100000,
-            },
-            {
-                "arxiv_id": "2401.67890",
-                "title": "Remote Paper",
-                "similarity": 0.90,
-                "abstract": "...",
-                "categories": ["cs.LG"],
-                "local": False,
-                "local_chunks": None,
-                "total_searched": 100000,
-            },
-        ]
+        mock_search.return_value = (
+            [
+                {
+                    "arxiv_id": "2401.12345",
+                    "title": "Local Paper",
+                    "similarity": 0.95,
+                    "abstract": "...",
+                    "categories": ["cs.AI"],
+                    "local": True,
+                    "local_chunks": 47,
+                },
+                {
+                    "arxiv_id": "2401.67890",
+                    "title": "Remote Paper",
+                    "similarity": 0.90,
+                    "abstract": "...",
+                    "categories": ["cs.LG"],
+                    "local": False,
+                    "local_chunks": None,
+                },
+            ],
+            100000,  # total_processed
+        )
 
         response = search_abstracts(
             query="test",
@@ -217,18 +220,20 @@ class TestSearchResultsFormat:
 
         mock_get_embedding.return_value = np.zeros(2048)
 
-        mock_search.return_value = [
-            {
-                "arxiv_id": "2401.12345",
-                "title": "Test",
-                "similarity": 0.95,
-                "abstract": "...",
-                "categories": [],
-                "local": False,
-                "local_chunks": None,
-                "total_searched": 2826761,
-            }
-        ]
+        mock_search.return_value = (
+            [
+                {
+                    "arxiv_id": "2401.12345",
+                    "title": "Test",
+                    "similarity": 0.95,
+                    "abstract": "...",
+                    "categories": [],
+                    "local": False,
+                    "local_chunks": None,
+                }
+            ],
+            2826761,  # total_processed
+        )
 
         response = search_abstracts(
             query="test",
@@ -254,7 +259,7 @@ class TestHybridSearch:
         mock_get_config.return_value = mock_config
 
         mock_get_embedding.return_value = np.zeros(2048)
-        mock_search.return_value = []
+        mock_search.return_value = ([], 0)
 
         search_abstracts(
             query="transformer attention",
@@ -280,20 +285,22 @@ class TestHybridSearch:
         mock_get_config.return_value = mock_config
 
         mock_get_embedding.return_value = np.zeros(2048)
-        mock_search.return_value = [
-            {
-                "arxiv_id": "2401.12345",
-                "title": "Test",
-                "similarity": 0.95,
-                "abstract": "...",
-                "categories": [],
-                "local": False,
-                "local_chunks": None,
-                "total_searched": 100000,
-                "keyword_score": 0.8,
-                "combined_score": 0.91,
-            }
-        ]
+        mock_search.return_value = (
+            [
+                {
+                    "arxiv_id": "2401.12345",
+                    "title": "Test",
+                    "similarity": 0.95,
+                    "abstract": "...",
+                    "categories": [],
+                    "local": False,
+                    "local_chunks": None,
+                    "keyword_score": 0.8,
+                    "combined_score": 0.91,
+                }
+            ],
+            100000,  # total_processed
+        )
 
         response = search_abstracts(
             query="test",
@@ -323,18 +330,20 @@ class TestFindSimilar:
         mock_get_embedding.return_value = np.zeros(2048)
 
         # Return similar papers (excluding the source)
-        mock_search.return_value = [
-            {
-                "arxiv_id": "2401.67890",
-                "title": "Similar Paper",
-                "similarity": 0.92,
-                "abstract": "...",
-                "categories": ["cs.AI"],
-                "local": False,
-                "local_chunks": None,
-                "total_searched": 100000,
-            }
-        ]
+        mock_search.return_value = (
+            [
+                {
+                    "arxiv_id": "2401.67890",
+                    "title": "Similar Paper",
+                    "similarity": 0.92,
+                    "abstract": "...",
+                    "categories": ["cs.AI"],
+                    "local": False,
+                    "local_chunks": None,
+                }
+            ],
+            100000,  # total_processed
+        )
 
         mock_get_info.return_value = {"title": "Source Paper"}
 
@@ -381,7 +390,7 @@ class TestFindSimilar:
         mock_get_config.return_value = mock_config
 
         mock_get_embedding.return_value = np.zeros(2048)
-        mock_search.return_value = []
+        mock_search.return_value = ([], 0)
         mock_get_info.return_value = {"title": "Source Paper"}
 
         find_similar(
