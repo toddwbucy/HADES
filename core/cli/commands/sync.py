@@ -265,7 +265,8 @@ def _filter_existing(
     """Filter out papers that already exist in the database."""
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
-    arango_config = get_arango_config(config, read_only=True)
+    # Use read-write socket - cursor operations require write access
+    arango_config = get_arango_config(config, read_only=False)
     client_config = ArangoHttp2Config(
         database=arango_config["database"],
         socket_path=arango_config.get("socket_path"),
