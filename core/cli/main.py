@@ -343,15 +343,15 @@ def abstract_refine(
     positive: list[str] = typer.Option(
         ..., "--positive", "-p", help="Relevant paper IDs (positive exemplars)"
     ),
-    negative: list[str] = typer.Option(
+    negative: list[str] | None = typer.Option(
         None, "--negative", "-x", help="Irrelevant paper IDs (negative exemplars)"
     ),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
-    category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
+    category: str | None = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
     alpha: float = typer.Option(1.0, "--alpha", help="Weight for original query (default 1.0)"),
     beta: float = typer.Option(0.75, "--beta", help="Weight for positive exemplars (default 0.75)"),
     gamma: float = typer.Option(0.15, "--gamma", help="Weight for negative exemplars (default 0.15)"),
-    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+    gpu: int | None = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Refine search using relevance feedback (Rocchio algorithm).
 
@@ -359,7 +359,7 @@ def abstract_refine(
     refine the query. The refined search uses a weighted combination of
     the original query and the exemplar embeddings.
 
-    Rocchio formula: q' = α*query + β*mean(positive) - γ*mean(negative)
+    Rocchio formula: q' = alpha*query + beta*mean(positive) - gamma*mean(negative)
 
     Examples:
         # Refine with positive exemplars only

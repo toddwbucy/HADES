@@ -233,7 +233,7 @@ def refine_search(
     the search. Computes a modified query vector as a weighted combination of
     the original query and the positive exemplar embeddings.
 
-    Rocchio formula: q' = α*q + β*mean(positive) - γ*mean(negative)
+    Rocchio formula: q' = alpha*q + beta*mean(positive) - gamma*mean(negative)
 
     Args:
         query: Original search query text
@@ -428,7 +428,7 @@ def _compute_rocchio_centroid(
 ) -> np.ndarray:
     """Compute Rocchio relevance feedback centroid.
 
-    Rocchio formula: q' = α*q + β*mean(positive) - γ*mean(negative)
+    Rocchio formula: q' = alpha*q + beta*mean(positive) - gamma*mean(negative)
 
     Args:
         query_embedding: Original query vector
