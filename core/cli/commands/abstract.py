@@ -50,6 +50,14 @@ def search_abstracts(
             start_time=start_time,
         )
 
+    if limit <= 0:
+        return error_response(
+            command="abstract.search",
+            code=ErrorCode.CONFIG_ERROR,
+            message="limit must be >= 1",
+            start_time=start_time,
+        )
+
     progress("Generating query embedding...")
 
     try:
@@ -144,6 +152,14 @@ def find_similar(
             command="abstract.similar",
             code=ErrorCode.CONFIG_ERROR,
             message=str(e),
+            start_time=start_time,
+        )
+
+    if limit <= 0:
+        return error_response(
+            command="abstract.similar",
+            code=ErrorCode.CONFIG_ERROR,
+            message="limit must be >= 1",
             start_time=start_time,
         )
 
@@ -351,14 +367,16 @@ def _search_abstract_embeddings(
         offset = 0
         total_processed = 0
 
-        # Build category filter if specified
+        # Build category filter if specified (use bind variable to prevent injection)
         category_clause = ""
+        category_bind: dict[str, str] = {}
         if category_filter:
             # Join with arxiv_papers to filter by category
-            category_clause = f"""
+            category_clause = """
                 LET paper = DOCUMENT(CONCAT("arxiv_papers/", emb._key))
-                FILTER paper != null AND "{category_filter}" IN paper.categories
+                FILTER paper != null AND @category_filter IN paper.categories
             """
+            category_bind = {"category_filter": category_filter}
 
         progress(f"Processing embeddings in batches of {batch_size}...")
 
@@ -377,7 +395,7 @@ def _search_abstract_embeddings(
             try:
                 batch = client.query(
                     aql,
-                    bind_vars={"offset": offset, "batch_size": batch_size},
+                    bind_vars={"offset": offset, "batch_size": batch_size, **category_bind},
                 )
             except Exception as e:
                 # If we get a chunked encoding error, try smaller batches

@@ -68,6 +68,22 @@ class TestAbstractSearch:
         assert response.success is False
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
 
+    @patch("core.cli.commands.abstract.get_config")
+    def test_search_rejects_invalid_limit(self, mock_get_config):
+        """Test search rejects limit <= 0."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        response = search_abstracts(
+            query="test query",
+            limit=0,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "limit must be >= 1" in response.error["message"]
+
     @patch("core.cli.commands.abstract._search_abstract_embeddings")
     @patch("core.cli.commands.abstract._get_query_embedding")
     @patch("core.cli.commands.abstract.get_config")
@@ -82,7 +98,7 @@ class TestAbstractSearch:
         mock_get_embedding.return_value = np.zeros(2048)
         mock_search.return_value = []
 
-        response = search_abstracts(
+        search_abstracts(
             query="test query",
             limit=10,
             start_time=0,
@@ -107,7 +123,7 @@ class TestAbstractIngest:
             data={"ingested": 1, "failed": 0},
         )
 
-        response = ingest_from_abstract(
+        ingest_from_abstract(
             arxiv_ids=["2401.12345"],
             force=False,
             start_time=0,
