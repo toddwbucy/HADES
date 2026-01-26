@@ -265,9 +265,10 @@ def sync_abstracts(
             progress("No previous sync found, using default (7 days ago)...")
             start_date = datetime.now() - timedelta(days=7)
         else:
-            # Convert to naive datetime for comparison
+            # Convert to naive local datetime for comparison
+            # Must use astimezone() first to convert UTC to local time
             if last_sync.tzinfo is not None:
-                start_date = last_sync.replace(tzinfo=None)
+                start_date = last_sync.astimezone().replace(tzinfo=None)
             else:
                 start_date = last_sync
             progress(f"Incremental sync from {start_date.strftime('%Y-%m-%d %H:%M')}...")
@@ -327,9 +328,9 @@ def sync_abstracts(
         # Embed abstracts and store
         synced = _embed_and_store_abstracts(new_papers, config, batch_size)
 
-        # Update sync metadata watermark
+        # Update sync metadata watermark with current time (when sync ran)
         try:
-            _update_sync_metadata(config, added=synced, updated=0, sync_date=start_date)
+            _update_sync_metadata(config, added=synced, updated=0, sync_date=datetime.now(UTC))
         except Exception as meta_err:
             progress(f"Warning: Failed to update sync metadata: {meta_err}")
 
@@ -621,6 +622,7 @@ def _embed_and_store_abstracts(
                     {
                         "_key": sanitized_key,
                         "arxiv_id": base_id,
+                        "title": paper["title"],
                         "authors": paper["authors"],
                         "categories": paper["categories"],
                         "primary_category": paper["primary_category"],

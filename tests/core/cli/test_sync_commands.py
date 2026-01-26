@@ -80,7 +80,7 @@ class TestIncrementalSync:
         self,
         mock_get_config,
         mock_get_last_sync,
-        mock_update_metadata,
+        _mock_update_metadata,
         mock_fetch,
         mock_filter,
         mock_embed,
@@ -126,10 +126,10 @@ class TestIncrementalSync:
         self,
         mock_get_config,
         mock_get_last_sync,
-        mock_update_metadata,
+        _mock_update_metadata,
         mock_fetch,
-        mock_filter,
-        mock_embed,
+        _mock_filter,
+        _mock_embed,
     ):
         """Test incremental sync with no previous sync falls back to 7 days."""
         mock_config = MagicMock()
@@ -140,7 +140,7 @@ class TestIncrementalSync:
         mock_get_last_sync.return_value = None
 
         mock_fetch.return_value = []
-        mock_filter.return_value = []
+        # Filter and embed mocks not needed since fetch returns empty list
 
         response = sync_abstracts(
             from_date=None,
