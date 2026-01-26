@@ -473,11 +473,13 @@ def _search_abstract_embeddings(
 
         if arxiv_ids:
             # Fetch abstracts and titles
+            # Normalize both "." and "/" for legacy arxiv IDs like hep-th/9901001
             abstracts_aql = """
                 FOR id IN @ids
-                    LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", SUBSTITUTE(id, ".", "_")))
-                    LET paper = DOCUMENT(CONCAT("arxiv_papers/", SUBSTITUTE(id, ".", "_")))
-                    LET local = DOCUMENT(CONCAT("arxiv_metadata/", SUBSTITUTE(id, ".", "_")))
+                    LET key = SUBSTITUTE(SUBSTITUTE(id, ".", "_"), "/", "_")
+                    LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", key))
+                    LET paper = DOCUMENT(CONCAT("arxiv_papers/", key))
+                    LET local = DOCUMENT(CONCAT("arxiv_metadata/", key))
                     RETURN {
                         arxiv_id: id,
                         title: abstract.title,
@@ -505,10 +507,13 @@ def _search_abstract_embeddings(
                 else:
                     abstract_snippet = abstract_text
 
+                # After hybrid rerank, sim is combined score; use semantic score from extra
+                semantic_score = extra.get("similarity", sim)
+
                 result_entry = {
                     "arxiv_id": arxiv_id,
                     "title": meta.get("title"),
-                    "similarity": round(sim, 4),
+                    "similarity": round(semantic_score, 4),
                     "abstract": abstract_snippet,
                     "categories": meta.get("categories", []),
                     "local": meta.get("local", False),
