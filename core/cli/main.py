@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import time
 
 import typer
@@ -24,6 +25,16 @@ from core.cli.output import (
     error_response,
     print_response,
 )
+
+
+def _set_gpu(gpu: int | None) -> None:
+    """Set CUDA_VISIBLE_DEVICES if gpu is specified.
+
+    This must be called before importing torch or loading config,
+    as it controls which GPU PyTorch will use.
+    """
+    if gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
 # Create the main Typer app
 # Note: rich_markup_mode=None disables rich help formatting to avoid
@@ -122,6 +133,7 @@ def ingest(
     arxiv_ids: list[str] = typer.Argument(None, help="ArXiv paper IDs to ingest"),
     file: str = typer.Option(None, "--file", "-f", help="Path to local PDF file"),
     force: bool = typer.Option(False, "--force", help="Force reprocessing even if already exists"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Ingest papers into the knowledge base.
 
@@ -130,7 +142,9 @@ def ingest(
     Examples:
         hades ingest 2401.12345 2401.67890
         hades ingest --file /path/to/paper.pdf
+        hades ingest 2401.12345 --gpu 2
     """
+    _set_gpu(gpu)
     start_time = time.time()
 
     try:
@@ -177,12 +191,14 @@ def query(
     search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     paper: str = typer.Option(None, "--paper", "-p", help="Get all chunks for a specific paper"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Semantic search over the knowledge base.
 
     Returns relevant text chunks with similarity scores.
     Use --paper to retrieve all chunks for a specific paper instead of semantic search.
     """
+    _set_gpu(gpu)
     start_time = time.time()
 
     try:
@@ -230,6 +246,7 @@ def sync(
     categories: str = typer.Option(None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"),
     max_results: int = typer.Option(1000, "--max", "-m", help="Maximum papers to sync"),
     batch_size: int = typer.Option(8, "--batch", "-b", help="Batch size for embedding (default 8 for 16GB GPU)"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Sync recent abstracts from arxiv for semantic search.
 
@@ -238,7 +255,12 @@ def sync(
 
     Use this to keep your abstract database current, then use 'hades ingest'
     to download full papers you're interested in.
+
+    Examples:
+        hades sync --gpu 2 --batch 8
+        hades sync --from 2025-01-01 --categories cs.AI,cs.CL --gpu 0
     """
+    _set_gpu(gpu)
     start_time = time.time()
 
     try:
