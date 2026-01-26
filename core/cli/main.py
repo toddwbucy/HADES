@@ -53,7 +53,7 @@ app.add_typer(arxiv_app, name="arxiv")
 
 @arxiv_app.command("search")
 def arxiv_search(
-    query: str = typer.Argument(..., help="Search query for arxiv papers"),
+    query: str = typer.Argument(..., help="Search query for arxiv papers", metavar="QUERY"),
     max_results: int = typer.Option(10, "--max", "-m", help="Maximum number of results"),
     categories: str = typer.Option(None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"),
 ) -> None:
@@ -86,7 +86,7 @@ def arxiv_search(
 
 @arxiv_app.command("info")
 def arxiv_info(
-    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID (e.g., 2401.12345)"),
+    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID (e.g., 2401.12345)", metavar="ARXIV_ID"),
 ) -> None:
     """Get detailed metadata for a specific arxiv paper."""
     start_time = time.time()
@@ -126,7 +126,10 @@ def ingest(
     """Ingest papers into the knowledge base.
 
     Downloads PDFs, extracts text, generates embeddings, and stores in ArangoDB.
-    Can ingest by arxiv ID or from a local PDF file.
+
+    Examples:
+        hades ingest 2401.12345 2401.67890
+        hades ingest --file /path/to/paper.pdf
     """
     start_time = time.time()
 
@@ -171,7 +174,7 @@ def ingest(
 
 @app.command("query")
 def query(
-    search_text: str = typer.Argument(None, help="Search query text"),
+    search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     paper: str = typer.Option(None, "--paper", "-p", help="Get all chunks for a specific paper"),
 ) -> None:
@@ -321,7 +324,7 @@ def stats() -> None:
 
 @app.command("check")
 def check(
-    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to check"),
+    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to check", metavar="ARXIV_ID"),
 ) -> None:
     """Check if a paper exists in the database."""
     start_time = time.time()
