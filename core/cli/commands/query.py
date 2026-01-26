@@ -20,6 +20,9 @@ def semantic_query(
     search_text: str,
     limit: int,
     start_time: float,
+    paper_filter: str | None = None,
+    context: int = 0,
+    cite_only: bool = False,
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -27,6 +30,9 @@ def semantic_query(
         search_text: Query text to search for
         limit: Maximum number of results
         start_time: Start time for duration calculation
+        paper_filter: Optional arxiv ID to limit search to specific paper
+        context: Number of adjacent chunks to include (0 = none)
+        cite_only: If True, return minimal citation format
 
     Returns:
         CLIResponse with search results
@@ -47,17 +53,32 @@ def semantic_query(
         # Generate query embedding
         query_embedding = _get_query_embedding(search_text, config)
 
-        progress(f"Searching {limit} most similar chunks...")
+        if paper_filter:
+            progress(f"Searching paper {paper_filter} for {limit} most similar chunks...")
+        else:
+            progress(f"Searching {limit} most similar chunks...")
 
         # Search database
-        results = _search_embeddings(query_embedding, limit, config)
+        results = _search_embeddings(query_embedding, limit, config, paper_filter=paper_filter)
+
+        # Add context chunks if requested
+        if context > 0 and results:
+            results = _add_context_chunks(results, context, config)
+
+        # Format for citation if requested
+        if cite_only:
+            results = _format_citations(results)
+
+        response_data = {
+            "query": search_text,
+            "results": results,
+        }
+        if paper_filter:
+            response_data["paper_filter"] = paper_filter
 
         return success_response(
             command="query",
-            data={
-                "query": search_text,
-                "results": results,
-            },
+            data=response_data,
             start_time=start_time,
         )
 
@@ -194,11 +215,20 @@ def _search_embeddings(
     query_embedding: np.ndarray,
     limit: int,
     config: Any,
+    paper_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search for similar embeddings in the database.
 
     Uses cosine similarity for matching.
+
+    Args:
+        query_embedding: Query vector
+        limit: Maximum results to return
+        config: CLI configuration
+        paper_filter: Optional arxiv ID to limit search to specific paper
     """
+    import re
+
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
     arango_config = get_arango_config(config, read_only=True)
@@ -212,55 +242,83 @@ def _search_embeddings(
 
     client = ArangoHttp2Client(client_config)
 
+    # Normalize paper filter if provided
+    paper_key_filter = None
+    if paper_filter:
+        base_id = re.sub(r"v\d+$", "", paper_filter)
+        paper_key_filter = base_id.replace(".", "_").replace("/", "_")
+
     try:
         all_embeddings = []
 
         # Search full paper chunks (from ingested PDFs)
         try:
-            aql_chunks = """
-                FOR emb IN arxiv_abstract_embeddings
-                    FILTER emb.chunk_key != null
-                    LET chunk = DOCUMENT(CONCAT("arxiv_abstract_chunks/", emb.chunk_key))
-                    LET meta = DOCUMENT(CONCAT("arxiv_metadata/", emb.paper_key))
-                    RETURN {
-                        paper_key: emb.paper_key,
-                        embedding: emb.embedding,
-                        text: chunk.text,
-                        chunk_index: chunk.chunk_index,
-                        total_chunks: chunk.total_chunks,
-                        title: meta.title,
-                        arxiv_id: meta.arxiv_id,
-                        source: "full_paper"
-                    }
-            """
-            chunk_results = client.query(aql_chunks)
+            if paper_key_filter:
+                aql_chunks = """
+                    FOR emb IN arxiv_abstract_embeddings
+                        FILTER emb.chunk_key != null
+                        FILTER emb.paper_key == @paper_key
+                        LET chunk = DOCUMENT(CONCAT("arxiv_abstract_chunks/", emb.chunk_key))
+                        LET meta = DOCUMENT(CONCAT("arxiv_metadata/", emb.paper_key))
+                        RETURN {
+                            paper_key: emb.paper_key,
+                            embedding: emb.embedding,
+                            text: chunk.text,
+                            chunk_index: chunk.chunk_index,
+                            total_chunks: chunk.total_chunks,
+                            title: meta.title,
+                            arxiv_id: meta.arxiv_id,
+                            source: "full_paper"
+                        }
+                """
+                chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter})
+            else:
+                aql_chunks = """
+                    FOR emb IN arxiv_abstract_embeddings
+                        FILTER emb.chunk_key != null
+                        LET chunk = DOCUMENT(CONCAT("arxiv_abstract_chunks/", emb.chunk_key))
+                        LET meta = DOCUMENT(CONCAT("arxiv_metadata/", emb.paper_key))
+                        RETURN {
+                            paper_key: emb.paper_key,
+                            embedding: emb.embedding,
+                            text: chunk.text,
+                            chunk_index: chunk.chunk_index,
+                            total_chunks: chunk.total_chunks,
+                            title: meta.title,
+                            arxiv_id: meta.arxiv_id,
+                            source: "full_paper"
+                        }
+                """
+                chunk_results = client.query(aql_chunks)
             all_embeddings.extend(chunk_results or [])
         except Exception as e:
             # Collection may not exist - continue with other sources
             progress(f"Note: Could not query full paper chunks: {e}")
 
-        # Search synced abstracts (from sync command)
-        try:
-            aql_abstracts = """
-                FOR emb IN arxiv_abstract_embeddings
-                    FILTER emb.text_type == "abstract"
-                    LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", emb.paper_key))
-                    RETURN {
-                        paper_key: emb.paper_key,
-                        embedding: emb.embedding,
-                        text: abstract.abstract,
-                        chunk_index: 0,
-                        total_chunks: 1,
-                        title: abstract.title,
-                        arxiv_id: abstract.arxiv_id,
-                        source: "abstract"
-                    }
-            """
-            abstract_results = client.query(aql_abstracts)
-            all_embeddings.extend(abstract_results or [])
-        except Exception as e:
-            # Collection may not exist - continue with other sources
-            progress(f"Note: Could not query synced abstracts: {e}")
+        # Search synced abstracts (from sync command) - skip if filtering by paper
+        # (abstracts are single chunks, full paper search is more useful when filtering)
+        if not paper_key_filter:
+            try:
+                aql_abstracts = """
+                    FOR emb IN arxiv_abstract_embeddings
+                        FILTER emb.text_type == "abstract"
+                        LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", emb.paper_key))
+                        RETURN {
+                            paper_key: emb.paper_key,
+                            embedding: emb.embedding,
+                            text: abstract.abstract,
+                            chunk_index: 0,
+                            total_chunks: 1,
+                            title: abstract.title,
+                            arxiv_id: abstract.arxiv_id,
+                            source: "abstract"
+                        }
+                """
+                abstract_results = client.query(aql_abstracts)
+                all_embeddings.extend(abstract_results or [])
+            except Exception as e:
+                # Collection may not exist - continue with other sources
+                progress(f"Note: Could not query synced abstracts: {e}")
 
         if not all_embeddings:
             return []
@@ -291,3 +349,143 @@ def _search_embeddings(
 
     finally:
         client.close()
+
+
+def _add_context_chunks(
+    results: list[dict[str, Any]],
+    context: int,
+    config: Any,
+) -> list[dict[str, Any]]:
+    """Add neighboring chunks to each result for context.
+
+    Args:
+        results: Search results with chunk_index
+        context: Number of chunks before/after to include
+
+    Returns:
+        Results with context_before and context_after lists
+    """
+    import re
+
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    arango_config = get_arango_config(config, read_only=True)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        for result in results:
+            arxiv_id = result.get("arxiv_id")
+            chunk_index = result.get("chunk_index")
+            source = result.get("source")
+
+            # Skip abstracts (they're single chunks)
+            if source == "abstract" or chunk_index is None or arxiv_id is None:
+                result["context_before"] = []
+                result["context_after"] = []
+                continue
+
+            # Normalize arxiv_id to paper_key
+            base_id = re.sub(r"v\d+$", "", arxiv_id)
+            paper_key = base_id.replace(".", "_").replace("/", "_")
+
+            # Fetch context chunks
+            context_before = []
+            context_after = []
+
+            try:
+                # Get chunks before
+                if chunk_index > 0:
+                    aql_before = """
+                        FOR chunk IN arxiv_abstract_chunks
+                            FILTER chunk.paper_key == @paper_key
+                            FILTER chunk.chunk_index >= @start_idx
+                            FILTER chunk.chunk_index < @current_idx
+                            SORT chunk.chunk_index
+                            RETURN {
+                                chunk_index: chunk.chunk_index,
+                                text: chunk.text
+                            }
+                    """
+                    start_idx = max(0, chunk_index - context)
+                    before_results = client.query(
+                        aql_before,
+                        bind_vars={
+                            "paper_key": paper_key,
+                            "start_idx": start_idx,
+                            "current_idx": chunk_index,
+                        },
+                    )
+                    context_before = before_results or []
+
+                # Get chunks after
+                aql_after = """
+                    FOR chunk IN arxiv_abstract_chunks
+                        FILTER chunk.paper_key == @paper_key
+                        FILTER chunk.chunk_index > @current_idx
+                        FILTER chunk.chunk_index <= @end_idx
+                        SORT chunk.chunk_index
+                        RETURN {
+                            chunk_index: chunk.chunk_index,
+                            text: chunk.text
+                        }
+                """
+                total_chunks = result.get("total_chunks", 999)
+                end_idx = min(total_chunks - 1, chunk_index + context)
+                after_results = client.query(
+                    aql_after,
+                    bind_vars={
+                        "paper_key": paper_key,
+                        "current_idx": chunk_index,
+                        "end_idx": end_idx,
+                    },
+                )
+                context_after = after_results or []
+
+            except Exception:
+                # If context fetch fails, just continue without context
+                pass
+
+            result["context_before"] = context_before
+            result["context_after"] = context_after
+
+        return results
+
+    finally:
+        client.close()
+
+
+def _format_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Format results as minimal citations.
+
+    Args:
+        results: Full search results
+
+    Returns:
+        Minimal citation format with arxiv_id, title, and quote
+    """
+    citations = []
+    for result in results:
+        text = result.get("text", "")
+        # Truncate text to ~200 chars for quote
+        if len(text) > 200:
+            quote = text[:200].rsplit(" ", 1)[0] + "..."
+        else:
+            quote = text
+
+        citations.append({
+            "arxiv_id": result.get("arxiv_id"),
+            "title": result.get("title"),
+            "similarity": result.get("similarity"),
+            "chunk_index": result.get("chunk_index"),
+            "quote": quote,
+        })
+
+    return citations

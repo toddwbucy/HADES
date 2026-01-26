@@ -189,14 +189,23 @@ def ingest(
 @app.command("query")
 def query(
     search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
-    limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
-    paper: str = typer.Option(None, "--paper", "-p", help="Get all chunks for a specific paper"),
+    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    paper: str = typer.Option(None, "--paper", "-p", help="Filter results to a specific paper (arxiv ID)"),
+    context: int = typer.Option(0, "--context", "-c", help="Include N adjacent chunks for context"),
+    cite: bool = typer.Option(False, "--cite", help="Output minimal citation format (arxiv_id, title, quote)"),
+    chunks_only: bool = typer.Option(False, "--chunks", help="Get all chunks for --paper (no semantic search)"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Semantic search over the knowledge base.
 
     Returns relevant text chunks with similarity scores.
-    Use --paper to retrieve all chunks for a specific paper instead of semantic search.
+
+    Examples:
+        hades query "attention mechanism"              # Search all papers
+        hades query "Newton-Schulz" --paper 2505.23735 # Search within paper
+        hades query "attention" --context 1            # Include ±1 adjacent chunks
+        hades query "attention" --cite --top-k 3       # Citation format, top 3
+        hades query --paper 2505.23735 --chunks        # Get all chunks (no search)
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -204,15 +213,25 @@ def query(
     try:
         from core.cli.commands.query import get_paper_chunks, semantic_query
 
-        if paper:
+        # Mode 1: Get all chunks for a paper (no semantic search)
+        if chunks_only and paper:
             response = get_paper_chunks(paper, limit, start_time)
+        # Mode 2: Semantic search (optionally filtered by paper)
         elif search_text:
-            response = semantic_query(search_text, limit, start_time)
+            response = semantic_query(
+                search_text,
+                limit,
+                start_time,
+                paper_filter=paper,
+                context=context,
+                cite_only=cite,
+            )
+        # Mode 3: Must provide search text or --chunks
         else:
             response = error_response(
                 command="query",
                 code=ErrorCode.CONFIG_ERROR,
-                message="Provide search text or --paper ID",
+                message="Provide search text, or use --paper with --chunks",
                 start_time=start_time,
             )
             print_response(response)
