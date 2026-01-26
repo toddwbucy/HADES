@@ -26,11 +26,14 @@ from core.cli.output import (
 )
 
 # Create the main Typer app
+# Note: rich_markup_mode=None disables rich help formatting to avoid
+# typer/click compatibility issues with Parameter.make_metavar()
 app = typer.Typer(
     name="hades",
     help="HADES Knowledge Base CLI - AI model interface for semantic search over academic papers.",
     no_args_is_help=True,
     add_completion=False,
+    rich_markup_mode=None,
 )
 
 # Create subcommand groups
@@ -38,6 +41,7 @@ arxiv_app = typer.Typer(
     name="arxiv",
     help="ArXiv paper search and metadata.",
     no_args_is_help=True,
+    rich_markup_mode=None,
 )
 app.add_typer(arxiv_app, name="arxiv")
 
