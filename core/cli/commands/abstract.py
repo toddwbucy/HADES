@@ -6,6 +6,7 @@ Search the 2.8M synced abstract embeddings and manage paper ingestion.
 from __future__ import annotations
 
 import heapq
+import re
 from typing import Any
 
 import numpy as np
@@ -25,6 +26,7 @@ def search_abstracts(
     limit: int,
     start_time: float,
     category: str | None = None,
+    hybrid: bool = False,
 ) -> CLIResponse:
     """Search the synced abstract embeddings (2.8M vectors).
 
@@ -33,6 +35,7 @@ def search_abstracts(
         limit: Maximum number of results
         start_time: Start time for duration calculation
         category: Optional arxiv category filter (e.g., "cs.AI")
+        hybrid: If True, combine BM25 keyword search with semantic search
 
     Returns:
         CLIResponse with search results including local availability status
@@ -53,7 +56,8 @@ def search_abstracts(
         # Generate query embedding
         query_embedding = _get_query_embedding(query, config)
 
-        progress(f"Searching {limit} most similar abstracts...")
+        search_mode = "hybrid (BM25 + semantic)" if hybrid else "semantic"
+        progress(f"Searching {limit} most similar abstracts ({search_mode})...")
 
         # Search the abstract embeddings
         results = _search_abstract_embeddings(
@@ -61,12 +65,14 @@ def search_abstracts(
             limit,
             config,
             category_filter=category,
+            hybrid_query=query if hybrid else None,
         )
 
         return success_response(
             command="abstract.search",
             data={
                 "query": query,
+                "mode": "hybrid" if hybrid else "semantic",
                 "results": results,
                 "total_searched": results[0]["total_searched"] if results else 0,
             },
@@ -111,6 +117,175 @@ def ingest_from_abstract(
     )
 
 
+def find_similar(
+    arxiv_id: str,
+    limit: int,
+    start_time: float,
+    category: str | None = None,
+) -> CLIResponse:
+    """Find papers similar to a given paper using its embedding.
+
+    This is a "query by example" - uses the paper's existing embedding
+    as the query vector, skipping the embedding generation step.
+
+    Args:
+        arxiv_id: ArXiv paper ID to find similar papers for
+        limit: Maximum number of results
+        start_time: Start time for duration calculation
+        category: Optional arxiv category filter
+
+    Returns:
+        CLIResponse with similar papers
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="abstract.similar",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    progress(f"Finding papers similar to {arxiv_id}...")
+
+    try:
+        # Fetch the paper's existing embedding
+        paper_embedding = _get_paper_embedding(arxiv_id, config)
+
+        if paper_embedding is None:
+            return error_response(
+                command="abstract.similar",
+                code=ErrorCode.PAPER_NOT_FOUND,
+                message=f"Paper {arxiv_id} not found in synced abstracts",
+                start_time=start_time,
+            )
+
+        progress(f"Searching {limit} most similar papers...")
+
+        # Search using the paper's embedding (add 1 to limit since we'll exclude the source paper)
+        results = _search_abstract_embeddings(
+            paper_embedding,
+            limit + 1,
+            config,
+            category_filter=category,
+            exclude_arxiv_id=arxiv_id,
+        )
+
+        # Filter out the source paper if it appears in results
+        results = [r for r in results if r.get("arxiv_id") != arxiv_id][:limit]
+
+        # Fetch source paper info for context
+        source_info = _get_paper_info(arxiv_id, config)
+
+        return success_response(
+            command="abstract.similar",
+            data={
+                "source_paper": {
+                    "arxiv_id": arxiv_id,
+                    "title": source_info.get("title") if source_info else None,
+                },
+                "results": results,
+                "total_searched": results[0]["total_searched"] if results else 0,
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="abstract.similar",
+            code=ErrorCode.QUERY_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
+def _get_paper_embedding(arxiv_id: str, config: Any) -> np.ndarray | None:
+    """Fetch the existing embedding for a paper.
+
+    Args:
+        arxiv_id: ArXiv paper ID
+        config: CLI configuration
+
+    Returns:
+        The paper's embedding vector, or None if not found
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    arango_config = get_arango_config(config, read_only=True)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        # Normalize arxiv_id to key format
+        base_id = re.sub(r"v\d+$", "", arxiv_id)
+        key = base_id.replace(".", "_").replace("/", "_")
+
+        # Try to fetch the embedding
+        try:
+            doc = client.get_document("arxiv_embeddings", key)
+            if doc and doc.get("combined_embedding"):
+                return np.array(doc["combined_embedding"], dtype=np.float32)
+        except Exception:
+            pass
+
+        return None
+
+    finally:
+        client.close()
+
+
+def _get_paper_info(arxiv_id: str, config: Any) -> dict[str, Any] | None:
+    """Fetch basic info for a paper.
+
+    Args:
+        arxiv_id: ArXiv paper ID
+        config: CLI configuration
+
+    Returns:
+        Dict with paper info, or None if not found
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    arango_config = get_arango_config(config, read_only=True)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        base_id = re.sub(r"v\d+$", "", arxiv_id)
+        key = base_id.replace(".", "_").replace("/", "_")
+
+        try:
+            doc = client.get_document("arxiv_abstracts", key)
+            if doc:
+                return {
+                    "arxiv_id": arxiv_id,
+                    "title": doc.get("title"),
+                    "abstract": doc.get("abstract"),
+                }
+        except Exception:
+            pass
+
+        return None
+
+    finally:
+        client.close()
+
+
 def _get_query_embedding(text: str, config: Any) -> np.ndarray:
     """Generate embedding for query text."""
     from core.embedders.embedders_jina import JinaV4Embedder
@@ -131,6 +306,8 @@ def _search_abstract_embeddings(
     limit: int,
     config: Any,
     category_filter: str | None = None,
+    hybrid_query: str | None = None,
+    exclude_arxiv_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search abstract embeddings with batched processing.
 
@@ -142,6 +319,8 @@ def _search_abstract_embeddings(
         limit: Number of results to return
         config: CLI configuration
         category_filter: Optional category to filter by
+        hybrid_query: If provided, combine semantic with BM25 keyword search
+        exclude_arxiv_id: ArXiv ID to exclude from results (for similar search)
 
     Returns:
         List of results with similarity scores and local status
@@ -218,11 +397,18 @@ def _search_abstract_embeddings(
                 if item.get("embedding") is None:
                     continue
 
+                arxiv_id = item.get("arxiv_id", "")
+
+                # Skip excluded paper (for similar search)
+                if exclude_arxiv_id:
+                    base_exclude = re.sub(r"v\d+$", "", exclude_arxiv_id)
+                    base_current = re.sub(r"v\d+$", "", arxiv_id)
+                    if base_exclude == base_current:
+                        continue
+
                 emb = np.array(item["embedding"], dtype=np.float32)
                 emb_norm = emb / (np.linalg.norm(emb) + 1e-8)
                 similarity = float(np.dot(query_norm, emb_norm))
-
-                arxiv_id = item.get("arxiv_id", "")
 
                 # Use heap to track top-k
                 if len(top_results) < limit:
@@ -269,7 +455,12 @@ def _search_abstract_embeddings(
             metadata = client.query(abstracts_aql, bind_vars={"ids": arxiv_ids})
             metadata_map = {m["arxiv_id"]: m for m in metadata if m}
 
-            for sim, arxiv_id, _ in heap_results:
+            # If hybrid search, compute keyword scores and re-rank
+            if hybrid_query:
+                progress("Re-ranking with keyword matching...")
+                heap_results = _hybrid_rerank(heap_results, metadata_map, hybrid_query)
+
+            for sim, arxiv_id, extra in heap_results:
                 meta = metadata_map.get(arxiv_id, {})
 
                 # Truncate abstract for display
@@ -279,7 +470,7 @@ def _search_abstract_embeddings(
                 else:
                     abstract_snippet = abstract_text
 
-                results.append({
+                result_entry = {
                     "arxiv_id": arxiv_id,
                     "title": meta.get("title"),
                     "similarity": round(sim, 4),
@@ -288,9 +479,72 @@ def _search_abstract_embeddings(
                     "local": meta.get("local", False),
                     "local_chunks": meta.get("local_chunks"),
                     "total_searched": total_processed,
-                })
+                }
+
+                # Add hybrid scores if present
+                if extra.get("keyword_score") is not None:
+                    result_entry["keyword_score"] = round(extra["keyword_score"], 4)
+                    result_entry["combined_score"] = round(extra["combined_score"], 4)
+
+                results.append(result_entry)
 
         return results
 
     finally:
         client.close()
+
+
+def _hybrid_rerank(
+    heap_results: list[tuple[float, str, dict]],
+    metadata_map: dict[str, dict],
+    query: str,
+    semantic_weight: float = 0.7,
+) -> list[tuple[float, str, dict]]:
+    """Re-rank results by combining semantic similarity with keyword matching.
+
+    Uses a simple BM25-inspired keyword score combined with semantic similarity.
+
+    Args:
+        heap_results: List of (similarity, arxiv_id, extra_dict) tuples
+        metadata_map: Map of arxiv_id to metadata (title, abstract)
+        query: Original query text for keyword matching
+        semantic_weight: Weight for semantic score (1 - this = keyword weight)
+
+    Returns:
+        Re-ranked list of (combined_score, arxiv_id, extra_dict) tuples
+    """
+    # Tokenize query
+    query_terms = set(query.lower().split())
+
+    reranked = []
+    for semantic_score, arxiv_id, _extra in heap_results:
+        meta = metadata_map.get(arxiv_id, {})
+
+        # Compute keyword score from title and abstract
+        title = (meta.get("title") or "").lower()
+        abstract = (meta.get("abstract") or "").lower()
+        text = title + " " + abstract
+
+        # Simple term frequency score
+        text_terms = text.split()
+        if text_terms:
+            matches = sum(1 for term in query_terms if term in text)
+            keyword_score = matches / len(query_terms) if query_terms else 0
+        else:
+            keyword_score = 0
+
+        # Combine scores
+        combined = (semantic_weight * semantic_score) + ((1 - semantic_weight) * keyword_score)
+
+        # Store scores in extra dict
+        new_extra = {
+            "similarity": semantic_score,
+            "keyword_score": keyword_score,
+            "combined_score": combined,
+        }
+
+        reranked.append((combined, arxiv_id, new_extra))
+
+    # Sort by combined score descending
+    reranked.sort(key=lambda x: x[0], reverse=True)
+    return reranked

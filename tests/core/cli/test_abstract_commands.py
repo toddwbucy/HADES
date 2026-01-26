@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from core.cli.commands.abstract import ingest_from_abstract, search_abstracts
+from core.cli.commands.abstract import find_similar, ingest_from_abstract, search_abstracts
 from core.cli.output import ErrorCode
 
 
@@ -221,3 +221,174 @@ class TestSearchResultsFormat:
         )
 
         assert response.data["total_searched"] == 2826761
+
+
+class TestHybridSearch:
+    """Tests for hybrid search functionality."""
+
+    @patch("core.cli.commands.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.abstract._get_query_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_hybrid_search_passes_query_to_search(
+        self, mock_get_config, mock_get_embedding, mock_search
+    ):
+        """Test that hybrid mode passes query for keyword matching."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_embedding.return_value = np.zeros(2048)
+        mock_search.return_value = []
+
+        search_abstracts(
+            query="transformer attention",
+            limit=10,
+            start_time=0,
+            hybrid=True,
+        )
+
+        # Verify hybrid_query was passed
+        mock_search.assert_called_once()
+        call_args = mock_search.call_args
+        assert call_args[1]["hybrid_query"] == "transformer attention"
+
+    @patch("core.cli.commands.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.abstract._get_query_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_hybrid_search_mode_in_response(
+        self, mock_get_config, mock_get_embedding, mock_search
+    ):
+        """Test that response indicates hybrid mode."""
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_get_config.return_value = mock_config
+
+        mock_get_embedding.return_value = np.zeros(2048)
+        mock_search.return_value = [
+            {
+                "arxiv_id": "2401.12345",
+                "title": "Test",
+                "similarity": 0.95,
+                "abstract": "...",
+                "categories": [],
+                "local": False,
+                "local_chunks": None,
+                "total_searched": 100000,
+                "keyword_score": 0.8,
+                "combined_score": 0.91,
+            }
+        ]
+
+        response = search_abstracts(
+            query="test",
+            limit=10,
+            start_time=0,
+            hybrid=True,
+        )
+
+        assert response.data["mode"] == "hybrid"
+
+
+class TestFindSimilar:
+    """Tests for find similar papers command."""
+
+    @patch("core.cli.commands.abstract._get_paper_info")
+    @patch("core.cli.commands.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.abstract._get_paper_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_similar_returns_results(
+        self, mock_get_config, mock_get_embedding, mock_search, mock_get_info
+    ):
+        """Test successful similar search."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        # Return a mock embedding
+        mock_get_embedding.return_value = np.zeros(2048)
+
+        # Return similar papers (excluding the source)
+        mock_search.return_value = [
+            {
+                "arxiv_id": "2401.67890",
+                "title": "Similar Paper",
+                "similarity": 0.92,
+                "abstract": "...",
+                "categories": ["cs.AI"],
+                "local": False,
+                "local_chunks": None,
+                "total_searched": 100000,
+            }
+        ]
+
+        mock_get_info.return_value = {"title": "Source Paper"}
+
+        response = find_similar(
+            arxiv_id="2401.12345",
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is True
+        assert response.command == "abstract.similar"
+        assert response.data["source_paper"]["arxiv_id"] == "2401.12345"
+        assert len(response.data["results"]) == 1
+        assert response.data["results"][0]["arxiv_id"] == "2401.67890"
+
+    @patch("core.cli.commands.abstract._get_paper_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_similar_paper_not_found(self, mock_get_config, mock_get_embedding):
+        """Test similar search when paper not in database."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        # Paper not found
+        mock_get_embedding.return_value = None
+
+        response = find_similar(
+            arxiv_id="9999.99999",
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.PAPER_NOT_FOUND.value
+
+    @patch("core.cli.commands.abstract._get_paper_info")
+    @patch("core.cli.commands.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.abstract._get_paper_embedding")
+    @patch("core.cli.commands.abstract.get_config")
+    def test_similar_excludes_source_paper(
+        self, mock_get_config, mock_get_embedding, mock_search, mock_get_info
+    ):
+        """Test that similar search excludes the source paper."""
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        mock_get_embedding.return_value = np.zeros(2048)
+        mock_search.return_value = []
+        mock_get_info.return_value = {"title": "Source Paper"}
+
+        find_similar(
+            arxiv_id="2401.12345",
+            limit=10,
+            start_time=0,
+        )
+
+        # Verify exclude_arxiv_id was passed
+        mock_search.assert_called_once()
+        call_args = mock_search.call_args
+        assert call_args[1]["exclude_arxiv_id"] == "2401.12345"
+
+    @patch("core.cli.commands.abstract.get_config")
+    def test_similar_handles_config_error(self, mock_get_config):
+        """Test similar handles config errors."""
+        mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
+
+        response = find_similar(
+            arxiv_id="2401.12345",
+            limit=10,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value

@@ -179,6 +179,7 @@ def abstract_search(
     query: str = typer.Argument(..., help="Search query for abstracts", metavar="QUERY"),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
+    hybrid: bool = typer.Option(False, "--hybrid", "-H", help="Combine semantic search with keyword matching"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Search the synced abstract database (2.8M papers).
@@ -189,6 +190,7 @@ def abstract_search(
     Examples:
         hades abstract search "transformer attention" --limit 20
         hades abstract search "neural networks" --category cs.LG
+        hades abstract search "BERT fine-tuning" --hybrid  # semantic + keyword
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -196,7 +198,7 @@ def abstract_search(
     try:
         from core.cli.commands.abstract import search_abstracts
 
-        response = search_abstracts(query, limit, start_time, category=category)
+        response = search_abstracts(query, limit, start_time, category=category, hybrid=hybrid)
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None
@@ -246,6 +248,46 @@ def abstract_ingest(
         response = error_response(
             command="abstract.ingest",
             code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@abstract_app.command("similar")
+def abstract_similar(
+    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to find similar papers for", metavar="ARXIV_ID"),
+    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+) -> None:
+    """Find papers similar to a given paper.
+
+    Uses the paper's existing embedding to find semantically similar papers
+    without needing to generate a new query embedding.
+
+    Examples:
+        hades abstract similar 2401.12345 --limit 20
+        hades abstract similar 2401.12345 --category cs.LG
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.abstract import find_similar
+
+        response = find_similar(arxiv_id, limit, start_time, category=category)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="abstract.similar",
+            code=ErrorCode.SEARCH_FAILED,
             message=str(e),
             start_time=start_time,
         )
