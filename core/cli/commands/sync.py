@@ -2,12 +2,14 @@
 
 This command fetches metadata and abstracts from arxiv, embeds them,
 and stores them for fast semantic search - without downloading PDFs.
+
+Supports incremental sync via watermark tracking in the sync_metadata collection.
 """
 
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from core.cli.config import get_arango_config, get_config
@@ -19,6 +21,207 @@ from core.cli.output import (
     success_response,
 )
 
+# Sync metadata collection and document key
+SYNC_METADATA_COLLECTION = "sync_metadata"
+SYNC_WATERMARK_KEY = "abstracts"
+
+
+def get_sync_status(start_time: float) -> CLIResponse:
+    """Get the current sync status including last sync time and history.
+
+    Args:
+        start_time: Start time for duration calculation
+
+    Returns:
+        CLIResponse with sync status
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="sync.status",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        metadata = _get_sync_metadata(config)
+
+        if metadata is None:
+            return success_response(
+                command="sync.status",
+                data={
+                    "last_sync": None,
+                    "total_synced": 0,
+                    "sync_history": [],
+                    "message": "No sync history found. Run 'hades sync' to begin.",
+                },
+                start_time=start_time,
+            )
+
+        return success_response(
+            command="sync.status",
+            data={
+                "last_sync": metadata.get("last_sync"),
+                "total_synced": metadata.get("total_synced", 0),
+                "sync_history": metadata.get("sync_history", [])[-10:],  # Last 10 syncs
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="sync.status",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
+def _get_sync_metadata(config: Any) -> dict[str, Any] | None:
+    """Fetch sync metadata from the database.
+
+    Returns None if no metadata exists (first sync).
+    """
+    from core.database.arango.optimized_client import (
+        ArangoHttp2Client,
+        ArangoHttp2Config,
+        ArangoHttpError,
+    )
+
+    arango_config = get_arango_config(config, read_only=True)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        try:
+            doc = client.get_document(SYNC_METADATA_COLLECTION, SYNC_WATERMARK_KEY)
+            return doc
+        except ArangoHttpError as e:
+            if e.status_code == 404:
+                return None
+            raise
+    finally:
+        client.close()
+
+
+def _update_sync_metadata(
+    config: Any,
+    added: int,
+    updated: int,
+    sync_date: datetime,
+) -> None:
+    """Update sync metadata after a successful sync.
+
+    Creates the sync_metadata collection if it doesn't exist.
+    """
+    from core.database.arango.optimized_client import (
+        ArangoHttp2Client,
+        ArangoHttp2Config,
+        ArangoHttpError,
+    )
+
+    arango_config = get_arango_config(config, read_only=False)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        # Ensure collection exists
+        try:
+            client.request(
+                "POST",
+                f"/_db/{arango_config['database']}/_api/collection",
+                json={"name": SYNC_METADATA_COLLECTION},
+            )
+        except ArangoHttpError as e:
+            # 409 = collection already exists, which is fine
+            if e.status_code != 409:
+                raise
+
+        # Get existing metadata or create new
+        existing = None
+        try:
+            existing = client.get_document(SYNC_METADATA_COLLECTION, SYNC_WATERMARK_KEY)
+        except ArangoHttpError as e:
+            if e.status_code != 404:
+                raise
+
+        now_iso = datetime.now(UTC).isoformat()
+        sync_entry = {
+            "date": sync_date.strftime("%Y-%m-%d"),
+            "added": added,
+            "updated": updated,
+            "timestamp": now_iso,
+        }
+
+        if existing:
+            # Update existing document
+            total_synced = existing.get("total_synced", 0) + added
+            history = existing.get("sync_history", [])
+            history.append(sync_entry)
+            # Keep last 100 entries
+            history = history[-100:]
+
+            # Use REPLACE to update the document
+            client.request(
+                "PUT",
+                f"/_db/{arango_config['database']}/_api/document/{SYNC_METADATA_COLLECTION}/{SYNC_WATERMARK_KEY}",
+                json={
+                    "_key": SYNC_WATERMARK_KEY,
+                    "last_sync": now_iso,
+                    "total_synced": total_synced,
+                    "sync_history": history,
+                },
+            )
+        else:
+            # Create new document
+            client.insert_documents(
+                SYNC_METADATA_COLLECTION,
+                [
+                    {
+                        "_key": SYNC_WATERMARK_KEY,
+                        "last_sync": now_iso,
+                        "total_synced": added,
+                        "sync_history": [sync_entry],
+                    }
+                ],
+            )
+
+    finally:
+        client.close()
+
+
+def _get_last_sync_date(config: Any) -> datetime | None:
+    """Get the date of the last successful sync.
+
+    Returns None if no previous sync exists.
+    """
+    metadata = _get_sync_metadata(config)
+    if metadata and metadata.get("last_sync"):
+        # Parse ISO format timestamp
+        last_sync_str = metadata["last_sync"]
+        # Handle both with and without timezone
+        try:
+            return datetime.fromisoformat(last_sync_str.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
 
 def sync_abstracts(
     from_date: str | None,
@@ -26,6 +229,7 @@ def sync_abstracts(
     max_results: int,
     batch_size: int,
     start_time: float,
+    incremental: bool = False,
 ) -> CLIResponse:
     """Sync abstracts from arxiv to the database.
 
@@ -38,6 +242,7 @@ def sync_abstracts(
         max_results: Maximum number of papers to fetch
         batch_size: Batch size for embedding generation
         start_time: Start time for duration calculation
+        incremental: If True, sync only papers newer than last sync watermark
 
     Returns:
         CLIResponse with sync results
@@ -52,8 +257,21 @@ def sync_abstracts(
             start_time=start_time,
         )
 
-    # Parse date
-    if from_date:
+    # Determine start date
+    if incremental:
+        # Use watermark from last sync
+        last_sync = _get_last_sync_date(config)
+        if last_sync is None:
+            progress("No previous sync found, using default (7 days ago)...")
+            start_date = datetime.now() - timedelta(days=7)
+        else:
+            # Convert to naive datetime for comparison
+            if last_sync.tzinfo is not None:
+                start_date = last_sync.replace(tzinfo=None)
+            else:
+                start_date = last_sync
+            progress(f"Incremental sync from {start_date.strftime('%Y-%m-%d %H:%M')}...")
+    elif from_date:
         try:
             start_date = datetime.strptime(from_date, "%Y-%m-%d")
         except ValueError:
@@ -109,11 +327,19 @@ def sync_abstracts(
         # Embed abstracts and store
         synced = _embed_and_store_abstracts(new_papers, config, batch_size)
 
+        # Update sync metadata watermark
+        try:
+            _update_sync_metadata(config, added=synced, updated=0, sync_date=start_date)
+        except Exception as meta_err:
+            progress(f"Warning: Failed to update sync metadata: {meta_err}")
+
         return success_response(
             command="sync",
             data={
                 "synced": synced,
                 "skipped": len(papers) - len(new_papers),
+                "mode": "incremental" if incremental else "manual",
+                "from_date": start_date.strftime("%Y-%m-%d"),
                 "papers": [
                     {
                         "arxiv_id": p["arxiv_id"],
@@ -230,16 +456,18 @@ def _fetch_month_papers(
             for entry in entries:
                 try:
                     metadata = client._parse_entry(entry)
-                    papers.append({
-                        "arxiv_id": metadata.arxiv_id,
-                        "title": metadata.title,
-                        "abstract": metadata.abstract,
-                        "authors": metadata.authors,
-                        "categories": metadata.categories,
-                        "primary_category": metadata.primary_category,
-                        "published": metadata.published.isoformat() if metadata.published else None,
-                        "updated": metadata.updated.isoformat() if metadata.updated else None,
-                    })
+                    papers.append(
+                        {
+                            "arxiv_id": metadata.arxiv_id,
+                            "title": metadata.title,
+                            "abstract": metadata.abstract,
+                            "authors": metadata.authors,
+                            "categories": metadata.categories,
+                            "primary_category": metadata.primary_category,
+                            "published": metadata.published.isoformat() if metadata.published else None,
+                            "updated": metadata.updated.isoformat() if metadata.updated else None,
+                        }
+                    )
                 except Exception:
                     continue
 
@@ -333,10 +561,12 @@ def _embed_and_store_abstracts(
     from core.embedders.embedders_jina import JinaV4Embedder
 
     # Initialize embedder
-    embedder = JinaV4Embedder({
-        "device": config.device,
-        "use_fp16": True,
-    })
+    embedder = JinaV4Embedder(
+        {
+            "device": config.device,
+            "use_fp16": True,
+        }
+    )
 
     arango_config = get_arango_config(config, read_only=False)
     client_config = ArangoHttp2Config(
@@ -387,34 +617,40 @@ def _embed_and_store_abstracts(
                     yymm = "2401"
 
                 # arxiv_papers document (metadata)
-                paper_docs.append({
-                    "_key": sanitized_key,
-                    "arxiv_id": base_id,
-                    "authors": paper["authors"],
-                    "categories": paper["categories"],
-                    "primary_category": paper["primary_category"],
-                    "year": year,
-                    "month": month,
-                    "year_month": f"{year}{month:02d}",
-                    "created_at": now_iso,
-                })
+                paper_docs.append(
+                    {
+                        "_key": sanitized_key,
+                        "arxiv_id": base_id,
+                        "authors": paper["authors"],
+                        "categories": paper["categories"],
+                        "primary_category": paper["primary_category"],
+                        "year": year,
+                        "month": month,
+                        "year_month": f"{year}{month:02d}",
+                        "created_at": now_iso,
+                    }
+                )
 
                 # arxiv_abstracts document
-                abstract_docs.append({
-                    "_key": sanitized_key,
-                    "arxiv_id": base_id,
-                    "title": paper["title"],
-                    "abstract": paper["abstract"],
-                })
+                abstract_docs.append(
+                    {
+                        "_key": sanitized_key,
+                        "arxiv_id": base_id,
+                        "title": paper["title"],
+                        "abstract": paper["abstract"],
+                    }
+                )
 
                 # arxiv_embeddings document (matching existing schema)
-                embedding_docs.append({
-                    "_key": sanitized_key,
-                    "arxiv_id": base_id,
-                    "combined_embedding": embeddings[j].tolist(),
-                    "abstract_embedding": [],  # Empty to match existing schema
-                    "title_embedding": [],  # Empty to match existing schema
-                })
+                embedding_docs.append(
+                    {
+                        "_key": sanitized_key,
+                        "arxiv_id": base_id,
+                        "combined_embedding": embeddings[j].tolist(),
+                        "abstract_embedding": [],  # Empty to match existing schema
+                        "title_embedding": [],  # Empty to match existing schema
+                    }
+                )
 
             # Insert documents (skip duplicates - they raise unique constraint errors)
             try:

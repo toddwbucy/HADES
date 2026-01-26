@@ -473,12 +473,25 @@ def query(
 # =============================================================================
 
 
-@app.command("sync")
-def sync(
+# Create sync subcommand group
+sync_app = typer.Typer(
+    name="sync",
+    help="Sync abstracts from arxiv (incremental or manual).",
+    no_args_is_help=False,
+    invoke_without_command=True,
+    rich_markup_mode=None,
+)
+app.add_typer(sync_app, name="sync")
+
+
+@sync_app.callback(invoke_without_command=True)
+def sync_default(
+    ctx: typer.Context,
     from_date: str = typer.Option(None, "--from", "-f", help="Start date (YYYY-MM-DD, default: 7 days ago)"),
     categories: str = typer.Option(None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"),
     max_results: int = typer.Option(1000, "--max", "-m", help="Maximum papers to sync"),
     batch_size: int = typer.Option(8, "--batch", "-b", help="Batch size for embedding (default 8 for 16GB GPU)"),
+    incremental: bool = typer.Option(False, "--incremental", "-i", help="Sync only papers newer than last sync"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Sync recent abstracts from arxiv for semantic search.
@@ -491,15 +504,22 @@ def sync(
 
     Examples:
         hades sync --gpu 2 --batch 8
+        hades sync --incremental                    # Sync since last sync
         hades sync --from 2025-01-01 --categories cs.AI,cs.CL --gpu 0
     """
+    # Only run sync if no subcommand was invoked
+    if ctx.invoked_subcommand is not None:
+        return
+
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
         from core.cli.commands.sync import sync_abstracts
 
-        response = sync_abstracts(from_date, categories, max_results, batch_size, start_time)
+        response = sync_abstracts(
+            from_date, categories, max_results, batch_size, start_time, incremental=incremental
+        )
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None
@@ -510,6 +530,36 @@ def sync(
         response = error_response(
             command="sync",
             code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@sync_app.command("status")
+def sync_status() -> None:
+    """Show sync status including last sync time and history.
+
+    Examples:
+        hades sync status
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.sync import get_sync_status
+
+        response = get_sync_status(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="sync.status",
+            code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
         )
