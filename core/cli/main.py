@@ -36,6 +36,19 @@ def _set_gpu(gpu: int | None) -> None:
     if gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
+
+def _global_gpu_callback(
+    ctx: typer.Context,
+    gpu: int | None,
+) -> None:
+    """Global callback to set GPU before any command runs."""
+    if gpu is not None:
+        _set_gpu(gpu)
+        # Store in context for commands that also accept --gpu
+        ctx.ensure_object(dict)
+        ctx.obj["gpu"] = gpu
+
+
 # Create the main Typer app
 # Note: rich_markup_mode=None disables rich help formatting to avoid
 # typer/click compatibility issues with Parameter.make_metavar()
@@ -46,6 +59,29 @@ app = typer.Typer(
     add_completion=False,
     rich_markup_mode=None,
 )
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", "-v", help="Show version and exit", is_eager=True),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index for embedding commands (e.g., 0, 1, 2)"),
+) -> None:
+    """HADES Knowledge Base CLI - AI model interface for semantic search over academic papers."""
+    if version:
+        from importlib.metadata import version as get_version
+        try:
+            print(f"hades {get_version('hades')}")
+        except Exception:
+            print("hades 0.1.0")
+        raise typer.Exit()
+
+    _global_gpu_callback(ctx, gpu)
+
+    # Show help if no command provided
+    if ctx.invoked_subcommand is None:
+        print(ctx.get_help())
+        raise typer.Exit()
 
 # Create subcommand groups
 arxiv_app = typer.Typer(
@@ -394,31 +430,6 @@ def check(
 # =============================================================================
 # Version and Help
 # =============================================================================
-
-
-@app.callback(invoke_without_command=True)
-def main(
-    ctx: typer.Context,
-    version: bool = typer.Option(False, "--version", "-v", help="Show version and exit"),
-) -> None:
-    """HADES Knowledge Base CLI.
-
-    An AI-focused interface for managing and querying the HADES semantic knowledge base.
-    All commands output JSON for predictable parsing.
-    """
-    if version:
-        from importlib.metadata import version as pkg_version
-
-        try:
-            v = pkg_version("hades")
-        except Exception:
-            v = "0.1.0-dev"
-        print(f'{{"version": "{v}"}}')
-        raise typer.Exit()
-
-    # If no subcommand provided, show help
-    if ctx.invoked_subcommand is None:
-        print(ctx.get_help())
 
 
 if __name__ == "__main__":
