@@ -216,6 +216,48 @@ def abstract_search(
         raise typer.Exit(1) from None
 
 
+@abstract_app.command("search-bulk")
+def abstract_search_bulk(
+    queries: list[str] = typer.Argument(..., help="Search queries (multiple allowed)"),
+    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum results per query"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+) -> None:
+    """Search abstracts with multiple queries in a single optimized pass.
+
+    More efficient than running multiple searches because:
+    - Loads embedding model once (not N times)
+    - Single pass over 2.8M embeddings (not N passes)
+    - Uses matrix multiplication for batch similarity
+
+    Examples:
+        hades abstract search-bulk "attention" "transformer" "BERT"
+        hades abstract search-bulk "neural networks" "deep learning" --limit 5
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.abstract import search_abstracts_bulk
+
+        response = search_abstracts_bulk(queries, limit, start_time, category=category)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="abstract.search-bulk",
+            code=ErrorCode.SEARCH_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 @abstract_app.command("ingest")
 def abstract_ingest(
     arxiv_ids: list[str] = typer.Argument(..., help="ArXiv paper IDs to ingest"),
