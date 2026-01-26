@@ -4,8 +4,10 @@ AI-focused CLI for interacting with the HADES knowledge base.
 All commands output JSON for predictable parsing by AI models.
 
 Usage:
-    hades arxiv search "query"     # Search arxiv for papers
-    hades arxiv info <arxiv_id>    # Get paper metadata
+    hades arxiv search "query"     # Search arxiv API for papers
+    hades arxiv info <arxiv_id>    # Get paper metadata from arxiv
+    hades abstract search "query"  # Search 2.8M synced abstracts
+    hades abstract ingest <id>...  # Ingest papers from abstract search
     hades ingest <arxiv_id>...     # Download, process, store papers
     hades query "search text"      # Semantic search over stored chunks
     hades list                     # List papers in database
@@ -92,6 +94,14 @@ arxiv_app = typer.Typer(
 )
 app.add_typer(arxiv_app, name="arxiv")
 
+abstract_app = typer.Typer(
+    name="abstract",
+    help="Search synced abstracts (2.8M) and ingest papers.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(abstract_app, name="abstract")
+
 
 # =============================================================================
 # ArXiv Commands
@@ -152,6 +162,90 @@ def arxiv_info(
         response = error_response(
             command="arxiv.info",
             code=ErrorCode.PAPER_NOT_FOUND,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+# =============================================================================
+# Abstract Commands (search 2.8M synced abstracts)
+# =============================================================================
+
+
+@abstract_app.command("search")
+def abstract_search(
+    query: str = typer.Argument(..., help="Search query for abstracts", metavar="QUERY"),
+    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+) -> None:
+    """Search the synced abstract database (2.8M papers).
+
+    Performs semantic search over all synced abstracts and shows whether
+    each paper has been fully ingested locally.
+
+    Examples:
+        hades abstract search "transformer attention" --limit 20
+        hades abstract search "neural networks" --category cs.LG
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.abstract import search_abstracts
+
+        response = search_abstracts(query, limit, start_time, category=category)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="abstract.search",
+            code=ErrorCode.SEARCH_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@abstract_app.command("ingest")
+def abstract_ingest(
+    arxiv_ids: list[str] = typer.Argument(..., help="ArXiv paper IDs to ingest"),
+    force: bool = typer.Option(False, "--force", help="Force reprocessing even if already exists"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+) -> None:
+    """Ingest papers identified from abstract search.
+
+    Downloads PDFs, extracts text, generates embeddings, and stores in ArangoDB.
+    Use after 'hades abstract search' to download interesting papers.
+
+    Examples:
+        hades abstract ingest 2401.12345 2401.67890
+        hades abstract ingest 2401.12345 --gpu 2
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.abstract import ingest_from_abstract
+
+        response = ingest_from_abstract(arxiv_ids, force, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="abstract.ingest",
+            code=ErrorCode.PROCESSING_FAILED,
             message=str(e),
             start_time=start_time,
         )
