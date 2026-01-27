@@ -64,11 +64,13 @@ class EmbedResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
 
-    status: str = Field(..., description="Service status: ready, loading, error")
+    status: str = Field(..., description="Service status: ready, loading, idle, error")
     model_loaded: bool = Field(..., description="Whether model is loaded in memory")
     device: str = Field(..., description="Device model is running on")
     model_name: str = Field(..., description="Name of loaded model")
     uptime_seconds: float = Field(..., description="Service uptime in seconds")
+    idle_timeout_seconds: float = Field(..., description="Idle timeout before model unload")
+    model_idle_seconds: float | None = Field(None, description="Seconds since model was unloaded due to idle")
 
 
 class ShutdownResponse(BaseModel):
@@ -91,6 +93,8 @@ class ServiceState:
     device: str = "unknown"
     model_name: str = "unknown"
     start_time: float = 0.0
+    last_request_time: float = 0.0
+    idle_timeout_seconds: float = 900.0  # 15 min default
     shutdown_event: asyncio.Event | None = None
 
 
@@ -102,11 +106,49 @@ state = ServiceState()
 # =============================================================================
 
 
+async def unload_model() -> None:
+    """Unload the model from GPU memory."""
+    if state.embedder is not None:
+        del state.embedder
+        state.embedder = None
+        state.model_loaded = False
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("CUDA cache cleared")
+        except Exception as e:
+            logger.warning(f"Could not clear CUDA cache: {e}")
+        logger.info("Model unloaded, GPU memory freed")
+
+
+async def idle_monitor() -> None:
+    """Background task to unload model after idle timeout."""
+    while True:
+        await asyncio.sleep(60)
+        if (
+            state.model_loaded
+            and state.last_request_time > 0
+            and state.idle_timeout_seconds > 0
+            and (time.time() - state.last_request_time) > state.idle_timeout_seconds
+        ):
+            logger.info(
+                f"Model idle for {state.idle_timeout_seconds}s. "
+                "Unloading to free GPU memory..."
+            )
+            await unload_model()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage service lifespan - load model on startup, cleanup on shutdown."""
     state.start_time = time.time()
+    state.last_request_time = time.time()
     state.shutdown_event = asyncio.Event()
+    state.idle_timeout_seconds = float(
+        os.environ.get("HADES_EMBEDDER_IDLE_TIMEOUT", "900")
+    )
 
     # Load model on startup
     logger.info("Starting HADES Embedding Service...")
@@ -117,26 +159,18 @@ async def lifespan(app: FastAPI):
         # Continue running so health check can report error state
         state.model_loaded = False
 
+    monitor_task = asyncio.create_task(idle_monitor())
+
     yield
 
     # Cleanup on shutdown
     logger.info("Shutting down HADES Embedding Service...")
-    if state.embedder is not None:
-        # Release GPU memory
-        del state.embedder
-        state.embedder = None
-        state.model_loaded = False
-
-        # Force CUDA memory cleanup
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.info("CUDA cache cleared")
-        except Exception as e:
-            logger.warning(f"Could not clear CUDA cache: {e}")
-
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
+    await unload_model()
     logger.info("Embedding service stopped")
 
 
@@ -191,8 +225,14 @@ async def health() -> HealthResponse:
     """Health check endpoint."""
     uptime = time.time() - state.start_time if state.start_time > 0 else 0
 
+    # Determine idle seconds (time since model was unloaded)
+    model_idle_seconds = None
     if state.model_loaded:
         status = "ready"
+    elif state.embedder is None and state.last_request_time > 0 and uptime >= 60:
+        # Model was unloaded due to idle
+        status = "idle"
+        model_idle_seconds = time.time() - state.last_request_time
     elif state.embedder is None and uptime < 60:
         status = "loading"
     else:
@@ -204,17 +244,26 @@ async def health() -> HealthResponse:
         device=state.device,
         model_name=state.model_name,
         uptime_seconds=uptime,
+        idle_timeout_seconds=state.idle_timeout_seconds,
+        model_idle_seconds=round(model_idle_seconds, 1) if model_idle_seconds is not None else None,
     )
 
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest) -> EmbedResponse:
     """Embed texts using the loaded model."""
+    # Reload model if it was unloaded due to idle
     if not state.model_loaded or state.embedder is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Check /health for status.",
-        )
+        logger.info("Model unloaded (idle). Reloading for incoming request...")
+        try:
+            await load_model()
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to reload model: {e}",
+            ) from e
+
+    state.last_request_time = time.time()
 
     if not request.texts:
         raise HTTPException(status_code=400, detail="No texts provided")
