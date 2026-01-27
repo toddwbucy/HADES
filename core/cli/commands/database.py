@@ -262,6 +262,8 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
             sanitized_id = base_id.replace(".", "_").replace("/", "_")
 
             # Try to get the document
+            from core.database.arango.optimized_client import ArangoHttpError
+
             try:
                 doc = client.get_document("arxiv_metadata", sanitized_id)
                 exists = True
@@ -272,9 +274,12 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
                     "processing_timestamp": doc.get("processing_timestamp"),
                     "status": doc.get("status"),
                 }
-            except Exception:
-                exists = False
-                paper_info = None
+            except ArangoHttpError as e:
+                if e.status_code == 404:
+                    exists = False
+                    paper_info = None
+                else:
+                    raise
 
             return success_response(
                 command="database.check",
