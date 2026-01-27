@@ -862,8 +862,8 @@ def _add_context_chunks(
                 context_after = after_results or []
 
             except Exception:
-                # If context fetch fails, just continue without context
-                pass
+                # If context fetch fails, log and continue without context
+                progress(f"Note: Could not fetch context for chunk {chunk_index}: skipped")
 
             result["context_before"] = context_before
             result["context_after"] = context_after
