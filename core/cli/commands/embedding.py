@@ -155,6 +155,9 @@ def service_stop(start_time: float, token: str | None = None) -> CLIResponse:
                         data={"action": "stopped", "method": "api"},
                         start_time=start_time,
                     )
+                # shutdown_service returned False — fall through to systemctl
+            except Exception:
+                pass  # Service/socket error — fall through to systemctl
             finally:
                 client.close()
 
@@ -387,7 +390,13 @@ def gpu_list(start_time: float) -> CLIResponse:
                 start_time=start_time,
             )
 
-        # Fall back to torch, but preserve our command name
+        # Non-zero return code — fall back to torch
+        fallback = gpu_status(start_time)
+        fallback.command = command_name
+        return fallback
+
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # nvidia-smi not installed or timed out — fall back to torch
         fallback = gpu_status(start_time)
         fallback.command = command_name
         return fallback
