@@ -4,15 +4,23 @@ AI-focused CLI for interacting with the HADES knowledge base.
 All commands output JSON for predictable parsing by AI models.
 
 Usage:
-    hades arxiv search "query"     # Search arxiv API for papers
-    hades arxiv info <arxiv_id>    # Get paper metadata from arxiv
-    hades abstract search "query"  # Search 2.8M synced abstracts
-    hades abstract ingest <id>...  # Ingest papers from abstract search
-    hades ingest <arxiv_id>...     # Download, process, store papers
-    hades query "search text"      # Semantic search over stored chunks
-    hades list                     # List papers in database
-    hades stats                    # Database statistics
-    hades check <arxiv_id>         # Check if paper exists in DB
+    hades arxiv search "query"       # Search arxiv API for papers
+    hades arxiv info <arxiv_id>      # Get paper metadata from arxiv
+    hades arxiv abstract "query"     # Search 2.8M synced abstracts
+    hades arxiv bulk-search "q1" ... # Batch abstract search
+    hades arxiv similar <arxiv_id>   # Find similar papers
+    hades arxiv refine "query" -p ID # Rocchio relevance feedback
+    hades arxiv sync                 # Sync abstracts from arxiv
+    hades arxiv sync-status          # Sync status
+    hades arxiv ingest <arxiv_id>... # Download, process, store papers
+
+    hades database query "text"      # Semantic search over stored chunks
+    hades database chunks --paper ID # Get all chunks for a paper
+    hades database list              # List papers in database
+    hades database stats             # Database statistics
+    hades database check <arxiv_id>  # Check if paper exists in DB
+    hades database create <name>     # Create a collection
+    hades database delete <col> <key> # Delete a document
 """
 
 from __future__ import annotations
@@ -72,6 +80,7 @@ def main(
     """HADES Knowledge Base CLI - AI model interface for semantic search over academic papers."""
     if version:
         from importlib.metadata import version as get_version
+
         try:
             print(f"hades {get_version('hades')}")
         except Exception:
@@ -85,22 +94,34 @@ def main(
         print(ctx.get_help())
         raise typer.Exit()
 
-# Create subcommand groups
+
+# =============================================================================
+# Subcommand Groups
+# =============================================================================
+
 arxiv_app = typer.Typer(
     name="arxiv",
-    help="ArXiv paper search and metadata.",
+    help="ArXiv paper search, abstract search, sync, and ingestion.",
     no_args_is_help=True,
     rich_markup_mode=None,
 )
 app.add_typer(arxiv_app, name="arxiv")
 
-abstract_app = typer.Typer(
-    name="abstract",
-    help="Search synced abstracts (2.8M) and ingest papers.",
+database_app = typer.Typer(
+    name="database",
+    help="Database queries, paper management, and collection operations.",
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-app.add_typer(abstract_app, name="abstract")
+app.add_typer(database_app, name="database")
+
+graph_app = typer.Typer(
+    name="graph",
+    help="Named graph management and traversal operations.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+database_app.add_typer(graph_app, name="graph")
 
 # Embedding service commands
 embedding_app = typer.Typer(
@@ -137,7 +158,9 @@ embedding_app.add_typer(embedding_gpu_app, name="gpu")
 def arxiv_search(
     query: str = typer.Argument(..., help="Search query for arxiv papers", metavar="QUERY"),
     max_results: int = typer.Option(10, "--max", "-m", help="Maximum number of results"),
-    categories: str = typer.Option(None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"),
+    categories: str = typer.Option(
+        None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"
+    ),
 ) -> None:
     """Search arxiv for papers matching a query.
 
@@ -194,13 +217,8 @@ def arxiv_info(
         raise typer.Exit(1) from None
 
 
-# =============================================================================
-# Abstract Commands (search 2.8M synced abstracts)
-# =============================================================================
-
-
-@abstract_app.command("search")
-def abstract_search(
+@arxiv_app.command("abstract")
+def arxiv_abstract(
     query: str = typer.Argument(..., help="Search query for abstracts", metavar="QUERY"),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
@@ -213,15 +231,15 @@ def abstract_search(
     each paper has been fully ingested locally.
 
     Examples:
-        hades abstract search "transformer attention" --limit 20
-        hades abstract search "neural networks" --category cs.LG
-        hades abstract search "BERT fine-tuning" --hybrid  # semantic + keyword
+        hades arxiv abstract "transformer attention" --limit 20
+        hades arxiv abstract "neural networks" --category cs.LG
+        hades arxiv abstract "BERT fine-tuning" --hybrid  # semantic + keyword
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.abstract import search_abstracts
+        from core.cli.commands.arxiv import search_abstracts
 
         response = search_abstracts(query, limit, start_time, category=category, hybrid=hybrid)
         print_response(response)
@@ -232,7 +250,7 @@ def abstract_search(
         raise
     except Exception as e:
         response = error_response(
-            command="abstract.search",
+            command="arxiv.abstract",
             code=ErrorCode.SEARCH_FAILED,
             message=str(e),
             start_time=start_time,
@@ -241,8 +259,8 @@ def abstract_search(
         raise typer.Exit(1) from None
 
 
-@abstract_app.command("search-bulk")
-def abstract_search_bulk(
+@arxiv_app.command("bulk-search")
+def arxiv_bulk_search(
     queries: list[str] = typer.Argument(..., help="Search queries (multiple allowed)"),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum results per query"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
@@ -256,14 +274,14 @@ def abstract_search_bulk(
     - Uses matrix multiplication for batch similarity
 
     Examples:
-        hades abstract search-bulk "attention" "transformer" "BERT"
-        hades abstract search-bulk "neural networks" "deep learning" --limit 5
+        hades arxiv bulk-search "attention" "transformer" "BERT"
+        hades arxiv bulk-search "neural networks" "deep learning" --limit 5
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.abstract import search_abstracts_bulk
+        from core.cli.commands.arxiv import search_abstracts_bulk
 
         response = search_abstracts_bulk(queries, limit, start_time, category=category)
         print_response(response)
@@ -274,7 +292,7 @@ def abstract_search_bulk(
         raise
     except Exception as e:
         response = error_response(
-            command="abstract.search-bulk",
+            command="arxiv.bulk-search",
             code=ErrorCode.SEARCH_FAILED,
             message=str(e),
             start_time=start_time,
@@ -283,47 +301,8 @@ def abstract_search_bulk(
         raise typer.Exit(1) from None
 
 
-@abstract_app.command("ingest")
-def abstract_ingest(
-    arxiv_ids: list[str] = typer.Argument(..., help="ArXiv paper IDs to ingest"),
-    force: bool = typer.Option(False, "--force", help="Force reprocessing even if already exists"),
-    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
-) -> None:
-    """Ingest papers identified from abstract search.
-
-    Downloads PDFs, extracts text, generates embeddings, and stores in ArangoDB.
-    Use after 'hades abstract search' to download interesting papers.
-
-    Examples:
-        hades abstract ingest 2401.12345 2401.67890
-        hades abstract ingest 2401.12345 --gpu 2
-    """
-    _set_gpu(gpu)
-    start_time = time.time()
-
-    try:
-        from core.cli.commands.abstract import ingest_from_abstract
-
-        response = ingest_from_abstract(arxiv_ids, force, start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="abstract.ingest",
-            code=ErrorCode.PROCESSING_FAILED,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
-
-
-@abstract_app.command("similar")
-def abstract_similar(
+@arxiv_app.command("similar")
+def arxiv_similar(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to find similar papers for", metavar="ARXIV_ID"),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
@@ -335,14 +314,14 @@ def abstract_similar(
     without needing to generate a new query embedding.
 
     Examples:
-        hades abstract similar 2401.12345 --limit 20
-        hades abstract similar 2401.12345 --category cs.LG
+        hades arxiv similar 2401.12345 --limit 20
+        hades arxiv similar 2401.12345 --category cs.LG
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.abstract import find_similar
+        from core.cli.commands.arxiv import find_similar
 
         response = find_similar(arxiv_id, limit, start_time, category=category)
         print_response(response)
@@ -353,7 +332,7 @@ def abstract_similar(
         raise
     except Exception as e:
         response = error_response(
-            command="abstract.similar",
+            command="arxiv.similar",
             code=ErrorCode.SEARCH_FAILED,
             message=str(e),
             start_time=start_time,
@@ -362,12 +341,10 @@ def abstract_similar(
         raise typer.Exit(1) from None
 
 
-@abstract_app.command("refine")
-def abstract_refine(
+@arxiv_app.command("refine")
+def arxiv_refine(
     query: str = typer.Argument(..., help="Original search query", metavar="QUERY"),
-    positive: list[str] = typer.Option(
-        ..., "--positive", "-p", help="Relevant paper IDs (positive exemplars)"
-    ),
+    positive: list[str] = typer.Option(..., "--positive", "-p", help="Relevant paper IDs (positive exemplars)"),
     negative: list[str] | None = typer.Option(
         None, "--negative", "-x", help="Irrelevant paper IDs (negative exemplars)"
     ),
@@ -388,19 +365,19 @@ def abstract_refine(
 
     Examples:
         # Refine with positive exemplars only
-        hades abstract refine "transformer attention" -p 2401.12345 -p 2401.67890
+        hades arxiv refine "transformer attention" -p 2401.12345 -p 2401.67890
 
         # Refine with both positive and negative exemplars
-        hades abstract refine "neural embeddings" -p 2401.12345 -x 2402.99999
+        hades arxiv refine "neural embeddings" -p 2401.12345 -x 2402.99999
 
         # Custom weights for more aggressive refinement
-        hades abstract refine "late chunking" -p 2401.12345 --alpha 0.5 --beta 1.0
+        hades arxiv refine "late chunking" -p 2401.12345 --alpha 0.5 --beta 1.0
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.abstract import refine_search
+        from core.cli.commands.arxiv import refine_search
 
         response = refine_search(
             query=query,
@@ -421,7 +398,7 @@ def abstract_refine(
         raise
     except Exception as e:
         response = error_response(
-            command="abstract.refine",
+            command="arxiv.refine",
             code=ErrorCode.SEARCH_FAILED,
             message=str(e),
             start_time=start_time,
@@ -430,13 +407,86 @@ def abstract_refine(
         raise typer.Exit(1) from None
 
 
-# =============================================================================
-# Ingest Commands
-# =============================================================================
+@arxiv_app.command("sync")
+def arxiv_sync(
+    from_date: str = typer.Option(None, "--from", "-f", help="Start date (YYYY-MM-DD, default: 7 days ago)"),
+    categories: str = typer.Option(
+        None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"
+    ),
+    max_results: int = typer.Option(1000, "--max", "-m", help="Maximum papers to sync"),
+    batch_size: int = typer.Option(8, "--batch", "-b", help="Batch size for embedding (default 8 for 16GB GPU)"),
+    incremental: bool = typer.Option(False, "--incremental", "-i", help="Sync only papers newer than last sync"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+) -> None:
+    """Sync recent abstracts from arxiv for semantic search.
+
+    Fetches metadata and abstracts, embeds them with Jina, and stores
+    for fast semantic search - WITHOUT downloading full PDFs.
+
+    Use this to keep your abstract database current, then use 'hades arxiv ingest'
+    to download full papers you're interested in.
+
+    Examples:
+        hades arxiv sync --gpu 2 --batch 8
+        hades arxiv sync --incremental                    # Sync since last sync
+        hades arxiv sync --from 2025-01-01 --categories cs.AI,cs.CL --gpu 0
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.arxiv import sync_abstracts
+
+        response = sync_abstracts(from_date, categories, max_results, batch_size, start_time, incremental=incremental)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="arxiv.sync",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
 
 
-@app.command("ingest")
-def ingest(
+@arxiv_app.command("sync-status")
+def arxiv_sync_status() -> None:
+    """Show sync status including last sync time and history.
+
+    Examples:
+        hades arxiv sync-status
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.arxiv import get_sync_status
+
+        response = get_sync_status(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="arxiv.sync-status",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@arxiv_app.command("ingest")
+def arxiv_ingest(
     arxiv_ids: list[str] = typer.Argument(None, help="ArXiv paper IDs to ingest"),
     file: str = typer.Option(None, "--file", "-f", help="Path to local PDF file"),
     force: bool = typer.Option(False, "--force", help="Force reprocessing even if already exists"),
@@ -447,15 +497,15 @@ def ingest(
     Downloads PDFs, extracts text, generates embeddings, and stores in ArangoDB.
 
     Examples:
-        hades ingest 2401.12345 2401.67890
-        hades ingest --file /path/to/paper.pdf
-        hades ingest 2401.12345 --gpu 2
+        hades arxiv ingest 2401.12345 2401.67890
+        hades arxiv ingest --file /path/to/paper.pdf
+        hades arxiv ingest 2401.12345 --gpu 2
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.ingest import ingest_papers
+        from core.cli.commands.arxiv import ingest_papers
 
         if file:
             response = ingest_papers(pdf_paths=[file], force=force, start_time=start_time)
@@ -463,7 +513,7 @@ def ingest(
             response = ingest_papers(arxiv_ids=arxiv_ids, force=force, start_time=start_time)
         else:
             response = error_response(
-                command="ingest",
+                command="arxiv.ingest",
                 code=ErrorCode.CONFIG_ERROR,
                 message="Provide either arxiv IDs or --file path",
                 start_time=start_time,
@@ -479,7 +529,7 @@ def ingest(
         raise
     except Exception as e:
         response = error_response(
-            command="ingest",
+            command="arxiv.ingest",
             code=ErrorCode.PROCESSING_FAILED,
             message=str(e),
             start_time=start_time,
@@ -489,12 +539,12 @@ def ingest(
 
 
 # =============================================================================
-# Query Commands
+# Database Commands
 # =============================================================================
 
 
-@app.command("query")
-def query(
+@database_app.command("query")
+def database_query(
     search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
     paper: str = typer.Option(None, "--paper", "-p", help="Filter results to a specific paper (arxiv ID)"),
@@ -508,17 +558,17 @@ def query(
     Returns relevant text chunks with similarity scores.
 
     Examples:
-        hades query "attention mechanism"              # Search all papers
-        hades query "Newton-Schulz" --paper 2505.23735 # Search within paper
-        hades query "attention" --context 1            # Include ±1 adjacent chunks
-        hades query "attention" --cite --top-k 3       # Citation format, top 3
-        hades query --paper 2505.23735 --chunks        # Get all chunks (no search)
+        hades database query "attention mechanism"              # Search all papers
+        hades database query "Newton-Schulz" --paper 2505.23735 # Search within paper
+        hades database query "attention" --context 1            # Include ±1 adjacent chunks
+        hades database query "attention" --cite --top-k 3       # Citation format, top 3
+        hades database query --paper 2505.23735 --chunks        # Get all chunks (no search)
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.query import get_paper_chunks, semantic_query
+        from core.cli.commands.database import get_paper_chunks, semantic_query
 
         # Mode 1: Get all chunks for a paper (no semantic search)
         if chunks_only and paper:
@@ -536,7 +586,7 @@ def query(
         # Mode 3: Must provide search text or --chunks
         else:
             response = error_response(
-                command="query",
+                command="database.query",
                 code=ErrorCode.CONFIG_ERROR,
                 message="Provide search text, or use --paper with --chunks",
                 start_time=start_time,
@@ -552,7 +602,7 @@ def query(
         raise
     except Exception as e:
         response = error_response(
-            command="query",
+            command="database.query",
             code=ErrorCode.QUERY_FAILED,
             message=str(e),
             start_time=start_time,
@@ -561,58 +611,25 @@ def query(
         raise typer.Exit(1) from None
 
 
-# =============================================================================
-# Sync Commands
-# =============================================================================
-
-
-# Create sync subcommand group
-sync_app = typer.Typer(
-    name="sync",
-    help="Sync abstracts from arxiv (incremental or manual).",
-    no_args_is_help=False,
-    invoke_without_command=True,
-    rich_markup_mode=None,
-)
-app.add_typer(sync_app, name="sync")
-
-
-@sync_app.callback(invoke_without_command=True)
-def sync_default(
-    ctx: typer.Context,
-    from_date: str = typer.Option(None, "--from", "-f", help="Start date (YYYY-MM-DD, default: 7 days ago)"),
-    categories: str = typer.Option(None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"),
-    max_results: int = typer.Option(1000, "--max", "-m", help="Maximum papers to sync"),
-    batch_size: int = typer.Option(8, "--batch", "-b", help="Batch size for embedding (default 8 for 16GB GPU)"),
-    incremental: bool = typer.Option(False, "--incremental", "-i", help="Sync only papers newer than last sync"),
-    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+@database_app.command("aql")
+def database_aql(
+    aql: str = typer.Argument(..., help="AQL query string", metavar="AQL"),
+    bind: str = typer.Option(None, "--bind", "-b", help="Bind variables as JSON (e.g., '{\"x\":1}')"),
 ) -> None:
-    """Sync recent abstracts from arxiv for semantic search.
+    """Execute an arbitrary AQL query.
 
-    Fetches metadata and abstracts, embeds them with Jina, and stores
-    for fast semantic search - WITHOUT downloading full PDFs.
-
-    Use this to keep your abstract database current, then use 'hades ingest'
-    to download full papers you're interested in.
+    Uses the read-write socket since AQL can mutate data.
 
     Examples:
-        hades sync --gpu 2 --batch 8
-        hades sync --incremental                    # Sync since last sync
-        hades sync --from 2025-01-01 --categories cs.AI,cs.CL --gpu 0
+        hades database aql "FOR d IN arxiv_metadata LIMIT 5 RETURN d.title"
+        hades database aql "FOR d IN col FILTER d.x == @x RETURN d" --bind '{"x":1}'
     """
-    # Only run sync if no subcommand was invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
-    _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.sync import sync_abstracts
+        from core.cli.commands.database import execute_aql
 
-        response = sync_abstracts(
-            from_date, categories, max_results, batch_size, start_time, incremental=incremental
-        )
+        response = execute_aql(aql, bind, start_time)
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None
@@ -621,8 +638,8 @@ def sync_default(
         raise
     except Exception as e:
         response = error_response(
-            command="sync",
-            code=ErrorCode.PROCESSING_FAILED,
+            command="database.aql",
+            code=ErrorCode.QUERY_FAILED,
             message=str(e),
             start_time=start_time,
         )
@@ -630,43 +647,8 @@ def sync_default(
         raise typer.Exit(1) from None
 
 
-@sync_app.command("status")
-def sync_status() -> None:
-    """Show sync status including last sync time and history.
-
-    Examples:
-        hades sync status
-    """
-    start_time = time.time()
-
-    try:
-        from core.cli.commands.sync import get_sync_status
-
-        response = get_sync_status(start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="sync.status",
-            code=ErrorCode.DATABASE_ERROR,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
-
-
-# =============================================================================
-# Database Management Commands
-# =============================================================================
-
-
-@app.command("list")
-def list_papers(
+@database_app.command("list")
+def database_list(
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of papers to list"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category"),
 ) -> None:
@@ -674,7 +656,7 @@ def list_papers(
     start_time = time.time()
 
     try:
-        from core.cli.commands.db import list_stored_papers
+        from core.cli.commands.database import list_stored_papers
 
         response = list_stored_papers(limit, category, start_time)
         print_response(response)
@@ -685,7 +667,7 @@ def list_papers(
         raise
     except Exception as e:
         response = error_response(
-            command="list",
+            command="database.list",
             code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
@@ -694,13 +676,13 @@ def list_papers(
         raise typer.Exit(1) from None
 
 
-@app.command("stats")
-def stats() -> None:
+@database_app.command("stats")
+def database_stats() -> None:
     """Show database statistics."""
     start_time = time.time()
 
     try:
-        from core.cli.commands.db import get_stats
+        from core.cli.commands.database import get_stats
 
         response = get_stats(start_time)
         print_response(response)
@@ -711,7 +693,7 @@ def stats() -> None:
         raise
     except Exception as e:
         response = error_response(
-            command="stats",
+            command="database.stats",
             code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
@@ -720,15 +702,15 @@ def stats() -> None:
         raise typer.Exit(1) from None
 
 
-@app.command("check")
-def check(
+@database_app.command("check")
+def database_check(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to check", metavar="ARXIV_ID"),
 ) -> None:
     """Check if a paper exists in the database."""
     start_time = time.time()
 
     try:
-        from core.cli.commands.db import check_paper_exists
+        from core.cli.commands.database import check_paper_exists
 
         response = check_paper_exists(arxiv_id, start_time)
         print_response(response)
@@ -739,7 +721,275 @@ def check(
         raise
     except Exception as e:
         response = error_response(
-            command="check",
+            command="database.check",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@database_app.command("create")
+def database_create(
+    name: str = typer.Argument(..., help="Collection name to create", metavar="NAME"),
+) -> None:
+    """Create a new ArangoDB collection."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import create_collection
+
+        response = create_collection(name, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.create",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@database_app.command("delete")
+def database_delete(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    key: str = typer.Argument(..., help="Document key to delete", metavar="KEY"),
+) -> None:
+    """Delete a document from an ArangoDB collection."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import delete_document
+
+        response = delete_document(collection, key, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.delete",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+# =============================================================================
+# Graph Commands
+# =============================================================================
+
+
+@graph_app.command("create")
+def graph_create_cmd(
+    name: str = typer.Option(..., "--name", "-n", help="Graph name"),
+    edge_defs: str = typer.Option(
+        ...,
+        "--edge-defs",
+        "-e",
+        help='Edge definitions as JSON (e.g., \'[{"collection":"edges","from":["A"],"to":["B"]}]\')',
+    ),
+) -> None:
+    """Create a named graph.
+
+    Examples:
+        hades database graph create --name my_graph --edge-defs '[{"collection":"edges","from":["A"],"to":["B"]}]'
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_create
+
+        response = graph_create(name, edge_defs, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.create",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@graph_app.command("list")
+def graph_list_cmd() -> None:
+    """List all named graphs."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_list
+
+        response = graph_list(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.list",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@graph_app.command("drop")
+def graph_drop_cmd(
+    name: str = typer.Option(..., "--name", "-n", help="Graph name to drop"),
+    drop_collections: bool = typer.Option(False, "--drop-collections", help="Also drop the graph's collections"),
+) -> None:
+    """Drop a named graph.
+
+    Examples:
+        hades database graph drop --name my_graph
+        hades database graph drop --name my_graph --drop-collections
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_drop
+
+        response = graph_drop(name, drop_collections, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.drop",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@graph_app.command("traverse")
+def graph_traverse_cmd(
+    start: str = typer.Option(..., "--start", "-s", help="Start vertex document ID (e.g., collection/key)"),
+    graph: str = typer.Option(..., "--graph", "-g", help="Graph name"),
+    direction: str = typer.Option("outbound", "--direction", "-d", help="Traversal direction (outbound, inbound, any)"),
+    min_depth: int = typer.Option(1, "--min", help="Minimum traversal depth"),
+    max_depth: int = typer.Option(3, "--max", help="Maximum traversal depth"),
+    limit: int = typer.Option(100, "--limit", "-n", help="Maximum number of results"),
+) -> None:
+    """Traverse a named graph from a start vertex.
+
+    Examples:
+        hades database graph traverse --start nodes/1 --graph my_graph
+        hades database graph traverse --start nodes/1 --graph my_graph --direction any --max 5
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_traverse
+
+        response = graph_traverse(start, graph, direction, min_depth, max_depth, limit, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.traverse",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@graph_app.command("shortest-path")
+def graph_shortest_path_cmd(
+    from_id: str = typer.Option(..., "--from", help="Source vertex document ID"),
+    to_id: str = typer.Option(..., "--to", help="Target vertex document ID"),
+    graph: str = typer.Option(..., "--graph", "-g", help="Graph name"),
+    direction: str = typer.Option("any", "--direction", "-d", help="Edge direction (outbound, inbound, any)"),
+) -> None:
+    """Find shortest path between two vertices.
+
+    Examples:
+        hades database graph shortest-path --from nodes/1 --to nodes/5 --graph my_graph
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_shortest_path
+
+        response = graph_shortest_path(from_id, to_id, graph, direction, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.shortest-path",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@graph_app.command("neighbors")
+def graph_neighbors_cmd(
+    start: str = typer.Option(..., "--start", "-s", help="Start vertex document ID"),
+    graph: str = typer.Option(..., "--graph", "-g", help="Graph name"),
+    direction: str = typer.Option("outbound", "--direction", "-d", help="Edge direction (outbound, inbound, any)"),
+    limit: int = typer.Option(100, "--limit", "-n", help="Maximum number of results"),
+) -> None:
+    """Get immediate neighbors of a vertex.
+
+    Examples:
+        hades database graph neighbors --start nodes/1 --graph my_graph
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_neighbors
+
+        response = graph_neighbors(start, graph, direction, limit, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.neighbors",
             code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
@@ -836,7 +1086,9 @@ def embedding_service_stop(
 @embedding_app.command("text")
 def embedding_text(
     text: str = typer.Argument(..., help="Text to embed", metavar="TEXT"),
-    task: str = typer.Option("retrieval.passage", "--task", "-t", help="Task type (retrieval.passage, retrieval.query)"),
+    task: str = typer.Option(
+        "retrieval.passage", "--task", "-t", help="Task type (retrieval.passage, retrieval.query)"
+    ),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw embedding array only"),
 ) -> None:
     """Embed a text string using the embedding service."""
