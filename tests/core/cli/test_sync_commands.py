@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
-from core.cli.commands.sync import (
+from core.cli.commands.arxiv import (
     SYNC_METADATA_COLLECTION,
     SYNC_WATERMARK_KEY,
     _get_last_sync_date,
@@ -17,8 +17,8 @@ from core.cli.output import ErrorCode
 class TestSyncStatus:
     """Tests for sync status command."""
 
-    @patch("core.cli.commands.sync._get_sync_metadata")
-    @patch("core.cli.commands.sync.get_config")
+    @patch("core.cli.commands.arxiv._get_sync_metadata")
+    @patch("core.cli.commands.arxiv.get_config")
     def test_status_returns_metadata(self, mock_get_config, mock_get_metadata):
         """Test status returns sync metadata."""
         mock_config = MagicMock()
@@ -40,8 +40,8 @@ class TestSyncStatus:
         assert response.data["total_synced"] == 2826761
         assert len(response.data["sync_history"]) == 1
 
-    @patch("core.cli.commands.sync._get_sync_metadata")
-    @patch("core.cli.commands.sync.get_config")
+    @patch("core.cli.commands.arxiv._get_sync_metadata")
+    @patch("core.cli.commands.arxiv.get_config")
     def test_status_no_history(self, mock_get_config, mock_get_metadata):
         """Test status when no sync history exists."""
         mock_config = MagicMock()
@@ -56,7 +56,7 @@ class TestSyncStatus:
         assert response.data["total_synced"] == 0
         assert "message" in response.data
 
-    @patch("core.cli.commands.sync.get_config")
+    @patch("core.cli.commands.arxiv.get_config")
     def test_status_handles_config_error(self, mock_get_config):
         """Test status handles config errors."""
         mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
@@ -70,12 +70,12 @@ class TestSyncStatus:
 class TestIncrementalSync:
     """Tests for incremental sync functionality."""
 
-    @patch("core.cli.commands.sync._embed_and_store_abstracts")
-    @patch("core.cli.commands.sync._filter_existing")
-    @patch("core.cli.commands.sync._fetch_recent_papers")
-    @patch("core.cli.commands.sync._update_sync_metadata")
-    @patch("core.cli.commands.sync._get_last_sync_date")
-    @patch("core.cli.commands.sync.get_config")
+    @patch("core.cli.commands.arxiv._embed_and_store_abstracts")
+    @patch("core.cli.commands.arxiv._filter_existing")
+    @patch("core.cli.commands.arxiv._fetch_recent_papers")
+    @patch("core.cli.commands.arxiv._update_sync_metadata")
+    @patch("core.cli.commands.arxiv._get_last_sync_date")
+    @patch("core.cli.commands.arxiv.get_config")
     def test_incremental_uses_watermark(
         self,
         mock_get_config,
@@ -116,12 +116,12 @@ class TestIncrementalSync:
         # The start_date should be close to last_sync
         assert abs((call_args[0] - last_sync).total_seconds()) < 60
 
-    @patch("core.cli.commands.sync._embed_and_store_abstracts")
-    @patch("core.cli.commands.sync._filter_existing")
-    @patch("core.cli.commands.sync._fetch_recent_papers")
-    @patch("core.cli.commands.sync._update_sync_metadata")
-    @patch("core.cli.commands.sync._get_last_sync_date")
-    @patch("core.cli.commands.sync.get_config")
+    @patch("core.cli.commands.arxiv._embed_and_store_abstracts")
+    @patch("core.cli.commands.arxiv._filter_existing")
+    @patch("core.cli.commands.arxiv._fetch_recent_papers")
+    @patch("core.cli.commands.arxiv._update_sync_metadata")
+    @patch("core.cli.commands.arxiv._get_last_sync_date")
+    @patch("core.cli.commands.arxiv.get_config")
     def test_incremental_no_previous_sync(
         self,
         mock_get_config,
@@ -160,11 +160,11 @@ class TestIncrementalSync:
         # Allow 1 hour tolerance
         assert abs((call_args[0] - expected_date).total_seconds()) < 3600
 
-    @patch("core.cli.commands.sync._embed_and_store_abstracts")
-    @patch("core.cli.commands.sync._filter_existing")
-    @patch("core.cli.commands.sync._fetch_recent_papers")
-    @patch("core.cli.commands.sync._update_sync_metadata")
-    @patch("core.cli.commands.sync.get_config")
+    @patch("core.cli.commands.arxiv._embed_and_store_abstracts")
+    @patch("core.cli.commands.arxiv._filter_existing")
+    @patch("core.cli.commands.arxiv._fetch_recent_papers")
+    @patch("core.cli.commands.arxiv._update_sync_metadata")
+    @patch("core.cli.commands.arxiv.get_config")
     def test_sync_updates_metadata(
         self,
         mock_get_config,
@@ -203,7 +203,7 @@ class TestIncrementalSync:
 class TestGetLastSyncDate:
     """Tests for _get_last_sync_date helper."""
 
-    @patch("core.cli.commands.sync._get_sync_metadata")
+    @patch("core.cli.commands.arxiv._get_sync_metadata")
     def test_returns_datetime_from_metadata(self, mock_get_metadata):
         """Test parsing ISO datetime from metadata."""
         mock_config = MagicMock()
@@ -218,7 +218,7 @@ class TestGetLastSyncDate:
         assert result.month == 1
         assert result.day == 20
 
-    @patch("core.cli.commands.sync._get_sync_metadata")
+    @patch("core.cli.commands.arxiv._get_sync_metadata")
     def test_returns_none_when_no_metadata(self, mock_get_metadata):
         """Test returns None when no metadata exists."""
         mock_config = MagicMock()
@@ -228,7 +228,7 @@ class TestGetLastSyncDate:
 
         assert result is None
 
-    @patch("core.cli.commands.sync._get_sync_metadata")
+    @patch("core.cli.commands.arxiv._get_sync_metadata")
     def test_returns_none_when_no_last_sync(self, mock_get_metadata):
         """Test returns None when last_sync field is missing."""
         mock_config = MagicMock()
@@ -243,7 +243,7 @@ class TestSyncMetadataHelpers:
     """Tests for sync metadata helper functions."""
 
     @patch("core.database.arango.optimized_client.ArangoHttp2Client")
-    @patch("core.cli.commands.sync.get_arango_config")
+    @patch("core.cli.commands.arxiv.get_arango_config")
     def test_get_sync_metadata_returns_doc(self, mock_get_config, mock_client_class):
         """Test _get_sync_metadata returns document when it exists."""
         mock_config = MagicMock()
@@ -273,7 +273,7 @@ class TestSyncMetadataHelpers:
         mock_client.close.assert_called_once()
 
     @patch("core.database.arango.optimized_client.ArangoHttp2Client")
-    @patch("core.cli.commands.sync.get_arango_config")
+    @patch("core.cli.commands.arxiv.get_arango_config")
     def test_get_sync_metadata_returns_none_on_404(
         self, mock_get_config, mock_client_class
     ):

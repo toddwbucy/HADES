@@ -613,21 +613,12 @@ def delete_document(collection: str, key: str, start_time: float) -> CLIResponse
 def _get_query_embedding(text: str, config: Any) -> np.ndarray:
     """Generate embedding for query text.
 
-    Uses the same embedder as document processing for consistent similarity search.
+    Uses the embedding service for consistent similarity search.
     """
-    from core.embedders.embedders_jina import JinaV4Embedder
+    from core.cli.config import get_embedder_client
 
-    embedder = JinaV4Embedder(
-        config={
-            "device": config.device,
-            "use_fp16": True,
-        }
-    )
-
-    # Use retrieval task for query embeddings
-    embedding = embedder.embed_texts([text], task="retrieval")[0]
-
-    return embedding
+    with get_embedder_client(config) as client:
+        return client.embed_query(text)
 
 
 def _search_embeddings(

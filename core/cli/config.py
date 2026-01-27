@@ -208,9 +208,7 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
         device = "cpu"
 
     # Parse port with validation
-    port_str = os.environ.get("ARANGO_PORT") or str(
-        _get_nested(yaml_config, "database", "port", default=8529)
-    )
+    port_str = os.environ.get("ARANGO_PORT") or str(_get_nested(yaml_config, "database", "port", default=8529))
     try:
         arango_port = int(port_str)
     except ValueError as e:
@@ -258,17 +256,12 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
     )
 
     # Socket paths: env overrides YAML
-    ro_socket = os.environ.get("ARANGO_RO_SOCKET") or _get_nested(
-        yaml_config, "database", "sockets", "readonly"
-    )
-    rw_socket = os.environ.get("ARANGO_RW_SOCKET") or _get_nested(
-        yaml_config, "database", "sockets", "readwrite"
-    )
+    ro_socket = os.environ.get("ARANGO_RO_SOCKET") or _get_nested(yaml_config, "database", "sockets", "readonly")
+    rw_socket = os.environ.get("ARANGO_RW_SOCKET") or _get_nested(yaml_config, "database", "sockets", "readwrite")
 
     return CLIConfig(
         arango_password=password,
-        arango_host=os.environ.get("ARANGO_HOST")
-        or _get_nested(yaml_config, "database", "host", default="localhost"),
+        arango_host=os.environ.get("ARANGO_HOST") or _get_nested(yaml_config, "database", "host", default="localhost"),
         arango_port=arango_port,
         arango_database=os.environ.get("HADES_DATABASE")
         or _get_nested(yaml_config, "database", "database", default="arxiv_datastore"),
@@ -288,6 +281,29 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
         search=search_config,
         rocchio=rocchio_config,
         sync=sync_config,
+    )
+
+
+def get_embedder_client(config: CLIConfig | None = None):
+    """Get an EmbedderClient configured from CLI config.
+
+    Uses the embedding service over Unix socket. No local fallback —
+    if the service is down, commands fail with a clear error.
+
+    Args:
+        config: CLI configuration (loaded if not provided)
+
+    Returns:
+        EmbedderClient instance (use as context manager)
+    """
+    if config is None:
+        config = get_config()
+    from core.services.embedder_client import EmbedderClient
+
+    return EmbedderClient(
+        socket_path=config.embedding.service_socket,
+        timeout=config.embedding.timeout_ms / 1000.0,
+        fallback_to_local=False,
     )
 
 

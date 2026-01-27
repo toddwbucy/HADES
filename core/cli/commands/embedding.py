@@ -309,14 +309,16 @@ def gpu_status(start_time: float) -> CLIResponse:
             mem_allocated = torch.cuda.memory_allocated(i)
             mem_reserved = torch.cuda.memory_reserved(i)
 
-            gpus.append({
-                "index": i,
-                "name": props.name,
-                "total_memory_gb": round(props.total_memory / 1e9, 2),
-                "allocated_memory_gb": round(mem_allocated / 1e9, 2),
-                "reserved_memory_gb": round(mem_reserved / 1e9, 2),
-                "compute_capability": f"{props.major}.{props.minor}",
-            })
+            gpus.append(
+                {
+                    "index": i,
+                    "name": props.name,
+                    "total_memory_gb": round(props.total_memory / 1e9, 2),
+                    "allocated_memory_gb": round(mem_allocated / 1e9, 2),
+                    "reserved_memory_gb": round(mem_reserved / 1e9, 2),
+                    "compute_capability": f"{props.major}.{props.minor}",
+                }
+            )
 
         # Get current device from service if running
         service_device = None
@@ -386,14 +388,16 @@ def gpu_list(start_time: float) -> CLIResponse:
                 if line:
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) >= 6:
-                        gpus.append({
-                            "index": _safe_parse_int(parts[0]),
-                            "name": parts[1],
-                            "memory_total_mb": _safe_parse_int(parts[2]),
-                            "memory_used_mb": _safe_parse_int(parts[3]),
-                            "memory_free_mb": _safe_parse_int(parts[4]),
-                            "utilization_percent": _safe_parse_int(parts[5]),
-                        })
+                        gpus.append(
+                            {
+                                "index": _safe_parse_int(parts[0]),
+                                "name": parts[1],
+                                "memory_total_mb": _safe_parse_int(parts[2]),
+                                "memory_used_mb": _safe_parse_int(parts[3]),
+                                "memory_free_mb": _safe_parse_int(parts[4]),
+                                "utilization_percent": _safe_parse_int(parts[5]),
+                            }
+                        )
 
             return success_response(
                 command=command_name,
