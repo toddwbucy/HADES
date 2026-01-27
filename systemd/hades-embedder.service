@@ -2,6 +2,8 @@
 Description=HADES Embedding Service
 Documentation=https://github.com/toddwbucy/HADES
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -40,8 +42,6 @@ Environment=TRANSFORMERS_CACHE=/var/cache/hades/huggingface
 # Restart policy
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=300
-StartLimitBurst=3
 
 # Resource limits
 # Increase if model loading fails due to memory

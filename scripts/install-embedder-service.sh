@@ -51,7 +51,8 @@ echo "  Service user: $SERVICE_USER"
 echo "  Service group: $SERVICE_GROUP"
 
 # Find the poetry virtualenv path
-VENV_PATH=$(sudo -u "$SERVICE_USER" bash -c 'cd '"$PROJECT_DIR"' && poetry env info -p 2>/dev/null')
+# Use login shell (-l) to load user's PATH which includes poetry
+VENV_PATH=$(sudo -u "$SERVICE_USER" bash -l -c 'cd '"$PROJECT_DIR"' && poetry env info -p 2>/dev/null')
 if [[ -z "$VENV_PATH" ]]; then
     echo "Error: Could not find poetry virtualenv. Run 'poetry install' first."
     exit 1
