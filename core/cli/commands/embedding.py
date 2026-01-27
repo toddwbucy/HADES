@@ -107,8 +107,10 @@ def service_start(start_time: float) -> CLIResponse:
         from core.services.embedder_client import EmbedderClient
 
         client = EmbedderClient()
-        is_available = client.is_service_available(force_check=True)
-        client.close()
+        try:
+            is_available = client.is_service_available(force_check=True)
+        finally:
+            client.close()
 
         return success_response(
             command="embedding.service.start",
@@ -145,15 +147,16 @@ def service_stop(start_time: float, token: str | None = None) -> CLIResponse:
             from core.services.embedder_client import EmbedderClient
 
             client = EmbedderClient()
-            if client.shutdown_service(token=token):
+            try:
+                if client.shutdown_service(token=token):
+                    time.sleep(1)
+                    return success_response(
+                        command="embedding.service.stop",
+                        data={"action": "stopped", "method": "api"},
+                        start_time=start_time,
+                    )
+            finally:
                 client.close()
-                time.sleep(1)
-                return success_response(
-                    command="embedding.service.stop",
-                    data={"action": "stopped", "method": "api"},
-                    start_time=start_time,
-                )
-            client.close()
 
         # Fall back to systemctl
         result = subprocess.run(
@@ -318,10 +321,12 @@ def gpu_status(start_time: float) -> CLIResponse:
             from core.services.embedder_client import EmbedderClient
 
             client = EmbedderClient()
-            if client.is_service_available():
-                health = client.get_health()
-                service_device = health.get("device")
-            client.close()
+            try:
+                if client.is_service_available():
+                    health = client.get_health()
+                    service_device = health.get("device")
+            finally:
+                client.close()
         except Exception:
             pass
 
