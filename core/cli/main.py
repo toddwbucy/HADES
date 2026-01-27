@@ -20,12 +20,14 @@ Usage:
     hades database stats             # Database statistics
     hades database check <arxiv_id>  # Check if paper exists in DB
     hades database create <name>     # Create a collection
+    hades database purge <arxiv_id>   # Purge all data for a paper
     hades database delete <col> <key> # Delete a document
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 import typer
@@ -75,6 +77,7 @@ app = typer.Typer(
 def main(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", "-v", help="Show version and exit", is_eager=True),
+    agent: str = typer.Option(None, "--agent", help="Install agent integration (claude or agent)", is_eager=True),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index for embedding commands (e.g., 0, 1, 2)"),
 ) -> None:
     """HADES Knowledge Base CLI - AI model interface for semantic search over academic papers."""
@@ -82,16 +85,22 @@ def main(
         from importlib.metadata import version as get_version
 
         try:
-            print(f"hades {get_version('hades')}")
+            print(f"hades {get_version('hades')}", file=sys.stderr)
         except Exception:
-            print("hades 0.1.0")
+            print("hades 0.1.0", file=sys.stderr)
+        raise typer.Exit()
+
+    if agent:
+        from core.cli.agent_templates import install_agent
+
+        install_agent(agent)
         raise typer.Exit()
 
     _global_gpu_callback(ctx, gpu)
 
     # Show help if no command provided
     if ctx.invoked_subcommand is None:
-        print(ctx.get_help())
+        print(ctx.get_help(), file=sys.stderr)
         raise typer.Exit()
 
 
@@ -722,6 +731,34 @@ def database_check(
     except Exception as e:
         response = error_response(
             command="database.check",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@database_app.command("purge")
+def database_purge(
+    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to purge", metavar="ARXIV_ID"),
+) -> None:
+    """Remove all data for a paper from all collections (metadata, chunks, embeddings)."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import purge_paper
+
+        response = purge_paper(arxiv_id, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.purge",
             code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
