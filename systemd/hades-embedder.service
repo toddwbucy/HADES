@@ -1,0 +1,63 @@
+[Unit]
+Description=HADES Embedding Service
+Documentation=https://github.com/toddwbucy/HADES
+After=network.target
+
+[Service]
+Type=simple
+# User and Group are updated by install-embedder-service.sh to match
+# the user who runs the install. Override these if using a service account.
+User=todd
+Group=todd
+
+# Create runtime directory for socket
+RuntimeDirectory=hades
+RuntimeDirectoryMode=0755
+
+# Working directory - updated by install script
+WorkingDirectory=/home/todd/git/HADES
+
+# Use the poetry-managed Python environment
+# Path is updated by install-embedder-service.sh based on poetry env
+ExecStart=/home/todd/.cache/pypoetry/virtualenvs/hades-Hc5c3_os-py3.12/bin/python -m core.services.embedder_service
+
+# Environment variables
+# GPU device: use cuda:0, cuda:1, etc. for specific GPU, or cpu for CPU-only
+Environment=HADES_EMBEDDER_DEVICE=cuda:0
+Environment=HADES_EMBEDDER_SOCKET=/run/hades/embedder.sock
+Environment=HADES_EMBEDDER_FP16=true
+Environment=HADES_EMBEDDER_BATCH_SIZE=48
+
+# HuggingFace model cache location
+# Required because ProtectHome=read-only blocks ~/.cache
+# This directory should be writable and have sufficient space for models (~10GB)
+Environment=HF_HOME=/var/cache/hades/huggingface
+Environment=TRANSFORMERS_CACHE=/var/cache/hades/huggingface
+
+# Optional: Shutdown token for API-based shutdown (leave empty for no auth)
+# Environment=HADES_EMBEDDER_SHUTDOWN_TOKEN=your-secret-token
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+# Resource limits
+# Increase if model loading fails due to memory
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+# Security hardening (optional, disable if causes issues)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/hades /var/cache/hades
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hades-embedder
+
+[Install]
+WantedBy=multi-user.target
