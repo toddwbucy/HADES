@@ -353,6 +353,17 @@ def gpu_status(start_time: float) -> CLIResponse:
         )
 
 
+def _safe_parse_int(value: str) -> int | None:
+    """Parse an int from nvidia-smi output, returning None for N/A or empty."""
+    value = value.strip()
+    if not value or value.upper() == "N/A":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def gpu_list(start_time: float) -> CLIResponse:
     """List available GPUs."""
     command_name = "embedding.gpu.list"
@@ -376,12 +387,12 @@ def gpu_list(start_time: float) -> CLIResponse:
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) >= 6:
                         gpus.append({
-                            "index": int(parts[0]),
+                            "index": _safe_parse_int(parts[0]),
                             "name": parts[1],
-                            "memory_total_mb": int(parts[2]),
-                            "memory_used_mb": int(parts[3]),
-                            "memory_free_mb": int(parts[4]),
-                            "utilization_percent": int(parts[5]),
+                            "memory_total_mb": _safe_parse_int(parts[2]),
+                            "memory_used_mb": _safe_parse_int(parts[3]),
+                            "memory_free_mb": _safe_parse_int(parts[4]),
+                            "utilization_percent": _safe_parse_int(parts[5]),
                         })
 
             return success_response(
