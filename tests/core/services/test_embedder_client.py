@@ -196,6 +196,16 @@ class TestEmbedderClientConvenienceMethods:
             mock_embed.assert_called_once_with(["test query"], task="retrieval.query")
             assert result.shape == (3,)
 
+    def test_embed_query_raises_on_empty_result(self):
+        """Test embed_query raises error when embeddings are empty."""
+        client = EmbedderClient()
+
+        with patch.object(client, "embed_texts") as mock_embed:
+            mock_embed.return_value = np.array([])
+
+            with pytest.raises(EmbedderServiceError, match="empty result"):
+                client.embed_query("test query")
+
     def test_embed_documents_uses_retrieval_passage_task(self):
         """Test embed_documents uses retrieval.passage task."""
         client = EmbedderClient()
@@ -208,6 +218,59 @@ class TestEmbedderClientConvenienceMethods:
             mock_embed.assert_called_once()
             call_args = mock_embed.call_args
             assert call_args[1]["task"] == "retrieval.passage"
+
+
+class TestEmbedderClientShutdown:
+    """Tests for shutdown functionality."""
+
+    def test_shutdown_without_token(self):
+        """Test shutdown request without token."""
+        client = EmbedderClient()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with patch.object(client, "_get_client") as mock_get_client:
+            mock_http_client = MagicMock()
+            mock_http_client.post.return_value = mock_response
+            mock_get_client.return_value = mock_http_client
+
+            result = client.shutdown_service()
+
+            assert result is True
+            mock_http_client.post.assert_called_once_with("/shutdown", json={})
+
+    def test_shutdown_with_token(self):
+        """Test shutdown request with token."""
+        client = EmbedderClient()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with patch.object(client, "_get_client") as mock_get_client:
+            mock_http_client = MagicMock()
+            mock_http_client.post.return_value = mock_response
+            mock_get_client.return_value = mock_http_client
+
+            result = client.shutdown_service(token="secret-token")
+
+            assert result is True
+            mock_http_client.post.assert_called_once_with(
+                "/shutdown", json={"token": "secret-token"}
+            )
+
+    def test_shutdown_returns_false_on_error(self):
+        """Test shutdown returns False on connection error."""
+        client = EmbedderClient()
+
+        with patch.object(client, "_get_client") as mock_get_client:
+            mock_http_client = MagicMock()
+            mock_http_client.post.side_effect = ConnectionError("Connection refused")
+            mock_get_client.return_value = mock_http_client
+
+            result = client.shutdown_service()
+
+            assert result is False
 
 
 class TestEmbedderClientContextManager:

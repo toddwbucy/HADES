@@ -168,9 +168,7 @@ class EmbedderClient:
             logger.info("Using local embedder fallback")
             return self._embed_locally(texts, task, batch_size)
 
-        raise EmbedderServiceError(
-            f"Embedding service unavailable at {self.socket_path} and fallback disabled"
-        )
+        raise EmbedderServiceError(f"Embedding service unavailable at {self.socket_path} and fallback disabled")
 
     def _embed_via_service(
         self,
@@ -229,8 +227,13 @@ class EmbedderClient:
 
         Returns:
             Embedding vector (1D array of 2048 floats)
+
+        Raises:
+            EmbedderServiceError: If embedding fails or returns empty result
         """
         embeddings = self.embed_texts([query], task="retrieval.query")
+        if embeddings.size == 0:
+            raise EmbedderServiceError("Embedding returned empty result for query")
         return embeddings[0]
 
     def embed_documents(
@@ -251,14 +254,18 @@ class EmbedderClient:
         """
         return self.embed_texts(documents, task="retrieval.passage", batch_size=batch_size)
 
-    def shutdown_service(self) -> bool:
+    def shutdown_service(self, token: str | None = None) -> bool:
         """Request graceful shutdown of the embedding service.
+
+        Args:
+            token: Shutdown token if service requires authentication
 
         Returns:
             True if shutdown was initiated successfully
         """
         try:
-            response = self._get_client().post("/shutdown")
+            data = {"token": token} if token else {}
+            response = self._get_client().post("/shutdown", json=data)
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Shutdown request failed: {e}")

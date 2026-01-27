@@ -48,9 +48,7 @@ class EmbedRequest(BaseModel):
         default="retrieval.passage",
         description="Task type: retrieval.passage, retrieval.query, text-matching",
     )
-    batch_size: int | None = Field(
-        default=None, description="Batch size (uses service default if not specified)"
-    )
+    batch_size: int | None = Field(default=None, description="Batch size (uses service default if not specified)")
 
 
 class EmbedResponse(BaseModel):
@@ -249,9 +247,31 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+class ShutdownRequest(BaseModel):
+    """Shutdown request with optional token."""
+
+    token: str | None = Field(default=None, description="Shutdown token for authentication")
+
+
+# Shutdown token from environment (if set, token is required)
+SHUTDOWN_TOKEN = os.environ.get("HADES_EMBEDDER_SHUTDOWN_TOKEN")
+
+
 @app.post("/shutdown", response_model=ShutdownResponse)
-async def shutdown() -> ShutdownResponse:
-    """Gracefully shutdown the service."""
+async def shutdown(request: ShutdownRequest | None = None) -> ShutdownResponse:
+    """Gracefully shutdown the service.
+
+    If HADES_EMBEDDER_SHUTDOWN_TOKEN is set, a matching token must be provided.
+    """
+    # Validate token if configured
+    if SHUTDOWN_TOKEN:
+        provided_token = request.token if request else None
+        if not provided_token or provided_token != SHUTDOWN_TOKEN:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or missing shutdown token",
+            )
+
     logger.info("Shutdown requested via API")
 
     if state.shutdown_event:
@@ -311,14 +331,8 @@ def run_server() -> None:
 
     server = uvicorn.Server(config)
 
-    # Set up signal handlers for graceful shutdown
-    def handle_signal(signum, frame):
-        logger.info(f"Received signal {signum}, initiating shutdown...")
-        if state.shutdown_event:
-            state.shutdown_event.set()
-
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    # Note: uvicorn handles SIGTERM/SIGINT internally for graceful shutdown
+    # No custom signal handlers needed
 
     try:
         server.run()
