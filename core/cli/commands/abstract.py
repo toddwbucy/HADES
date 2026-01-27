@@ -216,6 +216,247 @@ def find_similar(
         )
 
 
+def refine_search(
+    query: str,
+    positive_ids: list[str],
+    limit: int,
+    start_time: float,
+    negative_ids: list[str] | None = None,
+    category: str | None = None,
+    alpha: float = 1.0,
+    beta: float = 0.75,
+    gamma: float = 0.15,
+) -> CLIResponse:
+    """Refine search using relevance feedback (Rocchio algorithm).
+
+    Takes a query and list of relevant papers (positive exemplars) to refine
+    the search. Computes a modified query vector as a weighted combination of
+    the original query and the positive exemplar embeddings.
+
+    Rocchio formula: q' = alpha*q + beta*mean(positive) - gamma*mean(negative)
+
+    Args:
+        query: Original search query text
+        positive_ids: ArXiv IDs of relevant papers (positive exemplars)
+        limit: Maximum number of results
+        start_time: Start time for duration calculation
+        negative_ids: Optional ArXiv IDs of irrelevant papers (negative exemplars)
+        category: Optional arxiv category filter (e.g., "cs.AI")
+        alpha: Weight for original query (default 1.0)
+        beta: Weight for positive exemplars (default 0.75)
+        gamma: Weight for negative exemplars (default 0.15)
+
+    Returns:
+        CLIResponse with refined search results
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="abstract.refine",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    if limit <= 0:
+        return error_response(
+            command="abstract.refine",
+            code=ErrorCode.CONFIG_ERROR,
+            message="limit must be >= 1",
+            start_time=start_time,
+        )
+
+    if not positive_ids:
+        return error_response(
+            command="abstract.refine",
+            code=ErrorCode.CONFIG_ERROR,
+            message="At least one positive exemplar is required",
+            start_time=start_time,
+        )
+
+    progress("Generating query embedding...")
+
+    try:
+        # Generate original query embedding
+        query_embedding = _get_query_embedding(query, config)
+
+        progress(f"Fetching embeddings for {len(positive_ids)} positive exemplars...")
+
+        # Fetch positive exemplar embeddings
+        positive_embeddings = _get_multiple_paper_embeddings(positive_ids, config)
+        if not positive_embeddings:
+            return error_response(
+                command="abstract.refine",
+                code=ErrorCode.PAPER_NOT_FOUND,
+                message="None of the positive exemplar papers were found",
+                start_time=start_time,
+            )
+
+        # Fetch negative exemplar embeddings if provided
+        negative_embeddings: list[np.ndarray] = []
+        if negative_ids:
+            progress(f"Fetching embeddings for {len(negative_ids)} negative exemplars...")
+            negative_embeddings = _get_multiple_paper_embeddings(negative_ids, config)
+
+        progress("Computing refined query using Rocchio algorithm...")
+
+        # Compute Rocchio centroid
+        refined_embedding = _compute_rocchio_centroid(
+            query_embedding,
+            positive_embeddings,
+            negative_embeddings,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+        )
+
+        progress(f"Searching {limit} most similar abstracts with refined query...")
+
+        # Build exclude set: exclude all exemplar papers from results
+        exclude_ids = set(positive_ids)
+        if negative_ids:
+            exclude_ids.update(negative_ids)
+
+        # Search using refined embedding
+        results, total_processed = _search_abstract_embeddings(
+            refined_embedding,
+            limit + len(exclude_ids),  # Fetch extra to account for exclusions
+            config,
+            category_filter=category,
+        )
+
+        # Filter out exemplar papers from results
+        filtered_results = []
+        for r in results:
+            arxiv_id = r.get("arxiv_id", "")
+            # Normalize for comparison
+            base_id = re.sub(r"v\d+$", "", arxiv_id)
+            if not any(re.sub(r"v\d+$", "", eid) == base_id for eid in exclude_ids):
+                filtered_results.append(r)
+                if len(filtered_results) >= limit:
+                    break
+
+        # Get info about the positive exemplars used
+        positive_info = []
+        for pid in positive_ids:
+            info = _get_paper_info(pid, config)
+            if info:
+                positive_info.append({"arxiv_id": pid, "title": info.get("title")})
+
+        return success_response(
+            command="abstract.refine",
+            data={
+                "query": query,
+                "mode": "relevance_feedback",
+                "positive_exemplars": positive_info,
+                "negative_exemplars": negative_ids or [],
+                "weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
+                "results": filtered_results,
+                "total_searched": total_processed,
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="abstract.refine",
+            code=ErrorCode.QUERY_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
+def _get_multiple_paper_embeddings(arxiv_ids: list[str], config: Any) -> list[np.ndarray]:
+    """Fetch embeddings for multiple papers.
+
+    Args:
+        arxiv_ids: List of ArXiv paper IDs
+        config: CLI configuration
+
+    Returns:
+        List of embedding vectors for papers that were found
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    arango_config = get_arango_config(config, read_only=True)
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        # Normalize arxiv_ids to keys
+        keys = []
+        for arxiv_id in arxiv_ids:
+            base_id = re.sub(r"v\d+$", "", arxiv_id)
+            key = base_id.replace(".", "_").replace("/", "_")
+            keys.append(key)
+
+        # Fetch all embeddings in one query
+        aql = """
+            FOR key IN @keys
+                LET doc = DOCUMENT(CONCAT("arxiv_embeddings/", key))
+                FILTER doc != null AND doc.combined_embedding != null
+                RETURN doc.combined_embedding
+        """
+        results = client.query(aql, bind_vars={"keys": keys})
+
+        embeddings = []
+        for emb in results:
+            if emb:
+                embeddings.append(np.array(emb, dtype=np.float32))
+
+        return embeddings
+
+    finally:
+        client.close()
+
+
+def _compute_rocchio_centroid(
+    query_embedding: np.ndarray,
+    positive_embeddings: list[np.ndarray],
+    negative_embeddings: list[np.ndarray] | None = None,
+    alpha: float = 1.0,
+    beta: float = 0.75,
+    gamma: float = 0.15,
+) -> np.ndarray:
+    """Compute Rocchio relevance feedback centroid.
+
+    Rocchio formula: q' = alpha*q + beta*mean(positive) - gamma*mean(negative)
+
+    Args:
+        query_embedding: Original query vector
+        positive_embeddings: List of positive exemplar vectors
+        negative_embeddings: Optional list of negative exemplar vectors
+        alpha: Weight for original query
+        beta: Weight for positive exemplars
+        gamma: Weight for negative exemplars
+
+    Returns:
+        Refined query vector
+    """
+    # Start with weighted original query
+    refined = alpha * query_embedding
+
+    # Add positive centroid
+    if positive_embeddings:
+        positive_centroid = np.mean(positive_embeddings, axis=0)
+        refined = refined + (beta * positive_centroid)
+
+    # Subtract negative centroid
+    if negative_embeddings:
+        negative_centroid = np.mean(negative_embeddings, axis=0)
+        refined = refined - (gamma * negative_centroid)
+
+    return refined
+
+
 def _get_paper_embedding(arxiv_id: str, config: Any) -> np.ndarray | None:
     """Fetch the existing embedding for a paper.
 
