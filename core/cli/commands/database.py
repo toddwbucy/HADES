@@ -1202,6 +1202,30 @@ def graph_traverse(
             start_time=start_time,
         )
 
+    if min_depth < 0:
+        return error_response(
+            command="database.graph.traverse",
+            code=ErrorCode.CONFIG_ERROR,
+            message="min_depth must be >= 0",
+            start_time=start_time,
+        )
+
+    if max_depth < min_depth:
+        return error_response(
+            command="database.graph.traverse",
+            code=ErrorCode.CONFIG_ERROR,
+            message="max_depth must be >= min_depth",
+            start_time=start_time,
+        )
+
+    if limit <= 0:
+        return error_response(
+            command="database.graph.traverse",
+            code=ErrorCode.CONFIG_ERROR,
+            message="limit must be > 0",
+            start_time=start_time,
+        )
+
     try:
         config = get_config()
     except ValueError as e:

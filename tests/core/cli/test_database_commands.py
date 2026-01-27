@@ -383,6 +383,51 @@ class TestGraphTraverse:
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
         assert "Invalid direction" in response.error["message"]
 
+    def test_negative_min_depth(self):
+        response = graph_traverse(
+            start_vertex="nodes/1",
+            graph="g",
+            direction="outbound",
+            min_depth=-1,
+            max_depth=3,
+            limit=100,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "min_depth must be >= 0" in response.error["message"]
+
+    def test_max_depth_less_than_min_depth(self):
+        response = graph_traverse(
+            start_vertex="nodes/1",
+            graph="g",
+            direction="outbound",
+            min_depth=3,
+            max_depth=1,
+            limit=100,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "max_depth must be >= min_depth" in response.error["message"]
+
+    def test_zero_limit(self):
+        response = graph_traverse(
+            start_vertex="nodes/1",
+            graph="g",
+            direction="outbound",
+            min_depth=1,
+            max_depth=3,
+            limit=0,
+            start_time=0,
+        )
+
+        assert response.success is False
+        assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
+        assert "limit must be > 0" in response.error["message"]
+
 
 class TestGraphShortestPath:
     """Tests for graph_shortest_path command."""
