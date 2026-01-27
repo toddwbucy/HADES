@@ -102,6 +102,31 @@ abstract_app = typer.Typer(
 )
 app.add_typer(abstract_app, name="abstract")
 
+# Embedding service commands
+embedding_app = typer.Typer(
+    name="embedding",
+    help="Embedding service management and direct text embedding.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(embedding_app, name="embedding")
+
+embedding_service_app = typer.Typer(
+    name="service",
+    help="Manage the embedding service daemon.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+embedding_app.add_typer(embedding_service_app, name="service")
+
+embedding_gpu_app = typer.Typer(
+    name="gpu",
+    help="GPU status and management.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+embedding_app.add_typer(embedding_gpu_app, name="gpu")
+
 
 # =============================================================================
 # ArXiv Commands
@@ -716,6 +741,175 @@ def check(
         response = error_response(
             command="check",
             code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+# =============================================================================
+# Embedding Service Commands
+# =============================================================================
+
+
+@embedding_service_app.command("status")
+def embedding_service_status() -> None:
+    """Check embedding service health and status."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.embedding import service_status
+
+        response = service_status(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="embedding.service.status",
+            code=ErrorCode.SERVICE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@embedding_service_app.command("start")
+def embedding_service_start() -> None:
+    """Start the embedding service daemon."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.embedding import service_start
+
+        response = service_start(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="embedding.service.start",
+            code=ErrorCode.SERVICE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@embedding_service_app.command("stop")
+def embedding_service_stop(
+    token: str = typer.Option(None, "--token", "-t", help="Shutdown token (if configured)"),
+) -> None:
+    """Stop the embedding service daemon."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.embedding import service_stop
+
+        response = service_stop(start_time, token=token)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="embedding.service.stop",
+            code=ErrorCode.SERVICE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@embedding_app.command("text")
+def embedding_text(
+    text: str = typer.Argument(..., help="Text to embed", metavar="TEXT"),
+    task: str = typer.Option("retrieval.passage", "--task", "-t", help="Task type (retrieval.passage, retrieval.query)"),
+    raw: bool = typer.Option(False, "--raw", "-r", help="Output raw embedding array only"),
+) -> None:
+    """Embed a text string using the embedding service."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.embedding import embed_text
+
+        output_format = "raw" if raw else "json"
+        response = embed_text(text, start_time, task=task, output_format=output_format)
+        if output_format != "raw":
+            print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="embedding.text",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@embedding_gpu_app.command("status")
+def embedding_gpu_status() -> None:
+    """Show GPU status and memory usage."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.embedding import gpu_status
+
+        response = gpu_status(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="embedding.gpu.status",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@embedding_gpu_app.command("list")
+def embedding_gpu_list() -> None:
+    """List available GPUs."""
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.embedding import gpu_list
+
+        response = gpu_list(start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="embedding.gpu.list",
+            code=ErrorCode.CONFIG_ERROR,
             message=str(e),
             start_time=start_time,
         )
