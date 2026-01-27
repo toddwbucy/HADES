@@ -1,0 +1,116 @@
+# HADES Configuration
+# ===================
+# Default configuration for the HADES knowledge base system.
+# Values can be overridden by environment variables or CLI arguments.
+#
+# Override priority (highest wins):
+#   1. CLI arguments (--gpu, --limit, etc.)
+#   2. Environment variables (HADES_*, ARANGO_*)
+#   3. This config file
+
+# -----------------------------------------------------------------------------
+# Database Configuration
+# -----------------------------------------------------------------------------
+database:
+  # ArangoDB connection settings
+  host: localhost
+  port: 8529
+  database: arxiv_datastore
+  username: root
+  # password: Set via ARANGO_PASSWORD environment variable (required)
+
+  # Unix socket paths for high-performance local connections
+  # These override host:port when set
+  sockets:
+    readonly: /run/hades/readonly/arangod.sock
+    readwrite: /run/hades/readwrite/arangod.sock
+
+# -----------------------------------------------------------------------------
+# Embedding Service Configuration
+# -----------------------------------------------------------------------------
+embedding:
+  # Service socket for persistent embedder daemon
+  service:
+    socket: /run/hades/embedder.sock
+    # Fallback to local model if service unavailable
+    fallback_to_local: true
+    # Timeout for service requests (milliseconds)
+    timeout_ms: 30000
+
+  # Model settings (used by service and local fallback)
+  model:
+    name: jinaai/jina-embeddings-v4
+    dimension: 2048
+    max_tokens: 32768
+    use_fp16: true
+    normalize: true
+
+  # Default batch processing settings
+  batch:
+    size: 48          # Optimal for A6000/A100 GPUs
+    size_small: 8     # Conservative for 16GB GPUs
+
+  # Late chunking configuration
+  chunking:
+    size_tokens: 500
+    overlap_tokens: 200
+
+# -----------------------------------------------------------------------------
+# GPU Configuration
+# -----------------------------------------------------------------------------
+gpu:
+  # Default device (cuda, cpu, or specific device like cuda:0)
+  device: cuda
+  # Use GPU by default
+  enabled: true
+
+# -----------------------------------------------------------------------------
+# Search Defaults
+# -----------------------------------------------------------------------------
+search:
+  # Default number of results
+  limit: 10
+  # Maximum allowed results
+  max_limit: 100
+  # Hybrid search settings
+  hybrid:
+    # Weight for vector similarity (0-1)
+    vector_weight: 0.7
+    # Weight for keyword matching (0-1)
+    keyword_weight: 0.3
+
+# -----------------------------------------------------------------------------
+# Relevance Feedback (Rocchio Algorithm)
+# -----------------------------------------------------------------------------
+rocchio:
+  # Weight for original query
+  alpha: 1.0
+  # Weight for positive exemplars
+  beta: 0.75
+  # Weight for negative exemplars
+  gamma: 0.15
+
+# -----------------------------------------------------------------------------
+# Sync Settings
+# -----------------------------------------------------------------------------
+sync:
+  # Default lookback period for incremental sync (days)
+  default_lookback_days: 7
+  # Default batch size for embedding during sync
+  batch_size: 8
+  # Default max results per sync
+  max_results: 1000
+
+# -----------------------------------------------------------------------------
+# ArXiv Data Paths
+# -----------------------------------------------------------------------------
+arxiv:
+  pdf_base_path: /bulk-store/arxiv-data/pdf
+  latex_base_path: /bulk-store/arxiv-data/src
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
