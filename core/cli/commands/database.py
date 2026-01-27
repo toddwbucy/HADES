@@ -303,6 +303,88 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
         )
 
 
+def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
+    """Remove all data for a paper from all collections.
+
+    Deletes metadata, chunks, and embeddings for the given arxiv ID.
+
+    Args:
+        arxiv_id: ArXiv paper ID to purge
+        start_time: Start time for duration calculation
+
+    Returns:
+        CLIResponse with deletion counts
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.purge",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+        arango_config = get_arango_config(config, read_only=False)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            base_id = re.sub(r"v\d+$", "", arxiv_id)
+            paper_key = base_id.replace(".", "_").replace("/", "_")
+
+            aql = """
+                LET meta = (FOR d IN arxiv_metadata FILTER d._key == @key REMOVE d IN arxiv_metadata RETURN 1)
+                LET chunks = (FOR d IN arxiv_abstract_chunks FILTER d.paper_key == @key REMOVE d IN arxiv_abstract_chunks RETURN 1)
+                LET embs = (FOR d IN arxiv_abstract_embeddings FILTER d.paper_key == @key REMOVE d IN arxiv_abstract_embeddings RETURN 1)
+                RETURN {metadata: LENGTH(meta), chunks: LENGTH(chunks), embeddings: LENGTH(embs)}
+            """
+
+            results = client.query(aql, bind_vars={"key": paper_key})
+            counts = results[0] if results else {"metadata": 0, "chunks": 0, "embeddings": 0}
+
+            total = counts["metadata"] + counts["chunks"] + counts["embeddings"]
+            if total == 0:
+                return error_response(
+                    command="database.purge",
+                    code=ErrorCode.PAPER_NOT_FOUND,
+                    message=f"No data found for paper: {arxiv_id}",
+                    start_time=start_time,
+                )
+
+            return success_response(
+                command="database.purge",
+                data={
+                    "arxiv_id": arxiv_id,
+                    "paper_key": paper_key,
+                    "deleted": counts,
+                    "total_deleted": total,
+                },
+                start_time=start_time,
+            )
+
+        finally:
+            client.close()
+
+    except Exception as e:
+        return error_response(
+            command="database.purge",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
 # =============================================================================
 # Query Commands (query, chunks)
 # =============================================================================
