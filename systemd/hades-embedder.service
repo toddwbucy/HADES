@@ -1,0 +1,52 @@
+[Unit]
+Description=HADES Embedding Service
+Documentation=https://github.com/toddwbucy/HADES
+After=network.target
+
+[Service]
+Type=simple
+User=todd
+Group=todd
+
+# Create runtime directory for socket
+RuntimeDirectory=hades
+RuntimeDirectoryMode=0755
+
+# Working directory
+WorkingDirectory=/home/todd/git/HADES
+
+# Use the poetry-managed Python environment
+# Update this path if your virtualenv location differs
+ExecStart=/home/todd/.cache/pypoetry/virtualenvs/hades-Hc5c3_os-py3.12/bin/python -m core.services.embedder_service
+
+# Environment variables
+# GPU device: use cuda:0, cuda:1, etc. for specific GPU, or cpu for CPU-only
+Environment=HADES_EMBEDDER_DEVICE=cuda:0
+Environment=HADES_EMBEDDER_SOCKET=/run/hades/embedder.sock
+Environment=HADES_EMBEDDER_FP16=true
+Environment=HADES_EMBEDDER_BATCH_SIZE=48
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+# Resource limits
+# Increase if model loading fails due to memory
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+# Security hardening (optional, disable if causes issues)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/hades
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hades-embedder
+
+[Install]
+WantedBy=multi-user.target

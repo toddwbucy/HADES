@@ -59,8 +59,9 @@ embedding:
 # GPU Configuration
 # -----------------------------------------------------------------------------
 gpu:
-  # Default device (cuda, cpu, or specific device like cuda:0)
-  device: cuda
+  # Default device: cuda:0, cuda:1, cuda:2 for specific GPU, or cpu for CPU-only
+  # Using explicit GPU index (cuda:0) is preferred over bare 'cuda' for multi-GPU systems
+  device: cuda:0
   # Use GPU by default
   enabled: true
 
