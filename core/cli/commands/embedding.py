@@ -347,6 +347,7 @@ def gpu_status(start_time: float) -> CLIResponse:
 
 def gpu_list(start_time: float) -> CLIResponse:
     """List available GPUs."""
+    command_name = "embedding.gpu.list"
     try:
         # Try nvidia-smi for more detailed info
         result = subprocess.run(
@@ -376,17 +377,19 @@ def gpu_list(start_time: float) -> CLIResponse:
                         })
 
             return success_response(
-                command="embedding.gpu.list",
+                command=command_name,
                 data={"gpus": gpus},
                 start_time=start_time,
             )
 
-        # Fall back to torch
-        return gpu_status(start_time)
+        # Fall back to torch, but preserve our command name
+        fallback = gpu_status(start_time)
+        fallback.command = command_name
+        return fallback
 
     except Exception as e:
         return error_response(
-            command="embedding.gpu.list",
+            command=command_name,
             code=ErrorCode.CONFIG_ERROR,
             message=str(e),
             start_time=start_time,
