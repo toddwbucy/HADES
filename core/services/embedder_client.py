@@ -104,7 +104,7 @@ class EmbedderClient:
             response = self._get_client().get("/health")
             if response.status_code == 200:
                 data = response.json()
-                self._service_available = data.get("status") == "ready"
+                self._service_available = data.get("status") in ("ready", "idle")
             else:
                 self._service_available = False
         except Exception as e:
