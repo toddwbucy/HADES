@@ -52,6 +52,7 @@ LimitMEMLOCK=infinity
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
+PrivateTmp=true
 ReadWritePaths=/run/hades /var/cache/hades
 
 # Logging
