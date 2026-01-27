@@ -28,7 +28,7 @@ _ARANGO_CFG = {
 }
 
 
-def _patch_stack(mock_get_config, mock_get_arango, mock_client_class, *, read_only=False):
+def _patch_stack(mock_get_config, mock_get_arango, mock_client_class):
     """Set up the standard 3-mock patch stack and return the mock client."""
     mock_get_config.return_value = MagicMock()
     mock_get_arango.return_value = _ARANGO_CFG
