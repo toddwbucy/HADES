@@ -847,10 +847,13 @@ def embedding_text(
 
         output_format = "raw" if raw else "json"
         response = embed_text(text, start_time, task=task, output_format=output_format)
-        if output_format != "raw":
-            print_response(response)
+
+        # Always print errors, only print success in non-raw mode
         if not response.success:
+            print_response(response)
             raise typer.Exit(1) from None
+        elif output_format != "raw":
+            print_response(response)
 
     except typer.Exit:
         raise

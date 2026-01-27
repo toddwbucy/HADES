@@ -215,14 +215,16 @@ def embed_text(
                     start_time=start_time,
                 )
 
+            embedding_list = embedding.tolist()
+            preview_length = 10
             return success_response(
                 command="embedding.text",
                 data={
                     "text": text[:100] + "..." if len(text) > 100 else text,
                     "task": task,
-                    "dimension": len(embedding),
-                    "embedding": embedding.tolist()[:10],  # First 10 values as preview
-                    "embedding_truncated": True,
+                    "dimension": len(embedding_list),
+                    "embedding": embedding_list[:preview_length],
+                    "embedding_truncated": len(embedding_list) > preview_length,
                     "service_used": client.is_service_available(),
                 },
                 start_time=start_time,
