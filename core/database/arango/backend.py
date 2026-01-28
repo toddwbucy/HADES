@@ -132,25 +132,25 @@ class ArangoBackend:
             ck = chunk_key(key, i)
             chunk_docs.append(
                 {
+                    **chunk_dict,  # Chunk fields first, then override with our values
                     "_key": ck,
                     "document_id": doc_id,
                     "paper_key": key,
-                    "chunk_index": i,
+                    "chunk_index": i,  # Must match _key derivation
                     "total_chunks": len(chunks),
                     "created_at": now,
-                    **chunk_dict,
                 }
             )
             if i < len(embeddings):
                 emb_dict = _to_dict(embeddings[i])
                 embedding_docs.append(
                     {
+                        **emb_dict,  # Embedding fields first, then override with our values
                         "_key": embedding_key(ck),
                         "chunk_key": ck,
                         "document_id": doc_id,
                         "paper_key": key,
                         "created_at": now,
-                        **emb_dict,
                     }
                 )
 
