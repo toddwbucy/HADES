@@ -7,7 +7,6 @@ sync, sync-status, and ingest commands.
 from __future__ import annotations
 
 import heapq
-import re
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +23,8 @@ from core.cli.output import (
     progress,
     success_response,
 )
+from core.database.collections import get_profile
+from core.database.keys import chunk_key, embedding_key, normalize_document_key, strip_version
 from core.tools.arxiv.arxiv_api_client import ArXivAPIClient, ArXivMetadata
 
 # Sync metadata collection and document key
@@ -551,8 +552,8 @@ def refine_search(
         for r in results:
             result_arxiv_id = r.get("arxiv_id", "")
             # Normalize for comparison
-            base_id = re.sub(r"v\d+$", "", result_arxiv_id)
-            if not any(re.sub(r"v\d+$", "", eid) == base_id for eid in exclude_ids):
+            base_id = strip_version(result_arxiv_id)
+            if not any(strip_version(eid) == base_id for eid in exclude_ids):
                 filtered_results.append(r)
                 if len(filtered_results) >= limit:
                     break
@@ -931,17 +932,14 @@ def _get_multiple_paper_embeddings(arxiv_ids: list[str], config: Any) -> list[np
     client = ArangoHttp2Client(client_config)
 
     try:
+        sync_col = get_profile("sync")
         # Normalize arxiv_ids to keys
-        keys = []
-        for arxiv_id in arxiv_ids:
-            base_id = re.sub(r"v\d+$", "", arxiv_id)
-            key = base_id.replace(".", "_").replace("/", "_")
-            keys.append(key)
+        keys = [normalize_document_key(aid) for aid in arxiv_ids]
 
         # Fetch all embeddings in one query
-        aql = """
+        aql = f"""
             FOR key IN @keys
-                LET doc = DOCUMENT(CONCAT("arxiv_embeddings/", key))
+                LET doc = DOCUMENT(CONCAT("{sync_col.embeddings}/", key))
                 FILTER doc != null AND doc.combined_embedding != null
                 RETURN doc.combined_embedding
         """
@@ -1028,13 +1026,12 @@ def _get_paper_embedding(arxiv_id: str, config: Any) -> np.ndarray | None:
     client = ArangoHttp2Client(client_config)
 
     try:
-        # Normalize arxiv_id to key format
-        base_id = re.sub(r"v\d+$", "", arxiv_id)
-        key = base_id.replace(".", "_").replace("/", "_")
+        sync_col = get_profile("sync")
+        key = normalize_document_key(arxiv_id)
 
         # Fetch the embedding - only catch 404 (document not found)
         try:
-            doc = client.get_document("arxiv_embeddings", key)
+            doc = client.get_document(sync_col.embeddings, key)
             if doc and doc.get("combined_embedding"):
                 return np.array(doc["combined_embedding"], dtype=np.float32)
             return None
@@ -1078,12 +1075,12 @@ def _get_paper_info(arxiv_id: str, config: Any) -> dict[str, Any] | None:
     client = ArangoHttp2Client(client_config)
 
     try:
-        base_id = re.sub(r"v\d+$", "", arxiv_id)
-        key = base_id.replace(".", "_").replace("/", "_")
+        sync_col = get_profile("sync")
+        key = normalize_document_key(arxiv_id)
 
         # Fetch the paper info - only catch 404 (document not found)
         try:
-            doc = client.get_document("arxiv_abstracts", key)
+            doc = client.get_document(sync_col.chunks, key)
             if doc:
                 return {
                     "arxiv_id": arxiv_id,
@@ -1138,6 +1135,7 @@ def _search_abstract_embeddings(
     client = ArangoHttp2Client(client_config)
 
     try:
+        sync_col = get_profile("sync")
         # Normalize query embedding once
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
 
@@ -1155,8 +1153,8 @@ def _search_abstract_embeddings(
         category_bind: dict[str, str] = {}
         if category_filter:
             # Join with arxiv_papers to filter by category
-            category_clause = """
-                LET paper = DOCUMENT(CONCAT("arxiv_papers/", emb._key))
+            category_clause = f"""
+                LET paper = DOCUMENT(CONCAT("{sync_col.metadata}/", emb._key))
                 FILTER paper != null AND @category_filter IN paper.categories
             """
             category_bind = {"category_filter": category_filter}
@@ -1166,7 +1164,7 @@ def _search_abstract_embeddings(
         while True:
             # Fetch batch of embeddings
             aql = f"""
-                FOR emb IN arxiv_embeddings
+                FOR emb IN {sync_col.embeddings}
                     {category_clause}
                     LIMIT @offset, @batch_size
                     RETURN {{
@@ -1202,9 +1200,7 @@ def _search_abstract_embeddings(
 
                 # Skip excluded paper (for similar search)
                 if exclude_arxiv_id:
-                    base_exclude = re.sub(r"v\d+$", "", exclude_arxiv_id)
-                    base_current = re.sub(r"v\d+$", "", item_arxiv_id)
-                    if base_exclude == base_current:
+                    if strip_version(exclude_arxiv_id) == strip_version(item_arxiv_id):
                         continue
 
                 emb = np.array(item["embedding"], dtype=np.float32)
@@ -1240,20 +1236,21 @@ def _search_abstract_embeddings(
         if result_arxiv_ids:
             # Fetch abstracts and titles
             # Normalize both "." and "/" for legacy arxiv IDs like hep-th/9901001
-            abstracts_aql = """
+            arxiv_col = get_profile("arxiv")
+            abstracts_aql = f"""
                 FOR id IN @ids
                     LET key = SUBSTITUTE(SUBSTITUTE(id, ".", "_"), "/", "_")
-                    LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", key))
-                    LET paper = DOCUMENT(CONCAT("arxiv_papers/", key))
-                    LET local = DOCUMENT(CONCAT("arxiv_metadata/", key))
-                    RETURN {
+                    LET abstract = DOCUMENT(CONCAT("{sync_col.chunks}/", key))
+                    LET paper = DOCUMENT(CONCAT("{sync_col.metadata}/", key))
+                    LET local = DOCUMENT(CONCAT("{arxiv_col.metadata}/", key))
+                    RETURN {{
                         arxiv_id: id,
                         title: abstract.title,
                         abstract: abstract.abstract,
                         categories: paper.categories,
                         local: local != null,
                         local_chunks: local.num_chunks
-                    }
+                    }}
             """
             metadata = client.query(abstracts_aql, bind_vars={"ids": result_arxiv_ids})
             metadata_map = {m["arxiv_id"]: m for m in metadata if m}
@@ -1391,6 +1388,7 @@ def _search_abstract_embeddings_bulk(
     client = ArangoHttp2Client(client_config)
 
     try:
+        sync_col = get_profile("sync")
         num_queries = len(queries)
 
         # Normalize all query embeddings at once
@@ -1408,8 +1406,8 @@ def _search_abstract_embeddings_bulk(
         category_clause = ""
         category_bind: dict[str, str] = {}
         if category_filter:
-            category_clause = """
-                LET paper = DOCUMENT(CONCAT("arxiv_papers/", emb._key))
+            category_clause = f"""
+                LET paper = DOCUMENT(CONCAT("{sync_col.metadata}/", emb._key))
                 FILTER paper != null AND @category_filter IN paper.categories
             """
             category_bind = {"category_filter": category_filter}
@@ -1418,7 +1416,7 @@ def _search_abstract_embeddings_bulk(
 
         while True:
             aql = f"""
-                FOR emb IN arxiv_embeddings
+                FOR emb IN {sync_col.embeddings}
                     {category_clause}
                     LIMIT @offset, @batch_size
                     RETURN {{
@@ -1491,20 +1489,21 @@ def _search_abstract_embeddings_bulk(
         # Fetch metadata for all results
         metadata_map: dict[str, dict] = {}
         if all_arxiv_ids:
-            abstracts_aql = """
+            arxiv_col = get_profile("arxiv")
+            abstracts_aql = f"""
                 FOR id IN @ids
                     LET key = SUBSTITUTE(SUBSTITUTE(id, ".", "_"), "/", "_")
-                    LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", key))
-                    LET paper = DOCUMENT(CONCAT("arxiv_papers/", key))
-                    LET local = DOCUMENT(CONCAT("arxiv_metadata/", key))
-                    RETURN {
+                    LET abstract = DOCUMENT(CONCAT("{sync_col.chunks}/", key))
+                    LET paper = DOCUMENT(CONCAT("{sync_col.metadata}/", key))
+                    LET local = DOCUMENT(CONCAT("{arxiv_col.metadata}/", key))
+                    RETURN {{
                         arxiv_id: id,
                         title: abstract.title,
                         abstract: abstract.abstract,
                         categories: paper.categories,
                         local: local != null,
                         local_chunks: local.num_chunks
-                    }
+                    }}
             """
             metadata_results = client.query(abstracts_aql, bind_vars={"ids": list(all_arxiv_ids)})
             metadata_map = {m["arxiv_id"]: m for m in metadata_results if m}
@@ -1838,19 +1837,16 @@ def _filter_existing(
     client = ArangoHttp2Client(client_config)
 
     try:
+        sync_col = get_profile("sync")
         # Build list of base IDs to check (strip version suffixes)
-        check_ids = []
-        for p in papers:
-            paper_arxiv_id = p["arxiv_id"]
-            base_id = paper_arxiv_id.split("v")[0] if "v" in paper_arxiv_id else paper_arxiv_id
-            check_ids.append(base_id)
+        check_ids = [strip_version(p["arxiv_id"]) for p in papers]
 
         # Query only for the specific IDs we're checking (not all 2.8M!)
         # This avoids chunked transfer encoding issues with large result sets
         existing_ids = set()
         try:
             results = client.query(
-                "FOR doc IN arxiv_papers FILTER doc.arxiv_id IN @ids RETURN doc.arxiv_id",
+                f"FOR doc IN {sync_col.metadata} FILTER doc.arxiv_id IN @ids RETURN doc.arxiv_id",
                 bind_vars={"ids": check_ids},
             )
             existing_ids.update(r for r in results if r)
@@ -1861,8 +1857,7 @@ def _filter_existing(
         # Filter out existing
         new_papers = []
         for p in papers:
-            paper_arxiv_id = p["arxiv_id"]
-            base_id = paper_arxiv_id.split("v")[0] if "v" in paper_arxiv_id else paper_arxiv_id
+            base_id = strip_version(p["arxiv_id"])
             if base_id not in existing_ids:
                 new_papers.append(p)
 
@@ -1902,6 +1897,7 @@ def _embed_and_store_abstracts(
     client = ArangoHttp2Client(client_config)
 
     try:
+        sync_col = get_profile("sync")
         synced = 0
         now_iso = datetime.now(UTC).isoformat()
 
@@ -1922,11 +1918,9 @@ def _embed_and_store_abstracts(
             embedding_docs = []
 
             for j, paper in enumerate(batch):
-                # Use arxiv_id directly as key (matching existing format)
                 paper_arxiv_id = paper["arxiv_id"]
-                # Remove version suffix for key (e.g., "2501.12345v1" -> "2501_12345")
-                base_id = paper_arxiv_id.split("v")[0] if "v" in paper_arxiv_id else paper_arxiv_id
-                sanitized_key = base_id.replace(".", "_").replace("/", "_")
+                base_id = strip_version(paper_arxiv_id)
+                sanitized_key = normalize_document_key(paper_arxiv_id)
 
                 # Parse year_month from arxiv_id (YYMM.NNNNN format)
                 if "." in base_id:
@@ -1980,19 +1974,19 @@ def _embed_and_store_abstracts(
                 duplicates = 0
                 for doc in paper_docs:
                     try:
-                        client.insert_documents("arxiv_papers", [doc])
+                        client.insert_documents(sync_col.metadata, [doc])
                     except Exception:
                         duplicates += 1  # Likely duplicate key
 
                 for doc in abstract_docs:
                     try:
-                        client.insert_documents("arxiv_abstracts", [doc])
+                        client.insert_documents(sync_col.chunks, [doc])
                     except Exception:
                         pass  # Skip if exists
 
                 for doc in embedding_docs:
                     try:
-                        client.insert_documents("arxiv_embeddings", [doc])
+                        client.insert_documents(sync_col.embeddings, [doc])
                     except Exception:
                         pass  # Skip if exists
 
@@ -2172,9 +2166,9 @@ def _check_paper_in_db(arxiv_id: str, config: Any) -> bool:
 
         client = ArangoHttp2Client(client_config)
         try:
-            # Check arxiv_metadata collection
-            sanitized_id = arxiv_id.replace(".", "_").replace("/", "_")
-            client.get_document("arxiv_metadata", sanitized_id)
+            col = get_profile("arxiv")
+            sanitized_id = normalize_document_key(arxiv_id)
+            client.get_document(col.metadata, sanitized_id)
             return True
         except Exception:
             return False
@@ -2204,15 +2198,16 @@ def _process_and_store(
     try:
         from core.services.embedder_client import EmbedderClient
 
-        client = EmbedderClient(
+        embed_client = EmbedderClient(
             socket_path=config.embedding.service_socket,
             timeout=300.0,
             fallback_to_local=True,
         )
-        if client.is_service_available():
-            embedder = client
+        if embed_client.is_service_available():
+            embedder = embed_client
             progress("Using persistent embedding service")
         else:
+            embed_client.close()
             progress("Embedding service unavailable, loading model in-process")
     except Exception:
         progress("Embedding service unavailable, loading model in-process")
@@ -2257,7 +2252,8 @@ def _process_and_store(
         client = ArangoHttp2Client(client_config)
 
         try:
-            sanitized_id = doc_id.replace(".", "_").replace("/", "_")
+            col = get_profile("arxiv")
+            sanitized_id = normalize_document_key(doc_id)
             now_iso = datetime.now(UTC).isoformat()
 
             # Prepare metadata document
@@ -2287,11 +2283,11 @@ def _process_and_store(
             embedding_docs = []
 
             for chunk in result.chunks:
-                chunk_key = f"{sanitized_id}_chunk_{chunk.chunk_index}"
+                ck = chunk_key(sanitized_id, chunk.chunk_index)
 
                 chunk_docs.append(
                     {
-                        "_key": chunk_key,
+                        "_key": ck,
                         "document_id": doc_id,
                         "paper_key": sanitized_id,
                         "chunk_index": chunk.chunk_index,
@@ -2305,8 +2301,8 @@ def _process_and_store(
 
                 embedding_docs.append(
                     {
-                        "_key": f"{chunk_key}_emb",
-                        "chunk_key": chunk_key,
+                        "_key": embedding_key(ck),
+                        "chunk_key": ck,
                         "document_id": doc_id,
                         "paper_key": sanitized_id,
                         "embedding": chunk.embedding.tolist(),
@@ -2320,10 +2316,10 @@ def _process_and_store(
             progress(f"Storing {len(chunk_docs)} chunks in database...")
 
             if chunk_docs:
-                client.insert_documents("arxiv_abstract_chunks", chunk_docs, overwrite=force)
+                client.insert_documents(col.chunks, chunk_docs, overwrite=force)
             if embedding_docs:
-                client.insert_documents("arxiv_abstract_embeddings", embedding_docs, overwrite=force)
-            client.insert_documents("arxiv_metadata", [meta_doc], overwrite=force)
+                client.insert_documents(col.embeddings, embedding_docs, overwrite=force)
+            client.insert_documents(col.metadata, [meta_doc], overwrite=force)
 
             return {
                 "success": True,
@@ -2335,3 +2331,5 @@ def _process_and_store(
 
     finally:
         processor.cleanup()
+        if embedder is not None and hasattr(embedder, "close"):
+            embedder.close()
