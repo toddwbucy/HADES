@@ -351,6 +351,8 @@ def install_agent(agent_type: str) -> None:
     if agent_type == "claude":
         target = cwd / ".claude" / "skills" / "hades" / "SKILL.md"
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            print(f"Updating existing {target}", file=sys.stderr)
         target.write_text(SKILL_TEMPLATE, encoding="utf-8")
         print(f"Wrote {target}", file=sys.stderr)
 

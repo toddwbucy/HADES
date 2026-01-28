@@ -1896,8 +1896,11 @@ def _embed_and_store_abstracts(
                 for doc in embedding_docs:
                     try:
                         client.insert_documents(sync_col.embeddings, [doc])
-                    except Exception:
-                        pass  # Skip if exists
+                    except ArangoHttpError as e:
+                        if e.status_code == 409:
+                            pass  # Duplicate key, skip
+                        else:
+                            raise
 
                 synced += len(batch) - duplicates
             except Exception as e:

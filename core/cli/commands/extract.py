@@ -39,6 +39,16 @@ def extract_file(
     """
     path = Path(file_path)
 
+    # Validate output format
+    valid_formats = ("json", "text")
+    if output_format not in valid_formats:
+        return error_response(
+            command="extract",
+            code=ErrorCode.CONFIG_ERROR,
+            message=f"Invalid output format: {output_format!r}. Must be one of: {valid_formats}",
+            start_time=start_time,
+        )
+
     if not path.exists():
         return error_response(
             command="extract",
@@ -90,6 +100,14 @@ def extract_file(
             command="extract",
             code=ErrorCode.CONFIG_ERROR,
             message=f"Extraction dependencies not available: {e}",
+            start_time=start_time,
+        )
+    except FileNotFoundError:
+        # Handle TOCTOU race: file deleted between exists() check and extraction
+        return error_response(
+            command="extract",
+            code=ErrorCode.FILE_NOT_FOUND,
+            message=f"File not found: {file_path}",
             start_time=start_time,
         )
     except Exception as e:

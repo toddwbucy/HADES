@@ -119,7 +119,7 @@ class BatchProcessor:
         from datetime import UTC, datetime
 
         self.state.last_updated = datetime.now(UTC).isoformat()
-        self.state_file.write_text(json.dumps(self.state.to_dict(), indent=2))
+        self.state_file.write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
 
     def clear_state(self) -> None:
         """Clear state file."""
