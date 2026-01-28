@@ -127,6 +127,13 @@ class ArangoBackend:
 
         chunk_docs = []
         embedding_docs = []
+
+        # Validate embeddings match chunks to avoid silent data loss
+        if embeddings and len(embeddings) != len(chunks):
+            raise ValueError(
+                f"Embeddings count ({len(embeddings)}) does not match chunks ({len(chunks)})"
+            )
+
         for i, chunk in enumerate(chunks):
             chunk_dict = _to_dict(chunk)
             ck = chunk_key(key, i)
@@ -181,10 +188,16 @@ class ArangoBackend:
         query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-8)
 
         filter_clause = ""
-        bind_vars: dict[str, Any] = {"limit": limit}
+        bind_vars: dict[str, Any] = {}
         if doc_filter:
             filter_clause = "FILTER emb.paper_key == @paper_key"
             bind_vars["paper_key"] = normalize_document_key(doc_filter)
+
+        # Note: We fetch all embeddings for brute-force similarity computation.
+        # ArangoDB doesn't have built-in ANN indexes, so we compute cosine similarity
+        # in Python and return the top-k results. For large collections, consider
+        # adding an external vector index (e.g., FAISS) or using ArangoDB's
+        # experimental vector search features.
 
         aql = f"""
             FOR emb IN {col.embeddings}

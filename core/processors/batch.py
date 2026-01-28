@@ -104,10 +104,11 @@ class BatchProcessor:
             return False
 
         try:
-            data = json.loads(self.state_file.read_text())
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
             self.state = BatchState.from_dict(data)
             return True
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, OSError):
+            # OSError covers permission issues, IO errors, etc.
             return False
 
     def save_state(self) -> None:

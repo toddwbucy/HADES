@@ -189,12 +189,21 @@ def embed_image(
     Returns:
         1-D float32 numpy array (2048,).
     """
+    from pathlib import Path
+
+    from PIL import Image
+
     from core.embedders import EmbeddingConfig
     from core.embedders.embedders_jina import JinaV4Embedder
+
+    # Load image from path
+    pil_image = Image.open(Path(image_path))
 
     config = EmbeddingConfig(
         device=device or "cuda",
         use_fp16=use_fp16,
     )
     embedder = JinaV4Embedder(config)
-    return embedder.embed_image(image_path)
+    # embed_images returns (N, dim) array; extract the single embedding
+    embeddings = embedder.embed_images([pil_image])
+    return embeddings[0]

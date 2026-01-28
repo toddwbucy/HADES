@@ -351,13 +351,13 @@ def install_agent(agent_type: str) -> None:
     if agent_type == "claude":
         target = cwd / ".claude" / "skills" / "hades" / "SKILL.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(SKILL_TEMPLATE)
+        target.write_text(SKILL_TEMPLATE, encoding="utf-8")
         print(f"Wrote {target}", file=sys.stderr)
 
     elif agent_type == "agent":
         target = cwd / "AGENT.md"
         if target.exists():
-            content = target.read_text()
+            content = target.read_text(encoding="utf-8", errors="replace")
             if _HADES_SECTION_MARKER in content:
                 print(f"HADES section already present in {target}", file=sys.stderr)
                 return
@@ -365,10 +365,10 @@ def install_agent(agent_type: str) -> None:
             if not content.endswith("\n"):
                 content += "\n"
             content += HADES_TOOL_SECTION
-            target.write_text(content)
+            target.write_text(content, encoding="utf-8")
             print(f"Appended HADES section to {target}", file=sys.stderr)
         else:
-            target.write_text(AGENT_TEMPLATE)
+            target.write_text(AGENT_TEMPLATE, encoding="utf-8")
             print(f"Wrote {target}", file=sys.stderr)
 
     else:

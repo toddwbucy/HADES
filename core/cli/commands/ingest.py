@@ -60,9 +60,9 @@ def _classify_inputs(inputs: list[str]) -> tuple[list[str], list[str]]:
             arxiv_ids.append(inp)
         elif Path(inp).exists():
             file_paths.append(inp)
-        elif _is_arxiv_id(inp.split("/")[-1]):
-            # Handle case where user passes full path that looks like arxiv
-            arxiv_ids.append(inp)
+        elif _is_arxiv_id(Path(inp).name):
+            # Handle case where user passes full path that looks like arxiv ID
+            arxiv_ids.append(Path(inp).name)
         else:
             # Assume it's a file path that doesn't exist yet (will error later)
             file_paths.append(inp)
