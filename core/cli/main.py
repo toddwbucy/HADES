@@ -201,9 +201,11 @@ def extract_cmd(
 
 @app.command("ingest")
 def ingest_cmd(
-    inputs: list[str] = typer.Argument(..., help="ArXiv IDs or file paths to ingest"),
+    inputs: list[str] = typer.Argument(None, help="ArXiv IDs or file paths to ingest"),
     id: str = typer.Option(None, "--id", help="Custom document ID (single file only)"),
     force: bool = typer.Option(False, "--force", help="Force reprocessing"),
+    batch: bool = typer.Option(False, "--batch", "-b", help="Enable batch mode with progress and error isolation"),
+    resume: bool = typer.Option(False, "--resume", "-r", help="Resume from previous batch state"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index"),
 ) -> None:
     """Ingest documents into the knowledge base.
@@ -212,11 +214,18 @@ def ingest_cmd(
     - "2501.12345" → downloads and processes arxiv paper
     - "paper.pdf" → processes local file
 
+    Batch mode (--batch) provides:
+    - JSON progress to stderr (stdout stays clean for final result)
+    - Per-document error isolation (one failure doesn't stop the batch)
+    - Resume capability via state file
+
     Examples:
         hades ingest 2501.12345
         hades ingest paper.pdf --id my-doc
         hades ingest 2501.12345 2501.67890 --force
         hades ingest paper1.pdf paper2.pdf
+        hades ingest /papers/*.pdf --batch
+        hades ingest --resume
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -224,7 +233,17 @@ def ingest_cmd(
     try:
         from core.cli.commands.ingest import ingest
 
-        response = ingest(inputs, document_id=id, force=force, start_time=start_time)
+        # Handle resume-only mode (no inputs required)
+        actual_inputs = inputs or []
+
+        response = ingest(
+            actual_inputs,
+            document_id=id,
+            force=force,
+            batch=batch,
+            resume=resume,
+            start_time=start_time,
+        )
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None

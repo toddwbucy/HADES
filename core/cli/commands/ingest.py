@@ -6,10 +6,17 @@ Usage:
     hades ingest 2501.12345 2501.67890         # multiple arxiv IDs
     hades ingest paper1.pdf paper2.pdf         # multiple files
     hades ingest 2501.12345 paper.pdf          # mixed
+    hades ingest /papers/*.pdf --batch         # batch mode with progress
+    hades ingest --resume                      # resume after failure
 
 The command auto-detects inputs:
 - Patterns like "2501.12345" or "hep-th/9901001" → arxiv ID
 - File paths (existing files) → local file ingest
+
+Batch mode provides:
+- JSON progress to stderr (stdout stays clean for final result)
+- Per-document error isolation (one failure doesn't stop the batch)
+- Resume via state file recording completed IDs
 """
 
 from __future__ import annotations
@@ -67,6 +74,8 @@ def ingest(
     inputs: list[str],
     document_id: str | None = None,
     force: bool = False,
+    batch: bool = False,
+    resume: bool = False,
     start_time: float = 0.0,
 ) -> CLIResponse:
     """Ingest documents into the knowledge base.
@@ -77,11 +86,21 @@ def ingest(
         inputs: List of arxiv IDs or file paths to ingest.
         document_id: Custom document ID (only for single file ingest).
         force: Force reprocessing even if already exists.
+        batch: Enable batch mode with progress reporting and error isolation.
+        resume: Resume from previous batch state (implies batch=True).
         start_time: Command start timestamp.
 
     Returns:
         CLIResponse with ingestion results.
     """
+    # Resume implies batch mode
+    if resume:
+        batch = True
+
+    # Handle resume-only mode (no inputs needed)
+    if resume and not inputs:
+        return _ingest_batch([], None, force, resume, start_time)
+
     if not inputs:
         return error_response(
             command="ingest",
@@ -102,6 +121,21 @@ def ingest(
             start_time=start_time,
         )
 
+    # Batch mode not compatible with custom document_id
+    if batch and document_id:
+        return error_response(
+            command="ingest",
+            code=ErrorCode.CONFIG_ERROR,
+            message="--id option not compatible with batch mode",
+            start_time=start_time,
+        )
+
+    # Use batch processor for batch mode or large input sets
+    if batch or len(arxiv_ids) + len(file_paths) > 5:
+        all_items = arxiv_ids + file_paths
+        return _ingest_batch(all_items, None, force, resume, start_time)
+
+    # Standard (non-batch) mode
     progress(f"Ingesting {len(arxiv_ids)} arxiv papers and {len(file_paths)} files...")
 
     try:
@@ -151,6 +185,83 @@ def ingest(
             "results": results,
         },
         start_time=start_time,
+    )
+
+
+def _ingest_batch(
+    items: list[str],
+    document_id: str | None,
+    force: bool,
+    resume: bool,
+    start_time: float,
+) -> CLIResponse:
+    """Ingest items using batch processor with progress and resume.
+
+    Args:
+        items: List of arxiv IDs or file paths.
+        document_id: Not used in batch mode (passed for signature compatibility).
+        force: Force reprocessing even if already exists.
+        resume: Resume from previous batch state.
+        start_time: Command start timestamp.
+
+    Returns:
+        CLIResponse with batch results.
+    """
+    from core.processors.batch import BatchProcessor
+
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="ingest",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    def process_single(item_id: str) -> dict[str, Any]:
+        """Process a single item (arxiv ID or file path)."""
+        if _is_arxiv_id(item_id):
+            from core.cli.commands.arxiv import _ingest_arxiv_paper
+
+            return _ingest_arxiv_paper(item_id, config, force)
+        else:
+            return _ingest_file(item_id, config, None, force)
+
+    processor = BatchProcessor(
+        state_file=".hades-batch-state.json",
+        progress_interval=0.5,
+    )
+
+    result = processor.process_batch(items, process_single, resume=resume)
+
+    if result.failed > 0 and result.completed == 0:
+        return error_response(
+            command="ingest",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=f"All {result.failed} items failed to ingest",
+            details={
+                "results": result.results,
+                "errors": result.errors,
+            },
+            start_time=start_time,
+        )
+
+    return success_response(
+        command="ingest",
+        data={
+            "total": result.total,
+            "completed": result.completed,
+            "failed": result.failed,
+            "skipped": result.skipped,
+            "results": result.results,
+            "errors": result.errors if result.errors else None,
+        },
+        start_time=start_time,
+        metadata={
+            "batch_mode": True,
+            "duration_seconds": result.duration_seconds,
+        },
     )
 
 
