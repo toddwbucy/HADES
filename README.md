@@ -4,13 +4,23 @@
 
 A production-grade semantic knowledge base for academic papers. HADES transforms documents into vector embeddings with late chunking, stores them in ArangoDB via HTTP/2 Unix socket connections, and provides fast semantic search over millions of papers.
 
-## Features
+## Architecture
 
-- **CLI Interface** - AI-friendly JSON output for search, ingest, and query operations
-- **Semantic Search** - Query 2.8M+ paper abstracts in under 15 seconds
-- **Late Chunking** - Context-preserving embeddings using Jina V4 (2048 dimensions)
-- **HTTP/2 Transport** - Sub-millisecond database operations via Unix sockets
-- **ArXiv Integration** - Search, sync, and ingest papers directly from ArXiv
+HADES is **three composable tools**:
+
+| Tool | Component | Purpose |
+|------|-----------|---------|
+| **Extract** | Docling | Any document → structured text |
+| **Embed** | Jina V4 | Text → 2048-dim vectors with late chunking |
+| **Store** | ArangoDB | Pluggable storage backend via Protocol |
+
+Each tool works standalone. `ingest` composes them into a pipeline.
+
+```text
+PDF/ArXiv → Extract → Late Chunking → Embed → Store (ArangoDB)
+                                         ↓
+                            Semantic Search ← Query
+```
 
 ## Quick Start
 
@@ -22,86 +32,112 @@ poetry install
 export ARANGO_PASSWORD="your_password"
 
 # Search ArXiv for papers
-poetry run hades arxiv search "transformer attention mechanisms" --max 10
+hades arxiv search "transformer attention mechanisms" --max 10
 
 # Sync recent abstracts (builds searchable index without downloading PDFs)
-poetry run hades sync --from 2025-01-01 --batch 8
+hades arxiv sync --from 2025-01-01 --batch 8
 
 # Semantic search over your knowledge base
-poetry run hades query "how does late chunking preserve context"
+hades db query "how does late chunking preserve context"
 
 # Ingest full papers you're interested in
-poetry run hades ingest 2409.04701
+hades ingest 2409.04701
+
+# Batch ingest with progress and resume
+hades ingest /papers/*.pdf --batch
+hades ingest --resume  # after failure
 
 # Check database statistics
-poetry run hades stats
+hades db stats
 ```
 
 ## CLI Reference
 
 All commands output JSON for predictable parsing. Progress messages go to stderr.
 
+### Standalone Tools
+
+```bash
+# Extract text from any document (PDF, DOCX, HTML, etc.)
+hades extract document.pdf
+hades extract document.pdf --format text
+hades extract document.pdf --output extracted.json
+
+# Embed text directly
+hades embed text "some text to embed"
+hades embed text "query text" --task retrieval.query
+```
+
+### Ingest — Unified Pipeline
+
+Auto-detects ArXiv IDs vs file paths. Downloads, extracts, chunks, embeds, and stores:
+
+```bash
+# Single items
+hades ingest 2409.04701                    # arxiv paper
+hades ingest paper.pdf                     # local file
+hades ingest paper.pdf --id my-custom-id   # custom document ID
+hades ingest 2409.04701 --force            # reprocess existing
+
+# Batch mode with progress and error isolation
+hades ingest /papers/*.pdf --batch
+hades ingest 2409.04701 2501.12345 --batch
+hades ingest --resume                      # resume after failure
+```
+
 ### ArXiv Commands
 
 ```bash
-# Search ArXiv for papers
-hades arxiv search "query" [--max N] [--categories cs.AI,cs.CL]
+# Search ArXiv API (live)
+hades arxiv search "transformer attention" --max 20
+hades arxiv info 2409.04701
 
-# Get paper metadata
-hades arxiv info <arxiv_id>
-```
+# Search synced abstract database (2.8M papers, much faster)
+hades arxiv abstract "flash attention memory optimization" --limit 20
 
-### Sync Command
+# Find similar papers
+hades arxiv similar 2409.04701 --limit 10
 
-Sync abstracts from ArXiv for semantic search (no PDF downloads):
+# Relevance feedback
+hades arxiv refine "attention optimization" --positive 2409.04701 --limit 20
 
-```bash
-# Sync papers from the last 7 days
-hades sync
+# Sync abstracts from ArXiv (run periodically)
+hades arxiv sync --from 2025-01-01 --categories cs.AI,cs.CL --max 10000
+CUDA_VISIBLE_DEVICES=2 hades arxiv sync --from 2025-01-01 --batch 8
 
-# Sync from a specific date
-hades sync --from 2025-01-01
-
-# Sync specific categories with custom batch size
-hades sync --from 2025-01-01 --categories cs.AI,cs.CL --batch 8
-```
-
-### Query Commands
-
-```bash
-# Semantic search
-hades query "your search text" [--limit N]
-
-# Get all chunks for a specific paper
-hades query --paper <arxiv_id>
-```
-
-### Ingest Commands
-
-Download, process, and store full papers:
-
-```bash
-# Ingest by ArXiv ID
-hades ingest 2409.04701 2401.12345
-
-# Ingest local PDF
-hades ingest --file /path/to/paper.pdf
-
-# Force reprocessing
-hades ingest 2409.04701 --force
+# Check sync status
+hades arxiv sync-status
 ```
 
 ### Database Commands
 
 ```bash
-# List stored papers
-hades list [--limit N] [--category CAT]
+# Semantic search over ingested full papers
+hades db query "how does flash attention reduce memory"
+hades db query "Newton-Schulz" --paper 2505.23735    # within one paper
+hades db query "attention" --context 1               # include adjacent chunks
+hades db query "attention" --cite --top-k 3          # citation format
 
-# Database statistics
-hades stats
+# Get all chunks of a paper (no search)
+hades db query --paper 2409.04701 --chunks
 
-# Check if paper exists
-hades check <arxiv_id>
+# List and check papers
+hades db list --limit 20
+hades db check 2409.04701
+hades db stats
+hades db purge 2409.04701   # remove paper and all chunks
+
+# Raw AQL query
+hades db aql "FOR doc IN arxiv_metadata FILTER doc.year == 2025 RETURN doc.title"
+```
+
+### Embedding Service
+
+```bash
+hades embed service status
+hades embed service start
+hades embed service stop
+hades embed gpu status
 ```
 
 ### Output Format
@@ -124,33 +160,6 @@ Error:
   "error": { "code": "QUERY_FAILED", "message": "..." }
 }
 ```
-
-## Architecture
-
-```text
-PDF/ArXiv → Extractor → Late Chunking → Jina V4 Embedder → ArangoDB (HTTP/2)
-                                              ↓
-                                    Semantic Search ← Query
-```
-
-### Core Pipeline
-
-| Stage | Component | Purpose |
-|-------|-----------|---------|
-| Extract | Docling | PDF/document text extraction |
-| Embed | Jina V4 | 2048-dimension embeddings with late chunking |
-| Store | ArangoDB | HTTP/2 Unix socket client for fast writes |
-| Search | CLI | Cosine similarity search over embeddings |
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `core/cli/main.py` | CLI entry point |
-| `core/database/arango/optimized_client.py` | HTTP/2 ArangoDB client |
-| `core/processors/document_processor.py` | Document processing pipeline |
-| `core/embedders/embedders_jina.py` | Jina V4 embedder |
-| `core/extractors/extractors_docling.py` | PDF extraction |
 
 ## Installation
 
@@ -214,15 +223,54 @@ export ARANGO_RW_SOCKET=/run/hades/readwrite/arangod.sock
 
 | Collection | Purpose |
 |------------|---------|
-| `arxiv_papers` | Paper metadata (authors, categories, dates) |
+| `arxiv_metadata` | Paper metadata (authors, categories, dates) |
 | `arxiv_abstracts` | Abstract text for synced papers |
 | `arxiv_embeddings` | 2048-dim embeddings for semantic search |
-| `arxiv_abstract_chunks` | Full-text chunks for ingested papers |
+| `arxiv_chunks` | Full-text chunks for ingested papers |
 
 ### Sync vs Ingest
 
 - **Sync**: Fetches metadata + abstracts from ArXiv, embeds abstracts only. Fast, lightweight, good for discovery.
 - **Ingest**: Downloads full PDF, extracts text, chunks, embeds everything. Complete but heavier.
+
+## Project Structure
+
+```text
+hades/
+├── core/
+│   ├── cli/              # CLI commands and output formatting
+│   │   ├── commands/     # Command groups (arxiv, db, embed, ingest, extract)
+│   │   ├── main.py       # Typer app entry point
+│   │   └── output.py     # JSON response formatting
+│   ├── database/
+│   │   ├── arango/       # HTTP/2 ArangoDB client
+│   │   └── schemas.py    # Source-agnostic document schemas
+│   ├── embedders/        # Jina V4 with late chunking
+│   ├── extractors/       # Docling, LaTeX extractors
+│   ├── processors/       # Document processing, batch processor
+│   ├── services/         # Persistent embedding service
+│   └── tools/            # Standalone tools (extract, embed, store)
+├── tests/
+│   ├── core/             # Unit tests
+│   ├── integration/      # Integration tests
+│   └── e2e/              # End-to-end tests
+└── setup/                # Environment verification scripts
+```
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `core/cli/main.py` | CLI entry point |
+| `core/tools/extract.py` | Standalone extraction tool |
+| `core/tools/embed.py` | Standalone embedding tool |
+| `core/tools/store.py` | Storage backend protocol |
+| `core/database/arango/backend.py` | ArangoDB storage implementation |
+| `core/database/arango/optimized_client.py` | HTTP/2 ArangoDB client |
+| `core/processors/document_processor.py` | Document processing pipeline |
+| `core/processors/batch.py` | Batch processing with resume |
+| `core/embedders/embedders_jina.py` | Jina V4 embedder |
+| `core/extractors/extractors_docling.py` | PDF extraction |
 
 ## Development
 
@@ -258,29 +306,6 @@ poetry run mypy core --ignore-missing-imports
 poetry run python -m compileall core
 ```
 
-## Project Structure
-
-```text
-hades/
-├── core/
-│   ├── cli/              # CLI commands and output formatting
-│   │   ├── commands/     # Individual command implementations
-│   │   ├── main.py       # Typer app entry point
-│   │   ├── config.py     # Environment configuration
-│   │   └── output.py     # JSON response formatting
-│   ├── database/arango/  # HTTP/2 ArangoDB client
-│   ├── embedders/        # Jina V4 with late chunking
-│   ├── extractors/       # Docling, LaTeX extractors
-│   ├── processors/       # Document processing pipeline
-│   └── tools/arxiv/      # ArXiv API client
-├── tests/
-│   ├── core/             # Unit tests
-│   ├── integration/      # Integration tests
-│   └── e2e/              # End-to-end tests
-├── setup/                # Environment verification scripts
-└── docs/                 # Additional documentation
-```
-
 ## Performance
 
 ### Benchmarks
@@ -307,7 +332,7 @@ Keep your abstract database current with a nightly sync:
 
 ```bash
 # /etc/cron.d/hades-sync
-0 2 * * * root CUDA_VISIBLE_DEVICES=2 ARANGO_PASSWORD=xxx /path/to/hades sync --from $(date -d "7 days ago" +\%Y-\%m-\%d) --batch 8 >> /var/log/hades-sync.log 2>&1
+0 2 * * * root CUDA_VISIBLE_DEVICES=2 ARANGO_PASSWORD=xxx /path/to/hades arxiv sync --from $(date -d "7 days ago" +\%Y-\%m-\%d) --batch 8 >> /var/log/hades-sync.log 2>&1
 ```
 
 ## License
