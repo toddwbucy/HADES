@@ -172,7 +172,7 @@ class ProcessingResult:
 class DocumentProcessor:
     """Source-agnostic document processor leveraging Docling and late chunking."""
 
-    def __init__(self, config: ProcessingConfig | None = None):
+    def __init__(self, config: ProcessingConfig | None = None, embedder: Any | None = None):
         self.config = config or ProcessingConfig()
 
         docling_config = DoclingConfig(
@@ -218,8 +218,8 @@ class DocumentProcessor:
         )
         self._embedder_type = embedder_type
         self.embedding_model = model_name
-        # Embedder will be lazy-loaded when needed
-        self._embedder = None
+        # Use injected embedder if provided, otherwise lazy-load when needed
+        self._embedder = embedder
 
         # Initialize staging directory management
         self._staging_tempdir: tempfile.TemporaryDirectory | None = None

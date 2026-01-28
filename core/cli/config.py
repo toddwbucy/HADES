@@ -149,6 +149,9 @@ class CLIConfig:
     use_gpu: bool = True
     device: str = "cuda"
 
+    # Collection profile
+    collection_profile: str = "arxiv"
+
     # Nested configs
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     search: SearchConfig = field(default_factory=SearchConfig)

@@ -190,34 +190,32 @@ class JinaV4Embedder(EmbedderBase):
 
                 # Use Jina's encode method if available
                 if hasattr(self.model, 'encode'):
-                    # Jina v4 with encode method
-                    # Map task to Jina v4 task labels, preserving query-specific adapters
-                    # Jina v4 supports: 'retrieval', 'retrieval.query', 'text-matching', etc.
-                    if task == 'retrieval.query' or task.startswith('retrieval.'):
-                        # Preserve exact retrieval sub-tasks (e.g., retrieval.query)
-                        jina_task = task
-                    elif 'retrieval' in task:
-                        # Generic retrieval tasks fall back to 'retrieval'
-                        jina_task = 'retrieval'
-                    else:
-                        # Pass through other tasks as-is
-                        jina_task = task
-                    embeddings = self.model.encode(
-                        batch,
-                        task=jina_task
-                    )
-                else:
-                    # Jina v4 requires task_label when using forward pass
-                    # logger.debug(f"Using forward pass with task_label for batch of {len(batch)} texts")
-                    # Map task to the correct LoRA adapter name
-                    # Jina v4 uses: 'retrieval', 'retrieval.query', 'text-matching', 'classification', 'separation'
-                    task_mapping = {
+                    # Jina v4 encode method accepts task in {'retrieval','text-matching','code'}
+                    # and prompt_name in {'query','passage'} for retrieval prefix.
+                    jina_task_map = {
                         'retrieval.passage': 'retrieval',
-                        'retrieval.query': 'retrieval.query',
+                        'retrieval.query': 'retrieval',
                         'retrieval': 'retrieval',
                         'text-matching': 'text-matching',
-                        'classification': 'classification',
-                        'separation': 'separation'
+                        'code': 'code',
+                    }
+                    jina_task = jina_task_map.get(task, 'retrieval')
+                    prompt_name = 'query' if task == 'retrieval.query' else 'passage'
+                    embeddings = self.model.encode_text(
+                        batch,
+                        task=jina_task,
+                        prompt_name=prompt_name,
+                    )
+                else:
+                    # Jina v4 requires task_label when using forward pass.
+                    # Valid LoRA adapters are: 'retrieval', 'text-matching', 'code'
+                    # (query vs passage is a prompt prefix, not a separate adapter)
+                    task_mapping = {
+                        'retrieval.passage': 'retrieval',
+                        'retrieval.query': 'retrieval',
+                        'retrieval': 'retrieval',
+                        'text-matching': 'text-matching',
+                        'code': 'code',
                     }
                     task_label = task_mapping.get(task, 'retrieval')
 
@@ -735,11 +733,14 @@ class JinaV4Embedder(EmbedderBase):
 
         with torch.no_grad():
             # Map task to Jina v4 task labels
+            # Map task to Jina v4 LoRA adapter names.
+            # Valid adapters: 'retrieval', 'text-matching', 'code'
             task_mapping = {
+                'retrieval.passage': 'retrieval',
+                'retrieval.query': 'retrieval',
                 'retrieval': 'retrieval',
-                'code': 'text-matching',
-                'classification': 'classification',
-                'clustering': 'clustering'
+                'text-matching': 'text-matching',
+                'code': 'code',
             }
             task_label = task_mapping.get(task, 'retrieval')
 

@@ -7,7 +7,6 @@ import numpy as np
 from core.cli.commands.arxiv import (
     _compute_rocchio_centroid,
     find_similar,
-    ingest_from_abstract,
     refine_search,
     search_abstracts,
     search_abstracts_bulk,
@@ -118,47 +117,6 @@ class TestAbstractSearch:
         mock_search.assert_called_once()
         call_args = mock_search.call_args
         assert call_args[1]["category_filter"] == "cs.AI"
-
-
-class TestAbstractIngest:
-    """Tests for abstract ingest command."""
-
-    @patch("core.cli.commands.arxiv.ingest_papers")
-    def test_ingest_delegates_to_ingest_papers(self, mock_ingest):
-        """Test that abstract ingest delegates to existing ingest logic."""
-        mock_ingest.return_value = MagicMock(
-            success=True,
-            command="ingest",
-            data={"ingested": 1, "failed": 0},
-        )
-
-        ingest_from_abstract(
-            arxiv_ids=["2401.12345"],
-            force=False,
-            start_time=0,
-        )
-
-        # Verify delegation
-        mock_ingest.assert_called_once_with(
-            arxiv_ids=["2401.12345"],
-            pdf_paths=None,
-            force=False,
-            start_time=0,
-        )
-
-    @patch("core.cli.commands.arxiv.ingest_papers")
-    def test_ingest_passes_force_flag(self, mock_ingest):
-        """Test that force flag is passed through."""
-        mock_ingest.return_value = MagicMock(success=True)
-
-        ingest_from_abstract(
-            arxiv_ids=["2401.12345"],
-            force=True,
-            start_time=0,
-        )
-
-        call_args = mock_ingest.call_args
-        assert call_args[1]["force"] is True
 
 
 class TestSearchResultsFormat:

@@ -112,7 +112,9 @@ class ArangoHttp2Client:
         response = self._client.get(path)
         return self._handle_response(response)
 
-    def insert_documents(self, collection: str, documents: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    def insert_documents(
+        self, collection: str, documents: Iterable[dict[str, Any]], overwrite: bool = False
+    ) -> dict[str, Any]:
         """Bulk insert documents using NDJSON import."""
 
         document_iter = iter(documents)
@@ -131,9 +133,10 @@ class ArangoHttp2Client:
             buffer.write(line)
 
         payload = buffer.getvalue()
+        overwrite_str = "true" if overwrite else "false"
         path = (
             f"/_db/{self._config.database}/_api/import"
-            f"?collection={collection}&type=documents&complete=true&overwrite=false"
+            f"?collection={collection}&type=documents&complete=true&overwrite={overwrite_str}"
         )
         user_agent = os.environ.get("HADES_HTTP_USER_AGENT", "hades-arango-http2/1.0")
         trace_id = os.environ.get("HADES_TRACE_ID")
