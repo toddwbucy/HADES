@@ -5,7 +5,7 @@ All commands output JSON for predictable parsing by AI models.
 
 Core Tools (standalone):
     hades extract <file>             # Extract text from any document
-    hades embed "text"               # Generate embedding for text
+    hades embed text "..."           # Generate embedding for text
     hades ingest <file_or_arxiv>     # Extract → embed → store (unified)
 
 Database Operations:

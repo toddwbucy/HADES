@@ -18,6 +18,7 @@ class ErrorCode(str, Enum):
     """Standard error codes for CLI responses."""
 
     PAPER_NOT_FOUND = "PAPER_NOT_FOUND"
+    FILE_NOT_FOUND = "FILE_NOT_FOUND"
     INVALID_ARXIV_ID = "INVALID_ARXIV_ID"
     DATABASE_ERROR = "DATABASE_ERROR"
     DOWNLOAD_FAILED = "DOWNLOAD_FAILED"

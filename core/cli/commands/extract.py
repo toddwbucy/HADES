@@ -77,14 +77,12 @@ def extract_file(
             command="extract",
             data={"result": output if output_format == "json" else {"text": output}},
             start_time=start_time,
-            metadata={
-                "source_file": str(path),
-                "format": output_format,
-                "extraction_time": result.get("extraction_time", 0),
-                "tables": len(result.get("tables", [])),
-                "equations": len(result.get("equations", [])),
-                "images": len(result.get("images", [])),
-            },
+            source_file=str(path),
+            format=output_format,
+            extraction_time=result.get("extraction_time", 0),
+            tables=len(result.get("tables", [])),
+            equations=len(result.get("equations", [])),
+            images=len(result.get("images", [])),
         )
 
     except ImportError as e:
