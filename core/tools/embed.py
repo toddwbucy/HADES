@@ -27,8 +27,28 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def _get_client(**kwargs: Any):
-    """Create an EmbedderClient with sensible defaults."""
+def get_client(**kwargs: Any):
+    """Create an EmbedderClient with sensible defaults.
+
+    Use this when you need to make multiple embed calls and want to
+    reuse the connection (e.g., batch processing in a loop).
+
+    Args:
+        **kwargs: Forwarded to EmbedderClient constructor.
+            Defaults: socket_path="/run/hades/embedder.sock",
+                     timeout=30.0, fallback_to_local=True
+
+    Returns:
+        EmbedderClient instance. Caller is responsible for calling close().
+
+    Example:
+        client = get_client()
+        try:
+            for batch in batches:
+                vecs = embed_texts(batch, client=client)
+        finally:
+            client.close()
+    """
     from core.services.embedder_client import EmbedderClient
 
     defaults = {
@@ -38,6 +58,10 @@ def _get_client(**kwargs: Any):
     }
     defaults.update(kwargs)
     return EmbedderClient(**defaults)
+
+
+# Backwards compatibility alias
+_get_client = get_client
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +74,7 @@ def embed_texts(
     *,
     task: str = "retrieval.passage",
     batch_size: int | None = None,
+    client: Any | None = None,
     **client_kwargs: Any,
 ) -> np.ndarray:
     """Embed multiple texts.
@@ -58,16 +83,22 @@ def embed_texts(
         texts: Texts to embed.
         task: Jina task type (retrieval.passage, retrieval.query, text-matching).
         batch_size: Optional batch size override.
-        **client_kwargs: Forwarded to EmbedderClient constructor.
+        client: Optional pre-existing EmbedderClient for connection reuse.
+            If provided, caller is responsible for closing it.
+        **client_kwargs: Forwarded to EmbedderClient constructor (ignored if
+            client is provided).
 
     Returns:
         (N, 2048) float32 numpy array.
     """
-    client = _get_client(**client_kwargs)
+    owns_client = client is None
+    if owns_client:
+        client = get_client(**client_kwargs)
     try:
         return client.embed_texts(texts, task=task, batch_size=batch_size)
     finally:
-        client.close()
+        if owns_client:
+            client.close()
 
 
 def embed_text(

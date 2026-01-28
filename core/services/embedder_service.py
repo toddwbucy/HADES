@@ -252,6 +252,10 @@ async def health() -> HealthResponse:
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest) -> EmbedResponse:
     """Embed texts using the loaded model."""
+    # Reset idle timer before any async work so the idle_monitor
+    # never sees a freshly-loaded model with a stale timestamp.
+    state.last_request_time = time.time()
+
     # Reload model if it was unloaded due to idle
     if not state.model_loaded or state.embedder is None:
         logger.info("Model unloaded (idle). Reloading for incoming request...")
@@ -262,8 +266,6 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
                 status_code=503,
                 detail=f"Failed to reload model: {e}",
             ) from e
-
-    state.last_request_time = time.time()
 
     if not request.texts:
         raise HTTPException(status_code=400, detail="No texts provided")
