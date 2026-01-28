@@ -20,6 +20,7 @@ Usage:
     hades database stats             # Database statistics
     hades database check <arxiv_id>  # Check if paper exists in DB
     hades database create <name>     # Create a collection
+    hades database ingest <file>       # Ingest any document file
     hades database purge <arxiv_id>   # Purge all data for a paper
     hades database delete <col> <key> # Delete a document
 """
@@ -732,6 +733,40 @@ def database_check(
         response = error_response(
             command="database.check",
             code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@database_app.command("ingest")
+def database_ingest(
+    file: str = typer.Argument(..., help="Path to document file to ingest", metavar="FILE"),
+    document_id: str | None = typer.Option(None, "--id", help="Custom document ID (default: filename)"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing data"),
+) -> None:
+    """Ingest a local document file into the knowledge base.
+
+    Supports PDF, DOCX, PPTX, HTML, Markdown, and plain text files.
+    Extracts text, chunks, generates embeddings, and stores in the database.
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import ingest_file
+
+        response = ingest_file(file, document_id, force, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.ingest",
+            code=ErrorCode.PROCESSING_FAILED,
             message=str(e),
             start_time=start_time,
         )

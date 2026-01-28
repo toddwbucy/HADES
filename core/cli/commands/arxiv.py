@@ -2071,6 +2071,7 @@ def _ingest_arxiv_paper(arxiv_id: str, config: Any, force: bool) -> dict[str, An
             latex_path=download_result.latex_path,
             metadata=download_result.metadata,
             config=config,
+            force=force,
         )
 
         if not processing_result["success"]:
@@ -2190,10 +2191,31 @@ def _process_and_store(
     metadata: Any,
     config: Any,
     document_id: str | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Process a PDF and store results in the database."""
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
     from core.processors.document_processor import DocumentProcessor, ProcessingConfig
+
+    # Try to use the persistent embedding service instead of loading model in-process.
+    # Use a longer timeout for ingest (model may need to load from idle + embed many chunks).
+    # Fall back to in-process model if the service is unavailable.
+    embedder = None
+    try:
+        from core.services.embedder_client import EmbedderClient
+
+        client = EmbedderClient(
+            socket_path=config.embedding.service_socket,
+            timeout=300.0,
+            fallback_to_local=True,
+        )
+        if client.is_service_available():
+            embedder = client
+            progress("Using persistent embedding service")
+        else:
+            progress("Embedding service unavailable, loading model in-process")
+    except Exception:
+        progress("Embedding service unavailable, loading model in-process")
 
     # Configure processor
     # Use traditional chunking for now - late chunking has a dimension bug
@@ -2205,7 +2227,7 @@ def _process_and_store(
         chunk_overlap_tokens=100,
     )
 
-    processor = DocumentProcessor(proc_config)
+    processor = DocumentProcessor(proc_config, embedder=embedder)
 
     try:
         # Process the document
@@ -2293,15 +2315,15 @@ def _process_and_store(
                     }
                 )
 
-            # Insert documents
-            # Note: Using simple insert; for production, use transactions
+            # Insert chunks and embeddings first so that metadata only
+            # records success after the data is actually persisted.
             progress(f"Storing {len(chunk_docs)} chunks in database...")
 
-            client.insert_documents("arxiv_metadata", [meta_doc])
             if chunk_docs:
-                client.insert_documents("arxiv_abstract_chunks", chunk_docs)
+                client.insert_documents("arxiv_abstract_chunks", chunk_docs, overwrite=force)
             if embedding_docs:
-                client.insert_documents("arxiv_abstract_embeddings", embedding_docs)
+                client.insert_documents("arxiv_abstract_embeddings", embedding_docs, overwrite=force)
+            client.insert_documents("arxiv_metadata", [meta_doc], overwrite=force)
 
             return {
                 "success": True,

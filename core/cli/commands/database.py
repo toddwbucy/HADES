@@ -1,11 +1,12 @@
 """Database management commands for HADES CLI.
 
-Consolidates: list, stats, check, query, chunks, create, delete commands.
+Consolidates: list, stats, check, query, chunks, create, delete, ingest commands.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -380,6 +381,88 @@ def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
         return error_response(
             command="database.purge",
             code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
+def ingest_file(
+    file_path: str,
+    document_id: str | None,
+    force: bool,
+    start_time: float,
+) -> CLIResponse:
+    """Ingest a local file into the knowledge base.
+
+    Supports any format handled by the Docling extractor (PDF, DOCX, PPTX,
+    HTML, Markdown, plain text, images).
+
+    Args:
+        file_path: Path to the file to ingest
+        document_id: Optional document ID (defaults to filename stem)
+        force: Overwrite existing data if present
+        start_time: Start time for duration calculation
+
+    Returns:
+        CLIResponse with ingestion result
+    """
+    path = Path(file_path).expanduser().resolve()
+
+    if not path.exists():
+        return error_response(
+            command="database.ingest",
+            code=ErrorCode.PAPER_NOT_FOUND,
+            message=f"File not found: {path}",
+            start_time=start_time,
+        )
+
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.ingest",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    doc_id = document_id or path.stem
+
+    try:
+        from core.cli.commands.arxiv import _process_and_store
+
+        result = _process_and_store(
+            arxiv_id=None,
+            pdf_path=path,
+            latex_path=None,
+            metadata=None,
+            config=config,
+            document_id=doc_id,
+            force=force,
+        )
+
+        if not result.get("success"):
+            return error_response(
+                command="database.ingest",
+                code=ErrorCode.PROCESSING_FAILED,
+                message=result.get("error", "Processing failed"),
+                start_time=start_time,
+            )
+
+        return success_response(
+            command="database.ingest",
+            data={
+                "file": str(path),
+                "document_id": doc_id,
+                "num_chunks": result.get("num_chunks", 0),
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.ingest",
+            code=ErrorCode.PROCESSING_FAILED,
             message=str(e),
             start_time=start_time,
         )
