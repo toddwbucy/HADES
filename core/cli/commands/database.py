@@ -5,7 +5,6 @@ Consolidates: list, stats, check, query, chunks, create, delete, ingest commands
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,8 @@ from core.cli.output import (
     progress,
     success_response,
 )
+from core.database.collections import get_profile
+from core.database.keys import normalize_document_key
 
 # =============================================================================
 # Paper Management Commands (list, stats, check)
@@ -65,14 +66,15 @@ def list_stored_papers(
         client = ArangoHttp2Client(client_config)
 
         try:
+            col = get_profile("arxiv")
             # Build query with optional category filter
             if category:
-                aql = """
-                    FOR doc IN arxiv_metadata
+                aql = f"""
+                    FOR doc IN {col.metadata}
                         FILTER @category IN doc.categories
                         SORT doc.processing_timestamp DESC
                         LIMIT @limit
-                        RETURN {
+                        RETURN {{
                             arxiv_id: doc.arxiv_id,
                             document_id: doc.document_id,
                             title: doc.title,
@@ -81,15 +83,15 @@ def list_stored_papers(
                             num_chunks: doc.num_chunks,
                             source: doc.source,
                             processing_timestamp: doc.processing_timestamp
-                        }
+                        }}
                 """
                 bind_vars = {"category": category, "limit": limit}
             else:
-                aql = """
-                    FOR doc IN arxiv_metadata
+                aql = f"""
+                    FOR doc IN {col.metadata}
                         SORT doc.processing_timestamp DESC
                         LIMIT @limit
-                        RETURN {
+                        RETURN {{
                             arxiv_id: doc.arxiv_id,
                             document_id: doc.document_id,
                             title: doc.title,
@@ -98,7 +100,7 @@ def list_stored_papers(
                             num_chunks: doc.num_chunks,
                             source: doc.source,
                             processing_timestamp: doc.processing_timestamp
-                        }
+                        }}
                 """
                 bind_vars = {"limit": limit}
 
@@ -156,51 +158,52 @@ def get_stats(start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
+            col = get_profile("arxiv")
             stats = {}
 
             # Count papers
-            paper_count = client.query("RETURN LENGTH(arxiv_metadata)")
+            paper_count = client.query(f"RETURN LENGTH({col.metadata})")
             stats["total_papers"] = paper_count[0] if paper_count else 0
 
             # Count chunks
-            chunk_count = client.query("RETURN LENGTH(arxiv_abstract_chunks)")
+            chunk_count = client.query(f"RETURN LENGTH({col.chunks})")
             stats["total_chunks"] = chunk_count[0] if chunk_count else 0
 
             # Count embeddings
-            embedding_count = client.query("RETURN LENGTH(arxiv_abstract_embeddings)")
+            embedding_count = client.query(f"RETURN LENGTH({col.embeddings})")
             stats["total_embeddings"] = embedding_count[0] if embedding_count else 0
 
             # Get category distribution
-            category_aql = """
-                FOR doc IN arxiv_metadata
+            category_aql = f"""
+                FOR doc IN {col.metadata}
                     FOR cat IN (doc.categories || [])
                         COLLECT category = cat WITH COUNT INTO count
                         SORT count DESC
                         LIMIT 10
-                        RETURN {category: category, count: count}
+                        RETURN {{category: category, count: count}}
             """
             categories = client.query(category_aql)
             stats["top_categories"] = categories
 
             # Get source distribution
-            source_aql = """
-                FOR doc IN arxiv_metadata
+            source_aql = f"""
+                FOR doc IN {col.metadata}
                     COLLECT source = (doc.source || "arxiv") WITH COUNT INTO count
-                    RETURN {source: source, count: count}
+                    RETURN {{source: source, count: count}}
             """
             sources = client.query(source_aql)
             stats["sources"] = sources
 
             # Get recent papers
-            recent_aql = """
-                FOR doc IN arxiv_metadata
+            recent_aql = f"""
+                FOR doc IN {col.metadata}
                     SORT doc.processing_timestamp DESC
                     LIMIT 5
-                    RETURN {
+                    RETURN {{
                         arxiv_id: doc.arxiv_id,
                         title: doc.title,
                         processing_timestamp: doc.processing_timestamp
-                    }
+                    }}
             """
             recent = client.query(recent_aql)
             stats["recent_papers"] = recent
@@ -258,15 +261,14 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
-            # Normalize paper ID (strip version suffix like "v1", "v2")
-            base_id = re.sub(r"v\d+$", "", arxiv_id)
-            sanitized_id = base_id.replace(".", "_").replace("/", "_")
+            col = get_profile("arxiv")
+            sanitized_id = normalize_document_key(arxiv_id)
 
             # Try to get the document
             from core.database.arango.optimized_client import ArangoHttpError
 
             try:
-                doc = client.get_document("arxiv_metadata", sanitized_id)
+                doc = client.get_document(col.metadata, sanitized_id)
                 exists = True
                 paper_info = {
                     "arxiv_id": doc.get("arxiv_id"),
@@ -341,14 +343,14 @@ def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
-            base_id = re.sub(r"v\d+$", "", arxiv_id)
-            paper_key = base_id.replace(".", "_").replace("/", "_")
+            col = get_profile("arxiv")
+            paper_key = normalize_document_key(arxiv_id)
 
-            aql = """
-                LET meta = (FOR d IN arxiv_metadata FILTER d._key == @key REMOVE d IN arxiv_metadata RETURN 1)
-                LET chunks = (FOR d IN arxiv_abstract_chunks FILTER d.paper_key == @key REMOVE d IN arxiv_abstract_chunks RETURN 1)
-                LET embs = (FOR d IN arxiv_abstract_embeddings FILTER d.paper_key == @key REMOVE d IN arxiv_abstract_embeddings RETURN 1)
-                RETURN {metadata: LENGTH(meta), chunks: LENGTH(chunks), embeddings: LENGTH(embs)}
+            aql = f"""
+                LET meta = (FOR d IN {col.metadata} FILTER d._key == @key REMOVE d IN {col.metadata} RETURN 1)
+                LET chunks = (FOR d IN {col.chunks} FILTER d.paper_key == @key REMOVE d IN {col.chunks} RETURN 1)
+                LET embs = (FOR d IN {col.embeddings} FILTER d.paper_key == @key REMOVE d IN {col.embeddings} RETURN 1)
+                RETURN {{metadata: LENGTH(meta), chunks: LENGTH(chunks), embeddings: LENGTH(embs)}}
             """
 
             results = client.query(aql, bind_vars={"key": paper_key})
@@ -590,23 +592,22 @@ def get_paper_chunks(
         client = ArangoHttp2Client(client_config)
 
         try:
-            # Normalize paper ID for lookup (strip version suffix like "v1", "v2")
-            base_id = re.sub(r"v\d+$", "", paper_id)
-            sanitized_id = base_id.replace(".", "_").replace("/", "_")
+            col = get_profile("arxiv")
+            sanitized_id = normalize_document_key(paper_id)
 
             # Query chunks for this paper
-            aql = """
-                FOR chunk IN arxiv_abstract_chunks
+            aql = f"""
+                FOR chunk IN {col.chunks}
                     FILTER chunk.paper_key == @paper_key OR chunk.document_id == @paper_id
                     SORT chunk.chunk_index
                     LIMIT @limit
-                    RETURN {
+                    RETURN {{
                         chunk_index: chunk.chunk_index,
                         total_chunks: chunk.total_chunks,
                         text: chunk.text,
                         start_char: chunk.start_char,
                         end_char: chunk.end_char
-                    }
+                    }}
             """
 
             results = client.query(
@@ -818,22 +819,22 @@ def _search_embeddings(
     # Normalize paper filter if provided
     paper_key_filter = None
     if paper_filter:
-        base_id = re.sub(r"v\d+$", "", paper_filter)
-        paper_key_filter = base_id.replace(".", "_").replace("/", "_")
+        paper_key_filter = normalize_document_key(paper_filter)
 
     try:
+        col = get_profile("arxiv")
         all_embeddings = []
 
         # Search full paper chunks (from ingested PDFs)
         try:
             if paper_key_filter:
-                aql_chunks = """
-                    FOR emb IN arxiv_abstract_embeddings
+                aql_chunks = f"""
+                    FOR emb IN {col.embeddings}
                         FILTER emb.chunk_key != null
                         FILTER emb.paper_key == @paper_key
-                        LET chunk = DOCUMENT(CONCAT("arxiv_abstract_chunks/", emb.chunk_key))
-                        LET meta = DOCUMENT(CONCAT("arxiv_metadata/", emb.paper_key))
-                        RETURN {
+                        LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
+                        LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
+                        RETURN {{
                             paper_key: emb.paper_key,
                             embedding: emb.embedding,
                             text: chunk.text,
@@ -842,16 +843,16 @@ def _search_embeddings(
                             title: meta.title,
                             arxiv_id: meta.arxiv_id,
                             source: "full_paper"
-                        }
+                        }}
                 """
                 chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter})
             else:
-                aql_chunks = """
-                    FOR emb IN arxiv_abstract_embeddings
+                aql_chunks = f"""
+                    FOR emb IN {col.embeddings}
                         FILTER emb.chunk_key != null
-                        LET chunk = DOCUMENT(CONCAT("arxiv_abstract_chunks/", emb.chunk_key))
-                        LET meta = DOCUMENT(CONCAT("arxiv_metadata/", emb.paper_key))
-                        RETURN {
+                        LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
+                        LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
+                        RETURN {{
                             paper_key: emb.paper_key,
                             embedding: emb.embedding,
                             text: chunk.text,
@@ -860,7 +861,7 @@ def _search_embeddings(
                             title: meta.title,
                             arxiv_id: meta.arxiv_id,
                             source: "full_paper"
-                        }
+                        }}
                 """
                 chunk_results = client.query(aql_chunks)
             all_embeddings.extend(chunk_results or [])
@@ -872,11 +873,12 @@ def _search_embeddings(
         # (abstracts are single chunks, full paper search is more useful when filtering)
         if not paper_key_filter:
             try:
-                aql_abstracts = """
-                    FOR emb IN arxiv_abstract_embeddings
+                sync_col = get_profile("sync")
+                aql_abstracts = f"""
+                    FOR emb IN {col.embeddings}
                         FILTER emb.text_type == "abstract"
-                        LET abstract = DOCUMENT(CONCAT("arxiv_abstracts/", emb.paper_key))
-                        RETURN {
+                        LET abstract = DOCUMENT(CONCAT("{sync_col.chunks}/", emb.paper_key))
+                        RETURN {{
                             paper_key: emb.paper_key,
                             embedding: emb.embedding,
                             text: abstract.abstract,
@@ -885,7 +887,7 @@ def _search_embeddings(
                             title: abstract.title,
                             arxiv_id: abstract.arxiv_id,
                             source: "abstract"
-                        }
+                        }}
                 """
                 abstract_results = client.query(aql_abstracts)
                 all_embeddings.extend(abstract_results or [])
@@ -954,6 +956,7 @@ def _add_context_chunks(
     client = ArangoHttp2Client(client_config)
 
     try:
+        col = get_profile("arxiv")
         for result in results:
             arxiv_id = result.get("arxiv_id")
             chunk_index = result.get("chunk_index")
@@ -966,8 +969,7 @@ def _add_context_chunks(
                 continue
 
             # Normalize arxiv_id to paper_key
-            base_id = re.sub(r"v\d+$", "", arxiv_id)
-            paper_key = base_id.replace(".", "_").replace("/", "_")
+            paper_key = normalize_document_key(arxiv_id)
 
             # Fetch context chunks
             context_before = []
@@ -976,16 +978,16 @@ def _add_context_chunks(
             try:
                 # Get chunks before
                 if chunk_index > 0:
-                    aql_before = """
-                        FOR chunk IN arxiv_abstract_chunks
+                    aql_before = f"""
+                        FOR chunk IN {col.chunks}
                             FILTER chunk.paper_key == @paper_key
                             FILTER chunk.chunk_index >= @start_idx
                             FILTER chunk.chunk_index < @current_idx
                             SORT chunk.chunk_index
-                            RETURN {
+                            RETURN {{
                                 chunk_index: chunk.chunk_index,
                                 text: chunk.text
-                            }
+                            }}
                     """
                     start_idx = max(0, chunk_index - context)
                     before_results = client.query(
@@ -999,16 +1001,16 @@ def _add_context_chunks(
                     context_before = before_results or []
 
                 # Get chunks after
-                aql_after = """
-                    FOR chunk IN arxiv_abstract_chunks
+                aql_after = f"""
+                    FOR chunk IN {col.chunks}
                         FILTER chunk.paper_key == @paper_key
                         FILTER chunk.chunk_index > @current_idx
                         FILTER chunk.chunk_index <= @end_idx
                         SORT chunk.chunk_index
-                        RETURN {
+                        RETURN {{
                             chunk_index: chunk.chunk_index,
                             text: chunk.text
-                        }
+                        }}
                 """
                 total_chunks = result.get("total_chunks", 999)
                 end_idx = min(total_chunks - 1, chunk_index + context)
