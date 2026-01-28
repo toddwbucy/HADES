@@ -786,100 +786,6 @@ def sync_abstracts(
 
 
 # =============================================================================
-# Ingest Commands
-# =============================================================================
-
-
-def ingest_papers(
-    arxiv_ids: list[str] | None = None,
-    pdf_paths: list[str] | None = None,
-    force: bool = False,
-    start_time: float = 0.0,
-) -> CLIResponse:
-    """Ingest papers into the knowledge base.
-
-    Args:
-        arxiv_ids: List of arxiv paper IDs to download and ingest
-        pdf_paths: List of local PDF file paths to ingest
-        force: Force reprocessing even if paper already exists
-        start_time: Start time for duration calculation
-
-    Returns:
-        CLIResponse with ingestion results
-    """
-    try:
-        config = get_config()
-    except ValueError as e:
-        return error_response(
-            command="ingest",
-            code=ErrorCode.CONFIG_ERROR,
-            message=str(e),
-            start_time=start_time,
-        )
-
-    results: list[dict[str, Any]] = []
-
-    if arxiv_ids:
-        for arxiv_id in arxiv_ids:
-            result = _ingest_arxiv_paper(arxiv_id, config, force)
-            results.append(result)
-
-    if pdf_paths:
-        for pdf_path in pdf_paths:
-            result = _ingest_local_pdf(pdf_path, config)
-            results.append(result)
-
-    # Summarize results
-    successful = [r for r in results if r.get("success")]
-    failed = [r for r in results if not r.get("success")]
-
-    if failed and not successful:
-        return error_response(
-            command="ingest",
-            code=ErrorCode.PROCESSING_FAILED,
-            message=f"All {len(failed)} papers failed to ingest",
-            details={"results": results},
-            start_time=start_time,
-        )
-
-    return success_response(
-        command="ingest",
-        data={
-            "ingested": len(successful),
-            "failed": len(failed),
-            "results": results,
-        },
-        start_time=start_time,
-    )
-
-
-def ingest_from_abstract(
-    arxiv_ids: list[str],
-    force: bool,
-    start_time: float,
-) -> CLIResponse:
-    """Ingest papers identified from abstract search.
-
-    This is a convenience wrapper around ingest_papers,
-    designed for the abstract search → ingest workflow.
-
-    Args:
-        arxiv_ids: ArXiv paper IDs to ingest
-        force: Force reprocessing even if already exists
-        start_time: Start time for duration calculation
-
-    Returns:
-        CLIResponse with ingestion results
-    """
-    return ingest_papers(
-        arxiv_ids=arxiv_ids,
-        pdf_paths=None,
-        force=force,
-        start_time=start_time,
-    )
-
-
-# =============================================================================
 # Internal Helpers — Abstract Search
 # =============================================================================
 
@@ -1878,12 +1784,15 @@ def _embed_and_store_abstracts(
     - arxiv_papers: metadata (arxiv_id, title, authors, categories, etc.)
     - arxiv_abstracts: abstract text (arxiv_id, title, abstract)
     - arxiv_embeddings: embeddings (arxiv_id, combined_embedding)
-    """
-    from core.cli.config import get_embedder_client
-    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
-    # Initialize embedder client (uses service, no local fallback)
-    embedder_client = get_embedder_client(config)
+    Embedding is done via core/tools/embed.py for consistency across the codebase.
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+    from core.tools.embed import embed_texts, get_client
+
+    # Initialize embedder client via the embed tool (uses service with local fallback)
+    # We create a reusable client to avoid reconnecting for each batch
+    embed_client = get_client()
 
     arango_config = get_arango_config(config, read_only=False)
     client_config = ArangoHttp2Config(
@@ -1909,8 +1818,8 @@ def _embed_and_store_abstracts(
             # Extract abstracts for embedding
             abstracts = [p["abstract"] for p in batch]
 
-            # Generate embeddings using embedding service
-            embeddings = embedder_client.embed_texts(abstracts, task="retrieval.passage")
+            # Generate embeddings using the embed tool (with reusable client)
+            embeddings = embed_texts(abstracts, task="retrieval.passage", client=embed_client)
 
             # Prepare documents matching existing schema
             paper_docs = []
@@ -1997,7 +1906,7 @@ def _embed_and_store_abstracts(
         return synced
 
     finally:
-        embedder_client.close()
+        embed_client.close()
         client.close()
 
 
@@ -2092,62 +2001,6 @@ def _ingest_arxiv_paper(arxiv_id: str, config: Any, force: bool) -> dict[str, An
         }
     finally:
         client.close()
-
-
-def _ingest_local_pdf(pdf_path: str, config: Any) -> dict[str, Any]:
-    """Ingest a local PDF file."""
-    progress(f"Ingesting local PDF: {pdf_path}")
-
-    path = Path(pdf_path)
-    if not path.exists():
-        return {
-            "path": pdf_path,
-            "success": False,
-            "error": f"File not found: {pdf_path}",
-        }
-
-    if not path.suffix.lower() == ".pdf":
-        return {
-            "path": pdf_path,
-            "success": False,
-            "error": f"Not a PDF file: {pdf_path}",
-        }
-
-    # Use filename as document ID
-    doc_id = path.stem
-
-    try:
-        processing_result = _process_and_store(
-            arxiv_id=None,
-            pdf_path=path,
-            latex_path=None,
-            metadata=None,
-            config=config,
-            document_id=doc_id,
-        )
-
-        if not processing_result["success"]:
-            return {
-                "path": pdf_path,
-                "success": False,
-                "error": processing_result.get("error", "Processing failed"),
-            }
-
-        progress(f"Stored {processing_result['num_chunks']} chunks for {doc_id}")
-
-        return {
-            "path": pdf_path,
-            "document_id": doc_id,
-            "success": True,
-            "num_chunks": processing_result["num_chunks"],
-        }
-
-    except Exception as e:
-        return {
-            "path": pdf_path,
-            "success": False,
-            "error": str(e),
-        }
 
 
 def _check_paper_in_db(arxiv_id: str, config: Any) -> bool:
