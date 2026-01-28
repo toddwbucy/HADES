@@ -8,14 +8,33 @@ ArangoDB is the default (and currently only) backend.
 
 Usage:
     from core.tools.store import StorageBackend
+    from core.database.schemas import DocumentMetadata, Chunk, ChunkEmbedding
 
-    def ingest(backend: StorageBackend, doc_id, metadata, chunks, embeddings):
-        backend.store_document(doc_id, metadata, chunks, embeddings)
+    # Using schema objects (preferred)
+    def ingest(backend: StorageBackend, metadata, chunks, embeddings):
+        backend.store_document(
+            metadata.doc_id,
+            metadata,
+            chunks,
+            embeddings,
+        )
+
+    # Using dicts (backward compatible)
+    def ingest_dicts(backend: StorageBackend, doc_id, meta_dict, chunk_dicts, emb_dicts):
+        backend.store_document(doc_id, meta_dict, chunk_dicts, emb_dicts)
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, Union, runtime_checkable
+
+if TYPE_CHECKING:
+    from core.database.schemas import Chunk, ChunkEmbedding, DocumentMetadata
+
+# Type aliases for flexibility — accepts both schema objects and dicts
+MetadataType = Union["DocumentMetadata", dict[str, Any]]
+ChunkType = Union["Chunk", dict[str, Any]]
+EmbeddingType = Union["ChunkEmbedding", dict[str, Any]]
 
 
 @runtime_checkable
@@ -25,14 +44,17 @@ class StorageBackend(Protocol):
     Implementations:
         core.database.arango.backend.ArangoBackend  (default)
         # Future: PostgreSQL/pgvector, Neo4j, Milvus
+
+    Methods accept both schema dataclasses (preferred) and plain dicts
+    for backward compatibility.
     """
 
     def store_document(
         self,
         doc_id: str,
-        metadata: dict[str, Any],
-        chunks: list[dict[str, Any]],
-        embeddings: list[dict[str, Any]],
+        metadata: MetadataType,
+        chunks: list[ChunkType],
+        embeddings: list[EmbeddingType],
         *,
         overwrite: bool = False,
     ) -> dict[str, Any]:
@@ -40,9 +62,9 @@ class StorageBackend(Protocol):
 
         Args:
             doc_id: Unique document identifier.
-            metadata: Document-level metadata.
-            chunks: List of chunk dicts (text, start_char, end_char, chunk_index, …).
-            embeddings: List of embedding dicts (embedding, chunk_key, …).
+            metadata: Document-level metadata (DocumentMetadata or dict).
+            chunks: List of chunks (Chunk objects or dicts).
+            embeddings: List of embeddings (ChunkEmbedding objects or dicts).
             overwrite: Replace existing data for this doc_id.
 
         Returns:

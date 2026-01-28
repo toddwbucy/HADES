@@ -5,9 +5,15 @@ don't need to know physical collection names or key formats.
 
 Usage:
     from core.database.arango.backend import ArangoBackend
+    from core.database.schemas import DocumentMetadata, Chunk, ChunkEmbedding
 
     backend = ArangoBackend.from_config(cli_config)
-    backend.store_document("2501_12345", meta, chunks, embeddings)
+
+    # Using schema objects (preferred)
+    backend.store_document("my-doc", metadata_obj, chunk_objs, embedding_objs)
+
+    # Using dicts (backward compatible)
+    backend.store_document("2501_12345", meta_dict, chunk_dicts, emb_dicts)
 """
 
 from __future__ import annotations
@@ -25,6 +31,19 @@ from core.database.collections import CollectionProfile, get_profile
 from core.database.keys import chunk_key, embedding_key, normalize_document_key
 
 logger = logging.getLogger(__name__)
+
+
+def _to_dict(obj: Any) -> dict[str, Any]:
+    """Convert a schema object or dict to a dict.
+
+    Handles DocumentMetadata, Chunk, and ChunkEmbedding objects,
+    as well as plain dicts for backward compatibility.
+    """
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    raise TypeError(f"Cannot convert {type(obj).__name__} to dict")
 
 
 class ArangoBackend:
@@ -80,21 +99,36 @@ class ArangoBackend:
     def store_document(
         self,
         doc_id: str,
-        metadata: dict[str, Any],
-        chunks: list[dict[str, Any]],
-        embeddings: list[dict[str, Any]],
+        metadata: Any,
+        chunks: list[Any],
+        embeddings: list[Any],
         *,
         overwrite: bool = False,
     ) -> dict[str, Any]:
+        """Store a document with its chunks and embeddings.
+
+        Args:
+            doc_id: Unique document identifier.
+            metadata: Document metadata (DocumentMetadata or dict).
+            chunks: List of chunks (Chunk objects or dicts).
+            embeddings: List of embeddings (ChunkEmbedding objects or dicts).
+            overwrite: Replace existing data for this doc_id.
+
+        Returns:
+            Summary dict with counts of stored items.
+        """
         key = normalize_document_key(doc_id)
         now = datetime.now(UTC).isoformat()
         col = self._profile
 
-        meta_doc = {"_key": key, "document_id": doc_id, **metadata, "created_at": now}
+        # Convert schema objects to dicts if needed
+        meta_dict = _to_dict(metadata)
+        meta_doc = {"_key": key, "document_id": doc_id, **meta_dict, "created_at": now}
 
         chunk_docs = []
         embedding_docs = []
         for i, chunk in enumerate(chunks):
+            chunk_dict = _to_dict(chunk)
             ck = chunk_key(key, i)
             chunk_docs.append(
                 {
@@ -104,10 +138,11 @@ class ArangoBackend:
                     "chunk_index": i,
                     "total_chunks": len(chunks),
                     "created_at": now,
-                    **chunk,
+                    **chunk_dict,
                 }
             )
             if i < len(embeddings):
+                emb_dict = _to_dict(embeddings[i])
                 embedding_docs.append(
                     {
                         "_key": embedding_key(ck),
@@ -115,7 +150,7 @@ class ArangoBackend:
                         "document_id": doc_id,
                         "paper_key": key,
                         "created_at": now,
-                        **embeddings[i],
+                        **emb_dict,
                     }
                 )
 

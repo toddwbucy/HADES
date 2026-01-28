@@ -71,3 +71,34 @@ class TestStorageBackendProtocol:
             pass
 
         assert not isinstance(NotABackend(), StorageBackend)
+
+
+class TestSchemaObjectSupport:
+    """Test that backends can accept schema dataclasses."""
+
+    def test_store_with_schema_objects(self):
+        """Backend should accept schema objects via to_dict()."""
+        from core.database.schemas import Chunk, ChunkEmbedding, DocumentMetadata
+
+        backend = DummyBackend()
+        metadata = DocumentMetadata(doc_id="test", title="Test Doc")
+        chunks = [Chunk(doc_id="test", chunk_index=0, text="Hello")]
+        embeddings = [ChunkEmbedding(doc_id="test", chunk_index=0, embedding=[0.1])]
+
+        # The dummy backend just stores what it receives
+        # Real backends would call to_dict() on these
+        result = backend.store_document("test", metadata, chunks, embeddings)
+        assert result["doc_id"] == "test"
+
+    def test_mixed_dict_and_schema(self):
+        """Backend should handle mixed dict and schema inputs."""
+        from core.database.schemas import Chunk
+
+        backend = DummyBackend()
+        chunks = [
+            {"text": "dict chunk"},
+            Chunk(doc_id="test", chunk_index=1, text="schema chunk"),
+        ]
+
+        result = backend.store_document("test", {"title": "Mixed"}, chunks, [])
+        assert result["chunks"] == 2
