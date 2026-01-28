@@ -3,26 +3,23 @@
 AI-focused CLI for interacting with the HADES knowledge base.
 All commands output JSON for predictable parsing by AI models.
 
-Usage:
+Core Tools (standalone):
+    hades extract <file>             # Extract text from any document
+    hades embed "text"               # Generate embedding for text
+    hades ingest <file_or_arxiv>     # Extract → embed → store (unified)
+
+Database Operations:
+    hades db query "text"            # Semantic search over stored chunks
+    hades db list                    # List papers in database
+    hades db stats                   # Database statistics
+    hades db check <id>              # Check if document exists
+    hades db purge <id>              # Remove document and its chunks
+
+ArXiv Source Adapter:
     hades arxiv search "query"       # Search arxiv API for papers
     hades arxiv info <arxiv_id>      # Get paper metadata from arxiv
     hades arxiv abstract "query"     # Search 2.8M synced abstracts
-    hades arxiv bulk-search "q1" ... # Batch abstract search
-    hades arxiv similar <arxiv_id>   # Find similar papers
-    hades arxiv refine "query" -p ID # Rocchio relevance feedback
     hades arxiv sync                 # Sync abstracts from arxiv
-    hades arxiv sync-status          # Sync status
-    hades arxiv ingest <arxiv_id>... # Download, process, store papers
-
-    hades database query "text"      # Semantic search over stored chunks
-    hades database chunks --paper ID # Get all chunks for a paper
-    hades database list              # List papers in database
-    hades database stats             # Database statistics
-    hades database check <arxiv_id>  # Check if paper exists in DB
-    hades database create <name>     # Create a collection
-    hades database ingest <file>       # Ingest any document file
-    hades database purge <arxiv_id>   # Purge all data for a paper
-    hades database delete <col> <key> # Delete a document
 """
 
 from __future__ import annotations
@@ -117,13 +114,13 @@ arxiv_app = typer.Typer(
 )
 app.add_typer(arxiv_app, name="arxiv")
 
-database_app = typer.Typer(
-    name="database",
+db_app = typer.Typer(
+    name="db",
     help="Database queries, paper management, and collection operations.",
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-app.add_typer(database_app, name="database")
+app.add_typer(db_app, name="db")
 
 graph_app = typer.Typer(
     name="graph",
@@ -131,32 +128,118 @@ graph_app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-database_app.add_typer(graph_app, name="graph")
+db_app.add_typer(graph_app, name="graph")
 
-# Embedding service commands
-embedding_app = typer.Typer(
-    name="embedding",
-    help="Embedding service management and direct text embedding.",
+# Embed commands (text/image → vector)
+embed_app = typer.Typer(
+    name="embed",
+    help="Generate embeddings for text or images.",
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-app.add_typer(embedding_app, name="embedding")
+app.add_typer(embed_app, name="embed")
 
-embedding_service_app = typer.Typer(
+embed_service_app = typer.Typer(
     name="service",
     help="Manage the embedding service daemon.",
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-embedding_app.add_typer(embedding_service_app, name="service")
+embed_app.add_typer(embed_service_app, name="service")
 
-embedding_gpu_app = typer.Typer(
+embed_gpu_app = typer.Typer(
     name="gpu",
     help="GPU status and management.",
     no_args_is_help=True,
     rich_markup_mode=None,
 )
-embedding_app.add_typer(embedding_gpu_app, name="gpu")
+embed_app.add_typer(embed_gpu_app, name="gpu")
+
+
+# =============================================================================
+# Top-Level Commands (Standalone Tools)
+# =============================================================================
+
+
+@app.command("extract")
+def extract_cmd(
+    file: str = typer.Argument(..., help="Path to document file", metavar="FILE"),
+    format: str = typer.Option("json", "--format", "-f", help="Output format: json or text"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path"),
+) -> None:
+    """Extract structured text from a document.
+
+    Supports PDF, DOCX, PPTX, HTML, Markdown, and plain text files.
+
+    Examples:
+        hades extract paper.pdf
+        hades extract paper.pdf --format text
+        hades extract paper.pdf --output extracted.json
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.extract import extract_file
+
+        response = extract_file(file, format, output, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="extract",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@app.command("ingest")
+def ingest_cmd(
+    inputs: list[str] = typer.Argument(..., help="ArXiv IDs or file paths to ingest"),
+    id: str = typer.Option(None, "--id", help="Custom document ID (single file only)"),
+    force: bool = typer.Option(False, "--force", help="Force reprocessing"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index"),
+) -> None:
+    """Ingest documents into the knowledge base.
+
+    Auto-detects arxiv IDs vs file paths:
+    - "2501.12345" → downloads and processes arxiv paper
+    - "paper.pdf" → processes local file
+
+    Examples:
+        hades ingest 2501.12345
+        hades ingest paper.pdf --id my-doc
+        hades ingest 2501.12345 2501.67890 --force
+        hades ingest paper1.pdf paper2.pdf
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.ingest import ingest
+
+        response = ingest(inputs, document_id=id, force=force, start_time=start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="ingest",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
 
 
 # =============================================================================
@@ -495,65 +578,12 @@ def arxiv_sync_status() -> None:
         raise typer.Exit(1) from None
 
 
-@arxiv_app.command("ingest")
-def arxiv_ingest(
-    arxiv_ids: list[str] = typer.Argument(None, help="ArXiv paper IDs to ingest"),
-    file: str = typer.Option(None, "--file", "-f", help="Path to local PDF file"),
-    force: bool = typer.Option(False, "--force", help="Force reprocessing even if already exists"),
-    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
-) -> None:
-    """Ingest papers into the knowledge base.
-
-    Downloads PDFs, extracts text, generates embeddings, and stores in ArangoDB.
-
-    Examples:
-        hades arxiv ingest 2401.12345 2401.67890
-        hades arxiv ingest --file /path/to/paper.pdf
-        hades arxiv ingest 2401.12345 --gpu 2
-    """
-    _set_gpu(gpu)
-    start_time = time.time()
-
-    try:
-        from core.cli.commands.arxiv import ingest_papers
-
-        if file:
-            response = ingest_papers(pdf_paths=[file], force=force, start_time=start_time)
-        elif arxiv_ids:
-            response = ingest_papers(arxiv_ids=arxiv_ids, force=force, start_time=start_time)
-        else:
-            response = error_response(
-                command="arxiv.ingest",
-                code=ErrorCode.CONFIG_ERROR,
-                message="Provide either arxiv IDs or --file path",
-                start_time=start_time,
-            )
-            print_response(response)
-            raise typer.Exit(1) from None
-
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="arxiv.ingest",
-            code=ErrorCode.PROCESSING_FAILED,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
-
-
 # =============================================================================
 # Database Commands
 # =============================================================================
 
 
-@database_app.command("query")
+@db_app.command("query")
 def database_query(
     search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
     limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
@@ -621,7 +651,7 @@ def database_query(
         raise typer.Exit(1) from None
 
 
-@database_app.command("aql")
+@db_app.command("aql")
 def database_aql(
     aql: str = typer.Argument(..., help="AQL query string", metavar="AQL"),
     bind: str = typer.Option(None, "--bind", "-b", help="Bind variables as JSON (e.g., '{\"x\":1}')"),
@@ -657,7 +687,7 @@ def database_aql(
         raise typer.Exit(1) from None
 
 
-@database_app.command("list")
+@db_app.command("list")
 def database_list(
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of papers to list"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category"),
@@ -686,7 +716,7 @@ def database_list(
         raise typer.Exit(1) from None
 
 
-@database_app.command("stats")
+@db_app.command("stats")
 def database_stats() -> None:
     """Show database statistics."""
     start_time = time.time()
@@ -712,7 +742,7 @@ def database_stats() -> None:
         raise typer.Exit(1) from None
 
 
-@database_app.command("check")
+@db_app.command("check")
 def database_check(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to check", metavar="ARXIV_ID"),
 ) -> None:
@@ -740,41 +770,7 @@ def database_check(
         raise typer.Exit(1) from None
 
 
-@database_app.command("ingest")
-def database_ingest(
-    file: str = typer.Argument(..., help="Path to document file to ingest", metavar="FILE"),
-    document_id: str | None = typer.Option(None, "--id", help="Custom document ID (default: filename)"),
-    force: bool = typer.Option(False, "--force", help="Overwrite existing data"),
-) -> None:
-    """Ingest a local document file into the knowledge base.
-
-    Supports PDF, DOCX, PPTX, HTML, Markdown, and plain text files.
-    Extracts text, chunks, generates embeddings, and stores in the database.
-    """
-    start_time = time.time()
-
-    try:
-        from core.cli.commands.database import ingest_file
-
-        response = ingest_file(file, document_id, force, start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="database.ingest",
-            code=ErrorCode.PROCESSING_FAILED,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
-
-
-@database_app.command("purge")
+@db_app.command("purge")
 def database_purge(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to purge", metavar="ARXIV_ID"),
 ) -> None:
@@ -802,7 +798,7 @@ def database_purge(
         raise typer.Exit(1) from None
 
 
-@database_app.command("create")
+@db_app.command("create")
 def database_create(
     name: str = typer.Argument(..., help="Collection name to create", metavar="NAME"),
 ) -> None:
@@ -830,7 +826,7 @@ def database_create(
         raise typer.Exit(1) from None
 
 
-@database_app.command("delete")
+@db_app.command("delete")
 def database_delete(
     collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
     key: str = typer.Argument(..., help="Document key to delete", metavar="KEY"),
@@ -1075,7 +1071,7 @@ def graph_neighbors_cmd(
 # =============================================================================
 
 
-@embedding_service_app.command("status")
+@embed_service_app.command("status")
 def embedding_service_status() -> None:
     """Check embedding service health and status."""
     start_time = time.time()
@@ -1101,7 +1097,7 @@ def embedding_service_status() -> None:
         raise typer.Exit(1) from None
 
 
-@embedding_service_app.command("start")
+@embed_service_app.command("start")
 def embedding_service_start() -> None:
     """Start the embedding service daemon."""
     start_time = time.time()
@@ -1127,7 +1123,7 @@ def embedding_service_start() -> None:
         raise typer.Exit(1) from None
 
 
-@embedding_service_app.command("stop")
+@embed_service_app.command("stop")
 def embedding_service_stop(
     token: str = typer.Option(None, "--token", "-t", help="Shutdown token (if configured)"),
 ) -> None:
@@ -1155,7 +1151,7 @@ def embedding_service_stop(
         raise typer.Exit(1) from None
 
 
-@embedding_app.command("text")
+@embed_app.command("text")
 def embedding_text(
     text: str = typer.Argument(..., help="Text to embed", metavar="TEXT"),
     task: str = typer.Option(
@@ -1192,7 +1188,7 @@ def embedding_text(
         raise typer.Exit(1) from None
 
 
-@embedding_gpu_app.command("status")
+@embed_gpu_app.command("status")
 def embedding_gpu_status() -> None:
     """Show GPU status and memory usage."""
     start_time = time.time()
@@ -1218,7 +1214,7 @@ def embedding_gpu_status() -> None:
         raise typer.Exit(1) from None
 
 
-@embedding_gpu_app.command("list")
+@embed_gpu_app.command("list")
 def embedding_gpu_list() -> None:
     """List available GPUs."""
     start_time = time.time()
