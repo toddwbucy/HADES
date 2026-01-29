@@ -30,7 +30,9 @@ import time
 
 import typer
 
+from core.cli.decorators import cli_command
 from core.cli.output import (
+    CLIResponse,
     ErrorCode,
     error_response,
     print_response,
@@ -66,7 +68,7 @@ app = typer.Typer(
     name="hades",
     help="HADES Knowledge Base CLI - AI model interface for semantic search over academic papers.",
     no_args_is_help=True,
-    add_completion=False,
+    add_completion=True,  # Enable shell completion (#43)
     rich_markup_mode=None,
 )
 
@@ -267,72 +269,40 @@ def ingest_cmd(
 
 
 @arxiv_app.command("search")
+@cli_command("arxiv.search", ErrorCode.SEARCH_FAILED)
 def arxiv_search(
     query: str = typer.Argument(..., help="Search query for arxiv papers", metavar="QUERY"),
-    max_results: int = typer.Option(10, "--max", "-m", help="Maximum number of results"),
+    max_results: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     categories: str = typer.Option(
         None, "--categories", "-c", help="Comma-separated arxiv categories (e.g., cs.AI,cs.CL)"
     ),
-) -> None:
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
     """Search arxiv for papers matching a query.
 
     Returns paper metadata including abstracts for review before ingestion.
     """
-    start_time = time.time()
+    from core.cli.commands.arxiv import search_arxiv
 
-    try:
-        from core.cli.commands.arxiv import search_arxiv
-
-        response = search_arxiv(query, max_results, categories, start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="arxiv.search",
-            code=ErrorCode.SEARCH_FAILED,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
+    return search_arxiv(query, max_results, categories, start_time)
 
 
 @arxiv_app.command("info")
+@cli_command("arxiv.info", ErrorCode.PAPER_NOT_FOUND)
 def arxiv_info(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID (e.g., 2401.12345)", metavar="ARXIV_ID"),
-) -> None:
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
     """Get detailed metadata for a specific arxiv paper."""
-    start_time = time.time()
+    from core.cli.commands.arxiv import get_paper_info
 
-    try:
-        from core.cli.commands.arxiv import get_paper_info
-
-        response = get_paper_info(arxiv_id, start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="arxiv.info",
-            code=ErrorCode.PAPER_NOT_FOUND,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
+    return get_paper_info(arxiv_id, start_time)
 
 
 @arxiv_app.command("abstract")
 def arxiv_abstract(
     query: str = typer.Argument(..., help="Search query for abstracts", metavar="QUERY"),
-    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
     hybrid: bool = typer.Option(False, "--hybrid", "-H", help="Combine semantic search with keyword matching"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
@@ -374,7 +344,7 @@ def arxiv_abstract(
 @arxiv_app.command("bulk-search")
 def arxiv_bulk_search(
     queries: list[str] = typer.Argument(..., help="Search queries (multiple allowed)"),
-    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum results per query"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum results per query"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
@@ -416,7 +386,7 @@ def arxiv_bulk_search(
 @arxiv_app.command("similar")
 def arxiv_similar(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to find similar papers for", metavar="ARXIV_ID"),
-    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
@@ -460,7 +430,7 @@ def arxiv_refine(
     negative: list[str] | None = typer.Option(
         None, "--negative", "-x", help="Irrelevant paper IDs (negative exemplars)"
     ),
-    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     category: str | None = typer.Option(None, "--category", "-c", help="Filter by arxiv category (e.g., cs.AI)"),
     alpha: float = typer.Option(1.0, "--alpha", help="Weight for original query (default 1.0)"),
     beta: float = typer.Option(0.75, "--beta", help="Weight for positive exemplars (default 0.75)"),
@@ -605,7 +575,7 @@ def arxiv_sync_status() -> None:
 @db_app.command("query")
 def database_query(
     search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
-    limit: int = typer.Option(10, "--limit", "-n", "--top-k", "-k", help="Maximum number of results"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
     paper: str = typer.Option(None, "--paper", "-p", help="Filter results to a specific paper (arxiv ID)"),
     context: int = typer.Option(0, "--context", "-c", help="Include N adjacent chunks for context"),
     cite: bool = typer.Option(False, "--cite", help="Output minimal citation format (arxiv_id, title, quote)"),
@@ -620,7 +590,7 @@ def database_query(
         hades database query "attention mechanism"              # Search all papers
         hades database query "Newton-Schulz" --paper 2505.23735 # Search within paper
         hades database query "attention" --context 1            # Include ±1 adjacent chunks
-        hades database query "attention" --cite --top-k 3       # Citation format, top 3
+        hades db query "attention" --cite --limit 3             # Citation format, top 3
         hades database query --paper 2505.23735 --chunks        # Get all chunks (no search)
     """
     _set_gpu(gpu)
@@ -736,57 +706,26 @@ def database_list(
 
 
 @db_app.command("stats")
-def database_stats() -> None:
+@cli_command("database.stats", ErrorCode.DATABASE_ERROR)
+def database_stats(
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
     """Show database statistics."""
-    start_time = time.time()
+    from core.cli.commands.database import get_stats
 
-    try:
-        from core.cli.commands.database import get_stats
-
-        response = get_stats(start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="database.stats",
-            code=ErrorCode.DATABASE_ERROR,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
+    return get_stats(start_time)
 
 
 @db_app.command("check")
+@cli_command("database.check", ErrorCode.DATABASE_ERROR)
 def database_check(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to check", metavar="ARXIV_ID"),
-) -> None:
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
     """Check if a paper exists in the database."""
-    start_time = time.time()
+    from core.cli.commands.database import check_paper_exists
 
-    try:
-        from core.cli.commands.database import check_paper_exists
-
-        response = check_paper_exists(arxiv_id, start_time)
-        print_response(response)
-        if not response.success:
-            raise typer.Exit(1) from None
-
-    except typer.Exit:
-        raise
-    except Exception as e:
-        response = error_response(
-            command="database.check",
-            code=ErrorCode.DATABASE_ERROR,
-            message=str(e),
-            start_time=start_time,
-        )
-        print_response(response)
-        raise typer.Exit(1) from None
+    return check_paper_exists(arxiv_id, start_time)
 
 
 @db_app.command("purge")
