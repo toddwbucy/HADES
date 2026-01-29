@@ -232,14 +232,19 @@ class CheckpointManager:
 
         return False
 
-    def save(self) -> bool:
-        """Save checkpoints atomically."""
+    def save(self, deterministic: bool = False) -> bool:
+        """Save checkpoints atomically.
+
+        Args:
+            deterministic: If True, sort items for reproducible output (useful
+                for diffing checkpoint files). Default False for better perf.
+        """
         temp_file = self.checkpoint_file.with_suffix('.tmp')
 
         try:
             # Convert set to list for JSON serialization
-            # Skip sorting - it's O(n log n) overhead with no functional benefit
-            data = orjson.dumps(list(self.processed), option=orjson.OPT_INDENT_2)
+            items = sorted(self.processed) if deterministic else list(self.processed)
+            data = orjson.dumps(items, option=orjson.OPT_INDENT_2)
             temp_file.write_bytes(data)
 
             # Atomic rename
