@@ -483,6 +483,7 @@ def semantic_query(
     context: int = 0,
     cite_only: bool = False,
     hybrid: bool = False,
+    decompose: bool = False,
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -494,6 +495,7 @@ def semantic_query(
         context: Number of adjacent chunks to include (0 = none)
         cite_only: If True, return minimal citation format
         hybrid: If True, combine semantic similarity with keyword matching
+        decompose: If True, split compound queries and merge results
 
     Returns:
         CLIResponse with search results
@@ -508,26 +510,38 @@ def semantic_query(
             start_time=start_time,
         )
 
-    progress("Generating query embedding...")
-
     try:
-        # Generate query embedding
-        query_embedding = _get_query_embedding(search_text, config)
+        # Decompose query if requested
+        if decompose:
+            sub_queries = _decompose_query(search_text)
+            if len(sub_queries) > 1:
+                progress(f"Decomposed into {len(sub_queries)} sub-queries: {sub_queries}")
+                results = _search_with_decomposition(
+                    sub_queries, limit, config, paper_filter, hybrid, search_text
+                )
+            else:
+                # Single query, proceed normally
+                decompose = False
 
-        if paper_filter:
-            progress(f"Searching paper {paper_filter} for {limit} most similar chunks...")
-        else:
-            progress(f"Searching {limit} most similar chunks...")
+        if not decompose:
+            progress("Generating query embedding...")
+            # Generate query embedding
+            query_embedding = _get_query_embedding(search_text, config)
 
-        # Search database - fetch extra results if hybrid reranking
-        fetch_limit = limit * 3 if hybrid else limit
-        results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+            if paper_filter:
+                progress(f"Searching paper {paper_filter} for {limit} most similar chunks...")
+            else:
+                progress(f"Searching {limit} most similar chunks...")
 
-        # Apply hybrid reranking if requested
-        if hybrid and results:
-            progress("Re-ranking with keyword matching...")
-            results = _hybrid_rerank_results(results, search_text)
-            results = results[:limit]  # Trim to requested limit after reranking
+            # Search database - fetch extra results if hybrid reranking
+            fetch_limit = limit * 3 if hybrid else limit
+            results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+
+            # Apply hybrid reranking if requested
+            if hybrid and results:
+                progress("Re-ranking with keyword matching...")
+                results = _hybrid_rerank_results(results, search_text)
+                results = results[:limit]  # Trim to requested limit after reranking
 
         # Add context chunks if requested
         if context > 0 and results:
@@ -995,6 +1009,165 @@ def _hybrid_rerank_results(
     # Sort by combined score descending
     reranked.sort(key=lambda x: x["combined_score"], reverse=True)
     return reranked
+
+
+def _decompose_query(query: str) -> list[str]:
+    """Decompose a compound query into sub-queries.
+
+    Uses rule-based splitting on conjunctions and punctuation.
+    Keeps multi-word technical terms together.
+
+    Args:
+        query: Original query text
+
+    Returns:
+        List of sub-queries (may be single-element if not compound)
+    """
+    import re
+
+    # Normalize whitespace
+    query = " ".join(query.split())
+
+    # Split patterns: conjunctions and punctuation
+    # Order matters - try more specific patterns first
+    split_patterns = [
+        r"\s+and\s+",
+        r"\s+or\s+",
+        r"\s+with\s+",
+        r"\s+vs\.?\s+",
+        r"\s+versus\s+",
+        r",\s*",
+        r";\s*",
+    ]
+
+    # Try each pattern
+    sub_queries = [query]
+    for pattern in split_patterns:
+        new_subs = []
+        for sq in sub_queries:
+            parts = re.split(pattern, sq, flags=re.IGNORECASE)
+            new_subs.extend(parts)
+        sub_queries = new_subs
+
+    # Clean up: strip whitespace, filter empty/short, deduplicate
+    cleaned = []
+    seen = set()
+    for sq in sub_queries:
+        sq = sq.strip()
+        # Skip if too short (single word with < 4 chars) or empty
+        if not sq or (len(sq.split()) == 1 and len(sq) < 4):
+            continue
+        # Deduplicate (case-insensitive)
+        sq_lower = sq.lower()
+        if sq_lower not in seen:
+            seen.add(sq_lower)
+            cleaned.append(sq)
+
+    # If we ended up with nothing useful, return original
+    if not cleaned:
+        return [query]
+
+    return cleaned
+
+
+def _search_with_decomposition(
+    sub_queries: list[str],
+    limit: int,
+    config: Any,
+    paper_filter: str | None,
+    hybrid: bool,
+    original_query: str,
+) -> list[dict[str, Any]]:
+    """Search with multiple sub-queries and merge results.
+
+    Runs each sub-query, aggregates scores, and deduplicates.
+
+    Args:
+        sub_queries: List of decomposed queries
+        limit: Final number of results to return
+        config: CLI configuration
+        paper_filter: Optional paper filter
+        hybrid: Whether to use hybrid reranking
+        original_query: Original query for hybrid reranking
+
+    Returns:
+        Merged and deduplicated results
+    """
+    from collections import defaultdict
+
+    # Track results by unique key (arxiv_id + chunk_index)
+    result_scores: dict[str, dict[str, Any]] = {}
+    result_counts: defaultdict[str, int] = defaultdict(int)
+
+    # Fetch more results per sub-query to get good coverage
+    per_query_limit = max(limit, 10)
+
+    for i, sq in enumerate(sub_queries):
+        progress(f"Sub-query {i + 1}/{len(sub_queries)}: {sq}")
+
+        # Generate embedding for sub-query
+        query_embedding = _get_query_embedding(sq, config)
+
+        # Search
+        fetch_limit = per_query_limit * 2 if hybrid else per_query_limit
+        results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+
+        # Apply hybrid reranking per sub-query
+        if hybrid and results:
+            results = _hybrid_rerank_results(results, sq)
+            results = results[:per_query_limit]
+
+        # Aggregate results
+        for result in results:
+            # Create unique key
+            arxiv_id = result.get("arxiv_id", "")
+            chunk_idx = result.get("chunk_index", 0)
+            key = f"{arxiv_id}:{chunk_idx}"
+
+            score = result.get("combined_score") if hybrid else result.get("similarity", 0)
+
+            if key in result_scores:
+                # Update: keep max score, increment count
+                existing_score = (
+                    result_scores[key].get("combined_score")
+                    if hybrid
+                    else result_scores[key].get("similarity", 0)
+                )
+                if score > existing_score:
+                    result_scores[key] = result
+            else:
+                result_scores[key] = result
+
+            result_counts[key] += 1
+
+    # Boost results that appear in multiple sub-queries
+    progress("Merging results from sub-queries...")
+    merged = []
+    for key, result in result_scores.items():
+        count = result_counts[key]
+        base_score = result.get("combined_score") if hybrid else result.get("similarity", 0)
+
+        # Boost: results appearing in multiple queries get higher scores
+        # Formula: base_score * (1 + 0.1 * (count - 1))
+        # This gives 10% boost per additional query match
+        boost_factor = 1 + 0.1 * (count - 1)
+        boosted_score = base_score * boost_factor
+
+        merged_result = {
+            **result,
+            "sub_query_matches": count,
+            "aggregated_score": round(boosted_score, 4),
+        }
+        merged.append(merged_result)
+
+    # Sort by aggregated score
+    merged.sort(key=lambda x: x["aggregated_score"], reverse=True)
+
+    # Apply final hybrid reranking with original query for coherence
+    if hybrid:
+        merged = _hybrid_rerank_results(merged, original_query)
+
+    return merged[:limit]
 
 
 def _add_context_chunks(
