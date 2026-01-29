@@ -115,6 +115,12 @@ hades db query "Newton-Schulz" --paper 2505.23735    # within one paper
 hades db query "attention" --context 1               # include adjacent chunks
 hades db query "attention" --cite --top-k 3          # citation format
 
+# Quality enhancement flags (can be combined)
+hades db query "flash attention" --hybrid            # semantic + keyword matching
+hades db query "memory and speed" --decompose        # split compound queries
+hades db query "how does X work" --rerank            # cross-encoder precision
+hades db query "complex query" --decompose --hybrid --rerank  # maximum quality
+
 # Get all chunks of a paper (no search, just retrieve)
 hades db query --paper 2409.04701 --chunks
 
@@ -273,6 +279,12 @@ hades db query "how does flash attention reduce memory"
 hades db query "Newton-Schulz" --paper 2505.23735    # within one paper
 hades db query "attention" --context 1               # include adjacent chunks
 hades db query "attention" --cite --top-k 3          # citation format
+
+# Quality enhancement flags (can be combined)
+hades db query "flash attention" --hybrid            # semantic + keyword matching
+hades db query "memory and speed" --decompose        # split compound queries
+hades db query "how does X work" --rerank            # cross-encoder precision
+hades db query "complex query" --decompose --hybrid --rerank  # maximum quality
 
 # Get all chunks of a paper (no search, just retrieve)
 hades db query --paper 2409.04701 --chunks
