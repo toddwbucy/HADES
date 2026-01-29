@@ -580,6 +580,7 @@ def database_query(
     context: int = typer.Option(0, "--context", "-c", help="Include N adjacent chunks for context"),
     cite: bool = typer.Option(False, "--cite", help="Output minimal citation format (arxiv_id, title, quote)"),
     chunks_only: bool = typer.Option(False, "--chunks", help="Get all chunks for --paper (no semantic search)"),
+    hybrid: bool = typer.Option(False, "--hybrid", "-H", help="Combine semantic search with keyword matching"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Semantic search over the knowledge base.
@@ -592,6 +593,7 @@ def database_query(
         hades database query "attention" --context 1            # Include ±1 adjacent chunks
         hades db query "attention" --cite --limit 3             # Citation format, top 3
         hades database query --paper 2505.23735 --chunks        # Get all chunks (no search)
+        hades db query "flash attention memory" --hybrid        # Semantic + keyword matching
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -611,6 +613,7 @@ def database_query(
                 paper_filter=paper,
                 context=context,
                 cite_only=cite,
+                hybrid=hybrid,
             )
         # Mode 3: Must provide search text or --chunks
         else:

@@ -482,6 +482,7 @@ def semantic_query(
     paper_filter: str | None = None,
     context: int = 0,
     cite_only: bool = False,
+    hybrid: bool = False,
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -492,6 +493,7 @@ def semantic_query(
         paper_filter: Optional arxiv ID to limit search to specific paper
         context: Number of adjacent chunks to include (0 = none)
         cite_only: If True, return minimal citation format
+        hybrid: If True, combine semantic similarity with keyword matching
 
     Returns:
         CLIResponse with search results
@@ -517,8 +519,15 @@ def semantic_query(
         else:
             progress(f"Searching {limit} most similar chunks...")
 
-        # Search database
-        results = _search_embeddings(query_embedding, limit, config, paper_filter=paper_filter)
+        # Search database - fetch extra results if hybrid reranking
+        fetch_limit = limit * 3 if hybrid else limit
+        results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+
+        # Apply hybrid reranking if requested
+        if hybrid and results:
+            progress("Re-ranking with keyword matching...")
+            results = _hybrid_rerank_results(results, search_text)
+            results = results[:limit]  # Trim to requested limit after reranking
 
         # Add context chunks if requested
         if context > 0 and results:
@@ -805,7 +814,9 @@ def _search_embeddings(
     """
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
-    arango_config = get_arango_config(config, read_only=True)
+    # Use read-write socket because cursor pagination requires PUT requests,
+    # which the read-only socket doesn't support
+    arango_config = get_arango_config(config, read_only=False)
     client_config = ArangoHttp2Config(
         database=arango_config["database"],
         socket_path=arango_config.get("socket_path"),
@@ -845,7 +856,8 @@ def _search_embeddings(
                             source: "full_paper"
                         }}
                 """
-                chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter})
+                # Use large batch to avoid cursor pagination issues with proxy
+                chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter}, batch_size=50000)
             else:
                 aql_chunks = f"""
                     FOR emb IN {col.embeddings}
@@ -863,7 +875,8 @@ def _search_embeddings(
                             source: "full_paper"
                         }}
                 """
-                chunk_results = client.query(aql_chunks)
+                # Use large batch to avoid cursor pagination issues with proxy
+                chunk_results = client.query(aql_chunks, batch_size=50000)
             all_embeddings.extend(chunk_results or [])
         except Exception as e:
             # Collection may not exist - continue with other sources
@@ -889,7 +902,8 @@ def _search_embeddings(
                             source: "abstract"
                         }}
                 """
-                abstract_results = client.query(aql_abstracts)
+                # Use large batch to avoid cursor pagination issues with proxy
+                abstract_results = client.query(aql_abstracts, batch_size=50000)
                 all_embeddings.extend(abstract_results or [])
             except Exception as e:
                 # Collection may not exist - continue with other sources
@@ -926,6 +940,61 @@ def _search_embeddings(
 
     finally:
         client.close()
+
+
+def _hybrid_rerank_results(
+    results: list[dict[str, Any]],
+    query: str,
+    semantic_weight: float = 0.7,
+) -> list[dict[str, Any]]:
+    """Re-rank results by combining semantic similarity with keyword matching.
+
+    Uses a simple term frequency score combined with semantic similarity.
+    This improves retrieval for queries with specific technical terms that
+    should appear in the matching text.
+
+    Args:
+        results: List of search results with 'similarity' and 'text' fields
+        query: Original query text for keyword matching
+        semantic_weight: Weight for semantic score (1 - this = keyword weight)
+
+    Returns:
+        Re-ranked results with additional score fields
+    """
+    # Tokenize query into terms
+    query_terms = set(query.lower().split())
+
+    reranked = []
+    for result in results:
+        semantic_score = result.get("similarity", 0)
+
+        # Compute keyword score from text and title
+        text = (result.get("text") or "").lower()
+        title = (result.get("title") or "").lower()
+        combined_text = title + " " + text
+
+        # Simple term frequency score: fraction of query terms found
+        text_terms = set(combined_text.split())
+        if query_terms:
+            matches = sum(1 for term in query_terms if term in text_terms)
+            keyword_score = matches / len(query_terms)
+        else:
+            keyword_score = 0
+
+        # Combine scores
+        combined_score = (semantic_weight * semantic_score) + ((1 - semantic_weight) * keyword_score)
+
+        # Create result with additional scores
+        reranked_result = {
+            **result,
+            "keyword_score": round(keyword_score, 4),
+            "combined_score": round(combined_score, 4),
+        }
+        reranked.append(reranked_result)
+
+    # Sort by combined score descending
+    reranked.sort(key=lambda x: x["combined_score"], reverse=True)
+    return reranked
 
 
 def _add_context_chunks(
