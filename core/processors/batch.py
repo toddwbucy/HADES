@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.cli.output import progress
+from core.cli.output import BatchProgressTracker, is_terminal, progress
 
 
 @dataclass
@@ -199,10 +199,21 @@ class BatchProcessor:
         failed = 0
 
         total = len(items)
+
+        # Use rich progress bar for interactive terminals
+        use_progress_bar = is_terminal()
+        tracker: BatchProgressTracker | None = None
+        if use_progress_bar:
+            tracker = BatchProgressTracker("Processing batch", total=total, transient=False)
+            tracker.start()
+
         for i, item_id in enumerate(items, 1):
             # Skip if already completed
             if item_id in self.state.completed:
-                self._report_progress(i, total, item_id, "skipped")
+                if not use_progress_bar:
+                    self._report_progress(i, total, item_id, "skipped")
+                if tracker:
+                    tracker.update(1, description=f"Skipped: {item_id[:30]}")
                 skipped += 1
                 results.append(
                     {
@@ -216,7 +227,10 @@ class BatchProcessor:
 
             # Skip if previously failed (can retry with --force or clear state)
             if item_id in self.state.failed:
-                self._report_progress(i, total, item_id, "skipped")
+                if not use_progress_bar:
+                    self._report_progress(i, total, item_id, "skipped")
+                if tracker:
+                    tracker.update(1, description=f"Skipped (failed): {item_id[:30]}")
                 skipped += 1
                 results.append(
                     {
@@ -229,7 +243,10 @@ class BatchProcessor:
                 continue
 
             # Process item with error isolation
-            self._report_progress(i, total, item_id, "processing", force=True)
+            if not use_progress_bar:
+                self._report_progress(i, total, item_id, "processing", force=True)
+            if tracker:
+                tracker.update(0, description=f"Processing: {item_id[:30]}")
 
             try:
                 result = process_fn(item_id)
@@ -238,12 +255,18 @@ class BatchProcessor:
                 if result.get("success"):
                     self.state.completed.add(item_id)
                     completed += 1
-                    self._report_progress(i, total, item_id, "completed", force=True)
+                    if not use_progress_bar:
+                        self._report_progress(i, total, item_id, "completed", force=True)
+                    if tracker:
+                        tracker.update(1, description=f"✓ {item_id[:30]}")
                 else:
                     error_msg = result.get("error", "Unknown error")
                     self.state.failed[item_id] = error_msg
                     failed += 1
-                    self._report_progress(i, total, item_id, "failed", force=True)
+                    if not use_progress_bar:
+                        self._report_progress(i, total, item_id, "failed", force=True)
+                    if tracker:
+                        tracker.update(1, description=f"✗ {item_id[:30]}")
 
                 results.append(result)
 
@@ -252,7 +275,10 @@ class BatchProcessor:
                 error_msg = str(e)
                 self.state.failed[item_id] = error_msg
                 failed += 1
-                self._report_progress(i, total, item_id, "failed", force=True)
+                if not use_progress_bar:
+                    self._report_progress(i, total, item_id, "failed", force=True)
+                if tracker:
+                    tracker.update(1, description=f"✗ {item_id[:30]}")
                 results.append(
                     {
                         "id": item_id,
@@ -263,6 +289,12 @@ class BatchProcessor:
 
             # Save state after each item for resume capability
             self.save_state()
+
+        # Finish progress bar
+        if tracker:
+            tracker.finish(
+                message=f"Batch complete: {completed} completed, {failed} failed, {skipped} skipped"
+            )
 
         duration = time.time() - start_time
 

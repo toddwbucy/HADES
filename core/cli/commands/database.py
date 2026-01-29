@@ -1208,11 +1208,15 @@ def _crossencoder_rerank(
     """
     from sentence_transformers import CrossEncoder
 
+    from core.cli.output import progress_bar
+
     if not results:
         return results
 
-    # Load cross-encoder model (cached after first load)
-    model = CrossEncoder(model_name, max_length=512)
+    # Load cross-encoder model with progress indicator (may take a few seconds on first load)
+    with progress_bar("Loading cross-encoder", total=None) as (prog, task):
+        model = CrossEncoder(model_name, max_length=512)
+        prog.update(task, description="Cross-encoder ready")
 
     # Prepare (query, passage) pairs
     pairs = []

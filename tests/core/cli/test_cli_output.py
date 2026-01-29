@@ -154,3 +154,75 @@ class TestErrorCodes:
         actual = [code.value for code in ErrorCode]
         for expected_code in expected:
             assert expected_code in actual
+
+
+class TestProgressBarUtilities:
+    """Tests for progress bar utilities."""
+
+    def test_batch_progress_tracker_initialization(self):
+        """Test BatchProgressTracker initializes with correct values."""
+        from core.cli.output import BatchProgressTracker
+
+        tracker = BatchProgressTracker("Test task", total=100)
+        assert tracker.description == "Test task"
+        assert tracker.total == 100
+        assert tracker.completed == 0
+
+    def test_batch_progress_tracker_context_manager(self):
+        """Test BatchProgressTracker works as context manager."""
+        from core.cli.output import BatchProgressTracker
+
+        with BatchProgressTracker("Test task", total=10) as tracker:
+            for _ in range(10):
+                tracker.update(1)
+
+        assert tracker.completed == 10
+
+    def test_batch_progress_tracker_manual_start_finish(self):
+        """Test BatchProgressTracker manual start/finish."""
+        from core.cli.output import BatchProgressTracker
+
+        tracker = BatchProgressTracker("Test task", total=5)
+        tracker.start()
+        tracker.update(3)
+        tracker.update(2)
+        tracker.finish()
+
+        assert tracker.completed == 5
+
+    def test_batch_progress_tracker_set_total(self):
+        """Test BatchProgressTracker can update total after start."""
+        from core.cli.output import BatchProgressTracker
+
+        tracker = BatchProgressTracker("Test task", total=None)
+        tracker.start()
+        tracker.set_total(100)
+        assert tracker.total == 100
+        tracker.finish()
+
+    def test_is_terminal_returns_bool(self):
+        """Test is_terminal returns a boolean."""
+        from core.cli.output import is_terminal
+
+        result = is_terminal()
+        assert isinstance(result, bool)
+
+    def test_create_progress_returns_progress_instance(self):
+        """Test create_progress returns a rich Progress instance."""
+        from rich.progress import Progress
+
+        from core.cli.output import create_progress
+
+        prog = create_progress()
+        assert isinstance(prog, Progress)
+
+    def test_progress_bar_context_manager(self):
+        """Test progress_bar context manager yields tuple."""
+        from rich.progress import Progress
+
+        from core.cli.output import progress_bar
+
+        with progress_bar("Test", total=10) as (prog, task_id):
+            assert isinstance(prog, Progress)
+            # TaskID is a NewType wrapping int, so check it's an int
+            assert isinstance(task_id, int)

@@ -15,6 +15,7 @@ from defusedxml import ElementTree as ET
 
 from core.cli.config import get_arango_config, get_config
 from core.cli.output import (
+    BatchProgressTracker,
     CLIResponse,
     ErrorCode,
     error_response,
@@ -585,11 +586,17 @@ def _embed_and_store_abstracts(
         sync_col = get_profile("sync")
         synced = 0
         now_iso = datetime.now(UTC).isoformat()
+        total_batches = (len(papers) + batch_size - 1) // batch_size
+
+        # Progress tracker for batch processing
+        tracker = BatchProgressTracker("Embedding & storing", total=len(papers))
+        tracker.start()
 
         # Process in batches
         for i in range(0, len(papers), batch_size):
             batch = papers[i : i + batch_size]
-            progress(f"Processing batch {i // batch_size + 1} ({len(batch)} papers)...")
+            batch_num = i // batch_size + 1
+            tracker.update(0, description=f"Batch {batch_num}/{total_batches}")
 
             # Extract abstracts for embedding
             abstracts = [p["abstract"] for p in batch]
@@ -679,9 +686,12 @@ def _embed_and_store_abstracts(
                             raise
 
                 synced += len(batch) - duplicates
+                tracker.update(len(batch))
             except Exception as e:
                 progress(f"Warning: Failed to store batch: {e}")
+                tracker.update(len(batch))  # Still advance progress
 
+        tracker.finish(message=f"Synced {synced:,} papers")
         return synced
 
     finally:
