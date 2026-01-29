@@ -5,21 +5,21 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from core.cli.commands.arxiv import (
-    _compute_rocchio_centroid,
     find_similar,
     refine_search,
     search_abstracts,
     search_abstracts_bulk,
 )
+from core.cli.commands.arxiv.helpers import _compute_rocchio_centroid
 from core.cli.output import ErrorCode
 
 
 class TestAbstractSearch:
     """Tests for abstract search command."""
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_search_returns_results(
         self, mock_get_config, mock_get_embedding, mock_search
     ):
@@ -62,7 +62,7 @@ class TestAbstractSearch:
         assert response.data["results"][0]["arxiv_id"] == "2401.12345"
         assert response.data["results"][0]["local"] is False
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_search_handles_config_error(self, mock_get_config):
         """Test search handles config errors."""
         mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
@@ -76,7 +76,7 @@ class TestAbstractSearch:
         assert response.success is False
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_search_rejects_invalid_limit(self, mock_get_config):
         """Test search rejects limit <= 0."""
         mock_config = MagicMock()
@@ -92,9 +92,9 @@ class TestAbstractSearch:
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
         assert "limit must be >= 1" in response.error["message"]
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_search_with_category_filter(
         self, mock_get_config, mock_get_embedding, mock_search
     ):
@@ -122,9 +122,9 @@ class TestAbstractSearch:
 class TestSearchResultsFormat:
     """Tests for search result formatting."""
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_results_include_local_status(
         self, mock_get_config, mock_get_embedding, mock_search
     ):
@@ -172,9 +172,9 @@ class TestSearchResultsFormat:
         assert results[1]["local"] is False
         assert results[1]["local_chunks"] is None
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_results_include_total_searched(
         self, mock_get_config, mock_get_embedding, mock_search
     ):
@@ -212,9 +212,9 @@ class TestSearchResultsFormat:
 class TestHybridSearch:
     """Tests for hybrid search functionality."""
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_hybrid_search_passes_query_to_search(
         self, mock_get_config, mock_get_embedding, mock_search
     ):
@@ -238,9 +238,9 @@ class TestHybridSearch:
         call_args = mock_search.call_args
         assert call_args[1]["hybrid_query"] == "transformer attention"
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_hybrid_search_mode_in_response(
         self, mock_get_config, mock_get_embedding, mock_search
     ):
@@ -280,10 +280,10 @@ class TestHybridSearch:
 class TestFindSimilar:
     """Tests for find similar papers command."""
 
-    @patch("core.cli.commands.arxiv._get_paper_info")
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_paper_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_info")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_similar_returns_results(
         self, mock_get_config, mock_get_embedding, mock_search, mock_get_info
     ):
@@ -324,8 +324,8 @@ class TestFindSimilar:
         assert len(response.data["results"]) == 1
         assert response.data["results"][0]["arxiv_id"] == "2401.67890"
 
-    @patch("core.cli.commands.arxiv._get_paper_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_similar_paper_not_found(self, mock_get_config, mock_get_embedding):
         """Test similar search when paper not in database."""
         mock_config = MagicMock()
@@ -343,10 +343,10 @@ class TestFindSimilar:
         assert response.success is False
         assert response.error["code"] == ErrorCode.PAPER_NOT_FOUND.value
 
-    @patch("core.cli.commands.arxiv._get_paper_info")
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._get_paper_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_info")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_similar_excludes_source_paper(
         self, mock_get_config, mock_get_embedding, mock_search, mock_get_info
     ):
@@ -369,7 +369,7 @@ class TestFindSimilar:
         call_args = mock_search.call_args
         assert call_args[1]["exclude_arxiv_id"] == "2401.12345"
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_similar_handles_config_error(self, mock_get_config):
         """Test similar handles config errors."""
         mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
@@ -387,9 +387,9 @@ class TestFindSimilar:
 class TestBulkSearch:
     """Tests for bulk search command."""
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings_bulk")
-    @patch("core.cli.commands.arxiv._get_bulk_query_embeddings")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings_bulk")
+    @patch("core.cli.commands.arxiv.abstract._get_bulk_query_embeddings")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_bulk_search_returns_results(
         self, mock_get_config, mock_get_embeddings, mock_search
     ):
@@ -441,7 +441,7 @@ class TestBulkSearch:
         assert "query2" in response.data["results_by_query"]
         assert response.data["total_searched"] == 100000
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_bulk_search_rejects_empty_queries(self, mock_get_config):
         """Test bulk search rejects empty queries list."""
         mock_config = MagicMock()
@@ -457,7 +457,7 @@ class TestBulkSearch:
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
         assert "empty" in response.error["message"]
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_bulk_search_rejects_invalid_limit(self, mock_get_config):
         """Test bulk search rejects invalid limit."""
         mock_config = MagicMock()
@@ -473,7 +473,7 @@ class TestBulkSearch:
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
         assert "limit" in response.error["message"]
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_bulk_search_handles_config_error(self, mock_get_config):
         """Test bulk search handles config errors."""
         mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
@@ -487,9 +487,9 @@ class TestBulkSearch:
         assert response.success is False
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
 
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings_bulk")
-    @patch("core.cli.commands.arxiv._get_bulk_query_embeddings")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings_bulk")
+    @patch("core.cli.commands.arxiv.abstract._get_bulk_query_embeddings")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_bulk_search_passes_category_filter(
         self, mock_get_config, mock_get_embeddings, mock_search
     ):
@@ -516,12 +516,12 @@ class TestBulkSearch:
 class TestRefineSearch:
     """Tests for relevance feedback / refine search command."""
 
-    @patch("core.cli.commands.arxiv._get_paper_info")
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._compute_rocchio_centroid")
-    @patch("core.cli.commands.arxiv._get_multiple_paper_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_info")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._compute_rocchio_centroid")
+    @patch("core.cli.commands.arxiv.abstract._get_multiple_paper_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_refine_returns_results(
         self,
         mock_get_config,
@@ -570,7 +570,7 @@ class TestRefineSearch:
         assert len(response.data["positive_exemplars"]) == 1
         assert len(response.data["results"]) == 1
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_refine_rejects_empty_positive_ids(self, mock_get_config):
         """Test refine rejects empty positive exemplars."""
         mock_config = MagicMock()
@@ -587,9 +587,9 @@ class TestRefineSearch:
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
         assert "positive exemplar" in response.error["message"].lower()
 
-    @patch("core.cli.commands.arxiv._get_multiple_paper_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._get_multiple_paper_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_refine_handles_missing_papers(
         self, mock_get_config, mock_get_query_emb, mock_get_paper_embs
     ):
@@ -611,7 +611,7 @@ class TestRefineSearch:
         assert response.success is False
         assert response.error["code"] == ErrorCode.PAPER_NOT_FOUND.value
 
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_refine_handles_config_error(self, mock_get_config):
         """Test refine handles config errors."""
         mock_get_config.side_effect = ValueError("Missing ARANGO_PASSWORD")
@@ -626,12 +626,12 @@ class TestRefineSearch:
         assert response.success is False
         assert response.error["code"] == ErrorCode.CONFIG_ERROR.value
 
-    @patch("core.cli.commands.arxiv._get_paper_info")
-    @patch("core.cli.commands.arxiv._search_abstract_embeddings")
-    @patch("core.cli.commands.arxiv._compute_rocchio_centroid")
-    @patch("core.cli.commands.arxiv._get_multiple_paper_embeddings")
-    @patch("core.cli.commands.arxiv._get_query_embedding")
-    @patch("core.cli.commands.arxiv.get_config")
+    @patch("core.cli.commands.arxiv.abstract._get_paper_info")
+    @patch("core.cli.commands.arxiv.abstract._search_abstract_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._compute_rocchio_centroid")
+    @patch("core.cli.commands.arxiv.abstract._get_multiple_paper_embeddings")
+    @patch("core.cli.commands.arxiv.abstract._get_query_embedding")
+    @patch("core.cli.commands.arxiv.abstract.get_config")
     def test_refine_passes_weights_to_rocchio(
         self,
         mock_get_config,

@@ -3,14 +3,15 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from core.cli.commands.arxiv import _metadata_to_dict, get_paper_info, search_arxiv
+from core.cli.commands.arxiv import get_paper_info, search_arxiv
+from core.cli.commands.arxiv.api import _metadata_to_dict
 from core.cli.output import ErrorCode
 
 
 class TestArxivSearch:
     """Tests for arxiv search command."""
 
-    @patch("core.cli.commands.arxiv.ArXivAPIClient")
+    @patch("core.cli.commands.arxiv.api.ArXivAPIClient")
     def test_search_returns_results(self, mock_client_class):
         """Test successful arxiv search."""
         # Setup mock
@@ -50,7 +51,7 @@ class TestArxivSearch:
         assert "results" in response.data
         mock_client.close.assert_called_once()
 
-    @patch("core.cli.commands.arxiv.ArXivAPIClient")
+    @patch("core.cli.commands.arxiv.api.ArXivAPIClient")
     def test_search_handles_exception(self, mock_client_class):
         """Test search handles exceptions gracefully."""
         mock_client = MagicMock()
@@ -66,7 +67,7 @@ class TestArxivSearch:
 class TestArxivInfo:
     """Tests for arxiv info command."""
 
-    @patch("core.cli.commands.arxiv.ArXivAPIClient")
+    @patch("core.cli.commands.arxiv.api.ArXivAPIClient")
     def test_info_returns_metadata(self, mock_client_class):
         """Test successful paper info retrieval."""
         mock_client = MagicMock()
@@ -95,7 +96,7 @@ class TestArxivInfo:
         assert response.command == "arxiv.info"
         assert response.data["arxiv_id"] == "2401.12345"
 
-    @patch("core.cli.commands.arxiv.ArXivAPIClient")
+    @patch("core.cli.commands.arxiv.api.ArXivAPIClient")
     def test_info_handles_invalid_id(self, mock_client_class):
         """Test info handles invalid arxiv ID."""
         mock_client = MagicMock()
@@ -107,7 +108,7 @@ class TestArxivInfo:
         assert response.success is False
         assert response.error["code"] == ErrorCode.INVALID_ARXIV_ID.value
 
-    @patch("core.cli.commands.arxiv.ArXivAPIClient")
+    @patch("core.cli.commands.arxiv.api.ArXivAPIClient")
     def test_info_handles_not_found(self, mock_client_class):
         """Test info handles paper not found."""
         mock_client = MagicMock()

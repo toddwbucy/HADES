@@ -22,10 +22,11 @@ Batch mode provides:
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from core.cli.config import get_config
+from core.cli.config import get_arango_config, get_config
 from core.cli.output import (
     CLIResponse,
     ErrorCode,
@@ -33,6 +34,9 @@ from core.cli.output import (
     progress,
     success_response,
 )
+from core.database.collections import get_profile
+from core.database.keys import chunk_key, embedding_key, normalize_document_key
+from core.tools.arxiv.arxiv_api_client import ArXivAPIClient
 
 # Pattern for arxiv IDs: YYMM.NNNNN or category/NNNNNNN
 _ARXIV_PATTERN = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$|^[a-z-]+/\d{7}(v\d+)?$", re.IGNORECASE)
@@ -152,8 +156,6 @@ def ingest(
 
     # Process arxiv IDs
     if arxiv_ids:
-        from core.cli.commands.arxiv import _ingest_arxiv_paper
-
         for arxiv_id in arxiv_ids:
             result = _ingest_arxiv_paper(arxiv_id, config, force)
             results.append(result)
@@ -222,8 +224,6 @@ def _ingest_batch(
     def process_single(item_id: str) -> dict[str, Any]:
         """Process a single item (arxiv ID or file path)."""
         if _is_arxiv_id(item_id):
-            from core.cli.commands.arxiv import _ingest_arxiv_paper
-
             return _ingest_arxiv_paper(item_id, config, force)
         else:
             return _ingest_file(item_id, config, None, force)
@@ -295,10 +295,6 @@ def _ingest_file(
     progress(f"Ingesting {path.name} as {doc_id}...")
 
     try:
-        # Use _process_and_store from arxiv.py for now
-        # This will be refactored to use the new tools in future PRs
-        from core.cli.commands.arxiv import _process_and_store
-
         result = _process_and_store(
             arxiv_id=None,
             pdf_path=path,
@@ -331,3 +327,281 @@ def _ingest_file(
             "success": False,
             "error": str(e),
         }
+
+
+# =============================================================================
+# Internal Helpers — Ingest (moved from arxiv.py)
+# =============================================================================
+
+
+def _ingest_arxiv_paper(arxiv_id: str, config: Any, force: bool) -> dict[str, Any]:
+    """Ingest a single arxiv paper.
+
+    1. Check if already exists (unless force=True)
+    2. Download PDF from arxiv
+    3. Process with DocumentProcessor
+    4. Store in ArangoDB
+    """
+    progress(f"Ingesting arxiv paper: {arxiv_id}")
+
+    client = ArXivAPIClient(rate_limit_delay=1.0)
+
+    try:
+        # Validate ID
+        if not client.validate_arxiv_id(arxiv_id):
+            return {
+                "arxiv_id": arxiv_id,
+                "success": False,
+                "error": f"Invalid arxiv ID format: {arxiv_id}",
+            }
+
+        # Check if already exists
+        if not force:
+            exists = _check_paper_in_db(arxiv_id, config)
+            if exists:
+                progress(f"Paper {arxiv_id} already in database, skipping (use --force to reprocess)")
+                return {
+                    "arxiv_id": arxiv_id,
+                    "success": True,
+                    "skipped": True,
+                    "message": "Already in database",
+                }
+
+        # Download PDF
+        progress(f"Downloading PDF for {arxiv_id}...")
+        download_result = client.download_paper(
+            arxiv_id,
+            pdf_dir=config.pdf_base_path,
+            latex_dir=config.latex_base_path,
+            force=force,
+        )
+
+        if not download_result.success:
+            return {
+                "arxiv_id": arxiv_id,
+                "success": False,
+                "error": download_result.error_message or "Download failed",
+            }
+
+        progress(f"Downloaded {download_result.pdf_path} ({download_result.file_size_bytes:,} bytes)")
+
+        # Process the PDF
+        progress("Processing document (extracting text, generating embeddings)...")
+        processing_result = _process_and_store(
+            arxiv_id=arxiv_id,
+            pdf_path=download_result.pdf_path,
+            latex_path=download_result.latex_path,
+            metadata=download_result.metadata,
+            config=config,
+            force=force,
+        )
+
+        if not processing_result["success"]:
+            return {
+                "arxiv_id": arxiv_id,
+                "success": False,
+                "error": processing_result.get("error", "Processing failed"),
+            }
+
+        progress(f"Stored {processing_result['num_chunks']} chunks for {arxiv_id}")
+
+        return {
+            "arxiv_id": arxiv_id,
+            "success": True,
+            "num_chunks": processing_result["num_chunks"],
+            "title": download_result.metadata.title if download_result.metadata else None,
+        }
+
+    except Exception as e:
+        return {
+            "arxiv_id": arxiv_id,
+            "success": False,
+            "error": str(e),
+        }
+    finally:
+        client.close()
+
+
+def _check_paper_in_db(arxiv_id: str, config: Any) -> bool:
+    """Check if a paper already exists in the database."""
+    try:
+        from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+        arango_config = get_arango_config(config, read_only=True)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+
+        client = ArangoHttp2Client(client_config)
+        try:
+            col = get_profile("arxiv")
+            sanitized_id = normalize_document_key(arxiv_id)
+            client.get_document(col.metadata, sanitized_id)
+            return True
+        except Exception:
+            return False
+        finally:
+            client.close()
+    except Exception:
+        return False
+
+
+def _process_and_store(
+    arxiv_id: str | None,
+    pdf_path: Path,
+    latex_path: Path | None,
+    metadata: Any,
+    config: Any,
+    document_id: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Process a PDF and store results in the database."""
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+    from core.processors.document_processor import DocumentProcessor, ProcessingConfig
+
+    # Try to use the persistent embedding service instead of loading model in-process.
+    # Use a longer timeout for ingest (model may need to load from idle + embed many chunks).
+    # Fall back to in-process model if the service is unavailable.
+    embedder = None
+    try:
+        from core.services.embedder_client import EmbedderClient
+
+        embed_client = EmbedderClient(
+            socket_path=config.embedding.service_socket,
+            timeout=300.0,
+            fallback_to_local=True,
+        )
+        if embed_client.is_service_available():
+            embedder = embed_client
+            progress("Using persistent embedding service")
+        else:
+            embed_client.close()
+            progress("Embedding service unavailable, loading model in-process")
+    except Exception:
+        progress("Embedding service unavailable, loading model in-process")
+
+    # Configure processor
+    # Use traditional chunking for now - late chunking has a dimension bug
+    proc_config = ProcessingConfig(
+        use_gpu=config.use_gpu,
+        device=config.device,
+        chunking_strategy="traditional",
+        chunk_size_tokens=500,
+        chunk_overlap_tokens=100,
+    )
+
+    processor = DocumentProcessor(proc_config, embedder=embedder)
+
+    try:
+        # Process the document
+        doc_id = document_id or arxiv_id or pdf_path.stem
+        result = processor.process_document(
+            pdf_path=pdf_path,
+            latex_path=latex_path,
+            document_id=doc_id,
+        )
+
+        if not result.success:
+            return {
+                "success": False,
+                "error": "; ".join(result.errors) if result.errors else "Processing failed",
+            }
+
+        # Store in database
+        arango_config = get_arango_config(config, read_only=False)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            col = get_profile("arxiv")
+            sanitized_id = normalize_document_key(doc_id)
+            now_iso = datetime.now(UTC).isoformat()
+
+            # Prepare metadata document
+            meta_doc = {
+                "_key": sanitized_id,
+                "document_id": doc_id,
+                "title": metadata.title if metadata else doc_id,
+                "source": "arxiv" if arxiv_id else "local",
+                "num_chunks": len(result.chunks),
+                "processing_timestamp": now_iso,
+                "status": "PROCESSED",
+            }
+
+            if arxiv_id and metadata:
+                meta_doc.update(
+                    {
+                        "arxiv_id": arxiv_id,
+                        "authors": metadata.authors,
+                        "abstract": metadata.abstract,
+                        "categories": metadata.categories,
+                        "published": metadata.published.isoformat() if metadata.published else None,
+                    }
+                )
+
+            # Prepare chunk documents
+            chunk_docs = []
+            embedding_docs = []
+
+            for chunk in result.chunks:
+                ck = chunk_key(sanitized_id, chunk.chunk_index)
+
+                chunk_docs.append(
+                    {
+                        "_key": ck,
+                        "document_id": doc_id,
+                        "paper_key": sanitized_id,
+                        "chunk_index": chunk.chunk_index,
+                        "total_chunks": chunk.total_chunks,
+                        "text": chunk.text,
+                        "start_char": chunk.start_char,
+                        "end_char": chunk.end_char,
+                        "created_at": now_iso,
+                    }
+                )
+
+                embedding_docs.append(
+                    {
+                        "_key": embedding_key(ck),
+                        "chunk_key": ck,
+                        "document_id": doc_id,
+                        "paper_key": sanitized_id,
+                        "embedding": chunk.embedding.tolist(),
+                        "embedding_dim": int(chunk.embedding.shape[0]),
+                        "created_at": now_iso,
+                    }
+                )
+
+            # Insert chunks and embeddings first so that metadata only
+            # records success after the data is actually persisted.
+            progress(f"Storing {len(chunk_docs)} chunks in database...")
+
+            if chunk_docs:
+                client.insert_documents(col.chunks, chunk_docs, overwrite=force)
+            if embedding_docs:
+                client.insert_documents(col.embeddings, embedding_docs, overwrite=force)
+            client.insert_documents(col.metadata, [meta_doc], overwrite=force)
+
+            return {
+                "success": True,
+                "num_chunks": len(result.chunks),
+            }
+
+        finally:
+            client.close()
+
+    finally:
+        processor.cleanup()
+        if embedder is not None and hasattr(embedder, "close"):
+            embedder.close()

@@ -431,7 +431,7 @@ def ingest_file(
     doc_id = document_id or path.stem
 
     try:
-        from core.cli.commands.arxiv import _process_and_store
+        from core.cli.commands.ingest import _process_and_store
 
         result = _process_and_store(
             arxiv_id=None,
