@@ -805,7 +805,9 @@ class DocumentProcessor:
                 else:
                     raise ValueError(f"Unknown chunking strategy: {strategy}")
 
-                total_time = time.time() - start_time
+                # Use sum of phase times for accurate per-doc metrics in batch mode
+                # (wall-clock time would include time spent on other documents)
+                total_time = extraction_time + chunking_time + embedding_time
                 processing_metadata = {
                     "processor_version": "1.0",
                     "embedding_model": self.embedding_model,
