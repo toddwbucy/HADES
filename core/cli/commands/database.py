@@ -484,6 +484,8 @@ def semantic_query(
     cite_only: bool = False,
     hybrid: bool = False,
     decompose: bool = False,
+    rerank: bool = False,
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -496,6 +498,8 @@ def semantic_query(
         cite_only: If True, return minimal citation format
         hybrid: If True, combine semantic similarity with keyword matching
         decompose: If True, split compound queries and merge results
+        rerank: If True, re-rank top results with cross-encoder for better precision
+        rerank_model: Cross-encoder model to use for re-ranking
 
     Returns:
         CLIResponse with search results
@@ -533,15 +537,27 @@ def semantic_query(
             else:
                 progress(f"Searching {limit} most similar chunks...")
 
-            # Search database - fetch extra results if hybrid reranking
-            fetch_limit = limit * 3 if hybrid else limit
+            # Search database - fetch extra results for reranking stages
+            # Fetch more if we'll be doing any reranking
+            if rerank:
+                fetch_limit = max(limit * 5, 50)  # Get more candidates for cross-encoder
+            elif hybrid:
+                fetch_limit = limit * 3
+            else:
+                fetch_limit = limit
             results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
 
-            # Apply hybrid reranking if requested
+            # Apply hybrid reranking if requested (fast, keyword-based)
             if hybrid and results:
                 progress("Re-ranking with keyword matching...")
                 results = _hybrid_rerank_results(results, search_text)
-                results = results[:limit]  # Trim to requested limit after reranking
+                if not rerank:
+                    results = results[:limit]  # Trim unless cross-encoder will further refine
+
+        # Apply cross-encoder reranking if requested (slower, more accurate)
+        if rerank and results:
+            progress(f"Re-ranking with cross-encoder ({rerank_model})...")
+            results = _crossencoder_rerank(results, search_text, limit, rerank_model)
 
         # Add context chunks if requested
         if context > 0 and results:
@@ -1168,6 +1184,61 @@ def _search_with_decomposition(
         merged = _hybrid_rerank_results(merged, original_query)
 
     return merged[:limit]
+
+
+def _crossencoder_rerank(
+    results: list[dict[str, Any]],
+    query: str,
+    limit: int,
+    model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+) -> list[dict[str, Any]]:
+    """Re-rank results using a cross-encoder for better precision.
+
+    Cross-encoders score (query, document) pairs together, allowing
+    them to model token interactions that bi-encoders miss.
+
+    Args:
+        results: Initial search results with 'text' field
+        query: Original query text
+        limit: Number of results to return after reranking
+        model_name: HuggingFace cross-encoder model identifier
+
+    Returns:
+        Re-ranked results with cross-encoder scores
+    """
+    from sentence_transformers import CrossEncoder
+
+    if not results:
+        return results
+
+    # Load cross-encoder model (cached after first load)
+    model = CrossEncoder(model_name, max_length=512)
+
+    # Prepare (query, passage) pairs
+    pairs = []
+    for result in results:
+        text = result.get("text", "")
+        title = result.get("title", "")
+        # Combine title and text for better context
+        passage = f"{title}. {text}" if title else text
+        pairs.append([query, passage])
+
+    # Score all pairs in batch
+    scores = model.predict(pairs, show_progress_bar=False)
+
+    # Add scores to results
+    reranked = []
+    for result, score in zip(results, scores, strict=True):
+        reranked_result = {
+            **result,
+            "cross_encoder_score": round(float(score), 4),
+        }
+        reranked.append(reranked_result)
+
+    # Sort by cross-encoder score (descending)
+    reranked.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
+
+    return reranked[:limit]
 
 
 def _add_context_chunks(
