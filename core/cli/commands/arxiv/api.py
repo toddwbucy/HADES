@@ -38,6 +38,15 @@ def search_arxiv(
     Returns:
         CLIResponse with search results
     """
+    # Validate max_results
+    if max_results <= 0:
+        return error_response(
+            command="arxiv.search",
+            code=ErrorCode.CONFIG_ERROR,
+            message="max_results must be >= 1",
+            start_time=start_time,
+        )
+
     progress(f"Searching arxiv for: {query}")
 
     client = ArXivAPIClient(rate_limit_delay=0.5)
@@ -46,11 +55,12 @@ def search_arxiv(
         # Build search query
         search_query = query
 
-        # Add category filter if specified
+        # Add category filter if specified (filter out empty tokens)
         if categories:
-            cat_list = [c.strip() for c in categories.split(",")]
-            cat_query = " OR ".join(f"cat:{cat}" for cat in cat_list)
-            search_query = f"({query}) AND ({cat_query})"
+            cat_list = [c.strip() for c in categories.split(",") if c.strip()]
+            if cat_list:
+                cat_query = " OR ".join(f"cat:{cat}" for cat in cat_list)
+                search_query = f"({query}) AND ({cat_query})"
 
         # Use arxiv API search endpoint
         params = {
@@ -72,8 +82,9 @@ def search_arxiv(
             try:
                 metadata = client._parse_entry(entry)
                 results.append(_metadata_to_dict(metadata))
-            except Exception:
-                # Skip entries that fail to parse
+            except Exception as e:
+                # Log and skip entries that fail to parse
+                progress(f"Skipping entry due to parse error: {e}")
                 continue
 
         progress(f"Found {len(results)} papers")
