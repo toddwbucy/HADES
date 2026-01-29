@@ -485,13 +485,14 @@ def _process_and_store(
         progress("Embedding service unavailable, loading model in-process")
 
     # Configure processor
-    # Use traditional chunking for now - late chunking has a dimension bug
+    # Use semantic chunking to respect document structure (paragraphs/sentences)
+    # Larger chunks (1000 tokens) preserve more context for better retrieval
     proc_config = ProcessingConfig(
         use_gpu=config.use_gpu,
         device=config.device,
-        chunking_strategy="traditional",
-        chunk_size_tokens=500,
-        chunk_overlap_tokens=100,
+        chunking_strategy="semantic",
+        chunk_size_tokens=1000,
+        chunk_overlap_tokens=200,
     )
 
     processor = DocumentProcessor(proc_config, embedder=embedder)
