@@ -295,13 +295,24 @@ class DocumentProcessor:
         """
         if self._docling_extractor is not None:
             logger.info("Unloading Docling extractor to free VLM memory")
-            if hasattr(self._docling_extractor, "cleanup"):
-                self._docling_extractor.cleanup()
-            del self._docling_extractor
+            # Best-effort cleanup - don't let failures abort batch processing
+            try:
+                if hasattr(self._docling_extractor, "cleanup"):
+                    self._docling_extractor.cleanup()
+            except Exception as exc:
+                logger.error("Failed to cleanup Docling extractor: %s", exc, exc_info=True)
+            try:
+                del self._docling_extractor
+            except Exception as exc:
+                logger.error("Failed to delete Docling extractor: %s", exc, exc_info=True)
             self._docling_extractor = None
 
         if self._latex_extractor is not None:
-            del self._latex_extractor
+            # Best-effort cleanup - don't let failures abort batch processing
+            try:
+                del self._latex_extractor
+            except Exception as exc:
+                logger.error("Failed to delete LaTeX extractor: %s", exc, exc_info=True)
             self._latex_extractor = None
 
         # Clear CUDA cache
