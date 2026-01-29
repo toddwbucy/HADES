@@ -57,7 +57,8 @@ def cli_command(
             start_time = time.time()
 
             try:
-                # Inject start_time into kwargs
+                # Remove any incoming start_time (from hidden Typer option) to avoid duplicate
+                kwargs.pop("start_time", None)
                 response = func(*args, start_time=start_time, **kwargs)
 
                 # Handle the response

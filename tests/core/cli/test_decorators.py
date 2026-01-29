@@ -114,3 +114,26 @@ class TestCliCommandDecorator:
 
         assert received_args["name"] == "test"
         assert received_args["count"] == 42
+
+    def test_handles_duplicate_start_time_from_typer(self) -> None:
+        """Decorator should handle Typer passing start_time as hidden option.
+
+        When Typer invokes a command with a hidden start_time option,
+        it passes start_time in kwargs. The decorator should remove this
+        and inject its own start_time to avoid 'duplicate keyword argument' error.
+        """
+        received_start_time = None
+
+        @cli_command("test.command", ErrorCode.UNKNOWN_ERROR)
+        def test_func(query: str, start_time: float) -> CLIResponse:
+            nonlocal received_start_time
+            received_start_time = start_time
+            return CLIResponse(success=True, command="test.command")
+
+        with patch("core.cli.decorators.print_response"):
+            # Simulate Typer passing start_time=0.0 from hidden option
+            test_func(query="test", start_time=0.0)
+
+        # Should use decorator's injected time, not Typer's 0.0
+        assert received_start_time is not None
+        assert received_start_time > 0  # Decorator injects time.time()
