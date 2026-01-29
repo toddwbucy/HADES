@@ -792,11 +792,35 @@ def database_check(
 @db_app.command("purge")
 def database_purge(
     arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to purge", metavar="ARXIV_ID"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-y",
+        help="Skip interactive confirmation (still requires HADES_DESTRUCTIVE_OPS=enabled)",
+    ),
 ) -> None:
-    """Remove all data for a paper from all collections (metadata, chunks, embeddings)."""
+    """Remove all data for a paper from all collections (metadata, chunks, embeddings).
+
+    Requires HADES_DESTRUCTIVE_OPS=enabled environment variable.
+    Interactive confirmation is designed to require human involvement when using Claude Code.
+    """
     start_time = time.time()
 
     try:
+        from core.cli.destructive import check_destructive_allowed
+
+        # Check if destructive operation is allowed
+        blocked = check_destructive_allowed(
+            command="database.purge",
+            operation_desc=f"purge paper {arxiv_id}",
+            confirm_text=f"PURGE {arxiv_id}",
+            start_time=start_time,
+            force=force,
+        )
+        if blocked:
+            print_response(blocked)
+            raise typer.Exit(1) from None
+
         from core.cli.commands.database import purge_paper
 
         response = purge_paper(arxiv_id, start_time)
@@ -849,11 +873,35 @@ def database_create(
 def database_delete(
     collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
     key: str = typer.Argument(..., help="Document key to delete", metavar="KEY"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-y",
+        help="Skip interactive confirmation (still requires HADES_DESTRUCTIVE_OPS=enabled)",
+    ),
 ) -> None:
-    """Delete a document from an ArangoDB collection."""
+    """Delete a document from an ArangoDB collection.
+
+    Requires HADES_DESTRUCTIVE_OPS=enabled environment variable.
+    Interactive confirmation is designed to require human involvement when using Claude Code.
+    """
     start_time = time.time()
 
     try:
+        from core.cli.destructive import check_destructive_allowed
+
+        # Check if destructive operation is allowed
+        blocked = check_destructive_allowed(
+            command="database.delete",
+            operation_desc=f"delete {collection}/{key}",
+            confirm_text=f"DELETE {collection}/{key}",
+            start_time=start_time,
+            force=force,
+        )
+        if blocked:
+            print_response(blocked)
+            raise typer.Exit(1) from None
+
         from core.cli.commands.database import delete_document
 
         response = delete_document(collection, key, start_time)
@@ -947,16 +995,39 @@ def graph_list_cmd() -> None:
 def graph_drop_cmd(
     name: str = typer.Option(..., "--name", "-n", help="Graph name to drop"),
     drop_collections: bool = typer.Option(False, "--drop-collections", help="Also drop the graph's collections"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-y",
+        help="Skip interactive confirmation (still requires HADES_DESTRUCTIVE_OPS=enabled)",
+    ),
 ) -> None:
     """Drop a named graph.
 
+    Requires HADES_DESTRUCTIVE_OPS=enabled environment variable.
+    Interactive confirmation is designed to require human involvement when using Claude Code.
+
     Examples:
-        hades database graph drop --name my_graph
-        hades database graph drop --name my_graph --drop-collections
+        hades db graph drop --name my_graph
+        hades db graph drop --name my_graph --drop-collections
     """
     start_time = time.time()
 
     try:
+        from core.cli.destructive import check_destructive_allowed
+
+        # Check if destructive operation is allowed
+        blocked = check_destructive_allowed(
+            command="database.graph.drop",
+            operation_desc=f"drop graph {name}" + (" and collections" if drop_collections else ""),
+            confirm_text=f"DROP {name}",
+            start_time=start_time,
+            force=force,
+        )
+        if blocked:
+            print_response(blocked)
+            raise typer.Exit(1) from None
+
         from core.cli.commands.database import graph_drop
 
         response = graph_drop(name, drop_collections, start_time)
