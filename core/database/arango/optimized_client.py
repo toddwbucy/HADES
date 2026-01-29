@@ -12,14 +12,13 @@ later phases.
 
 from __future__ import annotations
 
-import io
-import json
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import orjson
 
 
 class ArangoHttpError(RuntimeError):
@@ -113,26 +112,25 @@ class ArangoHttp2Client:
         return self._handle_response(response)
 
     def insert_documents(
-        self, collection: str, documents: Iterable[dict[str, Any]], overwrite: bool = False
+        self,
+        collection: str,
+        documents: Iterable[dict[str, Any]],
+        overwrite: bool = False,
+        stream: bool = True,
     ) -> dict[str, Any]:
-        """Bulk insert documents using NDJSON import."""
+        """Bulk insert documents using NDJSON import.
 
-        document_iter = iter(documents)
-        try:
-            first_doc = next(document_iter)
-        except StopIteration:
-            return {"created": 0}
+        Args:
+            collection: Target collection name
+            documents: Iterable of documents to insert
+            overwrite: If True, overwrite existing documents with same _key
+            stream: If True (default), stream documents without buffering entire
+                payload in memory. Uses chunked transfer encoding. Set to False
+                for compatibility with servers that require Content-Length.
 
-        buffer = io.BytesIO()
-        first_line = json.dumps(first_doc, separators=(",", ":")).encode("utf-8")
-        buffer.write(first_line)
-
-        for doc in document_iter:
-            line = json.dumps(doc, separators=(",", ":")).encode("utf-8")
-            buffer.write(b"\n")
-            buffer.write(line)
-
-        payload = buffer.getvalue()
+        Returns:
+            Dict with import statistics (created, errors, etc.)
+        """
         overwrite_str = "true" if overwrite else "false"
         path = (
             f"/_db/{self._config.database}/_api/import"
@@ -140,15 +138,64 @@ class ArangoHttp2Client:
         )
         user_agent = os.environ.get("HADES_HTTP_USER_AGENT", "hades-arango-http2/1.0")
         trace_id = os.environ.get("HADES_TRACE_ID")
-        headers = {
+        headers: dict[str, str] = {
             "Content-Type": "application/x-ndjson",
-            "Content-Length": str(len(payload)),
             "User-Agent": user_agent,
         }
         if trace_id:
             headers["x-hades-trace"] = trace_id
-        response = self._client.post(path, content=payload, headers=headers)
+
+        if stream:
+            # Streaming mode: use generator to avoid buffering entire payload
+            # We need to peek at the first document to check if the iterator is empty
+            document_iter = iter(documents)
+            try:
+                first_doc = next(document_iter)
+            except StopIteration:
+                return {"created": 0}
+
+            # Create streaming generator starting with the peeked first document
+            content = self._ndjson_stream_with_first(first_doc, document_iter)
+            response = self._client.post(path, content=content, headers=headers)
+        else:
+            # Buffered mode: build payload in memory (for Content-Length header)
+            payload = self._ndjson_buffer(documents)
+            if payload is None:
+                return {"created": 0}
+            headers["Content-Length"] = str(len(payload))
+            response = self._client.post(path, content=payload, headers=headers)
+
         return self._handle_response(response)
+
+    def _ndjson_stream_with_first(
+        self, first_doc: dict[str, Any], rest: Iterator[dict[str, Any]]
+    ) -> Iterator[bytes]:
+        """Generate NDJSON lines as a stream, starting with a pre-peeked first document.
+
+        Yields bytes for each document, enabling memory-efficient bulk imports
+        without buffering the entire payload.
+        """
+        yield orjson.dumps(first_doc)
+        for doc in rest:
+            yield b"\n" + orjson.dumps(doc)
+
+    def _ndjson_buffer(self, documents: Iterable[dict[str, Any]]) -> bytes | None:
+        """Build NDJSON payload in memory for Content-Length mode.
+
+        Returns None if no documents provided.
+        """
+        document_iter = iter(documents)
+        try:
+            first_doc = next(document_iter)
+        except StopIteration:
+            return None
+
+        parts = [orjson.dumps(first_doc)]
+        for doc in document_iter:
+            parts.append(b"\n")
+            parts.append(orjson.dumps(doc))
+
+        return b"".join(parts)
 
     def query(
         self,
@@ -227,8 +274,8 @@ class ArangoHttp2Client:
 
         # For NDJSON import Arango responds with JSON content type, but as a safeguard:
         try:
-            return json.loads(response.text)
-        except ValueError:
+            return orjson.loads(response.text)
+        except orjson.JSONDecodeError:
             return {"raw": response.text}
 
 

@@ -5,11 +5,12 @@ Generic state persistence and recovery for any long-running pipeline.
 Provides atomic saves and checkpoint management for fault-tolerant processing.
 """
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import orjson
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,12 @@ class StateManager:
         """
         if self.state_file.exists():
             try:
-                with open(self.state_file) as f:
-                    saved_state = json.load(f)
-                    if not isinstance(saved_state, dict):
-                        logger.warning(
-                            f"State file {self.state_file} did not contain a valid object; starting fresh"
-                        )
-                        return False
+                saved_state = orjson.loads(self.state_file.read_bytes())
+                if not isinstance(saved_state, dict):
+                    logger.warning(
+                        f"State file {self.state_file} did not contain a valid object; starting fresh"
+                    )
+                    return False
 
                 # Validate it's for the same process
                 if saved_state.get('process_name') == self.process_name:
@@ -92,8 +92,14 @@ class StateManager:
         temp_file = self.state_file.with_suffix('.tmp')
 
         try:
-            with open(temp_file, 'w') as f:
-                json.dump(self.state, f, indent=2, default=str)
+            # orjson.dumps returns bytes; OPT_INDENT_2 for human-readable output
+            # OPT_SERIALIZE_NUMPY for any numpy arrays, OPT_NON_STR_KEYS for non-string dict keys
+            data = orjson.dumps(
+                self.state,
+                option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS,
+                default=str,
+            )
+            temp_file.write_bytes(data)
 
             # Atomic rename
             temp_file.replace(self.state_file)
@@ -205,17 +211,16 @@ class CheckpointManager:
         """Load processed items from checkpoint."""
         if self.checkpoint_file.exists():
             try:
-                with open(self.checkpoint_file) as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        self.processed = {str(item) for item in data}
-                    elif isinstance(data, dict):
-                        self.processed = {str(item) for item in data.get('processed', [])}
-                    else:
-                        logger.warning(
-                            f"Unexpected checkpoint format in {self.checkpoint_file}; resetting"
-                        )
-                        self.processed.clear()
+                data = orjson.loads(self.checkpoint_file.read_bytes())
+                if isinstance(data, list):
+                    self.processed = {str(item) for item in data}
+                elif isinstance(data, dict):
+                    self.processed = {str(item) for item in data.get('processed', [])}
+                else:
+                    logger.warning(
+                        f"Unexpected checkpoint format in {self.checkpoint_file}; resetting"
+                    )
+                    self.processed.clear()
 
                 logger.info(f"Loaded {len(self.processed)} checkpoints")
                 return True
@@ -230,8 +235,10 @@ class CheckpointManager:
         temp_file = self.checkpoint_file.with_suffix('.tmp')
 
         try:
-            with open(temp_file, 'w') as f:
-                json.dump(sorted(self.processed), f, indent=2)
+            # Convert set to list for JSON serialization
+            # Skip sorting - it's O(n log n) overhead with no functional benefit
+            data = orjson.dumps(list(self.processed), option=orjson.OPT_INDENT_2)
+            temp_file.write_bytes(data)
 
             # Atomic rename
             temp_file.replace(self.checkpoint_file)

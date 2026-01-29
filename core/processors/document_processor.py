@@ -175,24 +175,16 @@ class DocumentProcessor:
     def __init__(self, config: ProcessingConfig | None = None, embedder: Any | None = None):
         self.config = config or ProcessingConfig()
 
-        docling_config = DoclingConfig(
+        # Store extractor config for lazy loading - don't load VLM models yet
+        # This allows multiple DocumentProcessor instances without GPU memory overflow
+        self._docling_config = DoclingConfig(
             ocr_enabled=self.config.use_ocr,
             extract_tables=self.config.extract_tables,
             extract_equations=self.config.extract_equations,
             extract_images=self.config.extract_images,
         )
-        # DoclingExtractor/LaTeXExtractor are typed as Optional[Type] in __init__.py
-        # due to conditional imports, but are guaranteed non-None when imported successfully
-        if DoclingExtractor is None:
-            raise ImportError("DoclingExtractor not available - install docling package")
-        self.docling_extractor = DoclingExtractor(docling_config)
-
-        if self.config.extract_equations:
-            if LaTeXExtractor is None:
-                raise ImportError("LaTeXExtractor not available")
-            self.latex_extractor = LaTeXExtractor()
-        else:
-            self.latex_extractor = None
+        self._docling_extractor: Any | None = None
+        self._latex_extractor: Any | None = None
 
         # Store embedder config for lazy loading - don't load the model yet
         # This allows us to unload extraction models before loading embedder
@@ -269,6 +261,61 @@ class DocumentProcessor:
             )
         return self._embedder
 
+    @property
+    def docling_extractor(self):
+        """Lazy-load Docling extractor only when first needed.
+
+        Docling's VLM models consume ~8GB VRAM. Lazy loading allows:
+        1. Multiple processor instances without immediate memory pressure
+        2. Explicit unloading before embedding via unload_extractor()
+        3. Batch processing that shares extractor across documents
+        """
+        if self._docling_extractor is None:
+            if DoclingExtractor is None:
+                raise ImportError("DoclingExtractor not available - install docling package")
+            logger.info("Lazy-loading Docling extractor (VLM models)")
+            self._docling_extractor = DoclingExtractor(self._docling_config)
+        return self._docling_extractor
+
+    @property
+    def latex_extractor(self):
+        """Lazy-load LaTeX extractor only when first needed."""
+        if self._latex_extractor is None and self.config.extract_equations:
+            if LaTeXExtractor is None:
+                raise ImportError("LaTeXExtractor not available")
+            logger.info("Lazy-loading LaTeX extractor")
+            self._latex_extractor = LaTeXExtractor()
+        return self._latex_extractor
+
+    def unload_extractor(self) -> None:
+        """Explicitly unload extraction models to free GPU memory.
+
+        Call this before embedding when processing batches, or when you need
+        to reclaim VRAM. The extractor will be lazily reloaded on next use.
+        """
+        if self._docling_extractor is not None:
+            logger.info("Unloading Docling extractor to free VLM memory")
+            if hasattr(self._docling_extractor, "cleanup"):
+                self._docling_extractor.cleanup()
+            del self._docling_extractor
+            self._docling_extractor = None
+
+        if self._latex_extractor is not None:
+            del self._latex_extractor
+            self._latex_extractor = None
+
+        # Clear CUDA cache
+        try:
+            import gc
+
+            import torch
+            if torch.cuda.is_available():
+                gc.collect()
+                torch.cuda.empty_cache()
+                gc.collect()
+        except Exception:
+            pass
+
     def cleanup(self) -> None:
         """Clean up staging directory and other resources.
 
@@ -305,22 +352,9 @@ class DocumentProcessor:
 
             import torch
 
-            # Unload Docling's VLM models by calling its cleanup method
-            # This releases ~8GB of VRAM that would otherwise stay allocated
-            if unload_extractor and hasattr(self, "docling_extractor") and self.docling_extractor is not None:
-                logger.info("Unloading Docling extractor to free VLM memory")
-
-                # Use the extractor's cleanup method if available
-                if hasattr(self.docling_extractor, "cleanup"):
-                    self.docling_extractor.cleanup()
-
-                del self.docling_extractor
-                self.docling_extractor = None
-
-            # Also clear the latex extractor if present
-            if hasattr(self, "latex_extractor") and self.latex_extractor is not None:
-                del self.latex_extractor
-                self.latex_extractor = None
+            # Unload extraction models if requested
+            if unload_extractor:
+                self.unload_extractor()
 
             if torch.cuda.is_available():
                 # Run garbage collection to release Python references
@@ -643,14 +677,181 @@ class DocumentProcessor:
         self,
         document_paths: list[tuple[Path, Path | None]],
         document_ids: list[str] | None = None,
+        optimize_memory: bool = True,
     ) -> list[ProcessingResult]:
+        """Process multiple documents with optimized model loading.
+
+        Args:
+            document_paths: List of (pdf_path, latex_path) tuples
+            document_ids: Optional list of document IDs
+            optimize_memory: If True (default), performs two-phase processing:
+                1. Extract all documents (keeping extractor loaded)
+                2. Unload extractor, load embedder
+                3. Embed all chunks
+                This minimizes GPU memory pressure by avoiding simultaneous
+                model loading. Set to False for sequential per-document processing.
+
+        Returns:
+            List of ProcessingResult for each document
+        """
+        if not optimize_memory:
+            # Fall back to simple sequential processing
+            results: list[ProcessingResult] = []
+            for i, (pdf_path, latex_path) in enumerate(document_paths):
+                doc_id = document_ids[i] if document_ids and i < len(document_ids) else None
+                result = self.process_document(pdf_path, latex_path, doc_id)
+                results.append(result)
+            return results
+
+        # Optimized batch mode: separate extraction and embedding phases
+        logger.info("Starting optimized batch processing for %d documents", len(document_paths))
         results: list[ProcessingResult] = []
+        extractions: list[tuple[ExtractionResult, str, Path, float]] = []
 
+        # Phase 1: Extract all documents (extractor stays loaded)
+        logger.info("Phase 1: Extracting %d documents", len(document_paths))
         for i, (pdf_path, latex_path) in enumerate(document_paths):
-            doc_id = document_ids[i] if document_ids and i < len(document_ids) else None
-            result = self.process_document(pdf_path, latex_path, doc_id)
-            results.append(result)
+            doc_id = document_ids[i] if document_ids and i < len(document_ids) else pdf_path.stem
+            start_time = time.time()
+            try:
+                extraction_result = self._extract_content(Path(pdf_path), Path(latex_path) if latex_path else None)
+                extractions.append((extraction_result, doc_id, Path(pdf_path), start_time))
+                logger.info("Extracted document %d/%d: %s", i + 1, len(document_paths), doc_id)
+            except Exception as exc:
+                logger.error("Failed to extract document %s: %s", doc_id, exc)
+                results.append(ProcessingResult(
+                    extraction=ExtractionResult(full_text=""),
+                    chunks=[],
+                    processing_metadata={},
+                    total_processing_time=time.time() - start_time,
+                    extraction_time=0.0,
+                    chunking_time=0.0,
+                    embedding_time=0.0,
+                    success=False,
+                    errors=[str(exc)],
+                ))
+                extractions.append(None)  # type: ignore[arg-type]
 
+        # Unload extractor to free GPU memory before embedding
+        logger.info("Unloading extractor before embedding phase")
+        self.unload_extractor()
+        self._clear_gpu_memory(unload_extractor=False)
+
+        # Phase 2: Chunk and embed all extractions
+        logger.info("Phase 2: Chunking and embedding %d extractions", len(extractions))
+        for i, extraction_data in enumerate(extractions):
+            if extraction_data is None:
+                continue  # Already added error result
+
+            extraction_result, doc_id, pdf_path, start_time = extraction_data
+            extraction_time = extraction_result.extraction_time
+
+            try:
+                strategy = self.config.chunking_strategy
+                if strategy == "late":
+                    embedding_start = time.time()
+                    chunks = self._create_late_chunks(extraction_result.full_text)
+                    embedding_time = time.time() - embedding_start
+                    chunking_time = 0.0
+                elif strategy in ("semantic", "sliding", "sliding_window", "token"):
+                    chunking_start = time.time()
+                    if strategy == "token":
+                        chunker = ChunkingStrategyFactory.create_strategy(
+                            strategy,
+                            chunk_size=self.config.chunk_size_tokens,
+                            chunk_overlap=self.config.chunk_overlap_tokens,
+                        )
+                    elif strategy == "semantic":
+                        chunker = ChunkingStrategyFactory.create_strategy(
+                            strategy,
+                            max_chunk_size=self.config.chunk_size_tokens,
+                            min_chunk_size=self.config.chunk_overlap_tokens,
+                            respect_sentences=True,
+                            respect_paragraphs=True,
+                        )
+                    else:  # sliding or sliding_window
+                        chunker = ChunkingStrategyFactory.create_strategy(
+                            strategy,
+                            window_size=self.config.chunk_size_tokens,
+                            step_size=self.config.chunk_size_tokens - self.config.chunk_overlap_tokens,
+                        )
+                    text_chunks = chunker.create_chunks(extraction_result.full_text)
+                    chunks = [
+                        {
+                            "text": tc.text,
+                            "start_char": tc.start_char,
+                            "end_char": tc.end_char,
+                            "chunk_index": tc.chunk_index,
+                            **tc.metadata,
+                        }
+                        for tc in text_chunks
+                    ]
+                    chunking_time = time.time() - chunking_start
+
+                    embedding_start = time.time()
+                    if chunks:
+                        chunks = self._embed_chunks(chunks)
+                    embedding_time = time.time() - embedding_start
+                elif strategy == "traditional":
+                    chunking_start = time.time()
+                    chunks = self._create_traditional_chunks(extraction_result.full_text)
+                    chunking_time = time.time() - chunking_start
+
+                    embedding_start = time.time()
+                    if chunks:
+                        chunks = self._embed_chunks(chunks)
+                    embedding_time = time.time() - embedding_start
+                else:
+                    raise ValueError(f"Unknown chunking strategy: {strategy}")
+
+                total_time = time.time() - start_time
+                processing_metadata = {
+                    "processor_version": "1.0",
+                    "embedding_model": self.embedding_model,
+                    "chunking_strategy": self.config.chunking_strategy,
+                    "chunk_size_tokens": self.config.chunk_size_tokens,
+                    "chunk_overlap_tokens": self.config.chunk_overlap_tokens,
+                    "document_id": doc_id,
+                    "source_path": str(pdf_path),
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "chunk_count": len(chunks) if chunks else 0,
+                    "has_latex": extraction_result.has_latex,
+                    "has_tables": len(extraction_result.tables) > 0,
+                    "has_equations": len(extraction_result.equations) > 0,
+                    "batch_mode": True,
+                }
+
+                results.append(ProcessingResult(
+                    extraction=extraction_result,
+                    chunks=chunks if chunks else [],
+                    processing_metadata=processing_metadata,
+                    total_processing_time=total_time,
+                    extraction_time=extraction_time,
+                    chunking_time=chunking_time,
+                    embedding_time=embedding_time,
+                    success=bool(chunks),
+                    errors=[] if chunks else ["Document produced no chunks"],
+                    warnings=[] if chunks else ["Empty or unprocessable document"],
+                ))
+                logger.info("Embedded document %d/%d: %s (%d chunks)",
+                           i + 1, len(extractions), doc_id, len(chunks) if chunks else 0)
+
+            except Exception as exc:
+                logger.error("Failed to embed document %s: %s", doc_id, exc)
+                results.append(ProcessingResult(
+                    extraction=extraction_result,
+                    chunks=[],
+                    processing_metadata={},
+                    total_processing_time=time.time() - start_time,
+                    extraction_time=extraction_time,
+                    chunking_time=0.0,
+                    embedding_time=0.0,
+                    success=False,
+                    errors=[str(exc)],
+                ))
+
+        logger.info("Batch processing complete: %d/%d successful",
+                   sum(1 for r in results if r.success), len(results))
         return results
 
 

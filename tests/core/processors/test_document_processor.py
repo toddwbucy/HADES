@@ -237,10 +237,14 @@ class TestDocumentProcessorInit:
         assert processor.config.batch_size == 8
 
     @patch("core.processors.document_processor.DoclingExtractor")
-    def test_creates_docling_extractor(self, mock_docling: MagicMock) -> None:
-        """DocumentProcessor should create DoclingExtractor on init."""
+    def test_creates_docling_extractor_lazily(self, mock_docling: MagicMock) -> None:
+        """DocumentProcessor should lazy-load DoclingExtractor on first access."""
         mock_docling.return_value = MagicMock()
-        DocumentProcessor()
+        processor = DocumentProcessor()
+        # Extractor is not created on init (lazy loading)
+        mock_docling.assert_not_called()
+        # Accessing the property triggers creation
+        _ = processor.docling_extractor
         mock_docling.assert_called_once()
 
 
