@@ -313,8 +313,8 @@ class DocumentProcessor:
                 gc.collect()
                 torch.cuda.empty_cache()
                 gc.collect()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed during CUDA cache cleanup: %s", exc, exc_info=True)
 
     def cleanup(self) -> None:
         """Clean up staging directory and other resources.
@@ -712,12 +712,15 @@ class DocumentProcessor:
 
         # Phase 1: Extract all documents (extractor stays loaded)
         logger.info("Phase 1: Extracting %d documents", n_docs)
-        for i, (pdf_path, latex_path) in enumerate(document_paths):
+        for i, (pdf_path_raw, latex_path_raw) in enumerate(document_paths):
+            # Normalize paths to Path objects (input may be str or Path)
+            pdf_path = Path(pdf_path_raw)
+            latex_path = Path(latex_path_raw) if latex_path_raw else None
             doc_id = document_ids[i] if document_ids and i < len(document_ids) else pdf_path.stem
             start_time = time.time()
             try:
-                extraction_result = self._extract_content(Path(pdf_path), Path(latex_path) if latex_path else None)
-                extractions[i] = (extraction_result, doc_id, Path(pdf_path), start_time)
+                extraction_result = self._extract_content(pdf_path, latex_path)
+                extractions[i] = (extraction_result, doc_id, pdf_path, start_time)
                 logger.info("Extracted document %d/%d: %s", i + 1, n_docs, doc_id)
             except Exception as exc:
                 logger.error("Failed to extract document %s: %s", doc_id, exc)
