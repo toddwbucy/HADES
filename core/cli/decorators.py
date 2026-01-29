@@ -52,8 +52,11 @@ def cli_command(
     """
 
     def decorator(func: F) -> F:
+        """Create the actual decorator that wraps the function."""
+
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> None:
+            """Execute the wrapped function with timing and error handling."""
             start_time = time.time()
 
             try:
