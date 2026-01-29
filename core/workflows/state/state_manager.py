@@ -92,10 +92,12 @@ class StateManager:
         temp_file = self.state_file.with_suffix('.tmp')
 
         try:
+            # Capture timestamp before write so it's included in the saved file
+            last_save = datetime.now().isoformat()
             # orjson.dumps returns bytes; OPT_INDENT_2 for human-readable output
-            # OPT_SERIALIZE_NUMPY for any numpy arrays, OPT_NON_STR_KEYS for non-string dict keys
+            # OPT_NON_STR_KEYS for non-string dict keys
             data = orjson.dumps(
-                self.state,
+                {**self.state, "last_save": last_save},
                 option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS,
                 default=str,
             )
@@ -104,8 +106,8 @@ class StateManager:
             # Atomic rename
             temp_file.replace(self.state_file)
 
-            # Only update last_save after successful write
-            self.state['last_save'] = datetime.now().isoformat()
+            # Update in-memory state after successful write
+            self.state['last_save'] = last_save
             return True
 
         except Exception as e:

@@ -704,22 +704,24 @@ class DocumentProcessor:
             return results
 
         # Optimized batch mode: separate extraction and embedding phases
+        # Use indexed lists to preserve input order even when failures occur
         logger.info("Starting optimized batch processing for %d documents", len(document_paths))
-        results: list[ProcessingResult] = []
-        extractions: list[tuple[ExtractionResult, str, Path, float]] = []
+        n_docs = len(document_paths)
+        results: list[ProcessingResult | None] = [None] * n_docs
+        extractions: list[tuple[ExtractionResult, str, Path, float] | None] = [None] * n_docs
 
         # Phase 1: Extract all documents (extractor stays loaded)
-        logger.info("Phase 1: Extracting %d documents", len(document_paths))
+        logger.info("Phase 1: Extracting %d documents", n_docs)
         for i, (pdf_path, latex_path) in enumerate(document_paths):
             doc_id = document_ids[i] if document_ids and i < len(document_ids) else pdf_path.stem
             start_time = time.time()
             try:
                 extraction_result = self._extract_content(Path(pdf_path), Path(latex_path) if latex_path else None)
-                extractions.append((extraction_result, doc_id, Path(pdf_path), start_time))
-                logger.info("Extracted document %d/%d: %s", i + 1, len(document_paths), doc_id)
+                extractions[i] = (extraction_result, doc_id, Path(pdf_path), start_time)
+                logger.info("Extracted document %d/%d: %s", i + 1, n_docs, doc_id)
             except Exception as exc:
                 logger.error("Failed to extract document %s: %s", doc_id, exc)
-                results.append(ProcessingResult(
+                results[i] = ProcessingResult(
                     extraction=ExtractionResult(full_text=""),
                     chunks=[],
                     processing_metadata={},
@@ -729,8 +731,7 @@ class DocumentProcessor:
                     embedding_time=0.0,
                     success=False,
                     errors=[str(exc)],
-                ))
-                extractions.append(None)  # type: ignore[arg-type]
+                )
 
         # Unload extractor to free GPU memory before embedding
         logger.info("Unloading extractor before embedding phase")
@@ -738,10 +739,10 @@ class DocumentProcessor:
         self._clear_gpu_memory(unload_extractor=False)
 
         # Phase 2: Chunk and embed all extractions
-        logger.info("Phase 2: Chunking and embedding %d extractions", len(extractions))
+        logger.info("Phase 2: Chunking and embedding extractions")
         for i, extraction_data in enumerate(extractions):
             if extraction_data is None:
-                continue  # Already added error result
+                continue  # Already added error result at this index
 
             extraction_result, doc_id, pdf_path, start_time = extraction_data
             extraction_time = extraction_result.extraction_time
@@ -821,7 +822,7 @@ class DocumentProcessor:
                     "batch_mode": True,
                 }
 
-                results.append(ProcessingResult(
+                results[i] = ProcessingResult(
                     extraction=extraction_result,
                     chunks=chunks if chunks else [],
                     processing_metadata=processing_metadata,
@@ -832,13 +833,13 @@ class DocumentProcessor:
                     success=bool(chunks),
                     errors=[] if chunks else ["Document produced no chunks"],
                     warnings=[] if chunks else ["Empty or unprocessable document"],
-                ))
+                )
                 logger.info("Embedded document %d/%d: %s (%d chunks)",
-                           i + 1, len(extractions), doc_id, len(chunks) if chunks else 0)
+                           i + 1, n_docs, doc_id, len(chunks) if chunks else 0)
 
             except Exception as exc:
                 logger.error("Failed to embed document %s: %s", doc_id, exc)
-                results.append(ProcessingResult(
+                results[i] = ProcessingResult(
                     extraction=extraction_result,
                     chunks=[],
                     processing_metadata={},
@@ -848,11 +849,13 @@ class DocumentProcessor:
                     embedding_time=0.0,
                     success=False,
                     errors=[str(exc)],
-                ))
+                )
 
+        # Filter out None entries and return (all should be filled, but be safe)
+        final_results = [r for r in results if r is not None]
         logger.info("Batch processing complete: %d/%d successful",
-                   sum(1 for r in results if r.success), len(results))
-        return results
+                   sum(1 for r in final_results if r.success), len(final_results))
+        return final_results
 
 
 __all__ = [
