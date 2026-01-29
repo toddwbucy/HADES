@@ -580,6 +580,14 @@ def database_query(
     context: int = typer.Option(0, "--context", "-c", help="Include N adjacent chunks for context"),
     cite: bool = typer.Option(False, "--cite", help="Output minimal citation format (arxiv_id, title, quote)"),
     chunks_only: bool = typer.Option(False, "--chunks", help="Get all chunks for --paper (no semantic search)"),
+    hybrid: bool = typer.Option(False, "--hybrid", "-H", help="Combine semantic search with keyword matching"),
+    decompose: bool = typer.Option(False, "--decompose", "-D", help="Split compound queries and merge results"),
+    rerank: bool = typer.Option(False, "--rerank", "-R", help="Re-rank with cross-encoder for better precision"),
+    rerank_model: str = typer.Option(
+        "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "--rerank-model",
+        help="Cross-encoder model for re-ranking",
+    ),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
 ) -> None:
     """Semantic search over the knowledge base.
@@ -592,6 +600,9 @@ def database_query(
         hades database query "attention" --context 1            # Include ±1 adjacent chunks
         hades db query "attention" --cite --limit 3             # Citation format, top 3
         hades database query --paper 2505.23735 --chunks        # Get all chunks (no search)
+        hades db query "flash attention memory" --hybrid        # Semantic + keyword matching
+        hades db query "memory and linear complexity" --decompose  # Split query
+        hades db query "attention" --rerank                     # Cross-encoder precision
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -611,6 +622,10 @@ def database_query(
                 paper_filter=paper,
                 context=context,
                 cite_only=cite,
+                hybrid=hybrid,
+                decompose=decompose,
+                rerank=rerank,
+                rerank_model=rerank_model,
             )
         # Mode 3: Must provide search text or --chunks
         else:

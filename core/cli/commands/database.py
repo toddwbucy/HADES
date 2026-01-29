@@ -482,6 +482,10 @@ def semantic_query(
     paper_filter: str | None = None,
     context: int = 0,
     cite_only: bool = False,
+    hybrid: bool = False,
+    decompose: bool = False,
+    rerank: bool = False,
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -492,6 +496,10 @@ def semantic_query(
         paper_filter: Optional arxiv ID to limit search to specific paper
         context: Number of adjacent chunks to include (0 = none)
         cite_only: If True, return minimal citation format
+        hybrid: If True, combine semantic similarity with keyword matching
+        decompose: If True, split compound queries and merge results
+        rerank: If True, re-rank top results with cross-encoder for better precision
+        rerank_model: Cross-encoder model to use for re-ranking
 
     Returns:
         CLIResponse with search results
@@ -506,19 +514,50 @@ def semantic_query(
             start_time=start_time,
         )
 
-    progress("Generating query embedding...")
-
     try:
-        # Generate query embedding
-        query_embedding = _get_query_embedding(search_text, config)
+        # Decompose query if requested
+        if decompose:
+            sub_queries = _decompose_query(search_text)
+            if len(sub_queries) > 1:
+                progress(f"Decomposed into {len(sub_queries)} sub-queries: {sub_queries}")
+                results = _search_with_decomposition(
+                    sub_queries, limit, config, paper_filter, hybrid, search_text
+                )
+            else:
+                # Single query, proceed normally
+                decompose = False
 
-        if paper_filter:
-            progress(f"Searching paper {paper_filter} for {limit} most similar chunks...")
-        else:
-            progress(f"Searching {limit} most similar chunks...")
+        if not decompose:
+            progress("Generating query embedding...")
+            # Generate query embedding
+            query_embedding = _get_query_embedding(search_text, config)
 
-        # Search database
-        results = _search_embeddings(query_embedding, limit, config, paper_filter=paper_filter)
+            if paper_filter:
+                progress(f"Searching paper {paper_filter} for {limit} most similar chunks...")
+            else:
+                progress(f"Searching {limit} most similar chunks...")
+
+            # Search database - fetch extra results for reranking stages
+            # Fetch more if we'll be doing any reranking
+            if rerank:
+                fetch_limit = max(limit * 5, 50)  # Get more candidates for cross-encoder
+            elif hybrid:
+                fetch_limit = limit * 3
+            else:
+                fetch_limit = limit
+            results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+
+            # Apply hybrid reranking if requested (fast, keyword-based)
+            if hybrid and results:
+                progress("Re-ranking with keyword matching...")
+                results = _hybrid_rerank_results(results, search_text)
+                if not rerank:
+                    results = results[:limit]  # Trim unless cross-encoder will further refine
+
+        # Apply cross-encoder reranking if requested (slower, more accurate)
+        if rerank and results:
+            progress(f"Re-ranking with cross-encoder ({rerank_model})...")
+            results = _crossencoder_rerank(results, search_text, limit, rerank_model)
 
         # Add context chunks if requested
         if context > 0 and results:
@@ -805,7 +844,9 @@ def _search_embeddings(
     """
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
-    arango_config = get_arango_config(config, read_only=True)
+    # Use read-write socket because cursor pagination requires PUT requests,
+    # which the read-only socket doesn't support
+    arango_config = get_arango_config(config, read_only=False)
     client_config = ArangoHttp2Config(
         database=arango_config["database"],
         socket_path=arango_config.get("socket_path"),
@@ -845,7 +886,8 @@ def _search_embeddings(
                             source: "full_paper"
                         }}
                 """
-                chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter})
+                # Use large batch to avoid cursor pagination issues with proxy
+                chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter}, batch_size=50000)
             else:
                 aql_chunks = f"""
                     FOR emb IN {col.embeddings}
@@ -863,7 +905,8 @@ def _search_embeddings(
                             source: "full_paper"
                         }}
                 """
-                chunk_results = client.query(aql_chunks)
+                # Use large batch to avoid cursor pagination issues with proxy
+                chunk_results = client.query(aql_chunks, batch_size=50000)
             all_embeddings.extend(chunk_results or [])
         except Exception as e:
             # Collection may not exist - continue with other sources
@@ -889,7 +932,8 @@ def _search_embeddings(
                             source: "abstract"
                         }}
                 """
-                abstract_results = client.query(aql_abstracts)
+                # Use large batch to avoid cursor pagination issues with proxy
+                abstract_results = client.query(aql_abstracts, batch_size=50000)
                 all_embeddings.extend(abstract_results or [])
             except Exception as e:
                 # Collection may not exist - continue with other sources
@@ -926,6 +970,275 @@ def _search_embeddings(
 
     finally:
         client.close()
+
+
+def _hybrid_rerank_results(
+    results: list[dict[str, Any]],
+    query: str,
+    semantic_weight: float = 0.7,
+) -> list[dict[str, Any]]:
+    """Re-rank results by combining semantic similarity with keyword matching.
+
+    Uses a simple term frequency score combined with semantic similarity.
+    This improves retrieval for queries with specific technical terms that
+    should appear in the matching text.
+
+    Args:
+        results: List of search results with 'similarity' and 'text' fields
+        query: Original query text for keyword matching
+        semantic_weight: Weight for semantic score (1 - this = keyword weight)
+
+    Returns:
+        Re-ranked results with additional score fields
+    """
+    # Tokenize query into terms
+    query_terms = set(query.lower().split())
+
+    reranked = []
+    for result in results:
+        semantic_score = result.get("similarity", 0)
+
+        # Compute keyword score from text and title
+        text = (result.get("text") or "").lower()
+        title = (result.get("title") or "").lower()
+        combined_text = title + " " + text
+
+        # Simple term frequency score: fraction of query terms found
+        text_terms = set(combined_text.split())
+        if query_terms:
+            matches = sum(1 for term in query_terms if term in text_terms)
+            keyword_score = matches / len(query_terms)
+        else:
+            keyword_score = 0
+
+        # Combine scores
+        combined_score = (semantic_weight * semantic_score) + ((1 - semantic_weight) * keyword_score)
+
+        # Create result with additional scores
+        reranked_result = {
+            **result,
+            "keyword_score": round(keyword_score, 4),
+            "combined_score": round(combined_score, 4),
+        }
+        reranked.append(reranked_result)
+
+    # Sort by combined score descending
+    reranked.sort(key=lambda x: x["combined_score"], reverse=True)
+    return reranked
+
+
+def _decompose_query(query: str) -> list[str]:
+    """Decompose a compound query into sub-queries.
+
+    Uses rule-based splitting on conjunctions and punctuation.
+    Keeps multi-word technical terms together.
+
+    Args:
+        query: Original query text
+
+    Returns:
+        List of sub-queries (may be single-element if not compound)
+    """
+    import re
+
+    # Normalize whitespace
+    query = " ".join(query.split())
+
+    # Split patterns: conjunctions and punctuation
+    # Order matters - try more specific patterns first
+    split_patterns = [
+        r"\s+and\s+",
+        r"\s+or\s+",
+        r"\s+with\s+",
+        r"\s+vs\.?\s+",
+        r"\s+versus\s+",
+        r",\s*",
+        r";\s*",
+    ]
+
+    # Try each pattern
+    sub_queries = [query]
+    for pattern in split_patterns:
+        new_subs = []
+        for sq in sub_queries:
+            parts = re.split(pattern, sq, flags=re.IGNORECASE)
+            new_subs.extend(parts)
+        sub_queries = new_subs
+
+    # Clean up: strip whitespace, filter empty/short, deduplicate
+    cleaned = []
+    seen = set()
+    for sq in sub_queries:
+        sq = sq.strip()
+        # Skip if too short (single word with < 4 chars) or empty
+        if not sq or (len(sq.split()) == 1 and len(sq) < 4):
+            continue
+        # Deduplicate (case-insensitive)
+        sq_lower = sq.lower()
+        if sq_lower not in seen:
+            seen.add(sq_lower)
+            cleaned.append(sq)
+
+    # If we ended up with nothing useful, return original
+    if not cleaned:
+        return [query]
+
+    return cleaned
+
+
+def _search_with_decomposition(
+    sub_queries: list[str],
+    limit: int,
+    config: Any,
+    paper_filter: str | None,
+    hybrid: bool,
+    original_query: str,
+) -> list[dict[str, Any]]:
+    """Search with multiple sub-queries and merge results.
+
+    Runs each sub-query, aggregates scores, and deduplicates.
+
+    Args:
+        sub_queries: List of decomposed queries
+        limit: Final number of results to return
+        config: CLI configuration
+        paper_filter: Optional paper filter
+        hybrid: Whether to use hybrid reranking
+        original_query: Original query for hybrid reranking
+
+    Returns:
+        Merged and deduplicated results
+    """
+    from collections import defaultdict
+
+    # Track results by unique key (arxiv_id + chunk_index)
+    result_scores: dict[str, dict[str, Any]] = {}
+    result_counts: defaultdict[str, int] = defaultdict(int)
+
+    # Fetch more results per sub-query to get good coverage
+    per_query_limit = max(limit, 10)
+
+    for i, sq in enumerate(sub_queries):
+        progress(f"Sub-query {i + 1}/{len(sub_queries)}: {sq}")
+
+        # Generate embedding for sub-query
+        query_embedding = _get_query_embedding(sq, config)
+
+        # Search
+        fetch_limit = per_query_limit * 2 if hybrid else per_query_limit
+        results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+
+        # Apply hybrid reranking per sub-query
+        if hybrid and results:
+            results = _hybrid_rerank_results(results, sq)
+            results = results[:per_query_limit]
+
+        # Aggregate results
+        for result in results:
+            # Create unique key
+            arxiv_id = result.get("arxiv_id", "")
+            chunk_idx = result.get("chunk_index", 0)
+            key = f"{arxiv_id}:{chunk_idx}"
+
+            score = result.get("combined_score") if hybrid else result.get("similarity", 0)
+
+            if key in result_scores:
+                # Update: keep max score, increment count
+                existing_score = (
+                    result_scores[key].get("combined_score")
+                    if hybrid
+                    else result_scores[key].get("similarity", 0)
+                )
+                if score > existing_score:
+                    result_scores[key] = result
+            else:
+                result_scores[key] = result
+
+            result_counts[key] += 1
+
+    # Boost results that appear in multiple sub-queries
+    progress("Merging results from sub-queries...")
+    merged = []
+    for key, result in result_scores.items():
+        count = result_counts[key]
+        base_score = result.get("combined_score") if hybrid else result.get("similarity", 0)
+
+        # Boost: results appearing in multiple queries get higher scores
+        # Formula: base_score * (1 + 0.1 * (count - 1))
+        # This gives 10% boost per additional query match
+        boost_factor = 1 + 0.1 * (count - 1)
+        boosted_score = base_score * boost_factor
+
+        merged_result = {
+            **result,
+            "sub_query_matches": count,
+            "aggregated_score": round(boosted_score, 4),
+        }
+        merged.append(merged_result)
+
+    # Sort by aggregated score
+    merged.sort(key=lambda x: x["aggregated_score"], reverse=True)
+
+    # Apply final hybrid reranking with original query for coherence
+    if hybrid:
+        merged = _hybrid_rerank_results(merged, original_query)
+
+    return merged[:limit]
+
+
+def _crossencoder_rerank(
+    results: list[dict[str, Any]],
+    query: str,
+    limit: int,
+    model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+) -> list[dict[str, Any]]:
+    """Re-rank results using a cross-encoder for better precision.
+
+    Cross-encoders score (query, document) pairs together, allowing
+    them to model token interactions that bi-encoders miss.
+
+    Args:
+        results: Initial search results with 'text' field
+        query: Original query text
+        limit: Number of results to return after reranking
+        model_name: HuggingFace cross-encoder model identifier
+
+    Returns:
+        Re-ranked results with cross-encoder scores
+    """
+    from sentence_transformers import CrossEncoder
+
+    if not results:
+        return results
+
+    # Load cross-encoder model (cached after first load)
+    model = CrossEncoder(model_name, max_length=512)
+
+    # Prepare (query, passage) pairs
+    pairs = []
+    for result in results:
+        text = result.get("text", "")
+        title = result.get("title", "")
+        # Combine title and text for better context
+        passage = f"{title}. {text}" if title else text
+        pairs.append([query, passage])
+
+    # Score all pairs in batch
+    scores = model.predict(pairs, show_progress_bar=False)
+
+    # Add scores to results
+    reranked = []
+    for result, score in zip(results, scores, strict=True):
+        reranked_result = {
+            **result,
+            "cross_encoder_score": round(float(score), 4),
+        }
+        reranked.append(reranked_result)
+
+    # Sort by cross-encoder score (descending)
+    reranked.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
+
+    return reranked[:limit]
 
 
 def _add_context_chunks(
