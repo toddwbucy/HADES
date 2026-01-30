@@ -3,9 +3,19 @@ Storage Backends for Workflows.
 
 Provides storage backends for workflow outputs including
 local filesystem and ArangoDB utilities.
+
+Usage:
+    # Recommended: Use StorageFactory
+    from core.workflows.storage import StorageFactory
+    storage = StorageFactory.create("local", base_path="/data")
+
+    # Direct instantiation
+    from core.workflows.storage import LocalStorage
+    storage = LocalStorage(config={"base_path": "/data"})
 """
 
 from .storage_base import StorageBase
+from .storage_factory import StorageFactory
 from .storage_local import LocalStorage
 
 # Lazy imports for optional backends
@@ -42,6 +52,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "StorageFactory",
     "StorageBase",
     "LocalStorage",
     "ArangoStorageManager",
