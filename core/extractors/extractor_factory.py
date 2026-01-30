@@ -81,7 +81,7 @@ class ExtractorFactory:
             # Register extensions if provided
             if extensions:
                 for ext in extensions:
-                    ext_lower = ext.lower() if not ext.startswith(".") else ext.lower()
+                    ext_lower = ext.lower()
                     if not ext_lower.startswith("."):
                         ext_lower = f".{ext_lower}"
                     cls._extension_map[ext_lower] = name

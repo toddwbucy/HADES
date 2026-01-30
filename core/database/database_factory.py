@@ -332,7 +332,6 @@ class _ArangoWrapper:
         connect_timeout: float | None = None,
         read_timeout: float | None = None,
         write_timeout: float | None = None,
-        **kwargs,
     ):
         from core.database.arango import ArangoMemoryClient, resolve_memory_config
 
