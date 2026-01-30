@@ -18,7 +18,7 @@ from core.cli.output import (
     progress,
     success_response,
 )
-from core.database.collections import get_profile
+from core.database.collections import get_default_profile_name, get_profile
 from core.database.keys import normalize_document_key
 
 # =============================================================================
@@ -30,17 +30,21 @@ def list_stored_papers(
     limit: int,
     category: str | None,
     start_time: float,
+    collection: str | None = None,
 ) -> CLIResponse:
-    """List papers stored in the database.
+    """List documents stored in the database.
 
     Args:
-        limit: Maximum number of papers to return
-        category: Optional arxiv category filter
+        limit: Maximum number of documents to return
+        category: Optional category filter
         start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
-        CLIResponse with paper list
+        CLIResponse with document list
     """
+    profile_name = collection or get_default_profile_name()
+
     try:
         config = get_config()
     except ValueError as e:
@@ -66,7 +70,7 @@ def list_stored_papers(
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
+            col = get_profile(profile_name)
             # Build query with optional category filter
             if category:
                 aql = f"""
@@ -124,15 +128,18 @@ def list_stored_papers(
         )
 
 
-def get_stats(start_time: float) -> CLIResponse:
+def get_stats(start_time: float, collection: str | None = None) -> CLIResponse:
     """Get database statistics.
 
     Args:
         start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
         CLIResponse with database statistics
     """
+    profile_name = collection or get_default_profile_name()
+
     try:
         config = get_config()
     except ValueError as e:
@@ -158,7 +165,7 @@ def get_stats(start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
+            col = get_profile(profile_name)
             stats = {}
 
             # Count papers
@@ -226,16 +233,21 @@ def get_stats(start_time: float) -> CLIResponse:
         )
 
 
-def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
-    """Check if a paper exists in the database.
+def check_paper_exists(
+    document_id: str, start_time: float, collection: str | None = None
+) -> CLIResponse:
+    """Check if a document exists in the database.
 
     Args:
-        arxiv_id: ArXiv paper ID to check
+        document_id: Document ID to check
         start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
         CLIResponse with existence check result
     """
+    profile_name = collection or get_default_profile_name()
+
     try:
         config = get_config()
     except ValueError as e:
@@ -261,8 +273,8 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
-            sanitized_id = normalize_document_key(arxiv_id)
+            col = get_profile(profile_name)
+            sanitized_id = normalize_document_key(document_id)
 
             # Try to get the document
             from core.database.arango.optimized_client import ArangoHttpError
@@ -270,8 +282,8 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
             try:
                 doc = client.get_document(col.metadata, sanitized_id)
                 exists = True
-                paper_info = {
-                    "arxiv_id": doc.get("arxiv_id"),
+                doc_info = {
+                    "document_id": doc.get("document_id") or doc.get("arxiv_id"),
                     "title": doc.get("title"),
                     "num_chunks": doc.get("num_chunks"),
                     "processing_timestamp": doc.get("processing_timestamp"),
@@ -280,16 +292,17 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
             except ArangoHttpError as e:
                 if e.status_code == 404:
                     exists = False
-                    paper_info = None
+                    doc_info = None
                 else:
                     raise
 
             return success_response(
                 command="database.check",
                 data={
-                    "arxiv_id": arxiv_id,
+                    "document_id": document_id,
+                    "collection": profile_name,
                     "exists": exists,
-                    "paper": paper_info,
+                    "document": doc_info,
                 },
                 start_time=start_time,
             )
@@ -306,18 +319,23 @@ def check_paper_exists(arxiv_id: str, start_time: float) -> CLIResponse:
         )
 
 
-def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
-    """Remove all data for a paper from all collections.
+def purge_paper(
+    document_id: str, start_time: float, collection: str | None = None
+) -> CLIResponse:
+    """Remove all data for a document from all collections.
 
-    Deletes metadata, chunks, and embeddings for the given arxiv ID.
+    Deletes metadata, chunks, and embeddings for the given document ID.
 
     Args:
-        arxiv_id: ArXiv paper ID to purge
+        document_id: Document ID to purge
         start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
         CLIResponse with deletion counts
     """
+    profile_name = collection or get_default_profile_name()
+
     try:
         config = get_config()
     except ValueError as e:
@@ -343,8 +361,8 @@ def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
-            paper_key = normalize_document_key(arxiv_id)
+            col = get_profile(profile_name)
+            doc_key = normalize_document_key(document_id)
 
             aql = f"""
                 LET meta = (FOR d IN {col.metadata} FILTER d._key == @key REMOVE d IN {col.metadata} RETURN 1)
@@ -353,7 +371,7 @@ def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
                 RETURN {{metadata: LENGTH(meta), chunks: LENGTH(chunks), embeddings: LENGTH(embs)}}
             """
 
-            results = client.query(aql, bind_vars={"key": paper_key})
+            results = client.query(aql, bind_vars={"key": doc_key})
             counts = results[0] if results else {"metadata": 0, "chunks": 0, "embeddings": 0}
 
             total = counts["metadata"] + counts["chunks"] + counts["embeddings"]
@@ -361,15 +379,16 @@ def purge_paper(arxiv_id: str, start_time: float) -> CLIResponse:
                 return error_response(
                     command="database.purge",
                     code=ErrorCode.PAPER_NOT_FOUND,
-                    message=f"No data found for paper: {arxiv_id}",
+                    message=f"No data found for document: {document_id}",
                     start_time=start_time,
                 )
 
             return success_response(
                 command="database.purge",
                 data={
-                    "arxiv_id": arxiv_id,
-                    "paper_key": paper_key,
+                    "document_id": document_id,
+                    "collection": profile_name,
+                    "document_key": doc_key,
                     "deleted": counts,
                     "total_deleted": total,
                 },
@@ -486,6 +505,7 @@ def semantic_query(
     decompose: bool = False,
     rerank: bool = False,
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    collection: str | None = None,
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -493,17 +513,19 @@ def semantic_query(
         search_text: Query text to search for
         limit: Maximum number of results
         start_time: Start time for duration calculation
-        paper_filter: Optional arxiv ID to limit search to specific paper
+        paper_filter: Optional document ID to limit search to specific document
         context: Number of adjacent chunks to include (0 = none)
         cite_only: If True, return minimal citation format
         hybrid: If True, combine semantic similarity with keyword matching
         decompose: If True, split compound queries and merge results
         rerank: If True, re-rank top results with cross-encoder for better precision
         rerank_model: Cross-encoder model to use for re-ranking
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
         CLIResponse with search results
     """
+    profile_name = collection or get_default_profile_name()
     try:
         config = get_config()
     except ValueError as e:
@@ -521,7 +543,8 @@ def semantic_query(
             if len(sub_queries) > 1:
                 progress(f"Decomposed into {len(sub_queries)} sub-queries: {sub_queries}")
                 results = _search_with_decomposition(
-                    sub_queries, limit, config, paper_filter, hybrid, search_text
+                    sub_queries, limit, config, paper_filter, hybrid, search_text,
+                    collection=profile_name
                 )
             else:
                 # Single query, proceed normally
@@ -533,7 +556,7 @@ def semantic_query(
             query_embedding = _get_query_embedding(search_text, config)
 
             if paper_filter:
-                progress(f"Searching paper {paper_filter} for {limit} most similar chunks...")
+                progress(f"Searching document {paper_filter} for {limit} most similar chunks...")
             else:
                 progress(f"Searching {limit} most similar chunks...")
 
@@ -545,7 +568,10 @@ def semantic_query(
                 fetch_limit = limit * 3
             else:
                 fetch_limit = limit
-            results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+            results = _search_embeddings(
+                query_embedding, fetch_limit, config, paper_filter=paper_filter,
+                collection=profile_name
+            )
 
             # Apply hybrid reranking if requested (fast, keyword-based)
             if hybrid and results:
@@ -561,7 +587,7 @@ def semantic_query(
 
         # Add context chunks if requested
         if context > 0 and results:
-            results = _add_context_chunks(results, context, config)
+            results = _add_context_chunks(results, context, config, collection=profile_name)
 
         # Format for citation if requested
         if cite_only:
@@ -593,17 +619,21 @@ def get_paper_chunks(
     paper_id: str,
     limit: int,
     start_time: float,
+    collection: str | None = None,
 ) -> CLIResponse:
-    """Get all chunks for a specific paper.
+    """Get all chunks for a specific document.
 
     Args:
-        paper_id: ArXiv ID or document ID
+        paper_id: Document ID
         limit: Maximum number of chunks to return
         start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
-        CLIResponse with paper chunks
+        CLIResponse with document chunks
     """
+    profile_name = collection or get_default_profile_name()
+
     try:
         config = get_config()
     except ValueError as e:
@@ -614,7 +644,7 @@ def get_paper_chunks(
             start_time=start_time,
         )
 
-    progress(f"Retrieving chunks for paper: {paper_id}")
+    progress(f"Retrieving chunks for document: {paper_id}")
 
     try:
         from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
@@ -631,7 +661,7 @@ def get_paper_chunks(
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
+            col = get_profile(profile_name)
             sanitized_id = normalize_document_key(paper_id)
 
             # Query chunks for this paper
@@ -831,6 +861,7 @@ def _search_embeddings(
     limit: int,
     config: Any,
     paper_filter: str | None = None,
+    collection: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search for similar embeddings in the database.
 
@@ -840,9 +871,12 @@ def _search_embeddings(
         query_embedding: Query vector
         limit: Maximum results to return
         config: CLI configuration
-        paper_filter: Optional arxiv ID to limit search to specific paper
+        paper_filter: Optional document ID to limit search to specific document
+        collection: Collection profile name (default: from env or 'arxiv')
     """
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    profile_name = collection or get_default_profile_name()
 
     # Use read-write socket because cursor pagination requires PUT requests,
     # which the read-only socket doesn't support
@@ -863,10 +897,10 @@ def _search_embeddings(
         paper_key_filter = normalize_document_key(paper_filter)
 
     try:
-        col = get_profile("arxiv")
+        col = get_profile(profile_name)
         all_embeddings = []
 
-        # Search full paper chunks (from ingested PDFs)
+        # Search chunks in the specified collection
         try:
             if paper_key_filter:
                 aql_chunks = f"""
@@ -883,11 +917,15 @@ def _search_embeddings(
                             total_chunks: chunk.total_chunks,
                             title: meta.title,
                             arxiv_id: meta.arxiv_id,
-                            source: "full_paper"
+                            source: @collection
                         }}
                 """
                 # Use large batch to avoid cursor pagination issues with proxy
-                chunk_results = client.query(aql_chunks, bind_vars={"paper_key": paper_key_filter}, batch_size=50000)
+                chunk_results = client.query(
+                    aql_chunks,
+                    bind_vars={"paper_key": paper_key_filter, "collection": profile_name},
+                    batch_size=50000
+                )
             else:
                 aql_chunks = f"""
                     FOR emb IN {col.embeddings}
@@ -902,42 +940,19 @@ def _search_embeddings(
                             total_chunks: chunk.total_chunks,
                             title: meta.title,
                             arxiv_id: meta.arxiv_id,
-                            source: "full_paper"
+                            source: @collection
                         }}
                 """
                 # Use large batch to avoid cursor pagination issues with proxy
-                chunk_results = client.query(aql_chunks, batch_size=50000)
+                chunk_results = client.query(
+                    aql_chunks,
+                    bind_vars={"collection": profile_name},
+                    batch_size=50000
+                )
             all_embeddings.extend(chunk_results or [])
         except Exception as e:
-            # Collection may not exist - continue with other sources
-            progress(f"Note: Could not query full paper chunks: {e}")
-
-        # Search synced abstracts (from sync command) - skip if filtering by paper
-        # (abstracts are single chunks, full paper search is more useful when filtering)
-        if not paper_key_filter:
-            try:
-                sync_col = get_profile("sync")
-                aql_abstracts = f"""
-                    FOR emb IN {col.embeddings}
-                        FILTER emb.text_type == "abstract"
-                        LET abstract = DOCUMENT(CONCAT("{sync_col.chunks}/", emb.paper_key))
-                        RETURN {{
-                            paper_key: emb.paper_key,
-                            embedding: emb.embedding,
-                            text: abstract.abstract,
-                            chunk_index: 0,
-                            total_chunks: 1,
-                            title: abstract.title,
-                            arxiv_id: abstract.arxiv_id,
-                            source: "abstract"
-                        }}
-                """
-                # Use large batch to avoid cursor pagination issues with proxy
-                abstract_results = client.query(aql_abstracts, batch_size=50000)
-                all_embeddings.extend(abstract_results or [])
-            except Exception as e:
-                # Collection may not exist - continue with other sources
-                progress(f"Note: Could not query synced abstracts: {e}")
+            # Collection may not exist
+            progress(f"Note: Could not query {profile_name} chunks: {e}")
 
         if not all_embeddings:
             return []
@@ -1093,6 +1108,7 @@ def _search_with_decomposition(
     paper_filter: str | None,
     hybrid: bool,
     original_query: str,
+    collection: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search with multiple sub-queries and merge results.
 
@@ -1105,11 +1121,14 @@ def _search_with_decomposition(
         paper_filter: Optional paper filter
         hybrid: Whether to use hybrid reranking
         original_query: Original query for hybrid reranking
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
         Merged and deduplicated results
     """
     from collections import defaultdict
+
+    profile_name = collection or get_default_profile_name()
 
     # Track results by unique key (arxiv_id + chunk_index)
     result_scores: dict[str, dict[str, Any]] = {}
@@ -1126,7 +1145,9 @@ def _search_with_decomposition(
 
         # Search
         fetch_limit = per_query_limit * 2 if hybrid else per_query_limit
-        results = _search_embeddings(query_embedding, fetch_limit, config, paper_filter=paper_filter)
+        results = _search_embeddings(
+            query_embedding, fetch_limit, config, paper_filter=paper_filter, collection=profile_name
+        )
 
         # Apply hybrid reranking per sub-query
         if hybrid and results:
@@ -1249,17 +1270,21 @@ def _add_context_chunks(
     results: list[dict[str, Any]],
     context: int,
     config: Any,
+    collection: str | None = None,
 ) -> list[dict[str, Any]]:
     """Add neighboring chunks to each result for context.
 
     Args:
         results: Search results with chunk_index
         context: Number of chunks before/after to include
+        collection: Collection profile name (default: from env or 'arxiv')
 
     Returns:
         Results with context_before and context_after lists
     """
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    profile_name = collection or get_default_profile_name()
 
     arango_config = get_arango_config(config, read_only=True)
     client_config = ArangoHttp2Config(
@@ -1273,7 +1298,7 @@ def _add_context_chunks(
     client = ArangoHttp2Client(client_config)
 
     try:
-        col = get_profile("arxiv")
+        col = get_profile(profile_name)
         for result in results:
             arxiv_id = result.get("arxiv_id")
             chunk_index = result.get("chunk_index")
