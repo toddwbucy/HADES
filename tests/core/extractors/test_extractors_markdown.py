@@ -515,3 +515,24 @@ class TestCodeRabbitReviewFixes:
         # Empty cells should be preserved as empty strings
         assert table["rows"][0] == ["1", "", "3"]
         assert table["rows"][1] == ["x", "y", ""]
+
+    def test_handles_malformed_numeric_entities(self, tmp_path):
+        """Should handle out-of-range numeric HTML entities without crashing."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        html_file = tmp_path / "test.html"
+        # Include valid and invalid numeric entities
+        html_file.write_text(
+            "<p>Valid: &#65; &#x41;</p>"  # 'A' in decimal and hex
+            "<p>Invalid: &#999999999; &#xFFFFFFFF;</p>"  # Out of range
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(html_file)
+
+        # Should not crash
+        assert result.error is None
+        # Valid entities should be converted
+        assert "A" in result.text
+        # Invalid entities should be replaced with replacement character
+        assert "\uFFFD" in result.text

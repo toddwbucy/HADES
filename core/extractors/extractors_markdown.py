@@ -669,12 +669,20 @@ class MarkdownExtractor(ExtractorBase):
         for entity, char in entities.items():
             text = text.replace(entity, char)
 
-        # Handle numeric entities
+        # Handle numeric entities with safe conversion
+        def safe_chr(codepoint: int) -> str:
+            """Convert codepoint to character, returning replacement char on error."""
+            try:
+                return chr(codepoint)
+            except (ValueError, OverflowError):
+                # Out-of-range codepoints (e.g., &#999999999; or &#xFFFFFFFF;)
+                return "\uFFFD"  # Unicode replacement character
+
         text = re.sub(
-            r"&#(\d+);", lambda m: chr(int(m.group(1))), text
+            r"&#(\d+);", lambda m: safe_chr(int(m.group(1))), text
         )
         text = re.sub(
-            r"&#x([0-9a-fA-F]+);", lambda m: chr(int(m.group(1), 16)), text
+            r"&#x([0-9a-fA-F]+);", lambda m: safe_chr(int(m.group(1), 16)), text
         )
 
         return text
