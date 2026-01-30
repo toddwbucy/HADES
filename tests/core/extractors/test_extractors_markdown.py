@@ -536,3 +536,32 @@ class TestCodeRabbitReviewFixes:
         assert "A" in result.text
         # Invalid entities should be replaced with replacement character
         assert "\uFFFD" in result.text
+
+    def test_preserves_blank_lines_in_indented_code(self, tmp_path):
+        """Should preserve blank lines when dedenting indented code blocks."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        # Indented code block - note: in Markdown, a truly blank line ends the block
+        # Use a line with just spaces to keep it as part of the same block
+        md_file.write_text(
+            "Some text\n\n"
+            "    def foo():\n"
+            "        x = 1\n"
+            "    \n"  # Line with 4 spaces (stays in code block)
+            "        y = 2\n"
+            "        return x + y\n"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        # Should have one code block
+        assert len(result.code_blocks) >= 1
+        code = result.code_blocks[0]["code"]
+        # The blank line should be preserved (as empty line in dedented output)
+        assert "x = 1" in code
+        assert "y = 2" in code
+        # Check that blank line is preserved (not collapsed)
+        lines = code.split("\n")
+        assert any(line == "" for line in lines), "Blank line should be preserved"

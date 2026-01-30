@@ -260,17 +260,23 @@ class MarkdownExtractor(ExtractorBase):
 
         # Also match indented code blocks (4 spaces or 1 tab)
         # Only if not inside a fenced block
-        indented_pattern = r"(?:^|\n\n)((?:(?:    |\t).+\n?)+)"
+        # Use .* to allow blank lines within code block (lines with just indent)
+        indented_pattern = r"(?:^|\n\n)((?:(?:    |\t).*\n?)+)"
         indented_matches = re.findall(indented_pattern, content)
 
         for code in indented_matches:
-            # Remove indentation
+            # Remove indentation while preserving blank lines
             lines = code.split("\n")
-            dedented = "\n".join(
-                line[4:] if line.startswith("    ") else line[1:]
-                for line in lines
-                if line.strip()
-            )
+            dedented_lines = []
+            for line in lines:
+                if line.startswith("    "):
+                    dedented_lines.append(line[4:])
+                elif line.startswith("\t"):
+                    dedented_lines.append(line[1:])
+                else:
+                    # Preserve blank/whitespace-only lines as empty
+                    dedented_lines.append("")
+            dedented = "\n".join(dedented_lines)
             if dedented.strip():
                 code_blocks.append(
                     {
