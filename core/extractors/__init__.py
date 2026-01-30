@@ -2,22 +2,29 @@
 Extractors Module
 
 Provides document extraction capabilities for various file formats.
+
+Usage:
+    # Recommended: Use ExtractorFactory
+    from core.extractors import ExtractorFactory
+    extractor = ExtractorFactory.for_file("document.pdf")
+
+    # Legacy: Direct function call (uses factory internally)
+    from core.extractors import get_extractor
+    extractor = get_extractor("document.pdf")
 """
 
 import os
 from pathlib import Path
-from typing import Union
 
+from .extractor_factory import ExtractorFactory
 from .extractors_base import ExtractionResult, ExtractorBase, ExtractorConfig
 
 # Import extractors - use Optional types for conditional imports
-from typing import Optional, Type
-
-DoclingExtractor: Optional[Type] = None
-LaTeXExtractor: Optional[Type] = None
-CodeExtractor: Optional[Type] = None
-TreeSitterExtractor: Optional[Type] = None
-RobustExtractor: Optional[Type] = None
+DoclingExtractor: type | None = None
+LaTeXExtractor: type | None = None
+CodeExtractor: type | None = None
+TreeSitterExtractor: type | None = None
+RobustExtractor: type | None = None
 
 try:
     from .extractors_docling import DoclingExtractor as _DoclingExtractor
@@ -50,9 +57,12 @@ except ImportError:
     pass
 
 
-def get_extractor(file_path: str | Path | os.PathLike, **kwargs):
+def get_extractor(file_path: str | Path | os.PathLike, **kwargs) -> ExtractorBase:
     """
     Get an appropriate extractor for a file.
+
+    This function uses ExtractorFactory.for_file() internally.
+    Prefer using ExtractorFactory directly for more control.
 
     Args:
         file_path: Path to the file (str, Path, or os.PathLike)
@@ -60,44 +70,26 @@ def get_extractor(file_path: str | Path | os.PathLike, **kwargs):
 
     Returns:
         Extractor instance
+
+    Raises:
+        ValueError: If no extractor available for the file type
     """
-    file_path_lower = str(file_path).lower()
-
-    if file_path_lower.endswith('.pdf'):
-        if DoclingExtractor is not None:
-            return DoclingExtractor(**kwargs)
-        if RobustExtractor is not None:
-            return RobustExtractor(**kwargs)
-        raise ImportError("No PDF extractor available (DoclingExtractor and RobustExtractor unavailable)")
-
-    if file_path_lower.endswith('.tex'):
-        if LaTeXExtractor is not None:
-            return LaTeXExtractor(**kwargs)
-        raise ImportError("LaTeXExtractor not available")
-
-    if file_path_lower.endswith(('.py', '.js', '.ts', '.go', '.rs', '.java', '.c', '.cpp', '.h')):
-        if CodeExtractor is not None:
-            return CodeExtractor(**kwargs)
-        # TreeSitterExtractor does not implement ExtractorBase interface
-        raise ImportError("No code extractor available (CodeExtractor unavailable)")
-
-    # Default to robust extractor for unknown types
-    if RobustExtractor is not None:
-        return RobustExtractor(**kwargs)
-    if DoclingExtractor is not None:
-        return DoclingExtractor(**kwargs)
-
-    raise ImportError("No extractor available for this file type")
+    return ExtractorFactory.for_file(file_path, **kwargs)
 
 
 __all__ = [
+    # Factory (recommended)
+    'ExtractorFactory',
+    # Base classes
     'ExtractorBase',
     'ExtractorConfig',
     'ExtractionResult',
+    # Extractor classes (for direct use if needed)
     'DoclingExtractor',
     'LaTeXExtractor',
     'CodeExtractor',
     'TreeSitterExtractor',
     'RobustExtractor',
+    # Legacy function
     'get_extractor',
 ]

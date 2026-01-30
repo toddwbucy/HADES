@@ -1,27 +1,194 @@
 #!/usr/bin/env python3
-"""
-Database Factory
+"""Database Factory with Registry Pattern.
 
-Factory pattern for creating database connections.
-Supports automatic connection type selection and configuration.
+Factory pattern for creating database connections using a registry.
+Supports automatic connection type selection, lazy loading, and configuration.
+
+Usage:
+    # Create database connection
+    client = DatabaseFactory.create("arango", database="my_db")
+
+    # List available backends
+    DatabaseFactory.list_available()
+
+    # Register custom backend
+    @DatabaseFactory.register("custom")
+    class CustomDB(DatabaseBase):
+        ...
 """
 
 import logging
 import os
-from typing import Any
-
-from core.database.arango import ArangoMemoryClient, resolve_memory_config
+from abc import ABC, abstractmethod
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 
 
-class DatabaseFactory:
+class DatabaseBase(ABC):
+    """Abstract base class for database backends.
+
+    All database backends must implement this interface to be
+    compatible with the DatabaseFactory registry.
     """
-    Factory for creating database connections.
+
+    @property
+    @abstractmethod
+    def db_type(self) -> str:
+        """Return the database type identifier."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the database connection."""
+        ...
+
+    @abstractmethod
+    def is_connected(self) -> bool:
+        """Check if the database is connected."""
+        ...
+
+
+class DatabaseFactory:
+    """Factory for creating database connections using registry pattern.
 
     Manages the instantiation of different database types based on
-    configuration, with support for connection pooling and optimization.
+    configuration, with support for lazy loading and auto-detection.
+
+    Example:
+        # Create ArangoDB client
+        client = DatabaseFactory.create("arango", database="my_db")
+
+        # List available backends
+        available = DatabaseFactory.list_available()
+
+        # Register new backend
+        @DatabaseFactory.register("mydb")
+        class MyDBClient(DatabaseBase):
+            ...
     """
+
+    # Registry of available database backends
+    _registry: ClassVar[dict[str, type]] = {}
+
+    # Track which backends have been auto-registered
+    _auto_registered: ClassVar[set[str]] = set()
+
+    @classmethod
+    def register(cls, name: str):
+        """Decorator to register a database backend class.
+
+        Args:
+            name: Name to register under (e.g., "arango", "postgres")
+
+        Returns:
+            Decorator function
+
+        Example:
+            @DatabaseFactory.register("mydb")
+            class MyDBClient(DatabaseBase):
+                ...
+        """
+        def decorator(db_class: type) -> type:
+            cls._registry[name] = db_class
+            logger.debug(f"Registered database backend: {name}")
+            return db_class
+        return decorator
+
+    @classmethod
+    def create(cls, db_type: str, **kwargs) -> Any:
+        """Create a database connection instance.
+
+        Args:
+            db_type: Type of database ("arango", "postgres", "redis")
+            **kwargs: Database-specific connection options
+
+        Returns:
+            Database connection instance
+
+        Raises:
+            ValueError: If no backend registered for db_type
+        """
+        # Try auto-registration if not already registered
+        if db_type not in cls._registry:
+            cls._auto_register(db_type)
+
+        if db_type not in cls._registry:
+            available = list(cls._registry.keys())
+            raise ValueError(
+                f"No database backend registered for '{db_type}'. "
+                f"Available: {available}"
+            )
+
+        db_class = cls._registry[db_type]
+        logger.info(f"Creating {db_type} database connection")
+
+        return db_class(**kwargs)
+
+    @classmethod
+    def _auto_register(cls, db_type: str) -> None:
+        """Auto-register a database backend on first use.
+
+        This enables lazy loading of database modules.
+
+        Args:
+            db_type: Type of database to register
+        """
+        if db_type in cls._auto_registered:
+            return
+
+        try:
+            if db_type == "arango":
+                # Create a wrapper that matches DatabaseBase interface
+                cls._registry["arango"] = _ArangoWrapper
+                cls._auto_registered.add(db_type)
+                logger.debug("Auto-registered arango backend")
+
+            elif db_type == "postgres":
+                cls._registry["postgres"] = _PostgresWrapper
+                cls._auto_registered.add(db_type)
+                logger.debug("Auto-registered postgres backend")
+
+            elif db_type == "redis":
+                cls._registry["redis"] = _RedisWrapper
+                cls._auto_registered.add(db_type)
+                logger.debug("Auto-registered redis backend")
+
+            else:
+                # Mark unknown types to prevent repeated warnings
+                cls._auto_registered.add(db_type)
+                logger.warning(f"Unknown database type for auto-registration: {db_type}")
+
+        except ImportError:
+            logger.exception(f"Failed to auto-register {db_type}")
+
+    @classmethod
+    def list_available(cls) -> dict[str, dict[str, Any]]:
+        """List available database backends.
+
+        Returns:
+            Dictionary mapping backend names to their info
+        """
+        # Ensure all built-in backends are registered
+        for db_type in ["arango", "postgres", "redis"]:
+            if db_type not in cls._registry:
+                cls._auto_register(db_type)
+
+        available = {}
+        for name, db_class in cls._registry.items():
+            try:
+                available[name] = {
+                    "class": db_class.__name__,
+                    "module": db_class.__module__,
+                }
+            except Exception as e:
+                available[name] = {"error": str(e)}
+
+        return available
+
+    # =========================================================================
+    # Legacy API (preserved for backwards compatibility)
+    # =========================================================================
 
     @classmethod
     def get_arango(
@@ -41,25 +208,25 @@ class DatabaseFactory:
         read_timeout: float | None = None,
         write_timeout: float | None = None,
         **_: Any,
-    ) -> ArangoMemoryClient:
+    ) -> Any:
         """Return the optimized ArangoDB memory client.
 
-        The legacy python-arango client has been removed; this helper now wraps
-        :func:`resolve_memory_config` and returns :class:`ArangoMemoryClient` so
-        existing call-sites can seamlessly adopt the HTTP/2 pathway.
+        Legacy API preserved for backwards compatibility.
+        Prefer using: DatabaseFactory.create("arango", ...)
+
+        Returns:
+            ArangoMemoryClient instance
         """
+        from core.database.arango import ArangoMemoryClient, resolve_memory_config
 
         if password is None:
             password = os.environ.get("ARANGO_PASSWORD")
             if not password:
                 raise ValueError("ArangoDB password required (set ARANGO_PASSWORD env var)")
 
-        # Preserve the old ``use_unix`` flag by mapping it to proxy usage when
-        # callers still provide it.
         if use_unix is not None:
             use_proxies = True if use_unix else False
 
-        # Build a base URL from host/port when one was not explicitly supplied.
         if base_url is None and host:
             base_url = f"http://{host}:{port}"
 
@@ -85,220 +252,249 @@ class DatabaseFactory:
         return ArangoMemoryClient(config)
 
     @classmethod
-    def get_postgres(cls,
-                    database: str = "arxiv",
-                    username: str = "postgres",
-                    password: str | None = None,
-                    host: str = "localhost",
-                    port: int = 5432,
-                    **kwargs) -> Any:
+    def get_postgres(
+        cls,
+        database: str = "arxiv",
+        username: str = "postgres",
+        password: str | None = None,
+        host: str = "localhost",
+        port: int = 5432,
+        **kwargs,
+    ) -> Any:
+        """Get PostgreSQL connection.
+
+        Legacy API preserved for backwards compatibility.
+        Prefer using: DatabaseFactory.create("postgres", ...)
         """
-        Get PostgreSQL connection.
-
-        Args:
-            database: Database name
-            username: Username
-            password: Password (or from env)
-            host: Database host
-            port: Database port
-            **kwargs: Additional connection options
-
-        Returns:
-            PostgreSQL connection object
-        """
-        # Get password from environment if not provided
-        if password is None:
-            password = os.environ.get('PGPASSWORD')
-            if not password:
-                raise ValueError("PostgreSQL password required (set PGPASSWORD env var)")
-
-        try:
-            import psycopg
-            conn_string = f"host={host} port={port} dbname={database} user={username} password={password}"
-            conn = psycopg.connect(conn_string, **kwargs)
-            logger.info(f"✓ Connected to PostgreSQL at {host}:{port}/{database}")
-            return conn
-        except ImportError:
-            # Try psycopg2 as fallback
-            try:
-                import psycopg2
-                conn = psycopg2.connect(
-                    host=host,
-                    port=port,
-                    database=database,
-                    user=username,
-                    password=password,
-                    **kwargs
-                )
-                logger.info(f"✓ Connected to PostgreSQL (psycopg2) at {host}:{port}/{database}")
-                return conn
-            except ImportError:
-                raise ImportError("Neither psycopg nor psycopg2 installed. Run: pip install psycopg")
-        except Exception as e:
-            logger.error(f"Failed to connect to PostgreSQL: {e}")
-            raise
+        return cls.create(
+            "postgres",
+            database=database,
+            username=username,
+            password=password,
+            host=host,
+            port=port,
+            **kwargs,
+        )
 
     @classmethod
-    def get_arango_memory_service(
+    def get_redis(
         cls,
-        *,
-        database: str = "arxiv_repository",
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        password: str | None = None,
+        **kwargs,
+    ) -> Any:
+        """Get Redis connection.
+
+        Legacy API preserved for backwards compatibility.
+        Prefer using: DatabaseFactory.create("redis", ...)
+        """
+        return cls.create(
+            "redis",
+            host=host,
+            port=port,
+            db=db,
+            password=password,
+            **kwargs,
+        )
+
+    @classmethod
+    def get_arango_memory_service(cls, **kwargs) -> Any:
+        """Return the optimized ArangoDB memory client.
+
+        Legacy API preserved for backwards compatibility.
+        Prefer using: DatabaseFactory.create("arango", ...)
+
+        Returns:
+            ArangoMemoryClient instance
+        """
+        return cls.get_arango(**kwargs)
+
+
+# =============================================================================
+# Backend Wrapper Classes
+# =============================================================================
+
+
+class _ArangoWrapper:
+    """Wrapper for ArangoMemoryClient that provides factory-compatible interface."""
+
+    def __init__(
+        self,
+        database: str = "academy_store",
         username: str = "root",
         password: str | None = None,
+        host: str = "localhost",
+        port: int = 8529,
+        use_unix: bool | None = None,
+        base_url: str | None = None,
         socket_path: str | None = None,
         read_socket: str | None = None,
         write_socket: str | None = None,
         use_proxies: bool | None = None,
-        base_url: str | None = None,
         connect_timeout: float | None = None,
         read_timeout: float | None = None,
         write_timeout: float | None = None,
-    ) -> ArangoMemoryClient:
-        """Return the optimized ArangoDB memory client.
+    ):
+        from core.database.arango import ArangoMemoryClient, resolve_memory_config
 
-        Args:
-            database: Target database name.
-            username: Authentication user (default "root").
-            password: Password (falls back to ``ARANGO_PASSWORD``).
-            socket_path: Explicit Unix socket used for both reads and writes.
-            read_socket: Optional read-only proxy socket.
-            write_socket: Optional read-write proxy socket.
-            use_proxies: Force proxy usage (defaults to environment autodetect).
-            base_url: Base URL for HTTP/2 client (defaults to http://localhost).
-            connect_timeout: Override connection timeout.
-            read_timeout: Override read timeout.
-            write_timeout: Override write timeout.
+        if password is None:
+            password = os.environ.get("ARANGO_PASSWORD")
+            if not password:
+                raise ValueError("ArangoDB password required (set ARANGO_PASSWORD env var)")
 
-        Returns:
-            Configured :class:`ArangoMemoryClient` instance.
-        """
+        # Legacy use_unix maps to use_proxies
+        if use_unix is not None:
+            use_proxies = True if use_unix else False
+
+        if base_url is None and host:
+            base_url = f"http://{host}:{port}"
 
         config = resolve_memory_config(
             database=database,
             username=username,
             password=password,
+            base_url=base_url,
             socket_path=socket_path,
             read_socket=read_socket,
             write_socket=write_socket,
             use_proxies=use_proxies,
-            base_url=base_url,
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,
             write_timeout=write_timeout,
         )
 
+        self._client = ArangoMemoryClient(config)
         logger.info(
-            "✓ Using Arango memory client (read_socket=%s, write_socket=%s)",
+            "✓ Created Arango client (read_socket=%s, write_socket=%s)",
             config.read_socket,
             config.write_socket,
         )
-        return ArangoMemoryClient(config)
 
-    @classmethod
-    def get_redis(cls,
-                  host: str = "localhost",
-                  port: int = 6379,
-                  db: int = 0,
-                  password: str | None = None,
-                  **kwargs) -> Any:
-        """
-        Get Redis connection.
+    @property
+    def db_type(self) -> str:
+        return "arango"
 
-        Args:
-            host: Redis host
-            port: Redis port
-            db: Database number
-            password: Password if required
-            **kwargs: Additional connection options
+    def close(self) -> None:
+        self._client.close()
 
-        Returns:
-            Redis connection object
-        """
+    def is_connected(self) -> bool:
+        try:
+            self._client.server_version()
+            return True
+        except Exception:
+            return False
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate all other attributes to the underlying client."""
+        return getattr(self._client, name)
+
+
+class _PostgresWrapper:
+    """Wrapper for PostgreSQL connections."""
+
+    def __init__(
+        self,
+        database: str = "arxiv",
+        username: str = "postgres",
+        password: str | None = None,
+        host: str = "localhost",
+        port: int = 5432,
+        **kwargs,
+    ):
+        if password is None:
+            password = os.environ.get("PGPASSWORD")
+            if not password:
+                raise ValueError("PostgreSQL password required (set PGPASSWORD env var)")
+
+        try:
+            import psycopg
+            # Use keyword arguments to handle special characters in credentials
+            self._conn = psycopg.connect(
+                host=host,
+                port=port,
+                dbname=database,
+                user=username,
+                password=password,
+                **kwargs,
+            )
+            logger.info(f"✓ Connected to PostgreSQL at {host}:{port}/{database}")
+        except ImportError:
+            try:
+                import psycopg2
+                self._conn = psycopg2.connect(
+                    host=host,
+                    port=port,
+                    database=database,
+                    user=username,
+                    password=password,
+                    **kwargs,
+                )
+                logger.info(f"✓ Connected to PostgreSQL (psycopg2) at {host}:{port}/{database}")
+            except ImportError as e:
+                raise ImportError("Neither psycopg nor psycopg2 installed. Run: pip install psycopg") from e
+
+    @property
+    def db_type(self) -> str:
+        return "postgres"
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def is_connected(self) -> bool:
+        try:
+            return not self._conn.closed
+        except Exception:
+            return False
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate all other attributes to the underlying connection."""
+        return getattr(self._conn, name)
+
+
+class _RedisWrapper:
+    """Wrapper for Redis connections."""
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        password: str | None = None,
+        decode_responses: bool = True,
+        **kwargs,
+    ):
         try:
             import redis
-            conn = redis.Redis(
+            self._conn = redis.Redis(
                 host=host,
                 port=port,
                 db=db,
                 password=password,
-                decode_responses=True,
-                **kwargs
+                decode_responses=decode_responses,
+                **kwargs,
             )
             # Test connection
-            conn.ping()
+            self._conn.ping()
             logger.info(f"✓ Connected to Redis at {host}:{port}/{db}")
-            return conn
-        except ImportError:
-            raise ImportError("redis not installed. Run: pip install redis")
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
-            raise
+        except ImportError as e:
+            raise ImportError("redis not installed. Run: pip install redis") from e
 
-    @classmethod
-    def create_pool(cls, db_type: str, pool_size: int = 10, **kwargs) -> Any:
-        """
-        Create a connection pool for the specified database type.
+    @property
+    def db_type(self) -> str:
+        return "redis"
 
-        Args:
-            db_type: Type of database (arango, postgres, redis)
-            pool_size: Size of connection pool
-            **kwargs: Database-specific connection options
+    def close(self) -> None:
+        self._conn.close()
 
-        Returns:
-            Connection pool object
-        """
-        if db_type == "postgres":
-            try:
-                import psycopg_pool
-                conn_string = cls._build_postgres_conn_string(**kwargs)
-                pool = psycopg_pool.ConnectionPool(
-                    conn_string,
-                    min_size=1,
-                    max_size=pool_size
-                )
-                logger.info(f"✓ Created PostgreSQL connection pool (size={pool_size})")
-                return pool
-            except ImportError:
-                logger.warning("psycopg_pool not available, returning single connection")
-                return cls.get_postgres(**kwargs)
+    def is_connected(self) -> bool:
+        try:
+            self._conn.ping()
+            return True
+        except Exception:
+            return False
 
-        elif db_type == "redis":
-            try:
-                import redis
-                pool = redis.ConnectionPool(
-                    max_connections=pool_size,
-                    **kwargs
-                )
-                conn = redis.Redis(connection_pool=pool)
-                logger.info(f"✓ Created Redis connection pool (size={pool_size})")
-                return conn
-            except ImportError:
-                raise ImportError("redis not installed")
-
-        else:
-            # ArangoDB handles pooling internally
-            return cls.get_arango(**kwargs)
-
-    @staticmethod
-    def _build_postgres_conn_string(**kwargs) -> str:
-        """Build PostgreSQL connection string from kwargs."""
-        from typing import Any
-
-        # Normalize keys to libpq names
-        key_map = {"database": "dbname", "username": "user"}
-        mapped: dict[str, Any] = {}
-
-        for key, value in kwargs.items():
-            if value is None:
-                continue
-            # Map to correct libpq key names
-            mapped_key = key_map.get(key, key)
-            mapped[mapped_key] = value
-
-        # Password fallback from environment if not provided
-        if "password" not in mapped:
-            env_pw = os.environ.get("PGPASSWORD")
-            if env_pw:
-                mapped["password"] = env_pw
-
-        return " ".join(f"{k}={v}" for k, v in mapped.items())
+    def __getattr__(self, name: str) -> Any:
+        """Delegate all other attributes to the underlying connection."""
+        return getattr(self._conn, name)
