@@ -324,6 +324,7 @@ class _ArangoWrapper:
         password: str | None = None,
         host: str = "localhost",
         port: int = 8529,
+        use_unix: bool | None = None,
         base_url: str | None = None,
         socket_path: str | None = None,
         read_socket: str | None = None,
@@ -339,6 +340,10 @@ class _ArangoWrapper:
             password = os.environ.get("ARANGO_PASSWORD")
             if not password:
                 raise ValueError("ArangoDB password required (set ARANGO_PASSWORD env var)")
+
+        # Legacy use_unix maps to use_proxies
+        if use_unix is not None:
+            use_proxies = True if use_unix else False
 
         if base_url is None and host:
             base_url = f"http://{host}:{port}"

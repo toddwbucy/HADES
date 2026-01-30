@@ -194,9 +194,9 @@ class ExtractorFactory:
             if extractor_type == "docling":
                 from .extractors_docling import DoclingExtractor
                 cls._registry["docling"] = DoclingExtractor
-                # Register PDF extensions
-                for ext in [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".html", ".htm"]:
-                    cls._extension_map[ext] = "docling"
+                # Register extensions from DoclingExtractor.supported_formats
+                for ext in DoclingExtractor().supported_formats:
+                    cls._extension_map[ext.lower()] = "docling"
                 logger.debug("Auto-registered docling extractor")
 
             elif extractor_type == "latex":
@@ -212,10 +212,9 @@ class ExtractorFactory:
                     cls._extension_map[ext] = "code"
                 logger.debug("Auto-registered code extractor")
 
-            elif extractor_type == "treesitter":
-                from .extractors_treesitter import TreeSitterExtractor
-                cls._registry["treesitter"] = TreeSitterExtractor
-                logger.debug("Auto-registered treesitter extractor")
+            # Note: TreeSitterExtractor is a symbol extractor, not a document extractor.
+            # It doesn't implement ExtractorBase interface (extract/extract_batch).
+            # Use TreeSitterExtractor directly for code symbol extraction.
 
             elif extractor_type == "robust":
                 from .extractors_robust import RobustExtractor
