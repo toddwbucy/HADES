@@ -137,27 +137,30 @@ class DatabaseFactory:
         if db_type in cls._auto_registered:
             return
 
-        cls._auto_registered.add(db_type)
-
         try:
             if db_type == "arango":
                 # Create a wrapper that matches DatabaseBase interface
                 cls._registry["arango"] = _ArangoWrapper
+                cls._auto_registered.add(db_type)
                 logger.debug("Auto-registered arango backend")
 
             elif db_type == "postgres":
                 cls._registry["postgres"] = _PostgresWrapper
+                cls._auto_registered.add(db_type)
                 logger.debug("Auto-registered postgres backend")
 
             elif db_type == "redis":
                 cls._registry["redis"] = _RedisWrapper
+                cls._auto_registered.add(db_type)
                 logger.debug("Auto-registered redis backend")
 
             else:
+                # Mark unknown types to prevent repeated warnings
+                cls._auto_registered.add(db_type)
                 logger.warning(f"Unknown database type for auto-registration: {db_type}")
 
-        except ImportError as e:
-            logger.error(f"Failed to auto-register {db_type}: {e}")
+        except ImportError:
+            logger.exception(f"Failed to auto-register {db_type}")
 
     @classmethod
     def list_available(cls) -> dict[str, dict[str, Any]]:
@@ -407,8 +410,15 @@ class _PostgresWrapper:
 
         try:
             import psycopg
-            conn_string = f"host={host} port={port} dbname={database} user={username} password={password}"
-            self._conn = psycopg.connect(conn_string, **kwargs)
+            # Use keyword arguments to handle special characters in credentials
+            self._conn = psycopg.connect(
+                host=host,
+                port=port,
+                dbname=database,
+                user=username,
+                password=password,
+                **kwargs,
+            )
             logger.info(f"✓ Connected to PostgreSQL at {host}:{port}/{database}")
         except ImportError:
             try:
@@ -452,6 +462,7 @@ class _RedisWrapper:
         port: int = 6379,
         db: int = 0,
         password: str | None = None,
+        decode_responses: bool = True,
         **kwargs,
     ):
         try:
@@ -461,7 +472,7 @@ class _RedisWrapper:
                 port=port,
                 db=db,
                 password=password,
-                decode_responses=True,
+                decode_responses=decode_responses,
                 **kwargs,
             )
             # Test connection

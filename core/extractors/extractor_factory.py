@@ -162,11 +162,13 @@ class ExtractorFactory:
         # Try to find an extractor that supports this extension
         for name, extractor_class in cls._registry.items():
             try:
-                # Instantiate temporarily to check supported_formats
-                temp_instance = extractor_class()
+                # Instantiate with config/kwargs to avoid false negatives
+                temp_instance = extractor_class(config=config, **kwargs)
                 if ext in [f.lower() for f in temp_instance.supported_formats]:
-                    return cls.create(name, config=config, **kwargs)
-            except Exception:
+                    # Return the already-configured instance instead of creating another
+                    return temp_instance
+            except Exception as e:
+                logger.debug(f"Extractor '{name}' probe failed for {ext}: {e}")
                 continue
 
         # Fallback to robust extractor if available
