@@ -27,6 +27,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from core.cli.config import get_embedder_service_config
+
 # Configure logging before imports that might log
 logging.basicConfig(
     level=logging.INFO,
@@ -146,9 +148,10 @@ async def lifespan(app: FastAPI):
     state.start_time = time.time()
     state.last_request_time = time.time()
     state.shutdown_event = asyncio.Event()
-    state.idle_timeout_seconds = float(
-        os.environ.get("HADES_EMBEDDER_IDLE_TIMEOUT", "900")
-    )
+
+    # Load idle timeout from config (YAML with env var override)
+    config = get_embedder_service_config()
+    state.idle_timeout_seconds = float(config["idle_timeout"])
 
     # Load model on startup
     logger.info("Starting HADES Embedding Service...")
@@ -178,12 +181,13 @@ async def load_model() -> None:
     """Load the embedding model into GPU memory."""
     from core.embedders.embedders_jina import JinaV4Embedder
 
-    # Get config from environment or defaults
-    # Device can be: cuda:0, cuda:1, cuda:2, etc. for specific GPU, or cpu
-    device = os.environ.get("HADES_EMBEDDER_DEVICE", "cuda:0")
-    use_fp16 = os.environ.get("HADES_EMBEDDER_FP16", "true").lower() in ("true", "1", "yes")
-    batch_size = int(os.environ.get("HADES_EMBEDDER_BATCH_SIZE", "48"))
-    model_name = os.environ.get("HADES_EMBEDDER_MODEL", "jinaai/jina-embeddings-v4")
+    # Load config from YAML with env var overrides
+    # Priority: env vars > yaml config > defaults
+    config = get_embedder_service_config()
+    device = config["device"]
+    use_fp16 = config["use_fp16"]
+    batch_size = config["batch_size"]
+    model_name = config["model_name"]
 
     logger.info(f"Loading model: {model_name}")
     logger.info(f"Device: {device}, FP16: {use_fp16}, Batch size: {batch_size}")

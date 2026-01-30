@@ -16,6 +16,7 @@ from core.cli.config import (
     _get_nested,
     _load_yaml_config,
     get_config,
+    get_embedder_service_config,
 )
 
 
@@ -351,3 +352,133 @@ class TestConfigDataclasses:
         assert config.default_lookback_days == 7
         assert config.batch_size == 8
         assert config.max_results == 1000
+
+
+class TestGetEmbedderServiceConfig:
+    """Tests for get_embedder_service_config function."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_default_device_is_cuda2(self):
+        """Test default device is cuda:2 (inference GPU)."""
+        with patch("core.cli.config._load_yaml_config", return_value={}):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:2"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reads_device_from_yaml_gpu_section(self):
+        """Test device can be set via gpu.device in YAML."""
+        yaml_config = {"gpu": {"device": "cuda:1", "enabled": True}}
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:1"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reads_device_from_yaml_service_section(self):
+        """Test service-specific device overrides global GPU device."""
+        yaml_config = {
+            "gpu": {"device": "cuda:1", "enabled": True},
+            "embedding": {"service": {"device": "cuda:0"}},
+        }
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:0"
+
+    @patch.dict(os.environ, {"HADES_EMBEDDER_DEVICE": "cuda:3"}, clear=True)
+    def test_env_overrides_yaml(self):
+        """Test environment variable overrides YAML config."""
+        yaml_config = {
+            "gpu": {"device": "cuda:1", "enabled": True},
+            "embedding": {"service": {"device": "cuda:0"}},
+        }
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:3"
+
+    @patch.dict(os.environ, {"HADES_USE_GPU": "false"}, clear=True)
+    def test_gpu_disabled_via_env(self):
+        """Test GPU can be disabled via env var."""
+        yaml_config = {"gpu": {"device": "cuda:2", "enabled": True}}
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cpu"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_gpu_disabled_via_yaml(self):
+        """Test GPU can be disabled via YAML."""
+        yaml_config = {"gpu": {"device": "cuda:2", "enabled": False}}
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cpu"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_loads_all_settings(self):
+        """Test all settings are loaded from YAML."""
+        yaml_config = {
+            "gpu": {"device": "cuda:2", "enabled": True},
+            "embedding": {
+                "model": {"name": "custom-model", "use_fp16": False},
+                "batch": {"size": 32},
+                "service": {"idle_timeout": 600},
+            },
+        }
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:2"
+            assert config["model_name"] == "custom-model"
+            assert config["use_fp16"] is False
+            assert config["batch_size"] == 32
+            assert config["idle_timeout"] == 600
+
+    @patch.dict(
+        os.environ,
+        {
+            "HADES_EMBEDDER_DEVICE": "cuda:0",
+            "HADES_EMBEDDER_MODEL": "env-model",
+            "HADES_EMBEDDER_FP16": "false",
+            "HADES_EMBEDDER_BATCH_SIZE": "16",
+            "HADES_EMBEDDER_IDLE_TIMEOUT": "120",
+        },
+        clear=True,
+    )
+    def test_env_overrides_all_settings(self):
+        """Test all settings can be overridden via env vars."""
+        yaml_config = {
+            "gpu": {"device": "cuda:2", "enabled": True},
+            "embedding": {
+                "model": {"name": "yaml-model", "use_fp16": True},
+                "batch": {"size": 48},
+                "service": {"idle_timeout": 900},
+            },
+        }
+        with patch("core.cli.config._load_yaml_config", return_value=yaml_config):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:0"
+            assert config["model_name"] == "env-model"
+            assert config["use_fp16"] is False
+            assert config["batch_size"] == 16
+            assert config["idle_timeout"] == 120
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_uses_defaults_when_yaml_missing(self):
+        """Test defaults are used when YAML is empty."""
+        with patch("core.cli.config._load_yaml_config", return_value={}):
+            config = get_embedder_service_config()
+            assert config["device"] == "cuda:2"
+            assert config["model_name"] == "jinaai/jina-embeddings-v4"
+            assert config["use_fp16"] is True
+            assert config["batch_size"] == 48
+            assert config["idle_timeout"] == 300
+
+    @patch.dict(os.environ, {"HADES_EMBEDDER_BATCH_SIZE": "invalid"}, clear=True)
+    def test_invalid_batch_size_raises_error(self):
+        """Test invalid batch size raises ValueError."""
+        with patch("core.cli.config._load_yaml_config", return_value={}):
+            with pytest.raises(ValueError, match="HADES_EMBEDDER_BATCH_SIZE must be an integer"):
+                get_embedder_service_config()
+
+    @patch.dict(os.environ, {"HADES_EMBEDDER_IDLE_TIMEOUT": "not_a_number"}, clear=True)
+    def test_invalid_idle_timeout_raises_error(self):
+        """Test invalid idle timeout raises ValueError."""
+        with patch("core.cli.config._load_yaml_config", return_value={}):
+            with pytest.raises(ValueError, match="HADES_EMBEDDER_IDLE_TIMEOUT must be an integer"):
+                get_embedder_service_config()

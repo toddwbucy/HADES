@@ -147,7 +147,7 @@ class CLIConfig:
 
     # Processing settings
     use_gpu: bool = True
-    device: str = "cuda"
+    device: str = "cuda:2"  # Default to inference GPU, keep training GPUs free
 
     # Collection profile
     collection_profile: str = "arxiv"
@@ -206,7 +206,7 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
         use_gpu = _get_nested(yaml_config, "gpu", "enabled", default=True)
 
     if use_gpu:
-        device = _get_nested(yaml_config, "gpu", "device", default="cuda")
+        device = _get_nested(yaml_config, "gpu", "device", default="cuda:2")
     else:
         device = "cpu"
 
@@ -308,6 +308,83 @@ def get_embedder_client(config: CLIConfig | None = None):
         timeout=config.embedding.timeout_ms / 1000.0,
         fallback_to_local=False,
     )
+
+
+def get_embedder_service_config(config_path: Path | None = None) -> dict:
+    """Load embedder service configuration from YAML and environment variables.
+
+    Configuration sources (override priority, highest wins):
+        1. Environment variables (HADES_EMBEDDER_*)
+        2. YAML config file (core/config/hades.yaml)
+
+    Environment variables:
+        HADES_EMBEDDER_DEVICE: GPU device (e.g., cuda:0, cuda:2, cpu)
+        HADES_EMBEDDER_MODEL: Model name
+        HADES_EMBEDDER_FP16: Use half precision (true/false)
+        HADES_EMBEDDER_BATCH_SIZE: Batch size for embedding
+        HADES_EMBEDDER_IDLE_TIMEOUT: Seconds before unloading idle model
+
+    Returns:
+        Dictionary with embedder service configuration:
+            - device: GPU device string
+            - model_name: Model identifier
+            - use_fp16: Whether to use half precision
+            - batch_size: Batch size for embedding
+            - idle_timeout: Seconds before unloading model (0 = never)
+    """
+    yaml_config = _load_yaml_config(config_path)
+
+    # Device priority: env var > service-specific yaml > global gpu yaml > default
+    device = os.environ.get("HADES_EMBEDDER_DEVICE")
+    if not device:
+        device = _get_nested(yaml_config, "embedding", "service", "device")
+    if not device:
+        device = _get_nested(yaml_config, "gpu", "device")
+    if not device:
+        device = "cuda:2"  # Default to inference GPU
+
+    # Check if GPU is disabled
+    use_gpu_env = os.environ.get("HADES_USE_GPU")
+    if use_gpu_env is not None:
+        use_gpu = use_gpu_env.lower() in ("true", "1", "yes")
+    else:
+        use_gpu = _get_nested(yaml_config, "gpu", "enabled", default=True)
+
+    if not use_gpu:
+        device = "cpu"
+
+    # Parse batch_size with validation
+    batch_size_str = os.environ.get("HADES_EMBEDDER_BATCH_SIZE")
+    if batch_size_str:
+        try:
+            batch_size = int(batch_size_str)
+        except ValueError as e:
+            raise ValueError(f"HADES_EMBEDDER_BATCH_SIZE must be an integer, got: {batch_size_str}") from e
+    else:
+        batch_size = int(_get_nested(yaml_config, "embedding", "batch", "size", default=48))
+
+    # Parse idle_timeout with validation
+    idle_timeout_str = os.environ.get("HADES_EMBEDDER_IDLE_TIMEOUT")
+    if idle_timeout_str:
+        try:
+            idle_timeout = int(idle_timeout_str)
+        except ValueError as e:
+            raise ValueError(f"HADES_EMBEDDER_IDLE_TIMEOUT must be an integer, got: {idle_timeout_str}") from e
+    else:
+        idle_timeout = int(_get_nested(yaml_config, "embedding", "service", "idle_timeout", default=300))
+
+    return {
+        "device": device,
+        "model_name": os.environ.get("HADES_EMBEDDER_MODEL")
+        or _get_nested(yaml_config, "embedding", "model", "name", default="jinaai/jina-embeddings-v4"),
+        "use_fp16": (
+            os.environ.get("HADES_EMBEDDER_FP16", "").lower() in ("true", "1", "yes")
+            if os.environ.get("HADES_EMBEDDER_FP16")
+            else _get_nested(yaml_config, "embedding", "model", "use_fp16", default=True)
+        ),
+        "batch_size": batch_size,
+        "idle_timeout": idle_timeout,
+    }
 
 
 def get_arango_config(config: CLIConfig | None = None, read_only: bool = True) -> dict:
