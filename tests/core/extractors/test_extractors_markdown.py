@@ -565,3 +565,49 @@ class TestCodeRabbitReviewFixes:
         # Check that blank line is preserved (not collapsed)
         lines = code.split("\n")
         assert any(line == "" for line in lines), "Blank line should be preserved"
+
+    def test_excludes_images_from_links(self, tmp_path):
+        """Should not extract images as links."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        md_file.write_text(
+            "Here is a [link](https://example.com)\n"
+            "And an ![image](https://example.com/img.png)\n"
+            "Reference [link][ref] and ![image][imgref]\n"
+            "[ref]: https://example.com/ref\n"
+            "[imgref]: https://example.com/imgref.png\n"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        # Should have 2 links (not 4 - images should be excluded)
+        assert len(result.references) == 2
+        urls = [link["url"] for link in result.references]
+        assert "https://example.com" in urls
+        assert "https://example.com/ref" in urls
+        # Image URLs should NOT be in the links
+        assert "https://example.com/img.png" not in urls
+        assert "https://example.com/imgref.png" not in urls
+
+    def test_indented_code_not_matched_inside_fenced(self, tmp_path):
+        """Should not match indented lines inside fenced code blocks."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        md_file.write_text(
+            "```python\n"
+            "def foo():\n"
+            "    # This indented line should NOT create a separate code block\n"
+            "    return 42\n"
+            "```\n"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        # Should have exactly 1 code block (the fenced one)
+        assert len(result.code_blocks) == 1
+        assert result.code_blocks[0]["language"] == "python"
+        assert "def foo():" in result.code_blocks[0]["code"]

@@ -259,10 +259,11 @@ class MarkdownExtractor(ExtractorBase):
             )
 
         # Also match indented code blocks (4 spaces or 1 tab)
-        # Only if not inside a fenced block
+        # Strip fenced blocks first to avoid matching indented lines inside them
         # Use .* to allow blank lines within code block (lines with just indent)
+        content_without_fenced = re.sub(pattern, "", content, flags=re.DOTALL)
         indented_pattern = r"(?:^|\n\n)((?:(?:    |\t).*\n?)+)"
-        indented_matches = re.findall(indented_pattern, content)
+        indented_matches = re.findall(indented_pattern, content_without_fenced)
 
         for code in indented_matches:
             # Remove indentation while preserving blank lines
@@ -344,8 +345,9 @@ class MarkdownExtractor(ExtractorBase):
         """
         links = []
 
-        # Match inline links: [text](url)
-        inline_pattern = r"\[([^\]]+)\]\(([^)]+)\)"
+        # Match inline links: [text](url) but not images ![alt](url)
+        # Use negative lookbehind to exclude image syntax
+        inline_pattern = r"(?<!\!)\[([^\]]+)\]\(([^)]+)\)"
         for i, (text, url) in enumerate(re.findall(inline_pattern, content)):
             links.append(
                 {
@@ -363,7 +365,8 @@ class MarkdownExtractor(ExtractorBase):
             k.lower(): v for k, v in re.findall(ref_def_pattern, content, re.MULTILINE)
         }
 
-        ref_use_pattern = r"\[([^\]]+)\]\[([^\]]*)\]"
+        # Use negative lookbehind to exclude image reference syntax ![alt][ref]
+        ref_use_pattern = r"(?<!\!)\[([^\]]+)\]\[([^\]]*)\]"
         for text, ref in re.findall(ref_use_pattern, content):
             ref_key = (ref or text).lower()
             if ref_key in ref_defs:
