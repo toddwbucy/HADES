@@ -9,7 +9,6 @@ Tests for:
 
 import time
 from datetime import datetime
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -101,14 +100,15 @@ class TestArXivMetadata:
 class TestDownloadResult:
     """Tests for DownloadResult dataclass."""
 
-    def test_success_result(self):
+    def test_success_result(self, tmp_path):
         """Should create successful download result."""
         from core.tools.arxiv.arxiv_api_client import DownloadResult
 
+        pdf_path = tmp_path / "paper.pdf"
         result = DownloadResult(
             success=True,
             arxiv_id="2308.12345",
-            pdf_path=Path("/tmp/paper.pdf"),
+            pdf_path=pdf_path,
             file_size_bytes=1024,
         )
 
