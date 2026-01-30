@@ -37,7 +37,7 @@ def _prefix_char_offsets(tokens: list[str]) -> list[int]:
 class TextChunk:
     """
     Represents a chunk of text before embedding.
-    
+
     This is a boundary object that maintains coherence between
     the continuous document and discrete processing units.
     """
@@ -51,7 +51,7 @@ class TextChunk:
     def char_count(self) -> int:
         """
         Return the number of characters in this chunk's text.
-        
+
         Returns:
             int: Character count (equivalent to len(self.text)).
         """
@@ -61,7 +61,7 @@ class TextChunk:
     def token_count_estimate(self) -> int:
         """
         Return a rough estimate of the token count for this chunk.
-        
+
         This uses a simple whitespace split on the chunk text and should be treated as an approximate token count (use a tokenizer for exact tokenization).
         Returns:
             int: Estimated number of tokens (words) in the chunk.
@@ -72,7 +72,7 @@ class TextChunk:
 class ChunkingStrategy(ABC):
     """
     Abstract base class for chunking strategies.
-    
+
     Each strategy implements a different philosophy about how to
     preserve information across chunk boundaries, reflecting different
     theoretical approaches to the continuity/discreteness problem.
@@ -82,12 +82,12 @@ class ChunkingStrategy(ABC):
     def create_chunks(self, text: str, **kwargs) -> list[TextChunk]:
         """
         Create a sequence of TextChunk objects representing segments of the input text.
-        
+
         This is the abstract interface for chunking implementations. Implementations should accept the raw document string in `text` and return a list of TextChunk instances that together cover meaningful portions of the input (possibly with overlap depending on the strategy). The exact behavior, chunk size semantics, and accepted `**kwargs` are strategy-specific; callers should consult the concrete strategy's documentation for those details.
-        
+
         Parameters:
             text (str): The input document to split into chunks.
-        
+
         Returns:
             List[TextChunk]: A list of TextChunk objects (may be empty).
         """
@@ -96,7 +96,7 @@ class ChunkingStrategy(ABC):
     def _clean_text(self, text: str) -> str:
         """
         Normalize input text for chunking by collapsing all whitespace to single spaces, removing null characters, and trimming leading/trailing spaces.
-        
+
         This produces a compact, single-line-safe string suitable for downstream tokenization and chunk boundary calculations.
         """
         # Remove excessive whitespace
@@ -109,7 +109,7 @@ class ChunkingStrategy(ABC):
 class TokenBasedChunking(ChunkingStrategy):
     """
     Token-based chunking with configurable overlap.
-    
+
     This strategy prioritizes consistent chunk sizes over semantic boundaries,
     treating the document as a continuous stream of tokens. It represents
     a mechanical approach to information division.
@@ -123,7 +123,7 @@ class TokenBasedChunking(ChunkingStrategy):
     ):
         """
         Initialize a token-based chunking strategy.
-        
+
         Parameters:
             chunk_size (int): Target number of tokens per chunk.
             chunk_overlap (int): Number of tokens to overlap between consecutive chunks; must be less than chunk_size.
@@ -131,7 +131,7 @@ class TokenBasedChunking(ChunkingStrategy):
                 - A callable function that takes a string and returns a list of tokens: Callable[[str], List[str]]
                 - A tokenizer-like object with .tokenize(text) and .convert_tokens_to_string(tokens) methods
                 - None (uses simple whitespace split)
-        
+
         Raises:
             ValueError: If `chunk_overlap` is greater than or equal to `chunk_size`.
             TypeError: If tokenizer is provided but doesn't support either expected interface.
@@ -155,17 +155,17 @@ class TokenBasedChunking(ChunkingStrategy):
     def create_chunks(self, text: str, **kwargs) -> list[TextChunk]:
         """
         Create token-based text chunks with configurable overlap.
-        
+
         Generates a sequence of TextChunk objects by sliding a token window of size
         `self.chunk_size` across the cleaned text in steps of `self.chunk_size - self.chunk_overlap`.
         If a tokenizer was provided to the strategy it will be used for tokenization and
         reconstruction; otherwise simple whitespace splitting and joining are used.
         Character offsets (start_char, end_char) are approximate and derived from token
         boundaries, and metadata includes token indices and chunking parameters.
-        
+
         Returns:
             List[TextChunk]: Ordered list of created chunks covering the input text (may
-            overlap). 
+            overlap).
         """
         text = self._clean_text(text)
 
@@ -241,7 +241,7 @@ class TokenBasedChunking(ChunkingStrategy):
 class SemanticChunking(ChunkingStrategy):
     """
     Semantic chunking based on document structure.
-    
+
     This strategy respects natural boundaries in the document (paragraphs,
     sections, sentences), treating the document as a hierarchical structure
     rather than a flat stream. It represents an anthropological approach
@@ -257,7 +257,7 @@ class SemanticChunking(ChunkingStrategy):
     ):
         """
         Configure a semantic chunking strategy that preserves paragraph and sentence boundaries.
-        
+
         Parameters:
             max_chunk_size (int): Maximum number of tokens allowed in a chunk; larger paragraphs/sentences will be split.
             min_chunk_size (int): Minimum number of tokens preferred for a chunk; used to avoid producing overly small chunks.
@@ -272,16 +272,16 @@ class SemanticChunking(ChunkingStrategy):
     def create_chunks(self, text: str, **kwargs) -> list[TextChunk]:
         """
         Create semantically meaningful TextChunk objects from the input text.
-        
+
         This method preserves natural document boundaries by grouping content into chunks that align with paragraphs and, when enabled, sentences. It:
         - Splits the cleaned input into paragraphs.
         - Accumulates paragraphs (and, if a paragraph exceeds max_chunk_size and sentence-respecting is enabled, sentences) into chunks not exceeding self.max_chunk_size tokens.
         - For paragraphs larger than max_chunk_size, either splits them into sentences (if respect_sentences is True) or force-splits at token boundaries.
         - Produces a list of TextChunk instances with metadata (e.g., token counts, paragraph/sentence counts). Character offsets are estimated from the segmentation and may be approximate.
-        
+
         Parameters:
             text (str): Raw document text to chunk. It will be normalized by the strategy before splitting.
-        
+
         Returns:
             List[TextChunk]: Ordered list of chunks covering the input text, each with start/end character positions, chunk_index, and metadata.
         """
@@ -384,7 +384,7 @@ class SemanticChunking(ChunkingStrategy):
     def _split_paragraphs(self, text: str) -> list[str]:
         """
         Split text into non-empty paragraphs.
-        
+
         Paragraphs are defined by two or more consecutive newline characters; each returned paragraph is stripped of leading/trailing whitespace and empty segments are omitted. Preserves original order of paragraphs.
         """
         # Split on double newlines or typical paragraph markers
@@ -395,9 +395,9 @@ class SemanticChunking(ChunkingStrategy):
     def _split_sentences(self, text: str) -> list[str]:
         """
         Split text into sentences using a simple end-punctuation heuristic.
-        
+
         This performs a lightweight split on whitespace that follows '.', '!' or '?', then strips surrounding whitespace and filters out empty results. It is a simple heuristic and may not correctly handle edge cases such as abbreviations, ellipses, or quoted text.
-        
+
         Returns:
             List[str]: Non-empty sentence strings in original order.
         """
@@ -445,12 +445,12 @@ class SemanticChunking(ChunkingStrategy):
     def _create_chunk(self, text: str, start_char: int, index: int) -> TextChunk:
         """
         Create a TextChunk representing a semantic chunk of the original document.
-        
+
         Parameters:
             text (str): Chunk text content.
             start_char (int): Character index in the original text where this chunk begins.
             index (int): Sequential chunk index.
-        
+
         Returns:
             TextChunk: A chunk with start/end character offsets, index, and metadata including:
                 - strategy: 'semantic'
@@ -478,7 +478,7 @@ class SemanticChunking(ChunkingStrategy):
 class SlidingWindowChunking(ChunkingStrategy):
     """
     Sliding window chunking with maximal overlap.
-    
+
     This strategy creates highly overlapping chunks to ensure no information
     is lost at boundaries. It represents a conservative approach that
     prioritizes information preservation over efficiency.
@@ -491,11 +491,11 @@ class SlidingWindowChunking(ChunkingStrategy):
     ):
         """
         Create a SlidingWindowChunking instance.
-        
+
         Parameters:
             window_size (int): Number of tokens contained in each sliding window (default 512).
             step_size (int): Number of tokens to advance the window on each step (default 256).
-        
+
         Raises:
             ValueError: If `step_size` is greater than `window_size`.
         """
@@ -512,12 +512,12 @@ class SlidingWindowChunking(ChunkingStrategy):
     def create_chunks(self, text: str, **kwargs) -> list[TextChunk]:
         """
         Create a sequence of overlapping text chunks using a sliding-window token approach.
-        
+
         This produces successive windows of tokens of size `window_size`, advancing by `step_size` tokens each step to preserve continuity between adjacent chunks (higher overlap increases redundancy). Chunks are returned as TextChunk objects and include metadata fields such as `strategy`, `window_size`, `step_size`, `overlap_ratio`, and `token_count`. If a non-trivial trailing segment of tokens remains after the last full window, a final "sliding_window_remainder" chunk is emitted.
-        
+
         Parameters:
             text (str): Input document to chunk. Tokenization is performed by simple whitespace splitting.
-        
+
         Returns:
             List[TextChunk]: Ordered list of chunks covering the input text. `start_char`/`end_char` are estimated from token boundaries (approximate character offsets).
         """
@@ -601,10 +601,155 @@ class SlidingWindowChunking(ChunkingStrategy):
         return chunks
 
 
+class HybridChunking(ChunkingStrategy):
+    """
+    Hybrid chunking combining semantic boundaries with sliding window overlap.
+
+    This strategy first uses semantic chunking to respect natural document
+    boundaries (paragraphs, sentences), then ensures minimum overlap between
+    adjacent chunks to prevent information loss at boundaries.
+
+    This approach provides the best of both worlds:
+    - Semantic awareness from SemanticChunking
+    - Retrieval quality from guaranteed overlap
+    """
+
+    def __init__(
+        self,
+        max_chunk_size: int = 1500,
+        min_chunk_size: int = 100,
+        min_overlap_tokens: int = 50,
+        respect_sentences: bool = True,
+        respect_paragraphs: bool = True,
+    ):
+        """
+        Initialize a hybrid chunking strategy.
+
+        Parameters:
+            max_chunk_size (int): Maximum tokens per chunk (passed to semantic chunker).
+            min_chunk_size (int): Minimum tokens per chunk (passed to semantic chunker).
+            min_overlap_tokens (int): Minimum number of tokens to overlap between
+                adjacent chunks. Overlap is added by prepending tokens from the
+                previous chunk to the current chunk.
+            respect_sentences (bool): If True, respect sentence boundaries.
+            respect_paragraphs (bool): If True, respect paragraph boundaries.
+        """
+        self.min_overlap_tokens = min_overlap_tokens
+        self.semantic_chunker = SemanticChunking(
+            max_chunk_size=max_chunk_size,
+            min_chunk_size=min_chunk_size,
+            respect_sentences=respect_sentences,
+            respect_paragraphs=respect_paragraphs,
+        )
+
+    def create_chunks(self, text: str, **kwargs) -> list[TextChunk]:
+        """
+        Create chunks with semantic boundaries and guaranteed overlap.
+
+        First applies semantic chunking to respect document structure,
+        then ensures minimum overlap between adjacent chunks by prepending
+        tokens from the end of the previous chunk to the start of each chunk.
+
+        Parameters:
+            text (str): The input document to chunk.
+
+        Returns:
+            List[TextChunk]: Chunks with semantic boundaries and overlap guarantees.
+        """
+        # Get semantic chunks first
+        semantic_chunks = self.semantic_chunker.create_chunks(text, **kwargs)
+
+        if len(semantic_chunks) == 0:
+            return []
+
+        if len(semantic_chunks) == 1:
+            # No overlap needed for single chunk, but mark as hybrid
+            return [self._update_chunk_metadata(semantic_chunks[0], 0, overlap_tokens=0)]
+
+        # Ensure minimum overlap between adjacent chunks
+        return self._ensure_overlap(semantic_chunks)
+
+    def _ensure_overlap(self, chunks: list[TextChunk]) -> list[TextChunk]:
+        """
+        Ensure minimum overlap between adjacent chunks.
+
+        For each chunk (except the first), prepend tokens from the end of
+        the previous chunk to ensure at least min_overlap_tokens of overlap.
+
+        Parameters:
+            chunks: List of semantic chunks without guaranteed overlap.
+
+        Returns:
+            List of chunks with guaranteed minimum overlap.
+        """
+        if not chunks or self.min_overlap_tokens <= 0:
+            return chunks
+
+        result: list[TextChunk] = []
+
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                # First chunk stays unchanged
+                result.append(self._update_chunk_metadata(chunk, i, overlap_tokens=0))
+                continue
+
+            prev_chunk = chunks[i - 1]
+            prev_tokens = prev_chunk.text.split()
+
+            # Calculate how many tokens to prepend for overlap
+            overlap_tokens = min(self.min_overlap_tokens, len(prev_tokens))
+
+            if overlap_tokens > 0:
+                # Get overlap text from end of previous chunk
+                overlap_text = ' '.join(prev_tokens[-overlap_tokens:])
+
+                # Prepend overlap to current chunk
+                new_text = overlap_text + ' ' + chunk.text
+
+                # Create new chunk with overlap
+                new_chunk = TextChunk(
+                    text=new_text,
+                    start_char=prev_chunk.end_char - len(overlap_text),
+                    end_char=chunk.end_char,
+                    chunk_index=i,
+                    metadata={
+                        **chunk.metadata,
+                        'strategy': 'hybrid',
+                        'overlap_tokens': overlap_tokens,
+                        'token_count': len(new_text.split()),
+                        'semantic_token_count': chunk.metadata.get('token_count', len(chunk.text.split())),
+                    }
+                )
+                result.append(new_chunk)
+            else:
+                result.append(self._update_chunk_metadata(chunk, i, overlap_tokens=0))
+
+        logger.info(
+            f"Created {len(result)} hybrid chunks with {self.min_overlap_tokens}-token overlap guarantee"
+        )
+        return result
+
+    def _update_chunk_metadata(
+        self, chunk: TextChunk, index: int, overlap_tokens: int
+    ) -> TextChunk:
+        """Update chunk metadata for hybrid strategy."""
+        return TextChunk(
+            text=chunk.text,
+            start_char=chunk.start_char,
+            end_char=chunk.end_char,
+            chunk_index=index,
+            metadata={
+                **chunk.metadata,
+                'strategy': 'hybrid',
+                'overlap_tokens': overlap_tokens,
+            }
+        )
+
+
 class ChunkingStrategyFactory:
     """
     Factory for creating chunking strategies.
-    
+
     Provides a centralized way to instantiate different chunking strategies
     based on configuration, allowing for easy switching between approaches.
     """
@@ -616,17 +761,17 @@ class ChunkingStrategyFactory:
     ) -> ChunkingStrategy:
         """
         Return a ChunkingStrategy instance corresponding to strategy_type.
-        
+
         Creates one of: 'token' -> TokenBasedChunking, 'semantic' -> SemanticChunking,
         'sliding' or 'sliding_window' -> SlidingWindowChunking. The lookup is case-insensitive.
-        
+
         Parameters:
             strategy_type (str): Name of the strategy to create.
             **kwargs: Passed to the selected strategy class constructor.
-        
+
         Returns:
             ChunkingStrategy: An instance of the requested chunking strategy.
-        
+
         Raises:
             ValueError: If strategy_type is not one of the supported names.
         """
@@ -634,7 +779,8 @@ class ChunkingStrategyFactory:
             'token': TokenBasedChunking,
             'semantic': SemanticChunking,
             'sliding': SlidingWindowChunking,
-            'sliding_window': SlidingWindowChunking
+            'sliding_window': SlidingWindowChunking,
+            'hybrid': HybridChunking,
         }
 
         strategy_class = strategies.get(strategy_type.lower())
@@ -642,7 +788,7 @@ class ChunkingStrategyFactory:
             raise ValueError(f"Unknown chunking strategy: {strategy_type}")
 
         safe_kwargs = {
-            key: ('<callable>' if callable(value) else type(value).__name__ if not isinstance(value, (str, int, float, bool)) else value)
+            key: ('<callable>' if callable(value) else type(value).__name__ if not isinstance(value, str | int | float | bool) else value)
             for key, value in kwargs.items()
             if key not in {'tokenizer', 'text'}
         }
