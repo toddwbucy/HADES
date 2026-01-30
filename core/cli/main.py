@@ -37,6 +37,7 @@ from core.cli.output import (
     error_response,
     print_response,
 )
+from core.database.collections import get_default_profile_name, list_profiles
 
 
 def _set_gpu(gpu: int | None) -> None:
@@ -576,7 +577,7 @@ def arxiv_sync_status() -> None:
 def database_query(
     search_text: str = typer.Argument(None, help="Search query text", metavar="SEARCH_TEXT"),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
-    paper: str = typer.Option(None, "--paper", "-p", help="Filter results to a specific paper (arxiv ID)"),
+    paper: str = typer.Option(None, "--paper", "-p", help="Filter results to a specific paper (document ID)"),
     context: int = typer.Option(0, "--context", "-c", help="Include N adjacent chunks for context"),
     cite: bool = typer.Option(False, "--cite", help="Output minimal citation format (arxiv_id, title, quote)"),
     chunks_only: bool = typer.Option(False, "--chunks", help="Get all chunks for --paper (no semantic search)"),
@@ -589,30 +590,38 @@ def database_query(
         help="Cross-encoder model for re-ranking",
     ),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile to query (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
 ) -> None:
     """Semantic search over the knowledge base.
 
     Returns relevant text chunks with similarity scores.
 
     Examples:
-        hades database query "attention mechanism"              # Search all papers
-        hades database query "Newton-Schulz" --paper 2505.23735 # Search within paper
-        hades database query "attention" --context 1            # Include ±1 adjacent chunks
+        hades db query "attention mechanism"                    # Search default collection
+        hades db query "Newton-Schulz" --paper 2505.23735       # Search within paper
+        hades db query "attention" --context 1                  # Include ±1 adjacent chunks
         hades db query "attention" --cite --limit 3             # Citation format, top 3
-        hades database query --paper 2505.23735 --chunks        # Get all chunks (no search)
-        hades db query "flash attention memory" --hybrid        # Semantic + keyword matching
-        hades db query "memory and linear complexity" --decompose  # Split query
+        hades db query --paper 2505.23735 --chunks              # Get all chunks (no search)
+        hades db query "flash attention" --hybrid               # Semantic + keyword matching
+        hades db query "attention" --collection sync            # Query synced abstracts
         hades db query "attention" --rerank                     # Cross-encoder precision
     """
     _set_gpu(gpu)
     start_time = time.time()
+    # Use provided collection or fall back to default
+    profile = collection or get_default_profile_name()
 
     try:
         from core.cli.commands.database import get_paper_chunks, semantic_query
 
         # Mode 1: Get all chunks for a paper (no semantic search)
         if chunks_only and paper:
-            response = get_paper_chunks(paper, limit, start_time)
+            response = get_paper_chunks(paper, limit, start_time, collection=profile)
         # Mode 2: Semantic search (optionally filtered by paper)
         elif search_text:
             response = semantic_query(
@@ -626,6 +635,7 @@ def database_query(
                 decompose=decompose,
                 rerank=rerank,
                 rerank_model=rerank_model,
+                collection=profile,
             )
         # Mode 3: Must provide search text or --chunks
         else:
@@ -693,16 +703,23 @@ def database_aql(
 
 @db_app.command("list")
 def database_list(
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of papers to list"),
-    category: str = typer.Option(None, "--category", "-c", help="Filter by arxiv category"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of documents to list"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by category (if supported by collection)"),
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
 ) -> None:
-    """List papers stored in the database."""
+    """List documents stored in the database."""
     start_time = time.time()
+    profile = collection or get_default_profile_name()
 
     try:
         from core.cli.commands.database import list_stored_papers
 
-        response = list_stored_papers(limit, category, start_time)
+        response = list_stored_papers(limit, category, start_time, collection=profile)
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None
@@ -723,42 +740,63 @@ def database_list(
 @db_app.command("stats")
 @cli_command("database.stats", ErrorCode.DATABASE_ERROR)
 def database_stats(
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
     start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
 ) -> CLIResponse:
     """Show database statistics."""
     from core.cli.commands.database import get_stats
 
-    return get_stats(start_time)
+    profile = collection or get_default_profile_name()
+    return get_stats(start_time, collection=profile)
 
 
 @db_app.command("check")
 @cli_command("database.check", ErrorCode.DATABASE_ERROR)
 def database_check(
-    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to check", metavar="ARXIV_ID"),
+    document_id: str = typer.Argument(..., help="Document ID to check", metavar="DOCUMENT_ID"),
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
     start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
 ) -> CLIResponse:
-    """Check if a paper exists in the database."""
+    """Check if a document exists in the database."""
     from core.cli.commands.database import check_paper_exists
 
-    return check_paper_exists(arxiv_id, start_time)
+    profile = collection or get_default_profile_name()
+    return check_paper_exists(document_id, start_time, collection=profile)
 
 
 @db_app.command("purge")
 def database_purge(
-    arxiv_id: str = typer.Argument(..., help="ArXiv paper ID to purge", metavar="ARXIV_ID"),
+    document_id: str = typer.Argument(..., help="Document ID to purge", metavar="DOCUMENT_ID"),
     force: bool = typer.Option(
         False,
         "--force",
         "-y",
         help="Skip interactive confirmation (still requires HADES_DESTRUCTIVE_OPS=enabled)",
     ),
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
 ) -> None:
-    """Remove all data for a paper from all collections (metadata, chunks, embeddings).
+    """Remove all data for a document from all collections (metadata, chunks, embeddings).
 
     Requires HADES_DESTRUCTIVE_OPS=enabled environment variable.
     Interactive confirmation is designed to require human involvement when using Claude Code.
     """
     start_time = time.time()
+    profile = collection or get_default_profile_name()
 
     try:
         from core.cli.destructive import check_destructive_allowed
@@ -766,8 +804,8 @@ def database_purge(
         # Check if destructive operation is allowed
         blocked = check_destructive_allowed(
             command="database.purge",
-            operation_desc=f"purge paper {arxiv_id}",
-            confirm_text=f"PURGE {arxiv_id}",
+            operation_desc=f"purge document {document_id}",
+            confirm_text=f"PURGE {document_id}",
             start_time=start_time,
             force=force,
         )
@@ -777,7 +815,7 @@ def database_purge(
 
         from core.cli.commands.database import purge_paper
 
-        response = purge_paper(arxiv_id, start_time)
+        response = purge_paper(document_id, start_time, collection=profile)
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None

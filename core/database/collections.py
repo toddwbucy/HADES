@@ -8,10 +8,14 @@ Built-in profiles:
     arxiv       — ingested full papers (arxiv_metadata, arxiv_abstract_chunks, arxiv_abstract_embeddings)
     sync        — synced abstracts (arxiv_papers, arxiv_abstracts, arxiv_embeddings)
     default     — generic names (documents, chunks, embeddings)
+
+Environment variables:
+    HADES_DEFAULT_COLLECTION — default profile name (defaults to "arxiv")
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -61,3 +65,33 @@ def get_profile(name: str) -> CollectionProfile:
     except KeyError:
         available = ", ".join(sorted(PROFILES))
         raise KeyError(f"Unknown collection profile: {name!r}. Available: {available}") from None
+
+
+def get_default_profile_name() -> str:
+    """Get the default collection profile name.
+
+    Reads from HADES_DEFAULT_COLLECTION environment variable,
+    falling back to "arxiv" for backward compatibility.
+
+    Returns:
+        Profile name string
+    """
+    return os.environ.get("HADES_DEFAULT_COLLECTION", "arxiv")
+
+
+def get_default_profile() -> CollectionProfile:
+    """Get the default collection profile.
+
+    Returns:
+        CollectionProfile from environment or default (arxiv)
+    """
+    return get_profile(get_default_profile_name())
+
+
+def list_profiles() -> list[str]:
+    """List all available profile names.
+
+    Returns:
+        Sorted list of profile names
+    """
+    return sorted(PROFILES.keys())
