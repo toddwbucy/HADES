@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "hades"
-version = "0.1.0"
+version = "0.2.0"
 description = "Heterogeneous Adaptive Dimensional Embedding System - Production infrastructure for processing and serving embedded knowledge"
 authors = ["HADES Team"]
 readme = "README.md"
