@@ -36,6 +36,11 @@ embedding:
     fallback_to_local: true
     # Timeout for service requests (milliseconds)
     timeout_ms: 30000
+    # Device override for embedding service (uses gpu.device if not set)
+    # Set this to run embedder on a specific GPU independent of other settings
+    # device: cuda:2
+    # Idle timeout in seconds (0 = never unload model)
+    idle_timeout: 300
 
   # Model settings (used by service and local fallback)
   model:
@@ -58,10 +63,15 @@ embedding:
 # -----------------------------------------------------------------------------
 # GPU Configuration
 # -----------------------------------------------------------------------------
+# Multi-GPU systems should assign specific GPUs for different workloads:
+#   - Training workloads: cuda:0, cuda:1 (high-memory GPUs)
+#   - Inference/embedding: cuda:2 (dedicated inference GPU)
+#
+# This separation prevents embedding operations from interrupting model training.
 gpu:
-  # Default device: cuda:0, cuda:1, cuda:2 for specific GPU, or cpu for CPU-only
-  # Using explicit GPU index (cuda:0) is preferred over bare 'cuda' for multi-GPU systems
-  device: cuda:0
+  # Default device for inference/embedding operations
+  # Using explicit GPU index (cuda:2) keeps training GPUs (cuda:0, cuda:1) free
+  device: cuda:2
   # Use GPU by default
   enabled: true
 
