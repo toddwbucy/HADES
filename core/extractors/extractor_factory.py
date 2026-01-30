@@ -228,8 +228,10 @@ class ExtractorFactory:
             elif extractor_type == "markdown":
                 from .extractors_markdown import MarkdownExtractor
                 cls._registry["markdown"] = MarkdownExtractor
-                for ext in [".md", ".markdown", ".mdown", ".mkd", ".html", ".htm"]:
-                    cls._extension_map[ext] = "markdown"
+                # Only set extension if not already claimed (preserves Docling's .md mapping)
+                for ext in [".markdown", ".mdown", ".mkd", ".html", ".htm"]:
+                    if ext not in cls._extension_map:
+                        cls._extension_map[ext] = "markdown"
                 cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered markdown extractor")
 

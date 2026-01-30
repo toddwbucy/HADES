@@ -391,3 +391,104 @@ class TestExtractorFactory:
         available = ExtractorFactory.list_available()
 
         assert "markdown" in available
+
+
+class TestCodeRabbitReviewFixes:
+    """Tests for issues identified in CodeRabbit review."""
+
+    def test_extract_html_disabled_returns_error(self, tmp_path):
+        """Should return error when extract_html=False and given HTML file."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        html_file = tmp_path / "test.html"
+        html_file.write_text("<html><body>Test</body></html>")
+
+        extractor = MarkdownExtractor(extract_html=False)
+        result = extractor.extract(html_file)
+
+        assert result.error is not None
+        assert "HTML extraction disabled" in result.error
+
+    def test_case_insensitive_reference_links(self, tmp_path):
+        """Should match reference links case-insensitively."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        md_file.write_text(
+            "[Click HERE][Example]\n\n"
+            "[example]: https://example.com"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        assert len(result.references) == 1
+        assert result.references[0]["url"] == "https://example.com"
+
+    def test_extracts_cpp_language_code_block(self, tmp_path):
+        """Should extract code blocks with non-word language tags like c++."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        md_file.write_text(
+            "```c++\n"
+            "int main() { return 0; }\n"
+            "```"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        assert len(result.code_blocks) == 1
+        assert result.code_blocks[0]["language"] == "c++"
+
+    def test_extracts_csharp_language_code_block(self, tmp_path):
+        """Should extract code blocks with c# language tag."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        md_file.write_text(
+            "```c#\n"
+            "class Program { }\n"
+            "```"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        assert len(result.code_blocks) == 1
+        assert result.code_blocks[0]["language"] == "c#"
+
+    def test_html_code_with_cpp_language(self, tmp_path):
+        """Should extract HTML code blocks with c++ language class."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        html_file = tmp_path / "test.html"
+        html_file.write_text(
+            '<pre><code class="language-c++">int main() {}</code></pre>'
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(html_file)
+
+        assert len(result.code_blocks) == 1
+        assert result.code_blocks[0]["language"] == "c++"
+
+    def test_no_double_counting_pre_code_blocks(self, tmp_path):
+        """Should not double-count code in <pre><code> blocks."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        html_file = tmp_path / "test.html"
+        # This code appears in both <pre><code> and standalone <code>
+        html_file.write_text(
+            '<pre><code class="language-python">'
+            'def hello():\n    print("world")\n'
+            '</code></pre>'
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(html_file)
+
+        # Should only count once
+        assert len(result.code_blocks) == 1
+        assert result.code_blocks[0]["language"] == "python"

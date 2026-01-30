@@ -92,6 +92,12 @@ class MarkdownExtractor(ExtractorBase):
 
         ext = path.suffix.lower()
         if ext in [".html", ".htm"]:
+            if not self.extract_html:
+                return ExtractionResult(
+                    text="",
+                    error=f"HTML extraction disabled for file: {path}",
+                    processing_time=time.time() - start_time,
+                )
             return self._extract_html(content, path, start_time)
         else:
             return self._extract_markdown(content, path, start_time)
@@ -238,14 +244,15 @@ class MarkdownExtractor(ExtractorBase):
         code_blocks = []
 
         # Match fenced code blocks: ```language\ncode\n```
-        pattern = r"```(\w*)\n(.*?)```"
+        # Use [^\n`]* to support languages like c++, c#, objective-c
+        pattern = r"```([^\n`]*)\n(.*?)```"
         matches = re.findall(pattern, content, re.DOTALL)
 
         for i, (language, code) in enumerate(matches):
             code_blocks.append(
                 {
                     "index": i,
-                    "language": language or "text",
+                    "language": language.strip() or "text",
                     "code": code.strip(),
                     "line_count": code.count("\n") + 1,
                 }
@@ -341,12 +348,15 @@ class MarkdownExtractor(ExtractorBase):
             )
 
         # Match reference links: [text][ref] and [ref]: url
+        # Reference labels are case-insensitive in Markdown
         ref_def_pattern = r"^\[([^\]]+)\]:\s*(.+)$"
-        ref_defs = dict(re.findall(ref_def_pattern, content, re.MULTILINE))
+        ref_defs = {
+            k.lower(): v for k, v in re.findall(ref_def_pattern, content, re.MULTILINE)
+        }
 
         ref_use_pattern = r"\[([^\]]+)\]\[([^\]]*)\]"
         for text, ref in re.findall(ref_use_pattern, content):
-            ref_key = ref or text
+            ref_key = (ref or text).lower()
             if ref_key in ref_defs:
                 links.append(
                     {
@@ -426,7 +436,8 @@ class MarkdownExtractor(ExtractorBase):
         text = content
 
         # Remove fenced code blocks (keep the code content)
-        text = re.sub(r"```\w*\n", "", text)
+        # Use [^\n`]* to match languages like c++, c#, objective-c
+        text = re.sub(r"```[^\n`]*\n", "", text)
         text = re.sub(r"```", "", text)
 
         # Remove inline code backticks
@@ -479,9 +490,9 @@ class MarkdownExtractor(ExtractorBase):
         for i, (attrs, code) in enumerate(
             re.findall(pre_code_pattern, content, re.DOTALL | re.IGNORECASE)
         ):
-            # Extract language from class attribute
+            # Extract language from class attribute (supports c++, c#, etc.)
             language = "text"
-            class_match = re.search(r'class=["\'](?:language-)?(\w+)["\']', attrs, re.IGNORECASE)
+            class_match = re.search(r'language-([A-Za-z0-9_+#-]+)', attrs, re.IGNORECASE)
             if class_match:
                 language = class_match.group(1)
             # Unescape HTML entities
@@ -495,15 +506,16 @@ class MarkdownExtractor(ExtractorBase):
                 }
             )
 
-        # Match standalone <code> blocks (if not inside <pre>)
+        # Match standalone <code> blocks, excluding those already in <pre><code>
+        # First, remove <pre><code>...</code></pre> blocks to avoid double-counting
+        content_no_pre = re.sub(pre_code_pattern, "", content, flags=re.DOTALL | re.IGNORECASE)
         code_pattern = r"<code([^>]*)>(.*?)</code>"
-        for attrs, code in re.findall(code_pattern, content, re.DOTALL | re.IGNORECASE):
-            # Extract language from class attribute
+        for attrs, code in re.findall(code_pattern, content_no_pre, re.DOTALL | re.IGNORECASE):
+            # Extract language from class attribute (supports c++, c#, etc.)
             language = "text"
-            class_match = re.search(r'class=["\'](?:language-)?(\w+)["\']', attrs, re.IGNORECASE)
+            class_match = re.search(r'language-([A-Za-z0-9_+#-]+)', attrs, re.IGNORECASE)
             if class_match:
                 language = class_match.group(1)
-            # Skip if already captured in <pre><code>
             code = self._unescape_html(code)
             if code.strip() and len(code) > 50:  # Only substantial code blocks
                 code_blocks.append(
