@@ -300,16 +300,19 @@ class MarkdownExtractor(ExtractorBase):
         matches = re.findall(table_pattern, content)
 
         for i, (header_row, _separator, body_rows) in enumerate(matches):
-            # Parse header
-            headers = [
-                cell.strip() for cell in header_row.split("|") if cell.strip()
-            ]
+            # Parse header - preserve empty cells but strip leading/trailing from split
+            header_parts = [cell.strip() for cell in header_row.split("|")]
+            # Remove empty strings from leading/trailing pipes (e.g., "|A|B|" -> ['', 'A', 'B', ''])
+            headers = header_parts[1:-1] if header_parts[0] == "" and header_parts[-1] == "" else header_parts
 
-            # Parse body rows
+            # Parse body rows - preserve empty cells for correct column alignment
             rows = []
             for row in body_rows.strip().split("\n"):
-                cells = [cell.strip() for cell in row.split("|") if cell.strip()]
-                if cells:
+                cell_parts = [cell.strip() for cell in row.split("|")]
+                # Remove empty strings from leading/trailing pipes
+                cells = cell_parts[1:-1] if cell_parts[0] == "" and cell_parts[-1] == "" else cell_parts
+                # Keep rows with at least one non-empty cell (skip fully-blank rows)
+                if any(cell != "" for cell in cells):
                     rows.append(cells)
 
             tables.append(

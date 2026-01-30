@@ -492,3 +492,26 @@ class TestCodeRabbitReviewFixes:
         # Should only count once
         assert len(result.code_blocks) == 1
         assert result.code_blocks[0]["language"] == "python"
+
+    def test_preserves_empty_table_cells(self, tmp_path):
+        """Should preserve empty cells in tables for correct column alignment."""
+        from core.extractors.extractors_markdown import MarkdownExtractor
+
+        md_file = tmp_path / "test.md"
+        md_file.write_text(
+            "| A | B | C |\n"
+            "|---|---|---|\n"
+            "| 1 |   | 3 |\n"
+            "| x | y |   |\n"
+        )
+
+        extractor = MarkdownExtractor()
+        result = extractor.extract(md_file)
+
+        assert len(result.tables) == 1
+        table = result.tables[0]
+        assert table["headers"] == ["A", "B", "C"]
+        assert table["column_count"] == 3
+        # Empty cells should be preserved as empty strings
+        assert table["rows"][0] == ["1", "", "3"]
+        assert table["rows"][1] == ["x", "y", ""]
