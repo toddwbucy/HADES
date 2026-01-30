@@ -190,8 +190,6 @@ class ExtractorFactory:
         if extractor_type in cls._auto_registered:
             return
 
-        cls._auto_registered.add(extractor_type)
-
         try:
             if extractor_type == "docling":
                 from .extractors_docling import DoclingExtractor
@@ -199,12 +197,14 @@ class ExtractorFactory:
                 # Register extensions from DoclingExtractor.supported_formats
                 for ext in DoclingExtractor().supported_formats:
                     cls._extension_map[ext.lower()] = "docling"
+                cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered docling extractor")
 
             elif extractor_type == "latex":
                 from .extractors_latex import LaTeXExtractor
                 cls._registry["latex"] = LaTeXExtractor
                 cls._extension_map[".tex"] = "latex"
+                cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered latex extractor")
 
             elif extractor_type == "code":
@@ -212,6 +212,7 @@ class ExtractorFactory:
                 cls._registry["code"] = CodeExtractor
                 for ext in [".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp"]:
                     cls._extension_map[ext] = "code"
+                cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered code extractor")
 
             # Note: TreeSitterExtractor is a symbol extractor, not a document extractor.
@@ -221,13 +222,16 @@ class ExtractorFactory:
             elif extractor_type == "robust":
                 from .extractors_robust import RobustExtractor
                 cls._registry["robust"] = RobustExtractor
+                cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered robust extractor")
 
             else:
+                # Mark unknown types to prevent repeated warnings
+                cls._auto_registered.add(extractor_type)
                 logger.warning(f"Unknown extractor type for auto-registration: {extractor_type}")
 
-        except ImportError as e:
-            logger.debug(f"Could not auto-register {extractor_type}: {e}")
+        except ImportError:
+            logger.exception(f"Could not auto-register {extractor_type}")
 
     @classmethod
     def _ensure_registered(cls) -> None:
@@ -261,8 +265,8 @@ class ExtractorFactory:
                     info["supports_gpu"] = temp.supports_gpu
                     info["supports_batch"] = temp.supports_batch
                     info["supports_ocr"] = temp.supports_ocr
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not introspect extractor '%s': %s", name, e)
 
                 available[name] = info
 
