@@ -499,13 +499,13 @@ class ArXivAPIClient:
 
     def _extract_year_month(self, arxiv_id: str) -> str:
         """Extract year-month for directory organization"""
-        if "." in arxiv_id:
-            # New format: YYMM.NNNNN
-            return arxiv_id.split(".")[0]
-        elif "/" in arxiv_id:
-            # Old format: subject-class/YYMMnnn
+        if "/" in arxiv_id:
+            # Old format: subject-class/YYMMnnn (check "/" first to handle cs.AI/0601001)
             paper_id = arxiv_id.split("/", 1)[1]
             return paper_id[:4] if len(paper_id) >= 4 else "0000"
+        elif "." in arxiv_id:
+            # New format: YYMM.NNNNN
+            return arxiv_id.split(".")[0]
         else:
             return "0000"
 

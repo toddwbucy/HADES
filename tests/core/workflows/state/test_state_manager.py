@@ -96,9 +96,11 @@ class TestStateManager:
             assert manager_b.get_checkpoint("step") is None
             assert manager_b.state["process_name"] == "process_b"
         finally:
-            # Clean up main file and any backup files
-            Path(state_file).unlink(missing_ok=True)
-            for bak in Path(state_file).parent.glob("*.bak"):
+            # Clean up main file and any backup files created from this state file
+            state_path = Path(state_file)
+            state_path.unlink(missing_ok=True)
+            # Only remove backups that start with this file's stem to avoid removing unrelated .bak files
+            for bak in state_path.parent.glob(f"{state_path.stem}*.bak"):
                 bak.unlink(missing_ok=True)
 
     def test_set_and_get_checkpoint(self):

@@ -198,14 +198,13 @@ class TestArXivAPIClientYearMonthExtraction:
 
         client = ArXivAPIClient()
 
-        # Old format without dot in category (e.g., hep-th/9912345)
-        # uses the "/" branch and extracts first 4 chars after "/"
+        # Old format: "/" is checked first, extracts first 4 chars after "/"
         assert client._extract_year_month("hep-th/9912345") == "9912"
         assert client._extract_year_month("quant-ph/0601001") == "0601"
 
-        # Note: Old format WITH dot (cs.AI/0601001) triggers "." check first
-        # and returns "cs" - this is edge case behavior in the implementation
-        assert client._extract_year_month("cs.AI/0601001") == "cs"
+        # Old format with dot in category (cs.AI/0601001) also works correctly
+        # because "/" is checked before "."
+        assert client._extract_year_month("cs.AI/0601001") == "0601"
 
         client.close()
 
