@@ -206,7 +206,7 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
         use_gpu = _get_nested(yaml_config, "gpu", "enabled", default=True)
 
     if use_gpu:
-        device = _get_nested(yaml_config, "gpu", "device", default="cuda")
+        device = _get_nested(yaml_config, "gpu", "device", default="cuda:2")
     else:
         device = "cpu"
 
@@ -353,6 +353,26 @@ def get_embedder_service_config(config_path: Path | None = None) -> dict:
     if not use_gpu:
         device = "cpu"
 
+    # Parse batch_size with validation
+    batch_size_str = os.environ.get("HADES_EMBEDDER_BATCH_SIZE")
+    if batch_size_str:
+        try:
+            batch_size = int(batch_size_str)
+        except ValueError as e:
+            raise ValueError(f"HADES_EMBEDDER_BATCH_SIZE must be an integer, got: {batch_size_str}") from e
+    else:
+        batch_size = int(_get_nested(yaml_config, "embedding", "batch", "size", default=48))
+
+    # Parse idle_timeout with validation
+    idle_timeout_str = os.environ.get("HADES_EMBEDDER_IDLE_TIMEOUT")
+    if idle_timeout_str:
+        try:
+            idle_timeout = int(idle_timeout_str)
+        except ValueError as e:
+            raise ValueError(f"HADES_EMBEDDER_IDLE_TIMEOUT must be an integer, got: {idle_timeout_str}") from e
+    else:
+        idle_timeout = int(_get_nested(yaml_config, "embedding", "service", "idle_timeout", default=300))
+
     return {
         "device": device,
         "model_name": os.environ.get("HADES_EMBEDDER_MODEL")
@@ -362,14 +382,8 @@ def get_embedder_service_config(config_path: Path | None = None) -> dict:
             if os.environ.get("HADES_EMBEDDER_FP16")
             else _get_nested(yaml_config, "embedding", "model", "use_fp16", default=True)
         ),
-        "batch_size": int(
-            os.environ.get("HADES_EMBEDDER_BATCH_SIZE")
-            or _get_nested(yaml_config, "embedding", "batch", "size", default=48)
-        ),
-        "idle_timeout": int(
-            os.environ.get("HADES_EMBEDDER_IDLE_TIMEOUT")
-            or _get_nested(yaml_config, "embedding", "service", "idle_timeout", default=300)
-        ),
+        "batch_size": batch_size,
+        "idle_timeout": idle_timeout,
     }
 
 

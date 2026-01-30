@@ -468,3 +468,17 @@ class TestGetEmbedderServiceConfig:
             assert config["use_fp16"] is True
             assert config["batch_size"] == 48
             assert config["idle_timeout"] == 300
+
+    @patch.dict(os.environ, {"HADES_EMBEDDER_BATCH_SIZE": "invalid"}, clear=True)
+    def test_invalid_batch_size_raises_error(self):
+        """Test invalid batch size raises ValueError."""
+        with patch("core.cli.config._load_yaml_config", return_value={}):
+            with pytest.raises(ValueError, match="HADES_EMBEDDER_BATCH_SIZE must be an integer"):
+                get_embedder_service_config()
+
+    @patch.dict(os.environ, {"HADES_EMBEDDER_IDLE_TIMEOUT": "not_a_number"}, clear=True)
+    def test_invalid_idle_timeout_raises_error(self):
+        """Test invalid idle timeout raises ValueError."""
+        with patch("core.cli.config._load_yaml_config", return_value={}):
+            with pytest.raises(ValueError, match="HADES_EMBEDDER_IDLE_TIMEOUT must be an integer"):
+                get_embedder_service_config()
