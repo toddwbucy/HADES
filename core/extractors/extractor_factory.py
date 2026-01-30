@@ -225,6 +225,16 @@ class ExtractorFactory:
                 cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered robust extractor")
 
+            elif extractor_type == "markdown":
+                from .extractors_markdown import MarkdownExtractor
+                cls._registry["markdown"] = MarkdownExtractor
+                # Only set extension if not already claimed (preserves Docling's .md mapping)
+                for ext in [".markdown", ".mdown", ".mkd", ".html", ".htm"]:
+                    if ext not in cls._extension_map:
+                        cls._extension_map[ext] = "markdown"
+                cls._auto_registered.add(extractor_type)
+                logger.debug("Auto-registered markdown extractor")
+
             else:
                 # Mark unknown types to prevent repeated warnings
                 cls._auto_registered.add(extractor_type)
@@ -236,7 +246,7 @@ class ExtractorFactory:
     @classmethod
     def _ensure_registered(cls) -> None:
         """Ensure all built-in extractors are registered."""
-        for extractor_type in ["docling", "latex", "code", "robust"]:
+        for extractor_type in ["docling", "latex", "code", "robust", "markdown"]:
             if extractor_type not in cls._registry:
                 cls._auto_register(extractor_type)
 
