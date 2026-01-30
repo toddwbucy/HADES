@@ -633,7 +633,12 @@ class HybridChunking(ChunkingStrategy):
                 previous chunk to the current chunk.
             respect_sentences (bool): If True, respect sentence boundaries.
             respect_paragraphs (bool): If True, respect paragraph boundaries.
+
+        Raises:
+            ValueError: If min_overlap_tokens is negative.
         """
+        if min_overlap_tokens < 0:
+            raise ValueError("min_overlap_tokens must be non-negative")
         self.min_overlap_tokens = min_overlap_tokens
         self.semantic_chunker = SemanticChunking(
             max_chunk_size=max_chunk_size,
@@ -682,8 +687,14 @@ class HybridChunking(ChunkingStrategy):
         Returns:
             List of chunks with guaranteed minimum overlap.
         """
-        if not chunks or self.min_overlap_tokens <= 0:
-            return chunks
+        if not chunks:
+            return []
+        if self.min_overlap_tokens <= 0:
+            # Still mark all chunks as hybrid even with zero overlap
+            return [
+                self._update_chunk_metadata(chunk, idx, overlap_tokens=0)
+                for idx, chunk in enumerate(chunks)
+            ]
 
         result: list[TextChunk] = []
 

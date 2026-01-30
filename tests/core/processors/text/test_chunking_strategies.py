@@ -414,7 +414,7 @@ class TestHybridChunking:
         assert chunks == []
 
     def test_zero_overlap_returns_semantic_chunks(self):
-        """Should return semantic chunks unchanged when min_overlap_tokens=0."""
+        """Should return semantic chunks with hybrid metadata when min_overlap_tokens=0."""
         from core.processors.text.chunking_strategies import HybridChunking
 
         strategy = HybridChunking(
@@ -424,9 +424,17 @@ class TestHybridChunking:
 
         chunks = strategy.create_chunks(text)
 
-        # Should still have chunks but with 0 overlap
+        # Should still have chunks but with 0 overlap, and marked as hybrid
         for chunk in chunks:
             assert chunk.metadata.get("overlap_tokens", 0) == 0
+            assert chunk.metadata["strategy"] == "hybrid"
+
+    def test_rejects_negative_overlap(self):
+        """Should reject negative min_overlap_tokens."""
+        from core.processors.text.chunking_strategies import HybridChunking
+
+        with pytest.raises(ValueError, match="min_overlap_tokens must be non-negative"):
+            HybridChunking(max_chunk_size=100, min_overlap_tokens=-1)
 
     def test_overlap_limited_by_previous_chunk_length(self):
         """Should limit overlap to previous chunk's token count."""
