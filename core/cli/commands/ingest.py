@@ -584,15 +584,36 @@ def _process_and_store(
                     }
                 )
 
+            # When force=True, purge existing chunks/embeddings first to avoid orphans.
+            # This handles the case where re-ingestion produces fewer chunks than before.
+            if force:
+                progress(f"Purging existing data for {doc_id}...")
+                # Delete all chunks for this document
+                client.query(
+                    f"FOR c IN {col.chunks} FILTER c.paper_key == @key REMOVE c IN {col.chunks}",
+                    {"key": sanitized_id},
+                )
+                # Delete all embeddings for this document
+                client.query(
+                    f"FOR e IN {col.embeddings} FILTER e.paper_key == @key REMOVE e IN {col.embeddings}",
+                    {"key": sanitized_id},
+                )
+                # Delete metadata (will be re-inserted)
+                client.query(
+                    f"FOR m IN {col.metadata} FILTER m._key == @key REMOVE m IN {col.metadata}",
+                    {"key": sanitized_id},
+                )
+
             # Insert chunks and embeddings first so that metadata only
             # records success after the data is actually persisted.
             progress(f"Storing {len(chunk_docs)} chunks in database...")
 
+            # After purge, we can use regular insert (no overwrite needed)
             if chunk_docs:
-                client.insert_documents(col.chunks, chunk_docs, overwrite=force)
+                client.insert_documents(col.chunks, chunk_docs, overwrite=False)
             if embedding_docs:
-                client.insert_documents(col.embeddings, embedding_docs, overwrite=force)
-            client.insert_documents(col.metadata, [meta_doc], overwrite=force)
+                client.insert_documents(col.embeddings, embedding_docs, overwrite=False)
+            client.insert_documents(col.metadata, [meta_doc], overwrite=False)
 
             return {
                 "success": True,
