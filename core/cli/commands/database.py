@@ -319,6 +319,242 @@ def check_paper_exists(
         )
 
 
+def get_recent_papers(
+    limit: int, start_time: float, collection: str | None = None
+) -> CLIResponse:
+    """Get recently ingested papers sorted by ingestion time.
+
+    Args:
+        limit: Maximum number of papers to return
+        start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
+
+    Returns:
+        CLIResponse with recent papers list
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    profile_name = collection or get_default_profile_name()
+
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.recent",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        arango_config = get_arango_config(config, read_only=True)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            col = get_profile(profile_name)
+            results = client.query(
+                f"""
+                FOR doc IN {col.metadata}
+                    SORT doc.processing_timestamp DESC
+                    LIMIT @limit
+                    RETURN {{
+                        document_id: doc.document_id OR doc._key,
+                        arxiv_id: doc.arxiv_id,
+                        title: doc.title,
+                        authors: doc.authors,
+                        num_chunks: doc.num_chunks,
+                        source: doc.source,
+                        ingested: doc.processing_timestamp
+                    }}
+                """,
+                {"limit": limit},
+            )
+
+            return success_response(
+                command="database.recent",
+                data={"papers": results, "collection": profile_name},
+                start_time=start_time,
+                count=len(results),
+            )
+
+        finally:
+            client.close()
+
+    except Exception as e:
+        return error_response(
+            command="database.recent",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
+def check_health(start_time: float, collection: str | None = None) -> CLIResponse:
+    """Check database health and data integrity.
+
+    Detects:
+    - Orphaned chunks (chunks without metadata)
+    - Orphaned embeddings (embeddings without chunks)
+    - Missing embeddings (chunks without embeddings)
+    - Papers with mismatched chunk counts
+
+    Args:
+        start_time: Start time for duration calculation
+        collection: Collection profile name (default: from env or 'arxiv')
+
+    Returns:
+        CLIResponse with health report
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    profile_name = collection or get_default_profile_name()
+
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.health",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        arango_config = get_arango_config(config, read_only=True)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            col = get_profile(profile_name)
+            issues = []
+
+            # Count totals
+            metadata_count = client.query(f"RETURN LENGTH({col.metadata})")[0]
+            chunks_count = client.query(f"RETURN LENGTH({col.chunks})")[0]
+            embeddings_count = client.query(f"RETURN LENGTH({col.embeddings})")[0]
+
+            # Check for orphaned chunks (chunks without metadata)
+            orphaned_chunks = client.query(
+                f"""
+                FOR c IN {col.chunks}
+                    LET meta = DOCUMENT({col.metadata}, c.paper_key)
+                    FILTER meta == null
+                    COLLECT WITH COUNT INTO cnt
+                    RETURN cnt
+                """
+            )
+            orphaned_chunks_count = orphaned_chunks[0] if orphaned_chunks else 0
+            if orphaned_chunks_count > 0:
+                issues.append({
+                    "type": "orphaned_chunks",
+                    "count": orphaned_chunks_count,
+                    "description": "Chunks without corresponding metadata document",
+                })
+
+            # Check for orphaned embeddings (embeddings without chunks)
+            orphaned_embeddings = client.query(
+                f"""
+                FOR e IN {col.embeddings}
+                    LET chunk = DOCUMENT({col.chunks}, e.chunk_key)
+                    FILTER chunk == null
+                    COLLECT WITH COUNT INTO cnt
+                    RETURN cnt
+                """
+            )
+            orphaned_embeddings_count = orphaned_embeddings[0] if orphaned_embeddings else 0
+            if orphaned_embeddings_count > 0:
+                issues.append({
+                    "type": "orphaned_embeddings",
+                    "count": orphaned_embeddings_count,
+                    "description": "Embeddings without corresponding chunk document",
+                })
+
+            # Check for missing embeddings by comparing counts per paper
+            # This is more efficient than checking each chunk individually
+            if chunks_count != embeddings_count:
+                diff = abs(chunks_count - embeddings_count)
+                if chunks_count > embeddings_count:
+                    issues.append({
+                        "type": "missing_embeddings",
+                        "count": diff,
+                        "description": f"Fewer embeddings ({embeddings_count}) than chunks ({chunks_count})",
+                    })
+                else:
+                    issues.append({
+                        "type": "extra_embeddings",
+                        "count": diff,
+                        "description": f"More embeddings ({embeddings_count}) than chunks ({chunks_count})",
+                    })
+
+            # Check for chunk count mismatches
+            mismatched_papers = client.query(
+                f"""
+                FOR m IN {col.metadata}
+                    LET actual_chunks = LENGTH(
+                        FOR c IN {col.chunks}
+                            FILTER c.paper_key == m._key
+                            RETURN 1
+                    )
+                    FILTER m.num_chunks != null AND m.num_chunks != actual_chunks
+                    RETURN {{
+                        document_id: m.document_id OR m._key,
+                        expected: m.num_chunks,
+                        actual: actual_chunks
+                    }}
+                """
+            )
+            if mismatched_papers:
+                issues.append({
+                    "type": "chunk_count_mismatch",
+                    "count": len(mismatched_papers),
+                    "description": "Papers where stored chunk count differs from metadata",
+                    "papers": mismatched_papers[:10],  # Limit to first 10
+                })
+
+            health_status = "healthy" if not issues else "issues_found"
+
+            return success_response(
+                command="database.health",
+                data={
+                    "status": health_status,
+                    "collection": profile_name,
+                    "totals": {
+                        "metadata": metadata_count,
+                        "chunks": chunks_count,
+                        "embeddings": embeddings_count,
+                    },
+                    "issues": issues,
+                },
+                start_time=start_time,
+            )
+
+        finally:
+            client.close()
+
+    except Exception as e:
+        return error_response(
+            command="database.health",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
 def purge_paper(
     document_id: str, start_time: float, collection: str | None = None
 ) -> CLIResponse:

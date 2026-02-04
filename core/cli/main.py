@@ -164,6 +164,40 @@ embed_app.add_typer(embed_gpu_app, name="gpu")
 # =============================================================================
 
 
+@app.command("status")
+def status_cmd() -> None:
+    """Show comprehensive system status for workspace discovery.
+
+    Provides a single-command audit of the entire HADES system:
+    - Version and embedding service status
+    - Database connection and collection stats
+    - Recently ingested papers
+    - Last sync timestamp
+
+    Designed for fresh AI sessions to quickly understand what's available.
+
+    Examples:
+        hades status
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.status import get_status
+
+        response = get_status(start_time)
+        print_response(response)
+
+    except Exception as e:
+        response = error_response(
+            command="status",
+            code=ErrorCode.INTERNAL_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 @app.command("extract")
 def extract_cmd(
     file: str = typer.Argument(..., help="Path to document file", metavar="FILE"),
@@ -753,6 +787,63 @@ def database_stats(
 
     profile = collection or get_default_profile_name()
     return get_stats(start_time, collection=profile)
+
+
+@db_app.command("recent")
+@cli_command("database.recent", ErrorCode.DATABASE_ERROR)
+def database_recent(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of recent papers to show"),
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
+    """Show recently ingested papers.
+
+    Lists papers in reverse chronological order by ingestion time.
+    Useful for understanding what's new in the knowledge base.
+
+    Examples:
+        hades db recent
+        hades db recent --limit 20
+        hades db recent --collection sync
+    """
+    from core.cli.commands.database import get_recent_papers
+
+    profile = collection or get_default_profile_name()
+    return get_recent_papers(limit, start_time, collection=profile)
+
+
+@db_app.command("health")
+@cli_command("database.health", ErrorCode.DATABASE_ERROR)
+def database_health(
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
+    """Check database health and data integrity.
+
+    Detects common issues:
+    - Orphaned chunks (chunks without metadata)
+    - Orphaned embeddings (embeddings without chunks)
+    - Missing embeddings (chunks without embeddings)
+    - Papers with mismatched chunk counts
+
+    Examples:
+        hades db health
+        hades db health --collection arxiv
+    """
+    from core.cli.commands.database import check_health
+
+    profile = collection or get_default_profile_name()
+    return check_health(start_time, collection=profile)
 
 
 @db_app.command("check")
