@@ -580,6 +580,10 @@ def _process_and_store(
             # Merge user-provided custom metadata (last, so it can override)
             if extra_metadata:
                 meta_doc.update(extra_metadata)
+                # Reassert identity fields — these must stay consistent with chunks/embeddings
+                meta_doc["_key"] = sanitized_id
+                meta_doc["document_id"] = doc_id
+                meta_doc["num_chunks"] = len(result.chunks)
 
             # Prepare chunk documents
             chunk_docs = []

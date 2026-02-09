@@ -1554,7 +1554,7 @@ def export_collection(
         aql = "FOR doc IN @@col"
         bind_vars: dict[str, Any] = {"@col": collection_name}
 
-        if limit:
+        if limit is not None:
             aql += " LIMIT @limit"
             bind_vars["limit"] = limit
 

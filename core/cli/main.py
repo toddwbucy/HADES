@@ -977,6 +977,11 @@ def database_export(
         # Only print the response JSON if writing to a file (not stdout)
         if output:
             print_response(response)
+        elif not response.success:
+            # Keep stdout clean for JSONL; surface errors on stderr
+            import sys
+
+            print(response.to_json(), file=sys.stderr)
         if not response.success:
             raise typer.Exit(1) from None
 
