@@ -139,7 +139,7 @@ def ingest(
     # Use batch processor for batch mode or large input sets
     if batch or len(arxiv_ids) + len(file_paths) > 5:
         all_items = arxiv_ids + file_paths
-        return _ingest_batch(all_items, None, force, resume, start_time)
+        return _ingest_batch(all_items, None, force, resume, start_time, extra_metadata=extra_metadata)
 
     # Standard (non-batch) mode
     progress(f"Ingesting {len(arxiv_ids)} arxiv papers and {len(file_paths)} files...")
@@ -198,6 +198,7 @@ def _ingest_batch(
     force: bool,
     resume: bool,
     start_time: float,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> CLIResponse:
     """Ingest items using batch processor with progress and resume.
 
@@ -207,6 +208,7 @@ def _ingest_batch(
         force: Force reprocessing even if already exists.
         resume: Resume from previous batch state.
         start_time: Command start timestamp.
+        extra_metadata: Custom metadata fields to merge into document records.
 
     Returns:
         CLIResponse with batch results.
@@ -226,9 +228,9 @@ def _ingest_batch(
     def process_single(item_id: str) -> dict[str, Any]:
         """Process a single item (arxiv ID or file path)."""
         if _is_arxiv_id(item_id):
-            return _ingest_arxiv_paper(item_id, config, force)
+            return _ingest_arxiv_paper(item_id, config, force, extra_metadata=extra_metadata)
         else:
-            return _ingest_file(item_id, config, None, force)
+            return _ingest_file(item_id, config, None, force, extra_metadata=extra_metadata)
 
     processor = BatchProcessor(
         state_file=".hades-batch-state.json",
