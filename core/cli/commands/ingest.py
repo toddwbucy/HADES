@@ -292,6 +292,20 @@ def _ingest_file(
         }
 
     doc_id = document_id or path.stem
+
+    # Check if already exists (mirrors _ingest_arxiv_paper logic)
+    if not force:
+        exists = _check_paper_in_db(doc_id, config)
+        if exists:
+            progress(f"Document {doc_id} already in database, skipping (use --force to reprocess)")
+            return {
+                "path": file_path,
+                "document_id": doc_id,
+                "success": True,
+                "skipped": True,
+                "message": "Already in database",
+            }
+
     progress(f"Ingesting {path.name} as {doc_id}...")
 
     try:
@@ -584,36 +598,45 @@ def _process_and_store(
                     }
                 )
 
-            # When force=True, purge existing chunks/embeddings first to avoid orphans.
-            # This handles the case where re-ingestion produces fewer chunks than before.
-            if force:
-                progress(f"Purging existing data for {doc_id}...")
-                # Delete all chunks for this document
-                client.query(
-                    f"FOR c IN {col.chunks} FILTER c.paper_key == @key REMOVE c IN {col.chunks}",
-                    {"key": sanitized_id},
-                )
-                # Delete all embeddings for this document
-                client.query(
-                    f"FOR e IN {col.embeddings} FILTER e.paper_key == @key REMOVE e IN {col.embeddings}",
-                    {"key": sanitized_id},
-                )
-                # Delete metadata (will be re-inserted)
-                client.query(
-                    f"FOR m IN {col.metadata} FILTER m._key == @key REMOVE m IN {col.metadata}",
-                    {"key": sanitized_id},
-                )
-
             # Insert chunks and embeddings first so that metadata only
             # records success after the data is actually persisted.
+            #
+            # When force=True, use overwrite to replace existing documents,
+            # then clean up orphaned chunks (safe insert-first approach).
+            # This avoids the non-atomic purge+insert pattern where a failed
+            # insert after purge would permanently lose data.
             progress(f"Storing {len(chunk_docs)} chunks in database...")
 
-            # After purge, we can use regular insert (no overwrite needed)
             if chunk_docs:
-                client.insert_documents(col.chunks, chunk_docs, overwrite=False)
+                client.insert_documents(col.chunks, chunk_docs, overwrite=force)
             if embedding_docs:
-                client.insert_documents(col.embeddings, embedding_docs, overwrite=False)
-            client.insert_documents(col.metadata, [meta_doc], overwrite=False)
+                client.insert_documents(col.embeddings, embedding_docs, overwrite=force)
+            client.insert_documents(col.metadata, [meta_doc], overwrite=force)
+
+            # After successful insert with force, clean up orphaned chunks/embeddings
+            # from previous ingestion that had more chunks than the current one.
+            if force:
+                new_chunk_count = len(chunk_docs)
+                # Remove chunks with index >= new count (orphans from prior ingestion)
+                removed = client.query(
+                    f"""
+                    FOR c IN {col.chunks}
+                        FILTER c.paper_key == @key AND c.chunk_index >= @max_idx
+                        REMOVE c IN {col.chunks}
+                        RETURN OLD._key
+                    """,
+                    {"key": sanitized_id, "max_idx": new_chunk_count},
+                )
+                # Remove corresponding orphaned embeddings
+                if removed:
+                    client.query(
+                        f"""
+                        FOR e IN {col.embeddings}
+                            FILTER e.paper_key == @key AND e.chunk_key IN @orphan_keys
+                            REMOVE e IN {col.embeddings}
+                        """,
+                        {"key": sanitized_id, "orphan_keys": removed},
+                    )
 
             return {
                 "success": True,
