@@ -164,6 +164,40 @@ embed_app.add_typer(embed_gpu_app, name="gpu")
 # =============================================================================
 
 
+@app.command("status")
+def status_cmd() -> None:
+    """Show comprehensive system status for workspace discovery.
+
+    Provides a single-command audit of the entire HADES system:
+    - Version and embedding service status
+    - Database connection and collection stats
+    - Recently ingested papers
+    - Last sync timestamp
+
+    Designed for fresh AI sessions to quickly understand what's available.
+
+    Examples:
+        hades status
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.status import get_status
+
+        response = get_status(start_time)
+        print_response(response)
+
+    except Exception as e:
+        response = error_response(
+            command="status",
+            code=ErrorCode.INTERNAL_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 @app.command("extract")
 def extract_cmd(
     file: str = typer.Argument(..., help="Path to document file", metavar="FILE"),
@@ -755,6 +789,63 @@ def database_stats(
     return get_stats(start_time, collection=profile)
 
 
+@db_app.command("recent")
+@cli_command("database.recent", ErrorCode.DATABASE_ERROR)
+def database_recent(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of recent papers to show"),
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
+    """Show recently ingested papers.
+
+    Lists papers in reverse chronological order by ingestion time.
+    Useful for understanding what's new in the knowledge base.
+
+    Examples:
+        hades db recent
+        hades db recent --limit 20
+        hades db recent --collection sync
+    """
+    from core.cli.commands.database import get_recent_papers
+
+    profile = collection or get_default_profile_name()
+    return get_recent_papers(limit, start_time, collection=profile)
+
+
+@db_app.command("health")
+@cli_command("database.health", ErrorCode.DATABASE_ERROR)
+def database_health(
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-C",
+        help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
+    ),
+    start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
+) -> CLIResponse:
+    """Check database health and data integrity.
+
+    Detects common issues:
+    - Orphaned chunks (chunks without metadata)
+    - Orphaned embeddings (embeddings without chunks)
+    - Missing embeddings (chunks without embeddings)
+    - Papers with mismatched chunk counts
+
+    Examples:
+        hades db health
+        hades db health --collection arxiv
+    """
+    from core.cli.commands.database import check_health
+
+    profile = collection or get_default_profile_name()
+    return check_health(start_time, collection=profile)
+
+
 @db_app.command("check")
 @cli_command("database.check", ErrorCode.DATABASE_ERROR)
 def database_check(
@@ -906,6 +997,141 @@ def database_delete(
     except Exception as e:
         response = error_response(
             command="database.delete",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@db_app.command("collections")
+@cli_command("database.collections", ErrorCode.DATABASE_ERROR)
+def database_collections(
+    prefix: str = typer.Option(None, "--prefix", "-p", help="Filter by collection name prefix"),
+    show_system: bool = typer.Option(False, "--system", "-s", help="Include system collections (starting with '_')"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """List all collections in the database.
+
+    Shows all user collections by default. Use --system to include system collections,
+    or --prefix to filter by name prefix.
+
+    Examples:
+        hades db collections
+        hades db collections --prefix arxiv_
+        hades db collections --system
+    """
+    from core.cli.commands.database import list_collections
+
+    return list_collections(start_time, prefix=prefix, exclude_system=not show_system)
+
+
+@db_app.command("count")
+@cli_command("database.count", ErrorCode.DATABASE_ERROR)
+def database_count(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Count documents in a collection.
+
+    Examples:
+        hades db count arxiv_metadata
+        hades db count my_nodes
+    """
+    from core.cli.commands.database import count_collection
+
+    return count_collection(collection, start_time)
+
+
+@db_app.command("get")
+@cli_command("database.get", ErrorCode.DATABASE_ERROR)
+def database_get(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    key: str = typer.Argument(..., help="Document key", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Get a single document by collection and key.
+
+    Examples:
+        hades db get arxiv_metadata 2409_04701
+        hades db get my_nodes node_001
+    """
+    from core.cli.commands.database import get_document
+
+    return get_document(collection, key, start_time)
+
+
+@db_app.command("insert")
+def database_insert(
+    collection: str = typer.Argument(..., help="Target collection name", metavar="COLLECTION"),
+    data: str = typer.Option(None, "--data", "-d", help='JSON document or array (e.g., \'{"name": "test"}\')'),
+    file: str = typer.Option(None, "--file", "-f", help="Path to JSONL file (one JSON object per line)"),
+) -> None:
+    """Insert documents into a collection.
+
+    Creates the collection automatically if it doesn't exist.
+    Accepts inline JSON (single object or array) or a JSONL file for bulk insert.
+
+    Examples:
+        hades db insert my_nodes --data '{"_key": "n1", "label": "test"}'
+        hades db insert my_nodes --data '[{"a": 1}, {"a": 2}]'
+        hades db insert my_nodes --file nodes.jsonl
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import insert_documents
+
+        response = insert_documents(collection, data, file, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.insert",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@db_app.command("update")
+def database_update(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    key: str = typer.Argument(..., help="Document key", metavar="KEY"),
+    data: str = typer.Option(..., "--data", "-d", help='JSON fields to merge (e.g., \'{"status": "reviewed"}\')'),
+    replace: bool = typer.Option(False, "--replace", help="Replace entire document instead of merging fields"),
+) -> None:
+    """Update a document by merging fields (or full replace with --replace).
+
+    By default, merges the provided fields into the existing document (PATCH).
+    Use --replace to overwrite the entire document (PUT).
+
+    Examples:
+        hades db update my_nodes n1 --data '{"confidence": 0.95}'
+        hades db update my_nodes n1 --data '{"label": "new"}' --replace
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import update_document
+
+        response = update_document(collection, key, data, start_time, replace=replace)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.update",
             code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
