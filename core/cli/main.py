@@ -243,6 +243,7 @@ def ingest_cmd(
     force: bool = typer.Option(False, "--force", help="Force reprocessing"),
     batch: bool = typer.Option(False, "--batch", "-b", help="Enable batch mode with progress and error isolation"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Resume from previous batch state"),
+    metadata: str = typer.Option(None, "--metadata", "-m", help="Custom metadata JSON to merge into document record"),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index"),
 ) -> None:
     """Ingest documents into the knowledge base.
@@ -270,6 +271,32 @@ def ingest_cmd(
     try:
         from core.cli.commands.ingest import ingest
 
+        # Parse custom metadata if provided
+        extra_metadata = None
+        if metadata:
+            import json
+
+            try:
+                extra_metadata = json.loads(metadata)
+                if not isinstance(extra_metadata, dict):
+                    response = error_response(
+                        command="ingest",
+                        code=ErrorCode.PROCESSING_FAILED,
+                        message="--metadata must be a JSON object",
+                        start_time=start_time,
+                    )
+                    print_response(response)
+                    raise typer.Exit(1) from None
+            except json.JSONDecodeError as e:
+                response = error_response(
+                    command="ingest",
+                    code=ErrorCode.PROCESSING_FAILED,
+                    message=f"Invalid --metadata JSON: {e}",
+                    start_time=start_time,
+                )
+                print_response(response)
+                raise typer.Exit(1) from None
+
         # Handle resume-only mode (no inputs required)
         actual_inputs = inputs or []
 
@@ -280,6 +307,7 @@ def ingest_cmd(
             batch=batch,
             resume=resume,
             start_time=start_time,
+            extra_metadata=extra_metadata,
         )
         print_response(response)
         if not response.success:
@@ -559,9 +587,15 @@ def database_stats(
         "-C",
         help=f"Collection profile (default: $HADES_DEFAULT_COLLECTION or 'arxiv'). Available: {', '.join(list_profiles())}",
     ),
+    all: bool = typer.Option(False, "--all", "-a", help="Show database-wide stats for all collections"),
     start_time: float = typer.Option(0.0, hidden=True),  # Injected by decorator
 ) -> CLIResponse:
     """Show database statistics."""
+    if all:
+        from core.cli.commands.database import get_all_stats
+
+        return get_all_stats(start_time)
+
     from core.cli.commands.database import get_stats
 
     profile = collection or get_default_profile_name()
@@ -911,6 +945,51 @@ def database_update(
     except Exception as e:
         response = error_response(
             command="database.update",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@db_app.command("export")
+def database_export(
+    collection: str = typer.Argument(..., help="Collection name to export", metavar="COLLECTION"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path (default: stdout)"),
+    limit: int = typer.Option(None, "--limit", "-n", help="Maximum documents to export"),
+) -> None:
+    """Export collection documents as JSONL (one JSON object per line).
+
+    Outputs to stdout by default (pipe-friendly). Use --output to write to a file.
+
+    Examples:
+        hades db export my_collection > backup.jsonl
+        hades db export arxiv_metadata --output papers.jsonl
+        hades db export my_nodes --limit 100 -o sample.jsonl
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import export_collection
+
+        response = export_collection(collection, output, start_time, limit=limit)
+        # Only print the response JSON if writing to a file (not stdout)
+        if output:
+            print_response(response)
+        elif not response.success:
+            # Keep stdout clean for JSONL; surface errors on stderr
+            import sys
+
+            print(response.to_json(), file=sys.stderr)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.export",
             code=ErrorCode.DATABASE_ERROR,
             message=str(e),
             start_time=start_time,
