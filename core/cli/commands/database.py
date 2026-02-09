@@ -1512,6 +1512,148 @@ def update_document(
         client.close()
 
 
+def export_collection(
+    collection_name: str,
+    output_path: str | None,
+    start_time: float,
+    limit: int | None = None,
+) -> CLIResponse:
+    """Export collection documents as JSONL.
+
+    Args:
+        collection_name: Collection to export
+        output_path: Output file path (None = stdout)
+        start_time: Start time for duration calculation
+        limit: Maximum documents to export (None = all)
+
+    Returns:
+        CLIResponse with export result
+    """
+    import json
+
+    validation_err = _validate_collection_name(collection_name)
+    if validation_err:
+        return error_response(
+            command="database.export",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=validation_err,
+            start_time=start_time,
+        )
+
+    try:
+        client, _, _ = _make_client(read_only=True)
+    except ValueError as e:
+        return error_response(
+            command="database.export",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        aql = "FOR doc IN @@col"
+        bind_vars: dict[str, Any] = {"@col": collection_name}
+
+        if limit:
+            aql += " LIMIT @limit"
+            bind_vars["limit"] = limit
+
+        aql += " RETURN doc"
+
+        docs = client.query(aql, bind_vars)
+
+        if output_path:
+            with open(output_path, "w") as f:
+                for doc in docs:
+                    f.write(json.dumps(doc, default=str) + "\n")
+        else:
+            # Write to stdout directly (not through CLIResponse)
+            import sys
+
+            for doc in docs:
+                sys.stdout.write(json.dumps(doc, default=str) + "\n")
+
+        return success_response(
+            command="database.export",
+            data={
+                "collection": collection_name,
+                "exported": len(docs),
+                "output": output_path or "stdout",
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.export",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def get_all_stats(start_time: float) -> CLIResponse:
+    """Get database-wide statistics across all collections.
+
+    Returns:
+        CLIResponse with per-collection document counts
+    """
+    try:
+        client, _, db_name = _make_client(read_only=True)
+    except ValueError as e:
+        return error_response(
+            command="database.stats",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        collections = client.query(
+            """
+            FOR c IN COLLECTIONS()
+                FILTER !STARTS_WITH(c.name, '_')
+                SORT c.name
+                RETURN c.name
+            """
+        )
+
+        stats = []
+        total_docs = 0
+        for col_name in collections:
+            count_result = client.query(
+                "RETURN LENGTH(@@col)",
+                {"@col": col_name},
+                batch_size=1,
+            )
+            count = count_result[0] if count_result else 0
+            total_docs += count
+            stats.append({"collection": col_name, "count": count})
+
+        return success_response(
+            command="database.stats",
+            data={
+                "database": db_name,
+                "collections": stats,
+                "total_documents": total_docs,
+                "total_collections": len(stats),
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.stats",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
 # =============================================================================
 # Internal Helpers — Query
 # =============================================================================

@@ -81,6 +81,7 @@ def ingest(
     batch: bool = False,
     resume: bool = False,
     start_time: float = 0.0,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> CLIResponse:
     """Ingest documents into the knowledge base.
 
@@ -93,6 +94,7 @@ def ingest(
         batch: Enable batch mode with progress reporting and error isolation.
         resume: Resume from previous batch state (implies batch=True).
         start_time: Command start timestamp.
+        extra_metadata: Custom metadata fields to merge into the document metadata record.
 
     Returns:
         CLIResponse with ingestion results.
@@ -157,13 +159,13 @@ def ingest(
     # Process arxiv IDs
     if arxiv_ids:
         for arxiv_id in arxiv_ids:
-            result = _ingest_arxiv_paper(arxiv_id, config, force)
+            result = _ingest_arxiv_paper(arxiv_id, config, force, extra_metadata=extra_metadata)
             results.append(result)
 
     # Process file paths
     if file_paths:
         for file_path in file_paths:
-            result = _ingest_file(file_path, config, document_id, force)
+            result = _ingest_file(file_path, config, document_id, force, extra_metadata=extra_metadata)
             results.append(result)
 
     # Summarize
@@ -270,6 +272,7 @@ def _ingest_file(
     config: Any,
     document_id: str | None,
     force: bool,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ingest a local file (any supported format).
 
@@ -278,6 +281,7 @@ def _ingest_file(
         config: CLI configuration.
         document_id: Custom document ID (optional).
         force: Overwrite existing data.
+        extra_metadata: Custom metadata fields to merge into the document metadata record.
 
     Returns:
         Result dict with success status.
@@ -317,6 +321,7 @@ def _ingest_file(
             config=config,
             document_id=doc_id,
             force=force,
+            extra_metadata=extra_metadata,
         )
 
         if not result["success"]:
@@ -348,7 +353,12 @@ def _ingest_file(
 # =============================================================================
 
 
-def _ingest_arxiv_paper(arxiv_id: str, config: Any, force: bool) -> dict[str, Any]:
+def _ingest_arxiv_paper(
+    arxiv_id: str,
+    config: Any,
+    force: bool,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Ingest a single arxiv paper.
 
     1. Check if already exists (unless force=True)
@@ -408,6 +418,7 @@ def _ingest_arxiv_paper(arxiv_id: str, config: Any, force: bool) -> dict[str, An
             metadata=download_result.metadata,
             config=config,
             force=force,
+            extra_metadata=extra_metadata,
         )
 
         if not processing_result["success"]:
@@ -472,6 +483,7 @@ def _process_and_store(
     config: Any,
     document_id: str | None = None,
     force: bool = False,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Process a PDF and store results in the database."""
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
@@ -564,6 +576,10 @@ def _process_and_store(
                         "published": metadata.published.isoformat() if metadata.published else None,
                     }
                 )
+
+            # Merge user-provided custom metadata (last, so it can override)
+            if extra_metadata:
+                meta_doc.update(extra_metadata)
 
             # Prepare chunk documents
             chunk_docs = []
