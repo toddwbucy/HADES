@@ -1005,6 +1005,141 @@ def database_delete(
         raise typer.Exit(1) from None
 
 
+@db_app.command("collections")
+@cli_command("database.collections", ErrorCode.DATABASE_ERROR)
+def database_collections(
+    prefix: str = typer.Option(None, "--prefix", "-p", help="Filter by collection name prefix"),
+    show_system: bool = typer.Option(False, "--system", "-s", help="Include system collections (starting with '_')"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """List all collections in the database.
+
+    Shows all user collections by default. Use --system to include system collections,
+    or --prefix to filter by name prefix.
+
+    Examples:
+        hades db collections
+        hades db collections --prefix arxiv_
+        hades db collections --system
+    """
+    from core.cli.commands.database import list_collections
+
+    return list_collections(start_time, prefix=prefix, exclude_system=not show_system)
+
+
+@db_app.command("count")
+@cli_command("database.count", ErrorCode.DATABASE_ERROR)
+def database_count(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Count documents in a collection.
+
+    Examples:
+        hades db count arxiv_metadata
+        hades db count my_nodes
+    """
+    from core.cli.commands.database import count_collection
+
+    return count_collection(collection, start_time)
+
+
+@db_app.command("get")
+@cli_command("database.get", ErrorCode.DATABASE_ERROR)
+def database_get(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    key: str = typer.Argument(..., help="Document key", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Get a single document by collection and key.
+
+    Examples:
+        hades db get arxiv_metadata 2409_04701
+        hades db get my_nodes node_001
+    """
+    from core.cli.commands.database import get_document
+
+    return get_document(collection, key, start_time)
+
+
+@db_app.command("insert")
+def database_insert(
+    collection: str = typer.Argument(..., help="Target collection name", metavar="COLLECTION"),
+    data: str = typer.Option(None, "--data", "-d", help='JSON document or array (e.g., \'{"name": "test"}\')'),
+    file: str = typer.Option(None, "--file", "-f", help="Path to JSONL file (one JSON object per line)"),
+) -> None:
+    """Insert documents into a collection.
+
+    Creates the collection automatically if it doesn't exist.
+    Accepts inline JSON (single object or array) or a JSONL file for bulk insert.
+
+    Examples:
+        hades db insert my_nodes --data '{"_key": "n1", "label": "test"}'
+        hades db insert my_nodes --data '[{"a": 1}, {"a": 2}]'
+        hades db insert my_nodes --file nodes.jsonl
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import insert_documents
+
+        response = insert_documents(collection, data, file, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.insert",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@db_app.command("update")
+def database_update(
+    collection: str = typer.Argument(..., help="Collection name", metavar="COLLECTION"),
+    key: str = typer.Argument(..., help="Document key", metavar="KEY"),
+    data: str = typer.Option(..., "--data", "-d", help='JSON fields to merge (e.g., \'{"status": "reviewed"}\')'),
+    replace: bool = typer.Option(False, "--replace", help="Replace entire document instead of merging fields"),
+) -> None:
+    """Update a document by merging fields (or full replace with --replace).
+
+    By default, merges the provided fields into the existing document (PATCH).
+    Use --replace to overwrite the entire document (PUT).
+
+    Examples:
+        hades db update my_nodes n1 --data '{"confidence": 0.95}'
+        hades db update my_nodes n1 --data '{"label": "new"}' --replace
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import update_document
+
+        response = update_document(collection, key, data, start_time, replace=replace)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.update",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 # =============================================================================
 # Graph Commands
 # =============================================================================

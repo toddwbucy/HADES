@@ -1077,6 +1077,390 @@ def delete_document(collection: str, key: str, start_time: float) -> CLIResponse
 
 
 # =============================================================================
+# CRUD Commands (collections, count, insert, get, update)
+# =============================================================================
+
+
+def _make_client(read_only: bool = True) -> tuple[Any, Any, str]:
+    """Create an ArangoDB client with config.
+
+    Returns:
+        Tuple of (client, config, database_name)
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    config = get_config()
+    arango_config = get_arango_config(config, read_only=read_only)
+
+    client_config = ArangoHttp2Config(
+        database=arango_config["database"],
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+    return client, arango_config, arango_config["database"]
+
+
+def list_collections(
+    start_time: float,
+    prefix: str | None = None,
+    exclude_system: bool = True,
+) -> CLIResponse:
+    """List all collections in the database.
+
+    Args:
+        start_time: Start time for duration calculation
+        prefix: Optional prefix filter (e.g., 'arxiv_' to show only arxiv collections)
+        exclude_system: If True, exclude system collections (starting with '_')
+
+    Returns:
+        CLIResponse with collection list
+    """
+    try:
+        client, _, db_name = _make_client(read_only=True)
+    except ValueError as e:
+        return error_response(
+            command="database.collections",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        results = client.query(
+            """
+            FOR c IN COLLECTIONS()
+                FILTER !@exclude_system OR !STARTS_WITH(c.name, '_')
+                FILTER !@has_prefix OR STARTS_WITH(c.name, @prefix)
+                SORT c.name
+                RETURN c.name
+            """,
+            {
+                "exclude_system": exclude_system,
+                "has_prefix": prefix is not None,
+                "prefix": prefix or "",
+            },
+        )
+
+        return success_response(
+            command="database.collections",
+            data={"collections": results, "database": db_name},
+            start_time=start_time,
+            count=len(results),
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.collections",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def count_collection(
+    collection_name: str,
+    start_time: float,
+) -> CLIResponse:
+    """Count documents in a collection.
+
+    Args:
+        collection_name: Name of the collection
+        start_time: Start time for duration calculation
+
+    Returns:
+        CLIResponse with document count
+    """
+    try:
+        client, _, _ = _make_client(read_only=True)
+    except ValueError as e:
+        return error_response(
+            command="database.count",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        results = client.query(
+            f"RETURN LENGTH({collection_name})",
+            batch_size=1,
+        )
+        count = results[0] if results else 0
+
+        return success_response(
+            command="database.count",
+            data={"collection": collection_name, "count": count},
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.count",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def insert_documents(
+    collection_name: str,
+    data: str | None,
+    file_path: str | None,
+    start_time: float,
+) -> CLIResponse:
+    """Insert one or more documents into a collection.
+
+    Accepts either inline JSON (single object or array) or a JSONL file.
+    Creates the collection if it doesn't exist.
+
+    Args:
+        collection_name: Target collection name
+        data: JSON string (object or array of objects)
+        file_path: Path to JSONL file (one JSON object per line)
+        start_time: Start time for duration calculation
+
+    Returns:
+        CLIResponse with insertion result
+    """
+    import json
+
+    if not data and not file_path:
+        return error_response(
+            command="database.insert",
+            code=ErrorCode.VALIDATION_ERROR,
+            message="Provide either --data or --file",
+            start_time=start_time,
+        )
+
+    # Parse documents from input
+    try:
+        if file_path:
+            docs = []
+            with open(file_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        docs.append(json.loads(line))
+        else:
+            parsed = json.loads(data)
+            docs = parsed if isinstance(parsed, list) else [parsed]
+    except (json.JSONDecodeError, OSError) as e:
+        return error_response(
+            command="database.insert",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"Invalid input: {e}",
+            start_time=start_time,
+        )
+
+    if not docs:
+        return error_response(
+            command="database.insert",
+            code=ErrorCode.VALIDATION_ERROR,
+            message="No documents to insert",
+            start_time=start_time,
+        )
+
+    try:
+        client, arango_config, db_name = _make_client(read_only=False)
+    except ValueError as e:
+        return error_response(
+            command="database.insert",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        # Auto-create collection if it doesn't exist
+        try:
+            client.request(
+                "POST",
+                f"/_db/{db_name}/_api/collection",
+                json={"name": collection_name},
+            )
+        except Exception:
+            pass  # Collection already exists
+
+        # Insert documents
+        client.insert_documents(collection_name, docs, overwrite=False)
+
+        # Return keys of inserted documents
+        keys = [d.get("_key") for d in docs if d.get("_key")]
+
+        return success_response(
+            command="database.insert",
+            data={
+                "collection": collection_name,
+                "inserted": len(docs),
+                "keys": keys if keys else None,
+            },
+            start_time=start_time,
+            count=len(docs),
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.insert",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def get_document(
+    collection_name: str,
+    key: str,
+    start_time: float,
+) -> CLIResponse:
+    """Get a single document by collection and key.
+
+    Args:
+        collection_name: Collection name
+        key: Document key (_key)
+        start_time: Start time for duration calculation
+
+    Returns:
+        CLIResponse with document data
+    """
+    try:
+        client, _, _ = _make_client(read_only=True)
+    except ValueError as e:
+        return error_response(
+            command="database.get",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        doc = client.get_document(collection_name, key)
+
+        return success_response(
+            command="database.get",
+            data={"collection": collection_name, "key": key, "document": doc},
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        if "404" in error_msg:
+            return error_response(
+                command="database.get",
+                code=ErrorCode.PAPER_NOT_FOUND,
+                message=f"Document '{key}' not found in '{collection_name}'",
+                start_time=start_time,
+            )
+        return error_response(
+            command="database.get",
+            code=ErrorCode.DATABASE_ERROR,
+            message=error_msg,
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def update_document(
+    collection_name: str,
+    key: str,
+    data: str,
+    start_time: float,
+    replace: bool = False,
+) -> CLIResponse:
+    """Update a document by collection and key.
+
+    By default, merges the provided fields into the existing document.
+    Use replace=True to fully replace the document.
+
+    Args:
+        collection_name: Collection name
+        key: Document key (_key)
+        data: JSON string with fields to update
+        start_time: Start time for duration calculation
+        replace: If True, replace entire document instead of merging
+
+    Returns:
+        CLIResponse with update result
+    """
+    import json
+
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError as e:
+        return error_response(
+            command="database.update",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"Invalid JSON: {e}",
+            start_time=start_time,
+        )
+
+    if not isinstance(parsed, dict):
+        return error_response(
+            command="database.update",
+            code=ErrorCode.VALIDATION_ERROR,
+            message="Data must be a JSON object",
+            start_time=start_time,
+        )
+
+    try:
+        client, arango_config, db_name = _make_client(read_only=False)
+    except ValueError as e:
+        return error_response(
+            command="database.update",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        method = "PUT" if replace else "PATCH"
+        client.request(
+            method,
+            f"/_db/{db_name}/_api/document/{collection_name}/{key}",
+            json=parsed,
+        )
+
+        return success_response(
+            command="database.update",
+            data={
+                "collection": collection_name,
+                "key": key,
+                "updated": True,
+                "mode": "replace" if replace else "merge",
+            },
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        if "404" in error_msg:
+            return error_response(
+                command="database.update",
+                code=ErrorCode.PAPER_NOT_FOUND,
+                message=f"Document '{key}' not found in '{collection_name}'",
+                start_time=start_time,
+            )
+        return error_response(
+            command="database.update",
+            code=ErrorCode.DATABASE_ERROR,
+            message=error_msg,
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+# =============================================================================
 # Internal Helpers — Query
 # =============================================================================
 
