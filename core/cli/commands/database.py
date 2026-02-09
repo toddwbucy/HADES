@@ -5,6 +5,7 @@ Consolidates: list, stats, check, query, chunks, create, delete, ingest commands
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1104,6 +1105,17 @@ def _make_client(read_only: bool = True) -> tuple[Any, Any, str]:
     return client, arango_config, arango_config["database"]
 
 
+# ArangoDB collection names: alphanumeric, hyphens, underscores (1-256 chars)
+_VALID_COLLECTION_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,256}$")
+
+
+def _validate_collection_name(name: str) -> str | None:
+    """Validate a user-provided collection name. Returns error message or None."""
+    if not _VALID_COLLECTION_NAME.match(name):
+        return f"Invalid collection name '{name}': must be alphanumeric, hyphens, or underscores (1-256 chars)"
+    return None
+
+
 def list_collections(
     start_time: float,
     prefix: str | None = None,
@@ -1176,6 +1188,15 @@ def count_collection(
     Returns:
         CLIResponse with document count
     """
+    validation_err = _validate_collection_name(collection_name)
+    if validation_err:
+        return error_response(
+            command="database.count",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=validation_err,
+            start_time=start_time,
+        )
+
     try:
         client, _, _ = _make_client(read_only=True)
     except ValueError as e:
@@ -1188,7 +1209,8 @@ def count_collection(
 
     try:
         results = client.query(
-            f"RETURN LENGTH({collection_name})",
+            "RETURN LENGTH(@@col)",
+            bind_vars={"@col": collection_name},
             batch_size=1,
         )
         count = results[0] if results else 0
@@ -1231,6 +1253,15 @@ def insert_documents(
         CLIResponse with insertion result
     """
     import json
+
+    validation_err = _validate_collection_name(collection_name)
+    if validation_err:
+        return error_response(
+            command="database.insert",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=validation_err,
+            start_time=start_time,
+        )
 
     if not data and not file_path:
         return error_response(
@@ -1286,8 +1317,11 @@ def insert_documents(
                 f"/_db/{db_name}/_api/collection",
                 json={"name": collection_name},
             )
-        except Exception:
-            pass  # Collection already exists
+        except Exception as e:
+            # Ignore "duplicate name" errors (collection already exists)
+            error_str = str(e).lower()
+            if "duplicate" not in error_str and "1207" not in error_str:
+                raise
 
         # Insert documents
         client.insert_documents(collection_name, docs, overwrite=False)
@@ -1332,6 +1366,15 @@ def get_document(
     Returns:
         CLIResponse with document data
     """
+    validation_err = _validate_collection_name(collection_name)
+    if validation_err:
+        return error_response(
+            command="database.get",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=validation_err,
+            start_time=start_time,
+        )
+
     try:
         client, _, _ = _make_client(read_only=True)
     except ValueError as e:
@@ -1393,6 +1436,15 @@ def update_document(
         CLIResponse with update result
     """
     import json
+
+    validation_err = _validate_collection_name(collection_name)
+    if validation_err:
+        return error_response(
+            command="database.update",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=validation_err,
+            start_time=start_time,
+        )
 
     try:
         parsed = json.loads(data)

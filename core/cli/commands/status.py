@@ -121,9 +121,11 @@ def _get_database_status() -> dict[str, Any]:
                     stats = _get_collection_stats(client, profile)
                     if stats:  # Only include if collection exists
                         collections_status[profile_name] = stats
-                except Exception:
-                    # Collection might not exist
-                    pass
+                except Exception as e:
+                    # Collection might not exist — log other errors for debugging
+                    import logging
+
+                    logging.debug("Could not get stats for %s: %s", profile_name, e)
 
             return {
                 "connected": True,
