@@ -34,17 +34,19 @@ The `hades` CLI outputs JSON to stdout; progress and logs go to stderr.
 
 ## Important — Where to Search
 
-- `hades db query` — semantic search over ingested papers and synced abstracts
-- `hades db query --collection sync` — search the 2.8M synced abstract database
+**All academic paper searches start with `hades arxiv`**, not `hades db`.
+
+- `hades arxiv search` — live ArXiv API search
+- `hades arxiv abstract` — fast semantic search over 2.8M synced abstracts
 - `hades ingest` — download, extract, chunk, embed, and store papers (arxiv IDs or local files)
 
-Use `hades db query --collection sync` to find papers by abstract, `hades ingest` to store full papers, then `hades db query` to search ingested content.
+**`hades db` is for querying already-ingested paper content** (full-text semantic search over stored chunks) **and for managing custom collections/databases**. Do not use `hades db` to find papers — use `hades arxiv` first, ingest the papers you need, then query their content with `hades db query`.
 
 ## Prerequisites
 
 The embedding service must be running (`hades embed service status`). If it reports unhealthy or connection refused, run: `sudo systemctl restart hades-embedder`
 
-Configuration is at `core/config/hades.yaml`. GPU defaults to cuda:2 (configurable via `HADES_EMBEDDER_DEVICE`).
+Configuration is at `/etc/hades/embedder.conf`.
 
 ## Commands
 
@@ -71,22 +73,34 @@ hades ingest paper.pdf --id my-custom-id   # custom document ID
 hades ingest 2409.04701 2501.12345         # multiple papers
 hades ingest 2409.04701 --force            # reprocess existing
 
-# Custom metadata
-hades ingest paper.pdf --metadata '{"project": "survey", "priority": "high"}'
-
 # Batch mode with progress and error isolation
 hades ingest /papers/*.pdf --batch
 hades ingest --resume                      # resume after failure
 ```
 
-### ArXiv — Sync Only
-
-ArXiv API search commands have been moved to `arxiv-manager`. HADES keeps sync (writes to local DB):
+### ArXiv — Search Papers
 
 ```bash
-# Sync new abstracts from ArXiv (run periodically or via cron)
+# Search live ArXiv API
+hades arxiv search "transformer attention mechanisms" --max 20
+
+# Search synced abstract database (2.8M papers, much faster)
+hades arxiv abstract "flash attention memory optimization" --limit 20
+
+# Multi-query bulk search
+hades arxiv bulk-search "attention" "memory efficiency" --limit 10
+
+# Get paper metadata
+hades arxiv info 2409.04701
+
+# Find similar papers
+hades arxiv similar 2409.04701 --limit 10
+
+# Relevance feedback — refine query with known-good papers
+hades arxiv refine "attention optimization" --positive 2409.04701 --positive 2501.12345 --limit 20
+
+# Sync new abstracts from ArXiv (run periodically)
 hades arxiv sync --from 2025-01-01 --categories cs.AI,cs.CL --max 10000
-CUDA_VISIBLE_DEVICES=2 hades arxiv sync --batch 8
 
 # Check sync status
 hades arxiv sync-status
@@ -118,20 +132,7 @@ hades db query --paper 2409.04701 --chunks
 hades db list --limit 20
 hades db check 2409.04701
 hades db stats
-hades db stats --all                       # database-wide stats (all collections)
-hades db purge 2409.04701                  # remove paper and all chunks
-
-# CRUD operations (any collection)
-hades db collections                       # list all collections
-hades db collections --prefix arxiv_       # filter by prefix
-hades db count arxiv_metadata              # document count
-hades db get my_collection doc_key         # get single document
-hades db insert my_collection --data '{"key": "value"}'   # insert document(s)
-hades db insert my_collection --file nodes.jsonl          # bulk insert from JSONL
-hades db update my_collection doc_key --data '{"field": "new_value"}'  # merge update
-hades db update my_collection doc_key --data '{"full": "doc"}' --replace  # full replace
-hades db export my_collection > backup.jsonl              # export as JSONL
-hades db export my_collection --output data.jsonl         # export to file
+hades db purge 2409.04701   # remove paper and all chunks
 
 # Raw AQL query
 hades db aql "FOR doc IN arxiv_metadata FILTER doc.year == 2025 RETURN doc.title"
@@ -141,20 +142,6 @@ hades db graph list
 hades db graph traverse --start "arxiv_metadata/2409_04701" --graph my_graph --direction outbound
 hades db graph shortest-path --from "nodes/1" --to "nodes/5" --graph my_graph
 hades db graph neighbors --start "nodes/1" --graph my_graph
-```
-
-### Audit & Discovery
-
-```bash
-# System overview
-hades status                               # version, service health, collection stats
-
-# Recent activity
-hades db recent                            # last 10 ingested papers
-hades db recent --limit 20 --collection sync
-
-# Database health check
-hades db health                            # chunk/embedding consistency
 ```
 
 ### Embedding Service
@@ -197,9 +184,9 @@ Parse with `| jq` or `| python3 -m json.tool`.
 
 **Research a topic:**
 ```bash
-hades db query "topic of interest" --collection sync --limit 20  # find papers
-hades ingest 2409.04701 2501.12345                               # ingest best ones
-hades db query "specific question"                               # deep search
+hades arxiv abstract "topic of interest" --limit 20   # find papers
+hades ingest 2409.04701 2501.12345                    # ingest best ones
+hades db query "specific question"                    # deep search
 ```
 
 **Ingest local documents:**
@@ -218,18 +205,8 @@ hades ingest --resume                      # continues from state file
 
 **Check what's in the knowledge base:**
 ```bash
-hades status                               # system overview
-hades db stats --all                       # all collections
-hades db list --limit 50                   # recent papers
-hades db collections                       # raw collection list
-```
-
-**CRUD operations on custom collections:**
-```bash
-hades db insert my_nodes --data '{"label": "concept", "weight": 0.8}'
-hades db get my_nodes concept_1
-hades db update my_nodes concept_1 --data '{"weight": 0.95}'
-hades db export my_nodes > backup.jsonl
+hades db stats
+hades db list --limit 50
 ```
 
 ## GPU Note
@@ -243,7 +220,7 @@ HADES_TOOL_SECTION = """\
 
 The `hades` CLI provides semantic search over a knowledge base of academic papers backed by ArangoDB. It provides three composable tools: Extract (Docling), Embed (Jina v4), and Store (ArangoDB). All commands output JSON to stdout; progress goes to stderr.
 
-**Important — Where to Search:** Use `hades db query --collection sync` to search 2.8M synced abstracts, `hades ingest` to download and store full papers, then `hades db query` to search over ingested full-text content.
+**Important — Where to Search:** All academic paper searches start with `hades arxiv` (search, abstract, similar, refine), not `hades db`. Use `hades arxiv` to find papers, then `hades ingest` to download and store them, then `hades db query` to search over ingested full-text content.
 
 #### Standalone Tools
 
@@ -265,19 +242,36 @@ hades ingest paper.pdf                     # local file
 hades ingest paper.pdf --id my-custom-id   # custom document ID
 hades ingest 2409.04701 2501.12345         # multiple papers
 
-# Custom metadata
-hades ingest paper.pdf --metadata '{"project": "survey"}'
-
 # Batch mode with progress and error isolation
 hades ingest /papers/*.pdf --batch
 hades ingest --resume                      # resume after failure
 ```
 
-#### ArXiv — Sync
+#### ArXiv — Search Papers
 
 ```bash
-# Sync abstracts (run periodically or via cron)
+# Search live ArXiv API
+hades arxiv search "transformer attention mechanisms" --max 20
+
+# Search synced abstract database (2.8M papers, much faster)
+hades arxiv abstract "flash attention memory optimization" --limit 20
+
+# Multi-query bulk search
+hades arxiv bulk-search "attention" "memory efficiency" --limit 10
+
+# Get paper metadata
+hades arxiv info 2409.04701
+
+# Find similar papers
+hades arxiv similar 2409.04701 --limit 10
+
+# Relevance feedback — refine query with known-good papers
+hades arxiv refine "attention optimization" --positive 2409.04701 --limit 20
+
+# Sync new abstracts from ArXiv (run periodically)
 hades arxiv sync --from 2025-01-01 --categories cs.AI,cs.CL --max 10000
+
+# Check sync status
 hades arxiv sync-status
 ```
 
@@ -294,11 +288,11 @@ hades db query "attention" --cite --limit 3          # citation format
 hades db query "flash attention" --hybrid            # semantic + keyword matching
 hades db query "memory and speed" --decompose        # split compound queries
 hades db query "how does X work" --rerank            # cross-encoder precision
+hades db query "complex query" --decompose --hybrid --rerank  # maximum quality
 
 # Collection profiles: arxiv (full papers), sync (2.8M abstracts), default
 hades db query "attention" --collection sync         # query synced abstracts
 hades db stats --collection arxiv                    # stats for specific collection
-hades db stats --all                                 # database-wide stats
 
 # Get all chunks of a paper (no search, just retrieve)
 hades db query --paper 2409.04701 --chunks
@@ -309,28 +303,11 @@ hades db check 2409.04701
 hades db stats
 hades db purge 2409.04701
 
-# CRUD operations (any collection)
-hades db collections                       # list all collections
-hades db count arxiv_metadata              # document count
-hades db get my_collection doc_key         # get single document
-hades db insert my_collection --data '{"key": "value"}'   # insert
-hades db insert my_collection --file nodes.jsonl          # bulk insert
-hades db update my_collection doc_key --data '{"field": "new_value"}'
-hades db export my_collection > backup.jsonl              # export as JSONL
-
 # Raw AQL query
 hades db aql "FOR doc IN arxiv_metadata FILTER doc.year == 2025 RETURN doc.title"
 
 # Graph traversal
 hades db graph traverse --start "arxiv_metadata/2409_04701" --graph my_graph --direction outbound
-```
-
-#### Audit & Discovery
-
-```bash
-hades status                               # system overview
-hades db recent                            # last 10 ingested papers
-hades db health                            # chunk/embedding consistency
 ```
 
 #### Embedding Service
@@ -366,15 +343,14 @@ Errors:
 
 **Research a topic:**
 ```bash
-hades db query "topic of interest" --collection sync --limit 20  # find papers
-hades ingest 2409.04701 2501.12345                               # ingest best ones
-hades db query "specific question"                               # deep search
+hades arxiv abstract "topic of interest" --limit 20   # find papers
+hades ingest 2409.04701 2501.12345                    # ingest best ones
+hades db query "specific question"                    # deep search
 ```
 
 **Check what's in the knowledge base:**
 ```bash
-hades status
-hades db stats --all
+hades db stats
 hades db list --limit 50
 ```
 """
