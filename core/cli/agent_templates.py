@@ -35,10 +35,13 @@ The `hades` CLI outputs JSON to stdout; progress and logs go to stderr.
 ## Global Options
 
 - `--database` / `--db` — Target a specific ArangoDB database for any command (overrides config/env)
-  ```bash
-  hades --database NL db collections      # list collections in NL database
-  hades --db arxiv_datastore db stats     # stats for arxiv_datastore
-  ```
+- `--gpu` / `-g` — GPU device index for embedding commands (e.g., 0, 1, 2)
+
+```bash
+hades --database NL db collections        # list collections in NL database
+hades --db arxiv_datastore db stats       # stats for arxiv_datastore
+hades --gpu 2 ingest paper.pdf            # use GPU 2 for embedding
+```
 
 ## Important — Where to Search
 
@@ -134,10 +137,12 @@ hades db collections                       # list all collections
 hades db collections --prefix arxiv_       # filter by prefix
 hades db count arxiv_metadata              # document count
 hades db get my_collection doc_key         # get single document
+hades db create my_collection              # create a new collection
 hades db insert my_collection --data '{"key": "value"}'   # insert document(s)
 hades db insert my_collection --file nodes.jsonl          # bulk insert from JSONL
 hades db update my_collection doc_key --data '{"field": "new_value"}'  # merge update
 hades db update my_collection doc_key --data '{"full": "doc"}' --replace  # full replace
+hades db delete my_collection doc_key      # delete a document (requires HADES_DESTRUCTIVE_OPS=enabled)
 hades db export my_collection > backup.jsonl              # export as JSONL
 hades db export my_collection --output data.jsonl         # export to file
 
@@ -145,10 +150,12 @@ hades db export my_collection --output data.jsonl         # export to file
 hades db aql "FOR doc IN arxiv_metadata FILTER doc.year == 2025 RETURN doc.title"
 
 # Graph operations
-hades db graph list
-hades db graph traverse --start "arxiv_metadata/2409_04701" --graph my_graph --direction outbound
+hades db graph list                        # list all named graphs
+hades db graph create --name my_graph --edge-defs '[{"collection":"edges","from":["A"],"to":["B"]}]'
+hades db graph traverse --start "nodes/1" --graph my_graph --direction outbound
 hades db graph shortest-path --from "nodes/1" --to "nodes/5" --graph my_graph
 hades db graph neighbors --start "nodes/1" --graph my_graph
+hades db graph drop --name my_graph        # requires HADES_DESTRUCTIVE_OPS=enabled
 ```
 
 ### Audit & Discovery
@@ -256,7 +263,7 @@ HADES_TOOL_SECTION = """\
 
 The `hades` CLI provides semantic search over a knowledge base of academic papers backed by ArangoDB. It provides three composable tools: Extract (Docling), Embed (Jina v4), and Store (ArangoDB). All commands output JSON to stdout; progress goes to stderr.
 
-**Global Options:** `--database` / `--db` targets a specific ArangoDB database (e.g., `hades --database NL db query "text"`).
+**Global Options:** `--database` / `--db` targets a specific ArangoDB database (e.g., `hades --database NL db query "text"`). `--gpu` / `-g` selects GPU device.
 
 **Important — Where to Search:** Use `hades db query --collection sync` to search 2.8M synced abstracts, `hades ingest` to download and store full papers, then `hades db query` to search over ingested full-text content.
 
@@ -326,18 +333,26 @@ hades db purge 2409.04701
 
 # CRUD operations (any collection)
 hades db collections                       # list all collections
+hades db collections --prefix arxiv_       # filter by prefix
 hades db count arxiv_metadata              # document count
 hades db get my_collection doc_key         # get single document
+hades db create my_collection              # create a new collection
 hades db insert my_collection --data '{"key": "value"}'   # insert
 hades db insert my_collection --file nodes.jsonl          # bulk insert
 hades db update my_collection doc_key --data '{"field": "new_value"}'
+hades db delete my_collection doc_key      # delete document (HADES_DESTRUCTIVE_OPS=enabled)
 hades db export my_collection > backup.jsonl              # export as JSONL
 
 # Raw AQL query
 hades db aql "FOR doc IN arxiv_metadata FILTER doc.year == 2025 RETURN doc.title"
 
-# Graph traversal
-hades db graph traverse --start "arxiv_metadata/2409_04701" --graph my_graph --direction outbound
+# Graph operations
+hades db graph list                        # list all named graphs
+hades db graph create --name g --edge-defs '[{"collection":"edges","from":["A"],"to":["B"]}]'
+hades db graph traverse --start "nodes/1" --graph my_graph --direction outbound
+hades db graph shortest-path --from "nodes/1" --to "nodes/5" --graph my_graph
+hades db graph neighbors --start "nodes/1" --graph my_graph
+hades db graph drop --name my_graph        # requires HADES_DESTRUCTIVE_OPS=enabled
 ```
 
 #### Audit & Discovery
@@ -352,9 +367,12 @@ hades db health                            # chunk/embedding consistency
 #### Embedding Service
 
 ```bash
-hades embed service status
-hades embed text "some text to embed"
-hades embed gpu status
+hades embed service status                 # check health
+hades embed service start                  # start daemon
+hades embed service stop                   # stop daemon
+hades embed text "some text to embed"      # embed text
+hades embed gpu status                     # GPU memory/utilization
+hades embed gpu list                       # list available GPUs
 ```
 
 #### Output Format
