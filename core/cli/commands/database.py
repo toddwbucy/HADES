@@ -1175,6 +1175,66 @@ def list_collections(
         client.close()
 
 
+def list_databases(start_time: float) -> CLIResponse:
+    """List all accessible ArangoDB databases.
+
+    Queries the _system database's /_api/database/user endpoint
+    to discover all databases the configured user can access.
+
+    Returns:
+        CLIResponse with database list and current database name
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.databases",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    arango_config = get_arango_config(config, read_only=True)
+
+    # Must query _system database for the database list
+    client_config = ArangoHttp2Config(
+        database="_system",
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        result = client.request("GET", "/_db/_system/_api/database/user")
+        databases = result.get("result", [])
+        current_db = arango_config["database"]
+
+        return success_response(
+            command="database.databases",
+            data={
+                "databases": databases,
+                "current": current_db,
+            },
+            start_time=start_time,
+            count=len(databases),
+        )
+
+    except Exception as e:
+        return error_response(
+            command="database.databases",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
 def count_collection(
     collection_name: str,
     start_time: float,

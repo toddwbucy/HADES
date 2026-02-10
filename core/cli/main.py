@@ -80,8 +80,14 @@ def main(
     version: bool = typer.Option(False, "--version", "-v", help="Show version and exit", is_eager=True),
     agent: str = typer.Option(None, "--agent", help="Install agent integration (claude or agent)", is_eager=True),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index for embedding commands (e.g., 0, 1, 2)"),
+    database: str = typer.Option(
+        None, "--database", "--db", help="Target ArangoDB database name (overrides config/env)"
+    ),
 ) -> None:
     """HADES Knowledge Base CLI - AI model interface for semantic search over academic papers."""
+    if database:
+        os.environ["HADES_DATABASE"] = database
+
     if version:
         from importlib.metadata import version as get_version
 
@@ -838,6 +844,25 @@ def database_collections(
     from core.cli.commands.database import list_collections
 
     return list_collections(start_time, prefix=prefix, exclude_system=not show_system)
+
+
+@db_app.command("databases")
+@cli_command("database.databases", ErrorCode.DATABASE_ERROR)
+def database_databases(
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """List all accessible ArangoDB databases.
+
+    Shows all databases the configured user can access, and marks the
+    currently active database.
+
+    Examples:
+        hades db databases
+        hades --database NL db databases
+    """
+    from core.cli.commands.database import list_databases
+
+    return list_databases(start_time)
 
 
 @db_app.command("count")
