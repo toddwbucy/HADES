@@ -32,6 +32,14 @@ HADES is a semantic graph RAG system backed by ArangoDB. It provides three compo
 
 The `hades` CLI outputs JSON to stdout; progress and logs go to stderr.
 
+## Global Options
+
+- `--database` / `--db` — Target a specific ArangoDB database for any command (overrides config/env)
+  ```bash
+  hades --database NL db collections      # list collections in NL database
+  hades --db arxiv_datastore db stats     # stats for arxiv_datastore
+  ```
+
 ## Important — Where to Search
 
 - `hades db query` — semantic search over ingested papers and synced abstracts
@@ -149,6 +157,10 @@ hades db graph neighbors --start "nodes/1" --graph my_graph
 # System overview
 hades status                               # version, service health, collection stats
 
+# Multi-database discovery
+hades db databases                         # list all accessible databases
+hades --database NL db collections         # collections in a specific database
+
 # Recent activity
 hades db recent                            # last 10 ingested papers
 hades db recent --limit 20 --collection sync
@@ -219,6 +231,7 @@ hades ingest --resume                      # continues from state file
 **Check what's in the knowledge base:**
 ```bash
 hades status                               # system overview
+hades db databases                         # list all databases
 hades db stats --all                       # all collections
 hades db list --limit 50                   # recent papers
 hades db collections                       # raw collection list
@@ -242,6 +255,8 @@ HADES_TOOL_SECTION = """\
 ### HADES
 
 The `hades` CLI provides semantic search over a knowledge base of academic papers backed by ArangoDB. It provides three composable tools: Extract (Docling), Embed (Jina v4), and Store (ArangoDB). All commands output JSON to stdout; progress goes to stderr.
+
+**Global Options:** `--database` / `--db` targets a specific ArangoDB database (e.g., `hades --database NL db query "text"`).
 
 **Important — Where to Search:** Use `hades db query --collection sync` to search 2.8M synced abstracts, `hades ingest` to download and store full papers, then `hades db query` to search over ingested full-text content.
 
@@ -329,6 +344,7 @@ hades db graph traverse --start "arxiv_metadata/2409_04701" --graph my_graph --d
 
 ```bash
 hades status                               # system overview
+hades db databases                         # list all accessible databases
 hades db recent                            # last 10 ingested papers
 hades db health                            # chunk/embedding consistency
 ```
@@ -374,6 +390,7 @@ hades db query "specific question"                               # deep search
 **Check what's in the knowledge base:**
 ```bash
 hades status
+hades db databases
 hades db stats --all
 hades db list --limit 50
 ```

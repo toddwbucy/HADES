@@ -129,6 +129,7 @@ def _get_database_status() -> dict[str, Any]:
 
             return {
                 "connected": True,
+                "database": arango_config["database"],
                 "collections": collections_status,
             }
 
