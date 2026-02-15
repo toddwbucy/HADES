@@ -76,6 +76,20 @@ gpu:
   enabled: true
 
 # -----------------------------------------------------------------------------
+# Vector Index Settings
+# -----------------------------------------------------------------------------
+# ArangoDB 3.12+ FAISS-backed vector indexes for server-side ANN search.
+# When a vector index exists, `hades db query` uses APPROX_NEAR_VECTORS()
+# instead of brute-force cosine similarity. Create with `hades db create-index`.
+vector_index:
+  # Default nProbe for ANN search (higher = better recall, slower)
+  default_n_probe: 10
+  # Default metric (cosine, l2, innerProduct)
+  metric: cosine
+  # Auto-calculate nLists from collection size (N/15)
+  auto_n_lists: true
+
+# -----------------------------------------------------------------------------
 # Search Defaults
 # -----------------------------------------------------------------------------
 search:

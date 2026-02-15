@@ -167,9 +167,7 @@ class ArangoHttp2Client:
 
         return self._handle_response(response)
 
-    def _ndjson_stream_with_first(
-        self, first_doc: dict[str, Any], rest: Iterator[dict[str, Any]]
-    ) -> Iterator[bytes]:
+    def _ndjson_stream_with_first(self, first_doc: dict[str, Any], rest: Iterator[dict[str, Any]]) -> Iterator[bytes]:
         """Generate NDJSON lines as a stream, starting with a pre-peeked first document.
 
         Yields bytes for each document, enabling memory-efficient bulk imports
@@ -247,6 +245,76 @@ class ArangoHttp2Client:
             content=content,
         )
         return self._handle_response(response)
+
+    # ------------------------------------------------------------------
+    # Index management
+    # ------------------------------------------------------------------
+
+    def create_vector_index(
+        self,
+        collection: str,
+        field: str = "embedding",
+        dimension: int = 2048,
+        n_lists: int | None = None,
+        n_probe: int = 10,
+        metric: str = "cosine",
+    ) -> dict[str, Any]:
+        """Create a FAISS-backed vector index on a collection.
+
+        Args:
+            collection: Collection name containing embedding documents.
+            field: Field name holding the embedding array.
+            dimension: Embedding vector dimension.
+            n_lists: Number of IVF cells (None = auto-calculate from collection size).
+            n_probe: Number of cells to probe during search (recall vs speed).
+            metric: Distance metric — "cosine", "l2", or "innerProduct".
+
+        Returns:
+            Index definition dict from ArangoDB.
+        """
+        if n_lists is None:
+            # Auto-calculate: get collection count, use N/15 with minimum of 1
+            count_result = self.query(f"RETURN LENGTH({collection})")
+            doc_count = count_result[0] if count_result else 0
+            n_lists = max(1, doc_count // 15)
+
+        path = f"/_db/{self._config.database}/_api/index"
+        payload: dict[str, Any] = {
+            "type": "inverted",
+            "fields": [
+                {
+                    "name": field,
+                    "features": ["vector"],
+                    "vector": {
+                        "type": "float32",
+                        "dimension": dimension,
+                        "similarity": metric,
+                        "nLists": n_lists,
+                        "nProbe": n_probe,
+                    },
+                }
+            ],
+        }
+        return self.request("POST", path, json=payload, params={"collection": collection})
+
+    def list_indexes(self, collection: str) -> list[dict[str, Any]]:
+        """List all indexes on a collection.
+
+        Returns:
+            List of index definition dicts.
+        """
+        path = f"/_db/{self._config.database}/_api/index"
+        result = self.request("GET", path, params={"collection": collection})
+        return result.get("indexes", [])
+
+    def drop_index(self, index_id: str) -> dict[str, Any]:
+        """Drop an index by its full ID (e.g. "collection/12345").
+
+        Returns:
+            Response dict with the dropped index ID.
+        """
+        path = f"/_db/{self._config.database}/_api/index/{index_id}"
+        return self.request("DELETE", path)
 
     # ------------------------------------------------------------------
     # Internal helpers

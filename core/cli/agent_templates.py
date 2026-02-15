@@ -158,6 +158,20 @@ hades db graph neighbors --start "nodes/1" --graph my_graph
 hades db graph drop --name my_graph        # requires HADES_DESTRUCTIVE_OPS=enabled
 ```
 
+### Vector Index (ANN Search)
+
+```bash
+# Check if vector index exists and current search mode
+hades db index-status
+hades db index-status --collection sync
+
+# Create vector index for server-side ANN search (much faster queries)
+hades db create-index
+hades db create-index --collection sync
+hades db create-index --n-lists 200 --n-probe 20
+hades db create-index --metric l2
+```
+
 ### Audit & Discovery
 
 ```bash
@@ -353,6 +367,14 @@ hades db graph traverse --start "nodes/1" --graph my_graph --direction outbound
 hades db graph shortest-path --from "nodes/1" --to "nodes/5" --graph my_graph
 hades db graph neighbors --start "nodes/1" --graph my_graph
 hades db graph drop --name my_graph        # requires HADES_DESTRUCTIVE_OPS=enabled
+```
+
+#### Vector Index (ANN Search)
+
+```bash
+hades db index-status                      # check vector index / search mode
+hades db create-index                      # create FAISS-backed vector index
+hades db create-index --collection sync    # for specific collection profile
 ```
 
 #### Audit & Discovery
