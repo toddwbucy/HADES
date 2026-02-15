@@ -227,6 +227,14 @@ class ArangoBackend:
         "innerProduct": "APPROX_NEAR_INNER_PRODUCT",
     }
 
+    # Cosine/innerProduct return similarity (higher = closer, sort DESC).
+    # L2 returns distance (lower = closer, sort ASC).
+    _METRIC_SORT_DESC: dict[str, bool] = {
+        "cosine": True,
+        "l2": False,
+        "innerProduct": True,
+    }
+
     def _query_ann(
         self,
         query_embedding: list[float],
@@ -244,6 +252,7 @@ class ArangoBackend:
         col = self._profile
         metric = self._vector_index_metric or "cosine"
         approx_fn = self._METRIC_AQL_FUNCTIONS.get(metric, "APPROX_NEAR_COSINE")
+        sort_order = "DESC" if self._METRIC_SORT_DESC.get(metric, True) else "ASC"
 
         bind_vars: dict[str, Any] = {
             "query_vec": query_embedding,
@@ -259,7 +268,7 @@ class ArangoBackend:
             FOR emb IN {col.embeddings}
                 FILTER emb.chunk_key != null
                 LET score = {approx_fn}(emb.embedding, @query_vec{options_arg})
-                SORT score DESC
+                SORT score {sort_order}
                 LIMIT @limit
                 LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
                 LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
