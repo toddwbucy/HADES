@@ -1024,6 +1024,56 @@ def database_export(
 
 
 # =============================================================================
+# Vector Index Commands
+# =============================================================================
+
+
+@db_app.command("create-index")
+@cli_command("database.create-index", ErrorCode.DATABASE_ERROR)
+def database_create_index(
+    collection: str = typer.Option(None, "--collection", "-c", help="Collection profile (arxiv, sync, default)"),
+    n_lists: int = typer.Option(None, "--n-lists", help="Number of IVF cells (auto if omitted)"),
+    n_probe: int = typer.Option(10, "--n-probe", help="Cells to probe per query (recall vs speed)"),
+    metric: str = typer.Option("cosine", "--metric", help="Distance metric: cosine, l2, innerProduct"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Create a vector index on the embeddings collection for ANN search.
+
+    Enables server-side approximate nearest neighbor search via ArangoDB's
+    FAISS-backed vector index. Falls back to brute-force if not created.
+
+    Examples:
+        hades db create-index
+        hades db create-index --collection sync
+        hades db create-index --n-lists 200 --n-probe 20
+        hades db create-index --metric l2
+    """
+    from core.cli.commands.database import create_vector_index
+
+    return create_vector_index(start_time, collection=collection, n_lists=n_lists, n_probe=n_probe, metric=metric)
+
+
+@db_app.command("index-status")
+@cli_command("database.index-status", ErrorCode.DATABASE_ERROR)
+def database_index_status(
+    collection: str = typer.Option(None, "--collection", "-c", help="Collection profile (arxiv, sync, default)"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Show vector index status for the embeddings collection.
+
+    Reports whether a vector index exists, its configuration, and the
+    current search mode (ann or brute_force).
+
+    Examples:
+        hades db index-status
+        hades db index-status --collection sync
+    """
+    from core.cli.commands.database import vector_index_status
+
+    return vector_index_status(start_time, collection=collection)
+
+
+# =============================================================================
 # Graph Commands
 # =============================================================================
 

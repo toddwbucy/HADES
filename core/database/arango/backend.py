@@ -59,6 +59,8 @@ class ArangoBackend:
     ) -> None:
         self._client = client
         self._profile = profile or get_profile("arxiv")
+        self._vector_index_cache: bool | None = None
+        self._vector_index_metric: str | None = None  # cached metric from detected index
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -130,9 +132,7 @@ class ArangoBackend:
 
         # Validate embeddings match chunks to avoid silent data loss
         if embeddings and len(embeddings) != len(chunks):
-            raise ValueError(
-                f"Embeddings count ({len(embeddings)}) does not match chunks ({len(chunks)})"
-            )
+            raise ValueError(f"Embeddings count ({len(embeddings)}) does not match chunks ({len(chunks)})")
 
         for i, chunk in enumerate(chunks):
             chunk_dict = _to_dict(chunk)
@@ -180,7 +180,119 @@ class ArangoBackend:
         *,
         limit: int = 10,
         doc_filter: str | None = None,
+        n_probe: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Search for similar embeddings using ANN (if available) or brute-force fallback.
+
+        Args:
+            query_embedding: Query vector as a list of floats.
+            limit: Maximum results to return.
+            doc_filter: Optional document ID to restrict search.
+            n_probe: Override nProbe for ANN search (higher = better recall, slower).
+
+        Returns:
+            List of result dicts sorted by similarity score (descending).
+        """
+        if self._has_vector_index() and not doc_filter:
+            # Fast path: server-side ANN via vector index
+            return self._query_ann(query_embedding, limit=limit, n_probe=n_probe)
+        else:
+            # Slow path: brute-force cosine similarity in Python
+            return self._query_brute_force(query_embedding, limit=limit, doc_filter=doc_filter)
+
+    def _has_vector_index(self) -> bool:
+        """Check if the embeddings collection has a vector index. Cached per-instance."""
+        if self._vector_index_cache is not None:
+            return self._vector_index_cache
+
+        try:
+            indexes = self._client.list_indexes(self._profile.embeddings)
+            for idx in indexes:
+                if idx.get("type") == "vector":
+                    # Cache the metric so _query_ann can pick the right APPROX_NEAR_* function
+                    params = idx.get("params", {})
+                    self._vector_index_metric = params.get("metric", "cosine")
+                    self._vector_index_cache = True
+                    return True
+        except ArangoHttpError as e:
+            logger.warning("Failed to check for vector index on %s: %s", self._profile.embeddings, e)
+
+        self._vector_index_cache = False
+        return False
+
+    # Map metric names to their corresponding APPROX_NEAR_* AQL functions
+    _METRIC_AQL_FUNCTIONS: dict[str, str] = {
+        "cosine": "APPROX_NEAR_COSINE",
+        "l2": "APPROX_NEAR_L2",
+        "innerProduct": "APPROX_NEAR_INNER_PRODUCT",
+    }
+
+    # Cosine/innerProduct return similarity (higher = closer, sort DESC).
+    # L2 returns distance (lower = closer, sort ASC).
+    _METRIC_SORT_DESC: dict[str, bool] = {
+        "cosine": True,
+        "l2": False,
+        "innerProduct": True,
+    }
+
+    def _query_ann(
+        self,
+        query_embedding: list[float],
+        *,
+        limit: int = 10,
+        n_probe: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """ANN search using metric-specific APPROX_NEAR_* — runs server-side via vector index.
+
+        The AQL pattern iterates the collection, computes similarity via
+        APPROX_NEAR_COSINE/L2/INNER_PRODUCT (scalar function), then SORT+LIMIT.
+        The query optimizer detects this pattern and routes through the FAISS
+        vector index automatically.
+        """
+        col = self._profile
+        metric = self._vector_index_metric or "cosine"
+        approx_fn = self._METRIC_AQL_FUNCTIONS.get(metric, "APPROX_NEAR_COSINE")
+        sort_order = "DESC" if self._METRIC_SORT_DESC.get(metric, True) else "ASC"
+
+        bind_vars: dict[str, Any] = {
+            "query_vec": query_embedding,
+            "limit": limit,
+        }
+        # APPROX_NEAR_* accepts an optional options object as 3rd argument
+        options_arg = ""
+        if n_probe is not None:
+            options_arg = ", { nProbe: @n_probe }"
+            bind_vars["n_probe"] = n_probe
+
+        aql = f"""
+            FOR emb IN {col.embeddings}
+                FILTER emb.chunk_key != null
+                LET score = {approx_fn}(emb.embedding, @query_vec{options_arg})
+                SORT score {sort_order}
+                LIMIT @limit
+                LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
+                LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
+                RETURN {{
+                    paper_key: emb.paper_key,
+                    text: chunk.text,
+                    chunk_index: chunk.chunk_index,
+                    total_chunks: chunk.total_chunks,
+                    title: meta.title,
+                    arxiv_id: meta.arxiv_id,
+                    score: score
+                }}
+        """
+        logger.debug("Using ANN search (%s) with limit=%d", approx_fn, limit)
+        return self._client.query(aql, bind_vars=bind_vars)
+
+    def _query_brute_force(
+        self,
+        query_embedding: list[float],
+        *,
+        limit: int = 10,
+        doc_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Brute-force cosine similarity — fetches all embeddings to Python."""
         import numpy as np
 
         col = self._profile
@@ -193,12 +305,6 @@ class ArangoBackend:
             filter_clause = "FILTER emb.paper_key == @paper_key"
             bind_vars["paper_key"] = normalize_document_key(doc_filter)
 
-        # Note: We fetch all embeddings for brute-force similarity computation.
-        # ArangoDB doesn't have built-in ANN indexes, so we compute cosine similarity
-        # in Python and return the top-k results. For large collections, consider
-        # adding an external vector index (e.g., FAISS) or using ArangoDB's
-        # experimental vector search features.
-
         aql = f"""
             FOR emb IN {col.embeddings}
                 FILTER emb.chunk_key != null
@@ -210,10 +316,12 @@ class ArangoBackend:
                     embedding: emb.embedding,
                     text: chunk.text,
                     chunk_index: chunk.chunk_index,
+                    total_chunks: chunk.total_chunks,
                     title: meta.title,
                     arxiv_id: meta.arxiv_id
                 }}
         """
+        logger.debug("Using brute-force search (no vector index)")
         results = self._client.query(aql, bind_vars=bind_vars)
 
         scored = []

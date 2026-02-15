@@ -234,9 +234,7 @@ def get_stats(start_time: float, collection: str | None = None) -> CLIResponse:
         )
 
 
-def check_paper_exists(
-    document_id: str, start_time: float, collection: str | None = None
-) -> CLIResponse:
+def check_paper_exists(document_id: str, start_time: float, collection: str | None = None) -> CLIResponse:
     """Check if a document exists in the database.
 
     Args:
@@ -320,9 +318,7 @@ def check_paper_exists(
         )
 
 
-def get_recent_papers(
-    limit: int, start_time: float, collection: str | None = None
-) -> CLIResponse:
+def get_recent_papers(limit: int, start_time: float, collection: str | None = None) -> CLIResponse:
     """Get recently ingested papers sorted by ingestion time.
 
     Args:
@@ -461,11 +457,13 @@ def check_health(start_time: float, collection: str | None = None) -> CLIRespons
             )
             orphaned_chunks_count = orphaned_chunks[0] if orphaned_chunks else 0
             if orphaned_chunks_count > 0:
-                issues.append({
-                    "type": "orphaned_chunks",
-                    "count": orphaned_chunks_count,
-                    "description": "Chunks without corresponding metadata document",
-                })
+                issues.append(
+                    {
+                        "type": "orphaned_chunks",
+                        "count": orphaned_chunks_count,
+                        "description": "Chunks without corresponding metadata document",
+                    }
+                )
 
             # Check for orphaned embeddings (embeddings without chunks)
             orphaned_embeddings = client.query(
@@ -479,28 +477,34 @@ def check_health(start_time: float, collection: str | None = None) -> CLIRespons
             )
             orphaned_embeddings_count = orphaned_embeddings[0] if orphaned_embeddings else 0
             if orphaned_embeddings_count > 0:
-                issues.append({
-                    "type": "orphaned_embeddings",
-                    "count": orphaned_embeddings_count,
-                    "description": "Embeddings without corresponding chunk document",
-                })
+                issues.append(
+                    {
+                        "type": "orphaned_embeddings",
+                        "count": orphaned_embeddings_count,
+                        "description": "Embeddings without corresponding chunk document",
+                    }
+                )
 
             # Check for missing embeddings by comparing counts per paper
             # This is more efficient than checking each chunk individually
             if chunks_count != embeddings_count:
                 diff = abs(chunks_count - embeddings_count)
                 if chunks_count > embeddings_count:
-                    issues.append({
-                        "type": "missing_embeddings",
-                        "count": diff,
-                        "description": f"Fewer embeddings ({embeddings_count}) than chunks ({chunks_count})",
-                    })
+                    issues.append(
+                        {
+                            "type": "missing_embeddings",
+                            "count": diff,
+                            "description": f"Fewer embeddings ({embeddings_count}) than chunks ({chunks_count})",
+                        }
+                    )
                 else:
-                    issues.append({
-                        "type": "extra_embeddings",
-                        "count": diff,
-                        "description": f"More embeddings ({embeddings_count}) than chunks ({chunks_count})",
-                    })
+                    issues.append(
+                        {
+                            "type": "extra_embeddings",
+                            "count": diff,
+                            "description": f"More embeddings ({embeddings_count}) than chunks ({chunks_count})",
+                        }
+                    )
 
             # Check for chunk count mismatches
             mismatched_papers = client.query(
@@ -520,12 +524,14 @@ def check_health(start_time: float, collection: str | None = None) -> CLIRespons
                 """
             )
             if mismatched_papers:
-                issues.append({
-                    "type": "chunk_count_mismatch",
-                    "count": len(mismatched_papers),
-                    "description": "Papers where stored chunk count differs from metadata",
-                    "papers": mismatched_papers[:10],  # Limit to first 10
-                })
+                issues.append(
+                    {
+                        "type": "chunk_count_mismatch",
+                        "count": len(mismatched_papers),
+                        "description": "Papers where stored chunk count differs from metadata",
+                        "papers": mismatched_papers[:10],  # Limit to first 10
+                    }
+                )
 
             health_status = "healthy" if not issues else "issues_found"
 
@@ -556,9 +562,7 @@ def check_health(start_time: float, collection: str | None = None) -> CLIRespons
         )
 
 
-def purge_paper(
-    document_id: str, start_time: float, collection: str | None = None
-) -> CLIResponse:
+def purge_paper(document_id: str, start_time: float, collection: str | None = None) -> CLIResponse:
     """Remove all data for a document from all collections.
 
     Deletes metadata, chunks, and embeddings for the given document ID.
@@ -780,8 +784,7 @@ def semantic_query(
             if len(sub_queries) > 1:
                 progress(f"Decomposed into {len(sub_queries)} sub-queries: {sub_queries}")
                 results = _search_with_decomposition(
-                    sub_queries, limit, config, paper_filter, hybrid, search_text,
-                    collection=profile_name
+                    sub_queries, limit, config, paper_filter, hybrid, search_text, collection=profile_name
                 )
             else:
                 # Single query, proceed normally
@@ -806,8 +809,7 @@ def semantic_query(
             else:
                 fetch_limit = limit
             results = _search_embeddings(
-                query_embedding, fetch_limit, config, paper_filter=paper_filter,
-                collection=profile_name
+                query_embedding, fetch_limit, config, paper_filter=paper_filter, collection=profile_name
             )
 
             # Apply hybrid reranking if requested (fast, keyword-based)
@@ -1739,7 +1741,9 @@ def _search_embeddings(
 ) -> list[dict[str, Any]]:
     """Search for similar embeddings in the database.
 
-    Uses cosine similarity for matching.
+    Routes through ArangoBackend.query_similar(), which uses server-side ANN
+    search when a vector index is available, falling back to brute-force cosine
+    similarity otherwise.
 
     Args:
         query_embedding: Query vector
@@ -1748,117 +1752,36 @@ def _search_embeddings(
         paper_filter: Optional document ID to limit search to specific document
         collection: Collection profile name (default: from env or 'arxiv')
     """
-    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+    from core.database.arango.backend import ArangoBackend
 
     profile_name = collection or get_default_profile_name()
 
-    # Use read-write socket because cursor pagination requires PUT requests,
-    # which the read-only socket doesn't support
-    arango_config = get_arango_config(config, read_only=False)
-    client_config = ArangoHttp2Config(
-        database=arango_config["database"],
-        socket_path=arango_config.get("socket_path"),
-        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
-        username=arango_config["username"],
-        password=arango_config["password"],
-    )
-
-    client = ArangoHttp2Client(client_config)
-
-    # Normalize paper filter if provided
-    paper_key_filter = None
-    if paper_filter:
-        paper_key_filter = normalize_document_key(paper_filter)
-
+    # Use read-write socket because cursor pagination requires PUT requests
+    backend = ArangoBackend.from_config(config, read_only=False, profile_name=profile_name)
     try:
-        col = get_profile(profile_name)
-        all_embeddings = []
-
-        # Search chunks in the specified collection
-        try:
-            if paper_key_filter:
-                aql_chunks = f"""
-                    FOR emb IN {col.embeddings}
-                        FILTER emb.chunk_key != null
-                        FILTER emb.paper_key == @paper_key
-                        LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
-                        LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
-                        RETURN {{
-                            paper_key: emb.paper_key,
-                            embedding: emb.embedding,
-                            text: chunk.text,
-                            chunk_index: chunk.chunk_index,
-                            total_chunks: chunk.total_chunks,
-                            title: meta.title,
-                            arxiv_id: meta.arxiv_id,
-                            source: @collection
-                        }}
-                """
-                # Use large batch to avoid cursor pagination issues with proxy
-                chunk_results = client.query(
-                    aql_chunks,
-                    bind_vars={"paper_key": paper_key_filter, "collection": profile_name},
-                    batch_size=50000
-                )
-            else:
-                aql_chunks = f"""
-                    FOR emb IN {col.embeddings}
-                        FILTER emb.chunk_key != null
-                        LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
-                        LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
-                        RETURN {{
-                            paper_key: emb.paper_key,
-                            embedding: emb.embedding,
-                            text: chunk.text,
-                            chunk_index: chunk.chunk_index,
-                            total_chunks: chunk.total_chunks,
-                            title: meta.title,
-                            arxiv_id: meta.arxiv_id,
-                            source: @collection
-                        }}
-                """
-                # Use large batch to avoid cursor pagination issues with proxy
-                chunk_results = client.query(
-                    aql_chunks,
-                    bind_vars={"collection": profile_name},
-                    batch_size=50000
-                )
-            all_embeddings.extend(chunk_results or [])
-        except Exception as e:
-            # Collection may not exist
-            progress(f"Note: Could not query {profile_name} chunks: {e}")
-
-        if not all_embeddings:
-            return []
-
-        # Compute cosine similarities
-        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
-
-        scored_results = []
-        for item in all_embeddings:
-            emb = np.array(item["embedding"], dtype=np.float32)
-            emb_norm = emb / (np.linalg.norm(emb) + 1e-8)
-            similarity = float(np.dot(query_norm, emb_norm))
-
-            scored_results.append(
-                {
-                    "similarity": round(similarity, 4),
-                    "arxiv_id": item.get("arxiv_id"),
-                    "title": item.get("title"),
-                    "source": item.get("source", "full_paper"),
-                    "chunk_index": item.get("chunk_index"),
-                    "total_chunks": item.get("total_chunks"),
-                    "text": item.get("text"),
-                }
-            )
-
-        # Sort by similarity and take top results
-        scored_results.sort(key=lambda x: x["similarity"], reverse=True)
-
-        return scored_results[:limit]
-
+        results = backend.query_similar(
+            query_embedding.tolist(),
+            limit=limit,
+            doc_filter=paper_filter,
+        )
+        # Map backend field names to CLI output format
+        return [
+            {
+                "similarity": round(r.get("score", 0.0), 4),
+                "arxiv_id": r.get("arxiv_id"),
+                "title": r.get("title"),
+                "source": profile_name,
+                "chunk_index": r.get("chunk_index"),
+                "total_chunks": r.get("total_chunks"),
+                "text": r.get("text"),
+            }
+            for r in results
+        ]
+    except Exception as e:
+        progress(f"Note: Could not query {profile_name} chunks: {e}")
+        return []
     finally:
-        client.close()
+        backend.close()
 
 
 def _hybrid_rerank_results(
@@ -2040,9 +1963,7 @@ def _search_with_decomposition(
             if key in result_scores:
                 # Update: keep max score, increment count
                 existing_score = (
-                    result_scores[key].get("combined_score")
-                    if hybrid
-                    else result_scores[key].get("similarity", 0)
+                    result_scores[key].get("combined_score") if hybrid else result_scores[key].get("similarity", 0)
                 )
                 if score > existing_score:
                     result_scores[key] = result
@@ -2777,6 +2698,143 @@ def graph_neighbors(
         limit=limit,
         start_time=start_time,
     )
+
+
+def create_vector_index(
+    start_time: float,
+    collection: str | None = None,
+    n_lists: int | None = None,
+    n_probe: int = 10,
+    metric: str = "cosine",
+) -> CLIResponse:
+    """Create a vector index on an embeddings collection.
+
+    Args:
+        start_time: Command start time for duration tracking.
+        collection: Collection profile name (default: from env or 'arxiv').
+        n_lists: Number of IVF cells (auto-calculated if None).
+        n_probe: Number of cells to probe during search.
+        metric: Distance metric (cosine, l2, innerProduct).
+    """
+    from core.database.arango.backend import ArangoBackend
+
+    profile_name = collection or get_default_profile_name()
+    backend = ArangoBackend.from_config(get_config(), read_only=False, profile_name=profile_name)
+    try:
+        col = get_profile(profile_name)
+        embeddings_col = col.embeddings
+
+        # Check if vector index already exists
+        indexes = backend._client.list_indexes(embeddings_col)
+        for idx in indexes:
+            if idx.get("type") == "vector":
+                return success_response(
+                    command="database.create-index",
+                    data={
+                        "status": "already_exists",
+                        "index_id": idx.get("id"),
+                        "collection": embeddings_col,
+                        "type": "vector",
+                        "params": idx.get("params", {}),
+                    },
+                    start_time=start_time,
+                )
+
+        # Get embedding dimension from config
+        config = get_config()
+        dimension = config.embedding.dimension
+
+        result = backend._client.create_vector_index(
+            collection=embeddings_col,
+            field="embedding",
+            dimension=dimension,
+            n_lists=n_lists,
+            n_probe=n_probe,
+            metric=metric,
+        )
+
+        return success_response(
+            command="database.create-index",
+            data={
+                "status": "created",
+                "index_id": result.get("id"),
+                "collection": embeddings_col,
+                "profile": profile_name,
+                "dimension": dimension,
+                "n_lists": n_lists or "auto",
+                "n_probe": n_probe,
+                "metric": metric,
+            },
+            start_time=start_time,
+        )
+    finally:
+        backend.close()
+
+
+def vector_index_status(
+    start_time: float,
+    collection: str | None = None,
+) -> CLIResponse:
+    """Check vector index status for an embeddings collection.
+
+    Args:
+        start_time: Command start time for duration tracking.
+        collection: Collection profile name (default: from env or 'arxiv').
+    """
+    from core.database.arango.backend import ArangoBackend
+
+    profile_name = collection or get_default_profile_name()
+    backend = ArangoBackend.from_config(get_config(), read_only=False, profile_name=profile_name)
+    try:
+        col = get_profile(profile_name)
+        embeddings_col = col.embeddings
+
+        indexes = backend._client.list_indexes(embeddings_col)
+        vector_index = None
+        for idx in indexes:
+            if idx.get("type") == "vector":
+                vector_index = idx
+                break
+
+        # Get collection size for context
+        stats = backend.stats()
+        emb_count = stats.get("total_embeddings", 0)
+
+        if vector_index:
+            params = vector_index.get("params", {})
+
+            return success_response(
+                command="database.index-status",
+                data={
+                    "has_vector_index": True,
+                    "search_mode": "ann",
+                    "index_id": vector_index.get("id"),
+                    "collection": embeddings_col,
+                    "profile": profile_name,
+                    "type": "vector",
+                    "dimension": params.get("dimension"),
+                    "n_lists": params.get("nLists"),
+                    "n_probe": params.get("defaultNProbe"),
+                    "metric": params.get("metric"),
+                    "total_embeddings": emb_count,
+                },
+                start_time=start_time,
+            )
+        else:
+            return success_response(
+                command="database.index-status",
+                data={
+                    "has_vector_index": False,
+                    "search_mode": "brute_force",
+                    "collection": embeddings_col,
+                    "profile": profile_name,
+                    "total_embeddings": emb_count,
+                    "note": "Create a vector index with 'hades db create-index' for faster queries",
+                },
+                start_time=start_time,
+            )
+    finally:
+        backend.close()
 
 
 def _format_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
