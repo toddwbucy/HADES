@@ -214,8 +214,8 @@ class ArangoBackend:
                     self._vector_index_metric = params.get("metric", "cosine")
                     self._vector_index_cache = True
                     return True
-        except ArangoHttpError:
-            pass
+        except ArangoHttpError as e:
+            logger.warning("Failed to check for vector index on %s: %s", self._profile.embeddings, e)
 
         self._vector_index_cache = False
         return False
