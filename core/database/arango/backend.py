@@ -234,7 +234,13 @@ class ArangoBackend:
         limit: int = 10,
         n_probe: int | None = None,
     ) -> list[dict[str, Any]]:
-        """ANN search using metric-specific APPROX_NEAR_* — runs server-side via vector index."""
+        """ANN search using metric-specific APPROX_NEAR_* — runs server-side via vector index.
+
+        The AQL pattern iterates the collection, computes similarity via
+        APPROX_NEAR_COSINE/L2/INNER_PRODUCT (scalar function), then SORT+LIMIT.
+        The query optimizer detects this pattern and routes through the FAISS
+        vector index automatically.
+        """
         col = self._profile
         metric = self._vector_index_metric or "cosine"
         approx_fn = self._METRIC_AQL_FUNCTIONS.get(metric, "APPROX_NEAR_COSINE")
@@ -243,16 +249,18 @@ class ArangoBackend:
             "query_vec": query_embedding,
             "limit": limit,
         }
-        options_clause = ""
+        # APPROX_NEAR_* accepts an optional options object as 3rd argument
+        options_arg = ""
         if n_probe is not None:
-            options_clause = ", OPTIONS { nProbe: @n_probe }"
+            options_arg = ", { nProbe: @n_probe }"
             bind_vars["n_probe"] = n_probe
 
         aql = f"""
-            FOR emb IN {approx_fn}(
-                {col.embeddings}, "embedding", @query_vec, @limit{options_clause}
-            )
+            FOR emb IN {col.embeddings}
                 FILTER emb.chunk_key != null
+                LET score = {approx_fn}(emb.embedding, @query_vec{options_arg})
+                SORT score DESC
+                LIMIT @limit
                 LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
                 LET meta = DOCUMENT(CONCAT("{col.metadata}/", emb.paper_key))
                 RETURN {{
@@ -262,7 +270,7 @@ class ArangoBackend:
                     total_chunks: chunk.total_chunks,
                     title: meta.title,
                     arxiv_id: meta.arxiv_id,
-                    score: emb.$score
+                    score: score
                 }}
         """
         logger.debug("Using ANN search (%s) with limit=%d", approx_fn, limit)
