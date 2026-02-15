@@ -2727,25 +2727,22 @@ def create_vector_index(
         # Check if vector index already exists
         indexes = backend._client.list_indexes(embeddings_col)
         for idx in indexes:
-            if idx.get("type") == "inverted":
-                for field in idx.get("fields", []):
-                    if isinstance(field, dict) and (
-                        "vector" in (field.get("features", []) or []) or field.get("vector")
-                    ):
-                        return success_response(
-                            command="database.create-index",
-                            data={
-                                "status": "already_exists",
-                                "index_id": idx.get("id"),
-                                "collection": embeddings_col,
-                                "type": idx.get("type"),
-                            },
-                            start_time=start_time,
-                        )
+            if idx.get("type") == "vector":
+                return success_response(
+                    command="database.create-index",
+                    data={
+                        "status": "already_exists",
+                        "index_id": idx.get("id"),
+                        "collection": embeddings_col,
+                        "type": "vector",
+                        "params": idx.get("params", {}),
+                    },
+                    start_time=start_time,
+                )
 
         # Get embedding dimension from config
         config = get_config()
-        dimension = config.get("embedding", {}).get("model", {}).get("dimension", 2048)
+        dimension = config.embedding.dimension
 
         result = backend._client.create_vector_index(
             collection=embeddings_col,
@@ -2795,29 +2792,16 @@ def vector_index_status(
         indexes = backend._client.list_indexes(embeddings_col)
         vector_index = None
         for idx in indexes:
-            if idx.get("type") == "inverted":
-                for field in idx.get("fields", []):
-                    if isinstance(field, dict) and (
-                        "vector" in (field.get("features", []) or []) or field.get("vector")
-                    ):
-                        vector_index = idx
-                        break
-                if vector_index:
-                    break
+            if idx.get("type") == "vector":
+                vector_index = idx
+                break
 
         # Get collection size for context
         stats = backend.stats()
         emb_count = stats.get("total_embeddings", 0)
 
         if vector_index:
-            # Extract vector config from fields
-            vector_config = {}
-            for field in vector_index.get("fields", []):
-                if isinstance(field, dict):
-                    vc = field.get("vector", {})
-                    if vc:
-                        vector_config = vc
-                        break
+            params = vector_index.get("params", {})
 
             return success_response(
                 command="database.index-status",
@@ -2827,11 +2811,11 @@ def vector_index_status(
                     "index_id": vector_index.get("id"),
                     "collection": embeddings_col,
                     "profile": profile_name,
-                    "type": vector_index.get("type"),
-                    "dimension": vector_config.get("dimension"),
-                    "n_lists": vector_config.get("nLists"),
-                    "n_probe": vector_config.get("nProbe"),
-                    "metric": vector_config.get("similarity"),
+                    "type": "vector",
+                    "dimension": params.get("dimension"),
+                    "n_lists": params.get("nLists"),
+                    "n_probe": params.get("defaultNProbe"),
+                    "metric": params.get("metric"),
                     "total_embeddings": emb_count,
                 },
                 start_time=start_time,

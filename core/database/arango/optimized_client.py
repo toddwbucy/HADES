@@ -259,14 +259,18 @@ class ArangoHttp2Client:
         n_probe: int = 10,
         metric: str = "cosine",
     ) -> dict[str, Any]:
-        """Create a FAISS-backed vector index on a collection.
+        """Create a vector index on a collection (ArangoDB 3.12+).
+
+        Uses ArangoDB's native vector index type backed by FAISS for
+        server-side ANN search via APPROX_NEAR_COSINE / APPROX_NEAR_L2 /
+        APPROX_NEAR_INNER_PRODUCT AQL functions.
 
         Args:
             collection: Collection name containing embedding documents.
             field: Field name holding the embedding array.
             dimension: Embedding vector dimension.
             n_lists: Number of IVF cells (None = auto-calculate from collection size).
-            n_probe: Number of cells to probe during search (recall vs speed).
+            n_probe: Default cells to probe during search (recall vs speed).
             metric: Distance metric — "cosine", "l2", or "innerProduct".
 
         Returns:
@@ -280,20 +284,14 @@ class ArangoHttp2Client:
 
         path = f"/_db/{self._config.database}/_api/index"
         payload: dict[str, Any] = {
-            "type": "inverted",
-            "fields": [
-                {
-                    "name": field,
-                    "features": ["vector"],
-                    "vector": {
-                        "type": "float32",
-                        "dimension": dimension,
-                        "similarity": metric,
-                        "nLists": n_lists,
-                        "nProbe": n_probe,
-                    },
-                }
-            ],
+            "type": "vector",
+            "fields": [field],
+            "params": {
+                "metric": metric,
+                "dimension": dimension,
+                "nLists": n_lists,
+                "defaultNProbe": n_probe,
+            },
         }
         return self.request("POST", path, json=payload, params={"collection": collection})
 

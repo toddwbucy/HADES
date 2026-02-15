@@ -60,6 +60,7 @@ class ArangoBackend:
         self._client = client
         self._profile = profile or get_profile("arxiv")
         self._vector_index_cache: bool | None = None
+        self._vector_index_metric: str | None = None  # cached metric from detected index
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -193,7 +194,7 @@ class ArangoBackend:
             List of result dicts sorted by similarity score (descending).
         """
         if self._has_vector_index() and not doc_filter:
-            # Fast path: server-side ANN via FAISS-backed inverted index
+            # Fast path: server-side ANN via vector index
             return self._query_ann(query_embedding, limit=limit, n_probe=n_probe)
         else:
             # Slow path: brute-force cosine similarity in Python
@@ -207,21 +208,24 @@ class ArangoBackend:
         try:
             indexes = self._client.list_indexes(self._profile.embeddings)
             for idx in indexes:
-                # Check for inverted index with vector features
-                if idx.get("type") == "inverted":
-                    for field in idx.get("fields", []):
-                        if isinstance(field, dict) and "vector" in (field.get("features", []) or []):
-                            self._vector_index_cache = True
-                            return True
-                        # ArangoDB may also return vector config directly on the field
-                        if isinstance(field, dict) and field.get("vector"):
-                            self._vector_index_cache = True
-                            return True
+                if idx.get("type") == "vector":
+                    # Cache the metric so _query_ann can pick the right APPROX_NEAR_* function
+                    params = idx.get("params", {})
+                    self._vector_index_metric = params.get("metric", "cosine")
+                    self._vector_index_cache = True
+                    return True
         except ArangoHttpError:
             pass
 
         self._vector_index_cache = False
         return False
+
+    # Map metric names to their corresponding APPROX_NEAR_* AQL functions
+    _METRIC_AQL_FUNCTIONS: dict[str, str] = {
+        "cosine": "APPROX_NEAR_COSINE",
+        "l2": "APPROX_NEAR_L2",
+        "innerProduct": "APPROX_NEAR_INNER_PRODUCT",
+    }
 
     def _query_ann(
         self,
@@ -230,21 +234,23 @@ class ArangoBackend:
         limit: int = 10,
         n_probe: int | None = None,
     ) -> list[dict[str, Any]]:
-        """ANN search using APPROX_NEAR_VECTORS — runs server-side via FAISS index."""
+        """ANN search using metric-specific APPROX_NEAR_* — runs server-side via vector index."""
         col = self._profile
+        metric = self._vector_index_metric or "cosine"
+        approx_fn = self._METRIC_AQL_FUNCTIONS.get(metric, "APPROX_NEAR_COSINE")
 
-        options_clause = ""
         bind_vars: dict[str, Any] = {
             "query_vec": query_embedding,
             "limit": limit,
         }
+        options_clause = ""
         if n_probe is not None:
-            options_clause = "OPTIONS { nProbe: @n_probe }"
+            options_clause = ", OPTIONS { nProbe: @n_probe }"
             bind_vars["n_probe"] = n_probe
 
         aql = f"""
-            FOR emb IN APPROX_NEAR_VECTORS(
-                {col.embeddings}, "embedding", @query_vec, @limit {options_clause}
+            FOR emb IN {approx_fn}(
+                {col.embeddings}, "embedding", @query_vec, @limit{options_clause}
             )
                 FILTER emb.chunk_key != null
                 LET chunk = DOCUMENT(CONCAT("{col.chunks}/", emb.chunk_key))
@@ -259,7 +265,7 @@ class ArangoBackend:
                     score: emb.$score
                 }}
         """
-        logger.debug("Using ANN search (vector index) with limit=%d", limit)
+        logger.debug("Using ANN search (%s) with limit=%d", approx_fn, limit)
         return self._client.query(aql, bind_vars=bind_vars)
 
     def _query_brute_force(
