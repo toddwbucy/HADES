@@ -322,7 +322,10 @@ class ArangoBackend:
                 }}
         """
         logger.debug("Using brute-force search (no vector index)")
-        results = self._client.query(aql, bind_vars=bind_vars)
+        # Use large batch_size to avoid cursor pagination — the read-only
+        # ArangoDB proxy doesn't support the PUT requests needed for cursor
+        # continuation (chunked transfer encoding not implemented).
+        results = self._client.query(aql, bind_vars=bind_vars, batch_size=50000)
 
         scored = []
         for r in results:
