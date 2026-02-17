@@ -87,12 +87,12 @@ def _guard_different_reviewer(ctx: GuardContext) -> None:
     if task.get("minor"):
         return
 
-    # Find the session that implemented this task (moved it to in_progress)
-    implementer_edges = ctx.client.query(
+    # Find sessions that implemented or submitted this task for review
+    involved_sessions = ctx.client.query(
         """
         FOR e IN @@edges
             FILTER e._to == @task_id
-            FILTER e.type == "implements"
+            FILTER e.type IN ["implements", "submitted_review"]
             RETURN e._from
         """,
         bind_vars={
@@ -102,9 +102,9 @@ def _guard_different_reviewer(ctx: GuardContext) -> None:
     )
 
     current_session_id = f"{ctx.collections.sessions}/{ctx.session['_key']}"
-    if current_session_id in implementer_edges:
+    if current_session_id in involved_sessions:
         raise TransitionError(
-            f"Cannot approve own work: session {ctx.session['_key']} implemented this task. "
+            f"Cannot approve own work: session {ctx.session['_key']} implemented or reviewed this task. "
             "A different session must approve, or use --human to override.",
             code="SAME_REVIEWER",
         )
@@ -231,11 +231,19 @@ def transition(
         # Clear block_reason when leaving blocked state
         update_fields["block_reason"] = None
 
+    prev_block_reason = task.get("block_reason")
     updated = update_task(client, db_name, task_key, collections=cols, **update_fields)
 
-    # Create audit edge
+    # Create audit edge — rollback status on failure to keep state + audit in sync
     edge_type = _edge_type_for_transition(from_status, new_status)
-    create_session_task_edge(client, db_name, session["_key"], task_key, edge_type, collections=cols)
+    try:
+        create_session_task_edge(client, db_name, session["_key"], task_key, edge_type, collections=cols)
+    except Exception:
+        update_task(
+            client, db_name, task_key, collections=cols,
+            status=from_status, block_reason=prev_block_reason,
+        )
+        raise
 
     logger.info(
         "Task %s: %s → %s (session=%s, edge=%s)",

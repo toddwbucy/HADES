@@ -101,13 +101,24 @@ class TestGuardBlockReason:
 
 
 class TestGuardDifferentReviewer:
+    def test_blocks_same_implementer(self):
+        ctx = _make_ctx(
+            from_status="in_review",
+            to_status="closed",
+            task={"_key": "task_abc", "status": "in_review", "minor": False},
+        )
+        # Session is the implementer (implements edge)
+        ctx.client.query.return_value = ["persephone_sessions/ses_123"]
+        with pytest.raises(TransitionError, match="Cannot approve own work"):
+            _guard_different_reviewer(ctx)
+
     def test_blocks_same_reviewer(self):
         ctx = _make_ctx(
             from_status="in_review",
             to_status="closed",
             task={"_key": "task_abc", "status": "in_review", "minor": False},
         )
-        # Session is the implementer
+        # Session submitted this for review (submitted_review edge)
         ctx.client.query.return_value = ["persephone_sessions/ses_123"]
         with pytest.raises(TransitionError, match="Cannot approve own work"):
             _guard_different_reviewer(ctx)
@@ -215,6 +226,29 @@ class TestTransition:
             # Verify update_task was called with block_reason
             call_kwargs = mock_update.call_args
             assert call_kwargs[1]["block_reason"] == "waiting"
+
+    def test_rollback_on_edge_failure(self):
+        session = {"_key": "ses_123", "agent_type": "claude_code"}
+
+        with patch("core.persephone.workflow.get_task") as mock_get, \
+             patch("core.persephone.workflow.update_task") as mock_update, \
+             patch("core.persephone.workflow.get_or_create_session") as mock_session, \
+             patch("core.persephone.workflow.create_session_task_edge") as mock_edge, \
+             patch("core.persephone.workflow.check_blocked") as mock_blocked:
+
+            mock_get.return_value = {"_key": "task_abc", "status": "open", "minor": False}
+            mock_update.return_value = {"_key": "task_abc", "status": "in_progress"}
+            mock_session.return_value = session
+            mock_blocked.return_value = []
+            mock_edge.side_effect = RuntimeError("edge creation failed")
+
+            with pytest.raises(RuntimeError, match="edge creation failed"):
+                transition(self.client, "bident", "task_abc", "in_progress")
+
+            # Verify rollback: update_task called twice (forward + rollback)
+            assert mock_update.call_count == 2
+            rollback_call = mock_update.call_args_list[1]
+            assert rollback_call[1]["status"] == "open"
 
 
 class TestAddDependency:

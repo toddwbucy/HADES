@@ -1818,6 +1818,13 @@ def task_dep_cmd(
     """
     from core.cli.commands.persephone import task_blocked, task_dep_add, task_dep_remove
 
+    if blocked_by and remove:
+        return error_response(
+            command="task.dep",
+            code=ErrorCode.VALIDATION_ERROR,
+            message="Use either --blocked-by or --remove, not both.",
+            start_time=start_time,
+        )
     if blocked_by:
         return task_dep_add(key, blocked_by, start_time)
     elif remove:
