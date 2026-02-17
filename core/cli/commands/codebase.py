@@ -191,17 +191,14 @@ def codebase_ingest(
         resolver = ImportResolver(repo_root, known_rel_paths)
         edges = resolver.resolve_all(file_results)
 
-        # Clear stale import edges for processed files before inserting new ones
-        processed_file_ids = [
-            f"{cols.files}/{fr['file_key']}" for fr in file_results
-            if fr["file_key"] not in existing_hashes  # only clear for re-processed files
-            or force
-        ]
-        if processed_file_ids:
+        # Clear stale import edges for all resolved files before inserting new ones.
+        # This ensures removed imports don't leave orphan edges.
+        all_resolved_ids = [f"{cols.files}/{fr['file_key']}" for fr in file_results]
+        if all_resolved_ids:
             try:
                 client.query(
                     "FOR e IN @@edges FILTER e.type == 'imports' AND e._from IN @from_ids REMOVE e IN @@edges",
-                    bind_vars={"@edges": cols.edges, "from_ids": processed_file_ids},
+                    bind_vars={"@edges": cols.edges, "from_ids": all_resolved_ids},
                 )
             except Exception:
                 logger.warning("Failed to clear stale import edges")
