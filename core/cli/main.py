@@ -1801,6 +1801,64 @@ def task_unblock_cmd(
     return task_transition(key, "in_progress", start_time)
 
 
+# --- Handoff commands (Phase 4: structured handoffs) ---
+
+
+@task_app.command("handoff")
+@cli_command("task.handoff", ErrorCode.TASK_ERROR)
+def task_handoff_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    done: list[str] = typer.Option(None, "--done", help="What was completed (repeatable)"),
+    remaining: list[str] = typer.Option(None, "--remaining", help="What still needs doing (repeatable)"),
+    decision: list[str] = typer.Option(None, "--decision", help="Key decision made (repeatable)"),
+    uncertain: list[str] = typer.Option(None, "--uncertain", help="Open question / unknown (repeatable)"),
+    note: str = typer.Option(None, "--note", "-n", help="Free-form note"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Create a structured handoff for a task.
+
+    Captures what was done, what remains, key decisions, and uncertainties.
+    The next session picks up this context automatically via 'task usage'.
+    Multiple --done, --remaining, --decision, --uncertain flags are allowed.
+
+    Examples:
+        hades task handoff task_abc123 --done "Implemented state machine" --remaining "Add tests"
+        hades task handoff task_abc123 --decision "Used graph edges over foreign keys" --note "All tests pass"
+    """
+    from core.cli.commands.persephone import task_handoff
+
+    return task_handoff(
+        key,
+        start_time,
+        done=done or None,
+        remaining=remaining or None,
+        decisions=decision or None,
+        uncertain=uncertain or None,
+        note=note,
+    )
+
+
+@task_app.command("handoff-show")
+@cli_command("task.handoff-show", ErrorCode.TASK_ERROR)
+def task_handoff_show_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum handoffs to show"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Show handoff history for a task.
+
+    Lists handoffs in reverse chronological order. Shows the latest
+    handoff prominently for quick context pickup.
+
+    Examples:
+        hades task handoff-show task_abc123
+        hades task handoff-show task_abc123 --limit 5
+    """
+    from core.cli.commands.persephone import task_handoff_show
+
+    return task_handoff_show(key, start_time, limit=limit)
+
+
 @task_app.command("dep")
 @cli_command("task.dep", ErrorCode.TASK_ERROR)
 def task_dep_cmd(

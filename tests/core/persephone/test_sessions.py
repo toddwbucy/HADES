@@ -296,8 +296,10 @@ class TestBuildUsageBriefing:
             [in_progress_task],  # in_progress
             [],  # reviewable
             [],  # ready
+            [],  # handoff lookup for task_2
         ]
 
         briefing = build_usage_briefing(self.client, "bident", self.session)
         assert len(briefing["in_progress"]) == 1
         assert briefing["in_progress"][0]["_key"] == "task_2"
+        assert "handoffs" in briefing

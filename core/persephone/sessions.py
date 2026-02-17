@@ -573,6 +573,16 @@ def build_usage_briefing(
         bind_vars={"@tasks": cols.tasks},
     )
 
+    # For each in-progress task, fetch latest handoff for context
+    handoffs: dict[str, Any] = {}
+    if in_progress:
+        from core.persephone.handoffs import get_latest_handoff
+
+        for task in in_progress:
+            handoff = get_latest_handoff(client, db_name, task["_key"], collections=cols)
+            if handoff:
+                handoffs[task["_key"]] = handoff
+
     return {
         "session": {
             "key": session["_key"],
@@ -581,6 +591,7 @@ def build_usage_briefing(
             "started_at": session.get("started_at"),
         },
         "in_progress": in_progress,
+        "handoffs": handoffs,
         "reviewable": reviewable,
         "ready": ready,
     }

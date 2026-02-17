@@ -16,6 +16,10 @@ from core.cli.output import (
     success_response,
 )
 from core.persephone.collections import ensure_collections
+from core.persephone.handoffs import (
+    create_handoff,
+    list_handoffs,
+)
 from core.persephone.sessions import (
     build_usage_briefing,
     create_session_task_edge,
@@ -280,6 +284,110 @@ def task_usage(
     except Exception as e:
         return error_response(
             command="task.usage",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+# ------------------------------------------------------------------
+# Handoff commands (Phase 4)
+# ------------------------------------------------------------------
+
+
+def task_handoff(
+    key: str,
+    start_time: float,
+    *,
+    done: list[str] | None = None,
+    remaining: list[str] | None = None,
+    decisions: list[str] | None = None,
+    uncertain: list[str] | None = None,
+    note: str | None = None,
+) -> CLIResponse:
+    """Create a handoff document for a task."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=False)
+    except Exception as e:
+        return error_response(
+            command="task.handoff",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        ensure_collections(client, db_name)
+        session = get_or_create_session(client, db_name)
+        doc = create_handoff(
+            client,
+            db_name,
+            key,
+            done=done,
+            remaining=remaining,
+            decisions=decisions,
+            uncertain=uncertain,
+            note=note,
+            session=session,
+        )
+        return success_response(
+            command="task.handoff",
+            data={"handoff": doc},
+            start_time=start_time,
+        )
+    except ValueError as e:
+        return error_response(
+            command="task.handoff",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.handoff",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def task_handoff_show(
+    key: str,
+    start_time: float,
+    *,
+    limit: int = 10,
+) -> CLIResponse:
+    """Show handoffs for a task."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=True)
+    except Exception as e:
+        return error_response(
+            command="task.handoff-show",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        handoffs = list_handoffs(client, db_name, key, limit=limit)
+        latest = handoffs[0] if handoffs else None
+        return success_response(
+            command="task.handoff-show",
+            data={
+                "task_key": key,
+                "handoffs": handoffs,
+                "latest": latest,
+                "count": len(handoffs),
+            },
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.handoff-show",
             code=ErrorCode.TASK_ERROR,
             message=str(e),
             start_time=start_time,
