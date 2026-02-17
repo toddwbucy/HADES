@@ -112,12 +112,28 @@ class SessionCreate(BaseModel):
     ended_at: str | None = None
 
 
+# ── Log models ───────────────────────────────────────────────────
+
+
+class LogCreate(BaseModel):
+    """Schema for creating an activity log entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(..., min_length=1)
+    task_key: str | None = None
+    session_key: str | None = None
+    details: dict | None = None
+    created_at: str
+
+
 # ── Node type registry ────────────────────────────────────────────
 
 _NODE_REGISTRY: dict[str, tuple[type[BaseModel], type[BaseModel] | None]] = {
     "task": (TaskCreate, TaskUpdate),
     "handoff": (HandoffCreate, None),
     "session": (SessionCreate, None),
+    "log": (LogCreate, None),
 }
 
 

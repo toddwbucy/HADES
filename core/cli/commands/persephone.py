@@ -20,6 +20,7 @@ from core.persephone.handoffs import (
     create_handoff,
     list_handoffs,
 )
+from core.persephone.logging import list_logs
 from core.persephone.sessions import (
     build_usage_briefing,
     create_session_task_edge,
@@ -612,6 +613,109 @@ def task_blocked(
     except Exception as e:
         return error_response(
             command="task.blocked",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+# ------------------------------------------------------------------
+# Log and session commands (Phase 7)
+# ------------------------------------------------------------------
+
+
+def task_log(
+    key: str,
+    start_time: float,
+    *,
+    limit: int = 50,
+) -> CLIResponse:
+    """List activity logs for a task."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=True)
+    except Exception as e:
+        return error_response(
+            command="task.log",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        logs = list_logs(client, db_name, task_key=key, limit=limit)
+        return success_response(
+            command="task.log",
+            data={
+                "task_key": key,
+                "logs": logs,
+                "count": len(logs),
+            },
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.log",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def task_sessions(
+    key: str,
+    start_time: float,
+    *,
+    limit: int = 10,
+) -> CLIResponse:
+    """List sessions that worked on a task (via 'implements' edges)."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=True)
+    except Exception as e:
+        return error_response(
+            command="task.sessions",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        from core.persephone.collections import PERSEPHONE_COLLECTIONS
+
+        cols = PERSEPHONE_COLLECTIONS
+        sessions = client.query(
+            """
+            FOR e IN @@edges
+                FILTER e._to == @task_id
+                FILTER e.type IN ["implements", "submitted_review", "approved"]
+                FOR s IN @@sessions
+                    FILTER s._id == e._from
+                    SORT s.started_at DESC
+                    LIMIT @limit
+                    RETURN MERGE(s, {edge_type: e.type})
+            """,
+            bind_vars={
+                "@edges": cols.edges,
+                "@sessions": cols.sessions,
+                "task_id": f"{cols.tasks}/{key}",
+                "limit": limit,
+            },
+        )
+        return success_response(
+            command="task.sessions",
+            data={
+                "task_key": key,
+                "sessions": sessions,
+                "count": len(sessions),
+            },
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.sessions",
             code=ErrorCode.TASK_ERROR,
             message=str(e),
             start_time=start_time,

@@ -1992,6 +1992,48 @@ def task_context_cmd(
     return task_context(key, start_time, include_imports=not no_imports)
 
 
+@task_app.command("log")
+@cli_command("task.log", ErrorCode.TASK_ERROR)
+def task_log_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Maximum log entries"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Show activity log for a task.
+
+    Lists all logged actions (create, update, transition, handoff)
+    for the specified task in reverse chronological order.
+
+    Examples:
+        hades task log task_abc123
+        hades task log task_abc123 --limit 20
+    """
+    from core.cli.commands.persephone import task_log
+
+    return task_log(key, start_time, limit=limit)
+
+
+@task_app.command("sessions")
+@cli_command("task.sessions", ErrorCode.TASK_ERROR)
+def task_sessions_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum sessions"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Show sessions that worked on a task.
+
+    Lists sessions linked to the task via implements, submitted_review,
+    or approved edges. Useful for auditing who worked on what.
+
+    Examples:
+        hades task sessions task_abc123
+        hades task sessions task_abc123 --limit 5
+    """
+    from core.cli.commands.persephone import task_sessions
+
+    return task_sessions(key, start_time, limit=limit)
+
+
 @task_app.command("dep")
 @cli_command("task.dep", ErrorCode.TASK_ERROR)
 def task_dep_cmd(

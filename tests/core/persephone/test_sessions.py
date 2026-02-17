@@ -210,7 +210,8 @@ class TestEndSession:
     def test_sets_ended_at(self):
         client = MagicMock()
         end_session(client, "bident", "ses_abc123")
-        args = client.request.call_args
+        # First call is the PATCH to set ended_at (subsequent calls are best-effort logging)
+        args = client.request.call_args_list[0]
         assert "ended_at" in args[1]["json"]
         assert args[1]["json"]["ended_at"] is not None
 

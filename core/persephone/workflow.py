@@ -250,6 +250,21 @@ def transition(
         task_key, from_status, new_status, session["_key"], edge_type,
     )
 
+    # Best-effort activity log
+    try:
+        from core.persephone.logging import create_log
+
+        create_log(
+            client, db_name,
+            action="task.transitioned",
+            task_key=task_key,
+            session_key=session["_key"],
+            details={"from_status": from_status, "to_status": new_status, "edge_type": edge_type},
+            collections=cols,
+        )
+    except Exception:
+        logger.warning("Failed to log task.transitioned for %s", task_key)
+
     return updated
 
 

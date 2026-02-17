@@ -6,6 +6,7 @@ returns dicts or None. No CLI concerns here.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import UTC, datetime
 from typing import Any
@@ -98,6 +99,21 @@ def create_task(
     # Return the full doc with ArangoDB metadata
     doc["_id"] = resp.get("_id", f"{cols.tasks}/{key}")
     doc["_rev"] = resp.get("_rev")
+
+    # Best-effort activity log
+    try:
+        from core.persephone.logging import create_log
+
+        create_log(
+            client, db_name,
+            action="task.created",
+            task_key=key,
+            details={"title": title, "priority": priority, "type": type_},
+            collections=cols,
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to log task.created for %s", key)
+
     return doc
 
 
@@ -226,11 +242,27 @@ def update_task(
             json=clean,
             params={"returnNew": "true"},
         )
-        return resp.get("new", resp)
+        result = resp.get("new", resp)
     except ArangoHttpError as e:
         if _is_not_found(e):
             return None
         raise
+
+    # Best-effort activity log
+    try:
+        from core.persephone.logging import create_log
+
+        create_log(
+            client, db_name,
+            action="task.updated",
+            task_key=key,
+            details={"fields": list(clean.keys())},
+            collections=cols,
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to log task.updated for %s", key)
+
+    return result
 
 
 def delete_task(
