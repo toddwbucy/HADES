@@ -183,6 +183,18 @@ class TestListLogs:
         assert "FILTER doc.task_key == @task_key" in aql
         assert "FILTER doc.action == @action" in aql
 
+    def test_rejects_zero_limit(self):
+        client = self._make_mock_client()
+
+        with pytest.raises(ValueError, match="limit must be positive"):
+            list_logs(client, "test_db", limit=0)
+
+    def test_rejects_negative_limit(self):
+        client = self._make_mock_client()
+
+        with pytest.raises(ValueError, match="limit must be positive"):
+            list_logs(client, "test_db", limit=-1)
+
 
 # ── task_sessions CLI tests ──────────────────────────────────────
 
