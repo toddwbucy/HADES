@@ -206,23 +206,32 @@ class CodeProcessor:
         rel_path: str,
     ) -> list[CodeChunk]:
         """Split chunks that exceed _MAX_CHUNK_CHARS."""
+        preamble = f"# file: {rel_path}\n"
         result: list[CodeChunk] = []
         for chunk in chunks:
             if len(chunk.text) <= _MAX_CHUNK_CHARS:
                 result.append(chunk)
                 continue
 
-            # Split at line boundaries
-            lines = chunk.text.splitlines(keepends=True)
+            # Strip preamble before splitting, re-add to each subchunk
+            text = chunk.text
+            has_preamble = text.startswith(preamble)
+            if has_preamble:
+                text = text[len(preamble):]
+
+            lines = text.splitlines(keepends=True)
             current: list[str] = []
             current_len = 0
             line_offset = 0
 
             for line in lines:
                 if current_len + len(line) > _MAX_CHUNK_CHARS and current:
+                    sub_text = "".join(current)
+                    if has_preamble:
+                        sub_text = preamble + sub_text
                     result.append(CodeChunk(
                         index=len(result),
-                        text="".join(current),
+                        text=sub_text,
                         chunk_type=chunk.chunk_type,
                         start_line=chunk.start_line + line_offset - len(current),
                         end_line=chunk.start_line + line_offset - 1,
@@ -235,9 +244,12 @@ class CodeProcessor:
                 line_offset += 1
 
             if current:
+                sub_text = "".join(current)
+                if has_preamble:
+                    sub_text = preamble + sub_text
                 result.append(CodeChunk(
                     index=len(result),
-                    text="".join(current),
+                    text=sub_text,
                     chunk_type=chunk.chunk_type,
                     start_line=chunk.start_line + line_offset - len(current),
                     end_line=chunk.start_line + line_offset - 1,

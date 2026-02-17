@@ -55,18 +55,27 @@ def ensure_codebase_collections(
     # Document collections (type=2)
     for name in (cols.files, cols.chunks, cols.embeddings):
         if name not in existing:
-            client.request(
+            create_resp = client.request(
                 "POST",
                 f"/_db/{db_name}/_api/collection",
                 json={"name": name, "type": 2},
             )
+            if create_resp.get("error"):
+                raise RuntimeError(
+                    f"Failed to create collection '{name}': {create_resp.get('errorMessage', 'unknown error')}"
+                )
             logger.info("Created collection %s", name)
 
     # Edge collection (type=3)
     if cols.edges not in existing:
-        client.request(
+        create_resp = client.request(
             "POST",
             f"/_db/{db_name}/_api/collection",
             json={"name": cols.edges, "type": 3},
         )
+        if create_resp.get("error"):
+            raise RuntimeError(
+                f"Failed to create edge collection '{cols.edges}': "
+                f"{create_resp.get('errorMessage', 'unknown error')}"
+            )
         logger.info("Created edge collection %s", cols.edges)

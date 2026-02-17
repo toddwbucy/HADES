@@ -60,7 +60,9 @@ def assemble_task_context(
     modified_files: list[dict[str, Any]] = []
     if file_ids:
         modified_files = _query_codebase_graph(
-            client, db_name, file_ids, c_cols, include_imports=include_imports
+            client, db_name, file_ids, c_cols,
+            include_imports=include_imports,
+            import_depth=import_depth,
         )
 
     # Build final context
@@ -155,6 +157,7 @@ def _query_codebase_graph(
     cols: CodebaseCollections,
     *,
     include_imports: bool = True,
+    import_depth: int = 1,
 ) -> list[dict[str, Any]]:
     """Query the codebase graph for file details + imports."""
     if not include_imports:
@@ -175,17 +178,15 @@ def _query_codebase_graph(
             logger.exception("Codebase file query failed")
             return []
 
-    # With imports: get files + their import edges
+    # With imports: traverse import edges up to import_depth
     aql = """
     FOR file_id IN @file_ids
         LET f = DOCUMENT(file_id)
         FILTER f != null
         LET imports = (
-            FOR e IN @@code_edges
-                FILTER e._from == file_id AND e.type == "imports"
-                LET target = DOCUMENT(e._to)
-                FILTER target != null
-                RETURN target.rel_path
+            FOR v, e IN 1..@depth OUTBOUND file_id @@code_edges
+                FILTER e.type == "imports"
+                RETURN DISTINCT v.rel_path
         )
         RETURN {
             path: f.rel_path,
@@ -200,6 +201,7 @@ def _query_codebase_graph(
             bind_vars={
                 "file_ids": file_ids,
                 "@code_edges": cols.edges,
+                "depth": import_depth,
             },
         )
     except Exception:

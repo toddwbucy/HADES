@@ -125,7 +125,7 @@ class ImportResolver:
             pkg_parts = pkg_parts[:-levels_up]
 
         if remainder:
-            pkg_parts.append(remainder.replace(".", "/"))
+            pkg_parts.extend(part for part in remainder.split(".") if part)
 
         absolute = ".".join(str(p) for p in pkg_parts)
         return absolute if absolute else None
