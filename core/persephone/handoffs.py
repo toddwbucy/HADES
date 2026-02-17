@@ -14,7 +14,10 @@ import secrets
 import subprocess
 from typing import Any
 
+from pydantic import ValidationError
+
 from core.persephone.collections import PERSEPHONE_COLLECTIONS, PersephoneCollections
+from core.persephone.models import HandoffCreate
 from core.persephone.sessions import _create_edge, _utcnow, get_or_create_session
 
 logger = logging.getLogger(__name__)
@@ -99,9 +102,6 @@ def create_handoff(
     Raises:
         ValueError: If no content fields are provided
     """
-    if not any([done, remaining, decisions, uncertain, note]):
-        raise ValueError("At least one content field required (done, remaining, decisions, uncertain, or note)")
-
     cols = collections or PERSEPHONE_COLLECTIONS
 
     # Auto-detect session
@@ -115,20 +115,24 @@ def create_handoff(
     key = _generate_handoff_key()
     now = _utcnow()
 
-    doc: dict[str, Any] = {
-        "_key": key,
-        "task_key": task_key,
-        "session_key": session_key,
-        "done": done or [],
-        "remaining": remaining or [],
-        "decisions": decisions or [],
-        "uncertain": uncertain or [],
-        "note": note,
-        "git_branch": git["git_branch"],
-        "git_sha": git["git_sha"],
-        "git_dirty_files": git["git_dirty_files"],
-        "created_at": now,
-    }
+    try:
+        validated = HandoffCreate(
+            task_key=task_key,
+            session_key=session_key,
+            done=done or [],
+            remaining=remaining or [],
+            decisions=decisions or [],
+            uncertain=uncertain or [],
+            note=note,
+            git_branch=git["git_branch"],
+            git_sha=git["git_sha"],
+            git_dirty_files=git["git_dirty_files"],
+            created_at=now,
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+    doc: dict[str, Any] = {"_key": key, **validated.model_dump()}
 
     resp = client.request(
         "POST",

@@ -16,8 +16,11 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 
+from pydantic import ValidationError
+
 from core.database.arango.optimized_client import ArangoHttpError
 from core.persephone.collections import PERSEPHONE_COLLECTIONS, PersephoneCollections
+from core.persephone.models import SessionCreate
 
 logger = logging.getLogger(__name__)
 
@@ -334,17 +337,20 @@ def _create_session(
     now = _utcnow()
     key = _generate_session_key()
 
-    doc: dict[str, Any] = {
-        "_key": key,
-        "agent_type": fp.agent_type,
-        "agent_pid": fp.agent_pid,
-        "branch": branch,
-        "context_id": fp.context_id,
-        "previous_session_key": previous_session_key,
-        "started_at": now,
-        "last_activity": now,
-        "ended_at": None,
-    }
+    try:
+        validated = SessionCreate(
+            agent_type=fp.agent_type,
+            agent_pid=fp.agent_pid,
+            context_id=fp.context_id,
+            branch=branch,
+            previous_session_key=previous_session_key,
+            started_at=now,
+            last_activity=now,
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+    doc: dict[str, Any] = {"_key": key, **validated.model_dump()}
 
     resp = client.request(
         "POST",
