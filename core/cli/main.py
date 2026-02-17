@@ -225,6 +225,7 @@ def status_cmd() -> None:
 @app.command("orient")
 def orient_cmd(
     papers: int = typer.Option(10, "--papers", "-n", help="Number of recent papers per profile"),
+    verbose: bool = typer.Option(False, "--verbose", "-V", help="Include full collection list and extra detail"),
 ) -> None:
     """Metadata-first context orientation for AI agents.
 
@@ -233,17 +234,20 @@ def orient_cmd(
     graph stats. Designed for an LLM to plan its query strategy from
     metadata alone, without loading any document content.
 
+    Use --verbose to include the full collection list with document counts.
+
     Examples:
         hades orient
         hades --database NL orient
         hades orient --papers 20
+        hades orient --verbose
     """
     start_time = time.time()
 
     try:
         from core.cli.commands.orient import orient
 
-        response = orient(start_time, papers_limit=papers)
+        response = orient(start_time, papers_limit=papers, verbose=verbose)
         print_response(response)
         if not response.success:
             raise typer.Exit(1) from None

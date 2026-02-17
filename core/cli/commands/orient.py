@@ -63,7 +63,7 @@ def _recent_papers(client: Any, profile: CollectionProfile, limit: int = 10) -> 
         return []
 
 
-def orient(start_time: float, *, papers_limit: int = 10) -> CLIResponse:
+def orient(start_time: float, *, papers_limit: int = 10, verbose: bool = False) -> CLIResponse:
     """Build a compact orientation map for the current database.
 
     Returns:
@@ -135,13 +135,21 @@ def orient(start_time: float, *, papers_limit: int = 10) -> CLIResponse:
                 if count is not None:
                     codebase[name.replace("codebase_", "")] = count
 
+        total_documents = sum((p["counts"]["metadata"] or 0) for p in profiles.values())
+
         result: dict[str, Any] = {
             "database": db_name,
             "profiles": profiles,
-            "recent_papers": recent,
-            "all_collections": collection_counts,
             "total_collections": len(collection_counts),
+            "total_documents": total_documents,
         }
+        if verbose:
+            result["all_collections"] = collection_counts
+            result["recent_papers"] = recent
+        else:
+            # Compact mode: only include recent papers from profiles with data
+            if recent:
+                result["recent_papers"] = recent
         if persephone:
             result["persephone"] = persephone
         if codebase:

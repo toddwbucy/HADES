@@ -36,7 +36,10 @@ class TestOrient:
         assert result.success is True
         assert result.data["database"] == "test_db"
         assert "profiles" in result.data
-        assert "all_collections" in result.data
+        assert "total_collections" in result.data
+        assert "total_documents" in result.data
+        # all_collections only in verbose mode
+        assert "all_collections" not in result.data
 
     @patch("core.cli.commands.orient._make_client")
     def test_handles_connection_error(self, mock_make_client):
