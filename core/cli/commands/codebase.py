@@ -206,7 +206,8 @@ def codebase_ingest(
                     bind_vars={"@edges": cols.edges, "from_ids": all_resolved_ids},
                 )
             except Exception:
-                logger.warning("Failed to clear stale import edges")
+                logger.exception("Failed to clear stale import edges")
+                raise
 
         edges_created = 0
         for edge in edges:
