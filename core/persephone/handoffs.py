@@ -31,14 +31,16 @@ def _generate_handoff_key() -> str:
 def _capture_git_state() -> dict[str, Any]:
     """Capture current git state (best-effort).
 
-    Returns dict with git_branch, git_sha, git_dirty_files.
-    All values are None if git is unavailable.
+    Returns dict with git_branch, git_sha, git_dirty_files,
+    and git_changed_files (list of modified/added .py files).
+    All values are None/empty if git is unavailable.
     """
     cwd = os.environ.get("HADES_PROJECT_ROOT", ".")
     result: dict[str, Any] = {
         "git_branch": None,
         "git_sha": None,
         "git_dirty_files": None,
+        "git_changed_files": [],
     }
 
     try:
@@ -63,6 +65,24 @@ def _capture_git_state() -> dict[str, Any]:
         if status_out.returncode == 0:
             lines = [ln for ln in status_out.stdout.strip().split("\n") if ln]
             result["git_dirty_files"] = len(lines)
+
+        # Capture changed .py files (staged + unstaged)
+        changed_files: set[str] = set()
+        for diff_cmd in (
+            ["git", "diff", "--name-only", "HEAD"],
+            ["git", "diff", "--name-only", "--cached"],
+        ):
+            diff_out = subprocess.run(
+                diff_cmd,
+                capture_output=True, text=True, timeout=5, cwd=cwd,
+            )
+            if diff_out.returncode == 0:
+                for f in diff_out.stdout.strip().splitlines():
+                    f = f.strip()
+                    if f and f.endswith(".py"):
+                        changed_files.add(f)
+        result["git_changed_files"] = sorted(changed_files)
+
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
@@ -127,6 +147,7 @@ def create_handoff(
             git_branch=git["git_branch"],
             git_sha=git["git_sha"],
             git_dirty_files=git["git_dirty_files"],
+            git_changed_files=git.get("git_changed_files", []),
             created_at=now,
         )
     except ValidationError as exc:
@@ -158,8 +179,52 @@ def create_handoff(
         collections=cols,
     )
 
+    # Create task→file edges for changed .py files (links to codebase graph)
+    _link_task_to_changed_files(client, db_name, task_key, git.get("git_changed_files", []), cols)
+
     logger.info("Created handoff %s for task %s (session %s)", key, task_key, session_key)
     return doc
+
+
+def _link_task_to_changed_files(
+    client: Any,
+    db_name: str,
+    task_key: str,
+    changed_files: list[str],
+    collections: PersephoneCollections,
+) -> None:
+    """Create task→file edges for changed .py files.
+
+    Best-effort: checks if the file exists in codebase_files before
+    creating the edge. Silently skips files not in the codebase graph.
+    """
+    if not changed_files:
+        return
+
+    from core.database.codebase_collections import CODEBASE_COLLECTIONS
+    from core.database.keys import file_key
+
+    for rel_path in changed_files:
+        fk = file_key(rel_path)
+        # Check if codebase file doc exists
+        resp = client.request(
+            "GET",
+            f"/_db/{db_name}/_api/document/{CODEBASE_COLLECTIONS.files}/{fk}",
+        )
+        if resp.get("error"):
+            continue
+
+        # Create task → file edge in persephone_edges
+        _create_edge(
+            client,
+            db_name,
+            _from=f"{collections.tasks}/{task_key}",
+            _to=f"{CODEBASE_COLLECTIONS.files}/{fk}",
+            edge_type="modifies",
+            collections=collections,
+        )
+
+    logger.debug("Linked task %s to %d changed files", task_key, len(changed_files))
 
 
 def get_latest_handoff(

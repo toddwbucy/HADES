@@ -81,6 +81,7 @@ class HandoffCreate(BaseModel):
     git_branch: str | None = None
     git_sha: str | None = None
     git_dirty_files: int | None = None
+    git_changed_files: list[str] = Field(default_factory=list)
     created_at: str
 
     @model_validator(mode="after")

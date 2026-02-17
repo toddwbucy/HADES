@@ -58,6 +58,20 @@ def embedding_key(chunk_key_value: str) -> str:
     return f"{chunk_key_value}_emb"
 
 
+def file_key(rel_path: str) -> str:
+    """Normalise a relative file path into an ArangoDB-safe key.
+
+    Replaces ``'/'`` and ``'.'`` with ``'_'``.
+
+    Examples:
+        >>> file_key("core/persephone/models.py")
+        'core_persephone_models_py'
+        >>> file_key("setup.py")
+        'setup_py'
+    """
+    return rel_path.replace("/", "_").replace(".", "_")
+
+
 def strip_version(arxiv_id: str) -> str:
     """Strip the trailing version suffix from an arxiv ID.
 

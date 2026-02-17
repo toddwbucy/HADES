@@ -534,6 +534,55 @@ def task_dep_remove(
         client.close()
 
 
+def task_context(
+    key: str,
+    start_time: float,
+    *,
+    include_imports: bool = True,
+) -> CLIResponse:
+    """Assemble full context for a task."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=True)
+    except Exception as e:
+        return error_response(
+            command="task.context",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        from core.persephone.context import assemble_task_context
+
+        context = assemble_task_context(
+            client,
+            db_name,
+            key,
+            include_imports=include_imports,
+        )
+        if "error" in context:
+            return error_response(
+                command="task.context",
+                code=ErrorCode.TASK_ERROR,
+                message=context["error"],
+                start_time=start_time,
+            )
+        return success_response(
+            command="task.context",
+            data=context,
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.context",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
 def task_blocked(
     key: str,
     start_time: float,
