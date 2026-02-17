@@ -47,6 +47,8 @@ def ensure_collections(
 
     # Get existing collection names
     resp = client.request("GET", f"/_db/{db_name}/_api/collection")
+    if resp.get("error"):
+        raise RuntimeError(f"Failed to list collections: {resp.get('errorMessage', 'unknown error')}")
     existing = {c["name"] for c in resp.get("result", [])}
 
     # Document collections (type=2)

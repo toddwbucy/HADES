@@ -103,7 +103,6 @@ def task_list(
         )
 
     try:
-        ensure_collections(client, db_name)
         tasks = list_tasks(
             client,
             db_name,
@@ -145,7 +144,6 @@ def task_show(
         )
 
     try:
-        ensure_collections(client, db_name)
         doc = get_task(client, db_name, key)
         if doc is None:
             return error_response(

@@ -10,12 +10,16 @@ import secrets
 from datetime import UTC, datetime
 from typing import Any
 
+from core.database.arango.optimized_client import ArangoHttpError
 from core.persephone.collections import PERSEPHONE_COLLECTIONS, PersephoneCollections
 
 # Valid enum values
 VALID_STATUSES = {"open", "in_progress", "in_review", "closed", "blocked"}
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 VALID_TYPES = {"task", "bug", "epic"}
+
+# ArangoDB error number for document not found
+_ARANGO_DOC_NOT_FOUND = 1202
 
 
 def _generate_key() -> str:
@@ -26,6 +30,11 @@ def _generate_key() -> str:
 def _utcnow() -> str:
     """ISO 8601 UTC timestamp."""
     return datetime.now(UTC).isoformat()
+
+
+def _is_not_found(exc: ArangoHttpError) -> bool:
+    """Check if an ArangoHttpError represents a document-not-found."""
+    return exc.status_code == 404 or exc.details.get("errorNum") == _ARANGO_DOC_NOT_FOUND
 
 
 def create_task(
@@ -108,16 +117,20 @@ def get_task(
 
     Returns:
         Task document dict, or None if not found
+
+    Raises:
+        ArangoHttpError: On network/auth/unexpected errors
     """
     cols = collections or PERSEPHONE_COLLECTIONS
     try:
-        resp = client.request(
+        return client.request(
             "GET",
             f"/_db/{db_name}/_api/document/{cols.tasks}/{key}",
         )
-        return resp
-    except Exception:
-        return None
+    except ArangoHttpError as e:
+        if _is_not_found(e):
+            return None
+        raise
 
 
 def list_tasks(
@@ -133,9 +146,12 @@ def list_tasks(
 ) -> list[dict[str, Any]]:
     """List tasks with optional filters.
 
+    Note: db_name is accepted for API consistency but the AQL query runs
+    against the database configured on the client (set by _make_client).
+
     Args:
         client: ArangoHttp2Client instance
-        db_name: Target database name
+        db_name: Target database name (unused — client is pre-configured)
         status: Filter by status
         priority: Filter by priority
         type_: Filter by type
@@ -146,6 +162,7 @@ def list_tasks(
     Returns:
         List of task document dicts
     """
+    _ = db_name  # Used by client config; kept for API consistency
     cols = collections or PERSEPHONE_COLLECTIONS
     filters = []
     bind_vars: dict[str, Any] = {"@col": cols.tasks, "limit": limit}
@@ -193,6 +210,10 @@ def update_task(
 
     Returns:
         Updated task document, or None if not found
+
+    Raises:
+        ValueError: If an enum field value is invalid
+        ArangoHttpError: On network/auth/unexpected errors
     """
     # Validate enum fields if provided
     if "status" in fields and fields["status"] not in VALID_STATUSES:
@@ -213,8 +234,10 @@ def update_task(
             params={"returnNew": "true"},
         )
         return resp.get("new", resp)
-    except Exception:
-        return None
+    except ArangoHttpError as e:
+        if _is_not_found(e):
+            return None
+        raise
 
 
 def delete_task(
@@ -228,6 +251,9 @@ def delete_task(
 
     Returns:
         True if deleted, False if not found
+
+    Raises:
+        ArangoHttpError: On network/auth/unexpected errors
     """
     cols = collections or PERSEPHONE_COLLECTIONS
     try:
@@ -236,5 +262,7 @@ def delete_task(
             f"/_db/{db_name}/_api/document/{cols.tasks}/{key}",
         )
         return True
-    except Exception:
-        return False
+    except ArangoHttpError as e:
+        if _is_not_found(e):
+            return False
+        raise
