@@ -1320,7 +1320,9 @@ def graph_neighbors_cmd(
 def graph_materialize_cmd(
     edge: str | None = typer.Option(None, "--edge", "-e", help="Only materialize this edge collection"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Count edges without inserting"),
-    register_graphs: bool = typer.Option(False, "--register", "-r", help="Also register named graphs"),
+    register_graphs: bool = typer.Option(
+        False, "--register", "-r", help="Register named graphs (drops and recreates existing definitions)"
+    ),
 ) -> None:
     """Materialize NL graph edges from cross-reference fields.
 

@@ -109,8 +109,9 @@ class NLGraphMaterializer:
     def _resolve_ref(self, ref: str) -> str | None:
         """Resolve a reference to a full ArangoDB document ID.
 
-        Handles both full IDs (collection/key) and bare keys.
-        Returns None if the reference is invalid.
+        Only accepts full IDs (collection/key format). Bare keys without
+        a collection prefix cannot be resolved and return None.
+        Returns None if the reference is empty or not a string.
         """
         if not ref or not isinstance(ref, str):
             return None
@@ -135,9 +136,11 @@ class NLGraphMaterializer:
 
         edges: list[dict[str, Any]] = []
 
+        scan_fields = [edge_def.source_field] + [f for f in edge_def.edge_attributes if f != edge_def.source_field]
+
         for coll in from_collections:
             try:
-                docs = self._scan_collection(coll, [edge_def.source_field])
+                docs = self._scan_collection(coll, scan_fields)
             except Exception as e:
                 stats.errors.append(f"{coll}: {e}")
                 continue
@@ -169,12 +172,15 @@ class NLGraphMaterializer:
                         stats.edges_skipped += 1
                         continue
 
-                    edge = {
+                    edge: dict[str, Any] = {
                         "_from": from_id,
                         "_to": to_id,
                         "_key": f"{from_id.replace('/', '_')}__{to_id.replace('/', '_')}",
                         "source_field": edge_def.source_field,
                     }
+                    for attr in edge_def.edge_attributes:
+                        if attr in doc:
+                            edge[attr] = doc[attr]
                     edges.append(edge)
 
         if edges and not dry_run:
@@ -439,7 +445,7 @@ class NLGraphMaterializer:
             "edge_collections": results,
             "totals": total.to_dict(),
             "dry_run": dry_run,
-            "edge_collections_created": sorted(seen_names),
+            "edge_collections_processed": sorted(seen_names),
         }
 
     def create_named_graphs(self, drop_existing: bool = False) -> dict[str, Any]:
