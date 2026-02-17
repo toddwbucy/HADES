@@ -1677,7 +1677,9 @@ def task_close_cmd(
     key: str = typer.Argument(..., help="Task key to close", metavar="KEY"),
     start_time: float = typer.Option(0.0, hidden=True),
 ) -> CLIResponse:
-    """Close a task (shorthand for update --status closed).
+    """Close a task (shorthand for update --status closed, no guards).
+
+    For guarded closure (reviewer != implementer), use 'hades task approve'.
 
     Examples:
         hades task close task_abc123
@@ -1706,6 +1708,122 @@ def task_usage_cmd(
     from core.cli.commands.persephone import task_usage
 
     return task_usage(start_time, new_session=new_session)
+
+
+# --- Workflow commands (Phase 3: state machine) ---
+
+
+@task_app.command("start")
+@cli_command("task.transition", ErrorCode.TASK_ERROR)
+def task_start_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Start working on a task (open → in_progress).
+
+    Creates a session-task edge and enforces dependency guards.
+
+    Examples:
+        hades task start task_abc123
+    """
+    from core.cli.commands.persephone import task_transition
+
+    return task_transition(key, "in_progress", start_time)
+
+
+@task_app.command("review")
+@cli_command("task.transition", ErrorCode.TASK_ERROR)
+def task_review_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Submit a task for review (in_progress → in_review).
+
+    Examples:
+        hades task review task_abc123
+    """
+    from core.cli.commands.persephone import task_transition
+
+    return task_transition(key, "in_review", start_time)
+
+
+@task_app.command("approve")
+@cli_command("task.transition", ErrorCode.TASK_ERROR)
+def task_approve_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    human: bool = typer.Option(False, "--human", help="Human auditor override (bypasses reviewer guard)"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Approve and close a task (in_review → closed).
+
+    By default, the approving session must be different from the implementing
+    session. Use --human when you (the human auditor) are approving directly.
+
+    Examples:
+        hades task approve task_abc123
+        hades task approve task_abc123 --human
+    """
+    from core.cli.commands.persephone import task_transition
+
+    return task_transition(key, "closed", start_time, human_override=human)
+
+
+@task_app.command("block")
+@cli_command("task.transition", ErrorCode.TASK_ERROR)
+def task_block_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Why this task is blocked"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Block a task (in_progress → blocked).
+
+    Examples:
+        hades task block task_abc123 --reason "waiting on embedder fix"
+    """
+    from core.cli.commands.persephone import task_transition
+
+    return task_transition(key, "blocked", start_time, block_reason=reason)
+
+
+@task_app.command("unblock")
+@cli_command("task.transition", ErrorCode.TASK_ERROR)
+def task_unblock_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Unblock a task (blocked → in_progress).
+
+    Examples:
+        hades task unblock task_abc123
+    """
+    from core.cli.commands.persephone import task_transition
+
+    return task_transition(key, "in_progress", start_time)
+
+
+@task_app.command("dep")
+@cli_command("task.dep", ErrorCode.TASK_ERROR)
+def task_dep_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    blocked_by: str = typer.Option(None, "--blocked-by", "-b", help="Task key that blocks this one"),
+    remove: str = typer.Option(None, "--remove", help="Remove dependency on this task key"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Manage task dependencies.
+
+    Examples:
+        hades task dep task_abc --blocked-by task_xyz
+        hades task dep task_abc --remove task_xyz
+        hades task dep task_abc    # show blockers
+    """
+    from core.cli.commands.persephone import task_blocked, task_dep_add, task_dep_remove
+
+    if blocked_by:
+        return task_dep_add(key, blocked_by, start_time)
+    elif remove:
+        return task_dep_remove(key, remove, start_time)
+    else:
+        return task_blocked(key, start_time)
 
 
 # =============================================================================
