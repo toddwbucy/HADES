@@ -280,16 +280,19 @@ class NLGraphMaterializer:
 
         edges: list[dict[str, Any]] = []
 
+        source_field = edge_def.source_field
+        scan_fields = [source_field] + [f for f in edge_def.edge_attributes if f != source_field]
+
         for coll in from_collections:
             try:
-                docs = self._scan_collection(coll, ["chain"])
+                docs = self._scan_collection(coll, scan_fields)
             except Exception as e:
                 stats.errors.append(f"{coll}: {e}")
                 continue
             stats.collections_scanned += 1
 
             for doc in docs:
-                chain = doc.get("chain")
+                chain = doc.get(source_field)
                 if not chain or not isinstance(chain, list) or len(chain) < 2:
                     continue
 
@@ -310,14 +313,17 @@ class NLGraphMaterializer:
                         stats.edges_skipped += 1
                         continue
 
-                    edge = {
+                    edge: dict[str, Any] = {
                         "_from": from_ref,
                         "_to": to_ref,
                         "_key": f"{lineage_key}__step_{i}",
-                        "source_field": "chain",
+                        "source_field": source_field,
                         "lineage_doc": lineage_id,
                         "chain_position": i,
                     }
+                    for attr in edge_def.edge_attributes:
+                        if attr in doc:
+                            edge[attr] = doc[attr]
                     edges.append(edge)
 
                 # Membership edges: lineage_doc → each chain member
@@ -335,9 +341,12 @@ class NLGraphMaterializer:
                         "_from": lineage_id,
                         "_to": to_ref,
                         "_key": f"{lineage_key}__member_{i}",
-                        "source_field": "chain",
+                        "source_field": source_field,
                         "chain_position": i,
                     }
+                    for attr in edge_def.edge_attributes:
+                        if attr in doc:
+                            edge[attr] = doc[attr]
                     edges.append(edge)
 
         if edges and not dry_run:
@@ -355,8 +364,15 @@ class NLGraphMaterializer:
         return stats
 
     def _insert_edges(self, collection: str, edges: list[dict[str, Any]]) -> dict[str, Any]:
-        """Insert edges into an edge collection, overwriting duplicates."""
-        path = f"/_db/{self._db}/_api/import" f"?collection={collection}&type=documents&complete=false&overwrite=true"
+        """Insert edges into an edge collection, replacing duplicates by _key.
+
+        Uses onDuplicate=replace (not overwrite=true) to avoid truncating
+        the collection. This is critical for shared edge collections like
+        nl_hecate_trace_edges that receive edges from multiple definitions.
+        """
+        path = (
+            f"/_db/{self._db}/_api/import" f"?collection={collection}&type=documents&complete=false&onDuplicate=replace"
+        )
         import orjson
 
         payload = b"\n".join(orjson.dumps(e) for e in edges)
