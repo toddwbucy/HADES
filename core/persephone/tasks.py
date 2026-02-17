@@ -10,13 +10,11 @@ import secrets
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+
 from core.database.arango.optimized_client import ArangoHttpError
 from core.persephone.collections import PERSEPHONE_COLLECTIONS, PersephoneCollections
-
-# Valid enum values
-VALID_STATUSES = {"open", "in_progress", "in_review", "closed", "blocked"}
-VALID_PRIORITIES = {"critical", "high", "medium", "low"}
-VALID_TYPES = {"task", "bug", "epic"}
+from core.persephone.models import TaskCreate, TaskUpdate
 
 # ArangoDB error number for document not found
 _ARANGO_DOC_NOT_FOUND = 1202
@@ -70,29 +68,26 @@ def create_task(
     Raises:
         ValueError: If priority or type_ is invalid
     """
-    if priority not in VALID_PRIORITIES:
-        raise ValueError(f"Invalid priority '{priority}': must be one of {VALID_PRIORITIES}")
-    if type_ not in VALID_TYPES:
-        raise ValueError(f"Invalid type '{type_}': must be one of {VALID_TYPES}")
-
     cols = collections or PERSEPHONE_COLLECTIONS
     now = _utcnow()
     key = _generate_key()
 
-    doc: dict[str, Any] = {
-        "_key": key,
-        "title": title,
-        "description": description,
-        "status": "open",
-        "priority": priority,
-        "type": type_,
-        "labels": labels or [],
-        "parent_key": parent_key,
-        "acceptance": acceptance,
-        "minor": False,
-        "created_at": now,
-        "updated_at": now,
-    }
+    try:
+        validated = TaskCreate(
+            title=title,
+            description=description,
+            priority=priority,
+            type=type_,
+            labels=labels or [],
+            parent_key=parent_key,
+            acceptance=acceptance,
+            created_at=now,
+            updated_at=now,
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+    doc: dict[str, Any] = {"_key": key, **validated.model_dump()}
 
     resp = client.request(
         "POST",
@@ -215,22 +210,20 @@ def update_task(
         ValueError: If an enum field value is invalid
         ArangoHttpError: On network/auth/unexpected errors
     """
-    # Validate enum fields if provided
-    if "status" in fields and fields["status"] not in VALID_STATUSES:
-        raise ValueError(f"Invalid status '{fields['status']}': must be one of {VALID_STATUSES}")
-    if "priority" in fields and fields["priority"] not in VALID_PRIORITIES:
-        raise ValueError(f"Invalid priority '{fields['priority']}': must be one of {VALID_PRIORITIES}")
-    if "type" in fields and fields["type"] not in VALID_TYPES:
-        raise ValueError(f"Invalid type '{fields['type']}': must be one of {VALID_TYPES}")
+    try:
+        validated = TaskUpdate(**fields)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
     cols = collections or PERSEPHONE_COLLECTIONS
-    fields["updated_at"] = _utcnow()
+    clean = validated.model_dump(exclude_unset=True)
+    clean["updated_at"] = _utcnow()
 
     try:
         resp = client.request(
             "PATCH",
             f"/_db/{db_name}/_api/document/{cols.tasks}/{key}",
-            json=fields,
+            json=clean,
             params={"returnNew": "true"},
         )
         return resp.get("new", resp)
