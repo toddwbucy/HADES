@@ -150,6 +150,12 @@ def codebase_ingest(
                 params={"overwriteMode": "replace"},
             )
 
+            # Remove existing chunks for this file to avoid orphans when chunk count changes
+            client.query(
+                "FOR c IN @@chunks FILTER c.file_key == @file_key REMOVE c IN @@chunks",
+                bind_vars={"@chunks": cols.chunks, "file_key": result.file_key},
+            )
+
             # Store chunks
             for chunk in result.chunks:
                 ck = chunk_key(result.file_key, chunk.index)
