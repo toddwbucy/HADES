@@ -18,9 +18,11 @@ Edge collections (to be materialized):
     - Edges carry ``_from``, ``_to``, and optional metadata
 
 Named graphs compose edge collections into traversable units:
-    - nl_core: Universal axiom backbone (axiom_basis + validated_against)
-    - nl_inheritance: Axiom inheritance hierarchy
+    - nl_core: Universal axiom backbone (axiom_basis + validated_against + inherits_from)
     - nl_equations: Equation dependency network
+    - nl_hierarchy: Concept hierarchy (structural embodiments + lineage chains)
+    - nl_hecate: Build spec traceability
+    - nl_cross_paper: Cross-paper relationships
     - nl_concept_map: Full knowledge graph (all edges)
 
 Usage:
