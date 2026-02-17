@@ -1316,6 +1316,46 @@ def graph_neighbors_cmd(
         raise typer.Exit(1) from None
 
 
+@graph_app.command("materialize")
+def graph_materialize_cmd(
+    edge: str | None = typer.Option(None, "--edge", "-e", help="Only materialize this edge collection"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Count edges without inserting"),
+    register_graphs: bool = typer.Option(False, "--register", "-r", help="Also register named graphs"),
+) -> None:
+    """Materialize NL graph edges from cross-reference fields.
+
+    Scans NL vertex collections, extracts embedded references (axiom_basis,
+    depends_on, inherits_from, etc.), and creates native ArangoDB edges.
+
+    Examples:
+        hades --database NL db graph materialize --dry-run
+        hades --database NL db graph materialize
+        hades --database NL db graph materialize --edge nl_axiom_basis_edges
+        hades --database NL db graph materialize --register
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import graph_materialize
+
+        response = graph_materialize(start_time, edge=edge, dry_run=dry_run, register_graphs=register_graphs)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.graph.materialize",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 # =============================================================================
 # Embedding Service Commands
 # =============================================================================
@@ -1532,7 +1572,9 @@ def task_create_cmd(
 @task_app.command("list")
 @cli_command("task.list", ErrorCode.TASK_ERROR)
 def task_list_cmd(
-    status: str = typer.Option(None, "--status", "-s", help="Filter by status: open|in_progress|in_review|closed|blocked"),
+    status: str = typer.Option(
+        None, "--status", "-s", help="Filter by status: open|in_progress|in_review|closed|blocked"
+    ),
     priority: str = typer.Option(None, "--priority", "-p", help="Filter by priority: critical|high|medium|low"),
     type_: str = typer.Option(None, "--type", "-t", help="Filter by type: task|bug|epic"),
     parent: str = typer.Option(None, "--parent", help="Filter by parent task key"),
