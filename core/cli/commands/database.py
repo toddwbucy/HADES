@@ -2700,6 +2700,80 @@ def graph_neighbors(
     )
 
 
+def graph_materialize(
+    start_time: float,
+    edge: str | None = None,
+    dry_run: bool = False,
+    register_graphs: bool = False,
+) -> CLIResponse:
+    """Materialize NL graph edges from embedded cross-reference fields.
+
+    Reads the NL graph schema, scans vertex collections for cross-reference
+    fields, and inserts native ArangoDB edges into edge collections.
+
+    Args:
+        start_time: Start time for duration calculation
+        edge: If set, only materialize this edge collection name
+        dry_run: If True, count edges without inserting
+        register_graphs: If True, also register named graphs via Gharial API
+
+    Returns:
+        CLIResponse with materialization statistics
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.graph.materialize",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+        from core.database.nl_graph_materialize import NLGraphMaterializer
+
+        arango_config = get_arango_config(config, read_only=False)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            materializer = NLGraphMaterializer(client, database=arango_config["database"])
+
+            progress("Materializing NL graph edges...")
+            result = materializer.materialize_all(dry_run=dry_run, edge_filter=edge)
+
+            if register_graphs and not dry_run:
+                progress("Registering named graphs...")
+                graph_results = materializer.create_named_graphs(drop_existing=True)
+                result["named_graphs"] = graph_results
+
+            return success_response(
+                command="database.graph.materialize",
+                data=result,
+                start_time=start_time,
+            )
+
+        finally:
+            client.close()
+
+    except Exception as e:
+        return error_response(
+            command="database.graph.materialize",
+            code=ErrorCode.GRAPH_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
 def create_vector_index(
     start_time: float,
     collection: str | None = None,
