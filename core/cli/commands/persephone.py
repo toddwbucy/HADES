@@ -1,6 +1,6 @@
 """Persephone task management commands for HADES CLI.
 
-CLI wrappers around core.persephone.tasks and core.persephone.sessions —
+CLI wrappers around core.persephone.tasks, sessions, and workflow —
 handles client creation, collection auto-setup, and CLIResponse formatting.
 """
 
@@ -27,6 +27,13 @@ from core.persephone.tasks import (
     get_task,
     list_tasks,
     update_task,
+)
+from core.persephone.workflow import (
+    TransitionError,
+    add_dependency,
+    check_blocked,
+    remove_dependency,
+    transition,
 )
 
 
@@ -273,6 +280,181 @@ def task_usage(
     except Exception as e:
         return error_response(
             command="task.usage",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+# ------------------------------------------------------------------
+# Workflow commands (Phase 3)
+# ------------------------------------------------------------------
+
+
+def task_transition(
+    key: str,
+    new_status: str,
+    start_time: float,
+    *,
+    human_override: bool = False,
+    block_reason: str | None = None,
+) -> CLIResponse:
+    """Transition a task with guard enforcement."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=False)
+    except Exception as e:
+        return error_response(
+            command="task.transition",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        ensure_collections(client, db_name)
+        doc = transition(
+            client, db_name, key, new_status,
+            human_override=human_override,
+            block_reason=block_reason,
+        )
+        return success_response(
+            command="task.transition",
+            data={"task": doc, "transition": f"→ {new_status}"},
+            start_time=start_time,
+        )
+    except TransitionError as e:
+        return error_response(
+            command="task.transition",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.transition",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def task_dep_add(
+    key: str,
+    blocked_by: str,
+    start_time: float,
+) -> CLIResponse:
+    """Add a dependency (blocked_by edge)."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=False)
+    except Exception as e:
+        return error_response(
+            command="task.dep",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        ensure_collections(client, db_name)
+        edge = add_dependency(client, db_name, key, blocked_by)
+        return success_response(
+            command="task.dep",
+            data={"edge": edge, "message": f"{key} is now blocked by {blocked_by}"},
+            start_time=start_time,
+        )
+    except TransitionError as e:
+        return error_response(
+            command="task.dep",
+            code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.dep",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def task_dep_remove(
+    key: str,
+    blocked_by: str,
+    start_time: float,
+) -> CLIResponse:
+    """Remove a dependency."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=False)
+    except Exception as e:
+        return error_response(
+            command="task.dep",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        ensure_collections(client, db_name)
+        removed = remove_dependency(client, db_name, key, blocked_by)
+        if not removed:
+            return error_response(
+                command="task.dep",
+                code=ErrorCode.TASK_ERROR,
+                message=f"No dependency from {key} to {blocked_by}",
+                start_time=start_time,
+            )
+        return success_response(
+            command="task.dep",
+            data={"message": f"Removed: {key} no longer blocked by {blocked_by}"},
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.dep",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
+def task_blocked(
+    key: str,
+    start_time: float,
+) -> CLIResponse:
+    """Check what blocks a task."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=True)
+    except Exception as e:
+        return error_response(
+            command="task.blocked",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        blockers = check_blocked(client, db_name, key)
+        return success_response(
+            command="task.blocked",
+            data={
+                "task_key": key,
+                "blocked": len(blockers) > 0,
+                "blockers": blockers,
+            },
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.blocked",
             code=ErrorCode.TASK_ERROR,
             message=str(e),
             start_time=start_time,
