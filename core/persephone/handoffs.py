@@ -183,6 +183,22 @@ def create_handoff(
     _link_task_to_changed_files(client, db_name, task_key, git.get("git_changed_files", []), cols)
 
     logger.info("Created handoff %s for task %s (session %s)", key, task_key, session_key)
+
+    # Best-effort activity log
+    try:
+        from core.persephone.logging import create_log
+
+        create_log(
+            client, db_name,
+            action="handoff.created",
+            task_key=task_key,
+            session_key=session_key,
+            details={"handoff_key": key},
+            collections=cols,
+        )
+    except Exception:
+        logger.warning("Failed to log handoff.created for %s", key, exc_info=True)
+
     return doc
 
 

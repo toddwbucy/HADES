@@ -266,6 +266,59 @@ hades db update my_nodes concept_1 --data '{"weight": 0.95}'
 hades db export my_nodes > backup.jsonl
 ```
 
+### Persephone — Task Management (any database)
+
+Persephone is a database-agnostic task management system. Use `--db` to target any HADES database.
+Tasks, sessions, handoffs, and logs are graph nodes connected by edges in persephone_* collections.
+
+```bash
+# Session briefing (start here — auto-detects agent, resumes or creates session)
+hades task usage
+hades task usage --new-session
+
+# Task CRUD
+hades task create "Title" --priority high --type task
+hades task list --status open --priority high
+hades task show <key>
+hades task update <key> --status in_progress
+hades task close <key>
+
+# Workflow (guarded state transitions)
+hades task start <key>              # open → in_progress
+hades task review <key>             # in_progress → in_review
+hades task approve <key>            # in_review → closed
+hades task block <key> --reason "..." # → blocked
+hades task unblock <key>            # blocked → in_progress
+
+# Dependencies
+hades task dep <key> --blocked-by <other>
+hades task dep <key> --remove <other>
+hades task dep <key>                # show blockers
+
+# Handoffs (structured context transfer between sessions)
+hades task handoff <key> --done "..." --remaining "..."
+hades task handoff-show <key>
+
+# Context assembly (traverses task + codebase graphs)
+hades task context <key>
+hades task context <key> --no-imports
+
+# Activity log
+hades task log <key>
+
+# Session history
+hades task sessions <key>
+```
+
+### Codebase Knowledge Graph
+
+```bash
+hades codebase ingest .              # index Python files (AST chunks + import edges)
+hades codebase ingest . --force      # re-process all files
+hades codebase update .              # incremental (only changed files)
+hades codebase stats                 # collection counts
+```
+
 ## GPU Note
 
 The embedding service runs on GPU 2 by default (configured in `core/config/hades.yaml`). Override with `HADES_EMBEDDER_DEVICE` env var. The service auto-unloads the model after 300s idle and reloads on next request.
@@ -416,6 +469,39 @@ Errors:
   "success": false,
   "error": { "code": "PAPER_NOT_FOUND", "message": "..." }
 }
+```
+
+#### Persephone — Task Management (any database)
+
+Database-agnostic task management. Use `--db` to target any HADES database.
+
+```bash
+hades task usage                     # session briefing (start here)
+hades task usage --new-session       # force new session
+hades task create "Title" --priority high
+hades task list --status open
+hades task show <key>
+hades task update <key> --status in_progress
+hades task start <key>               # open → in_progress (guarded)
+hades task review <key>              # in_progress → in_review
+hades task approve <key>             # in_review → closed
+hades task block <key> --reason "..."
+hades task unblock <key>
+hades task dep <key> --blocked-by <other>
+hades task handoff <key> --done "..." --remaining "..."
+hades task handoff-show <key>
+hades task context <key>             # full context assembly
+hades task log <key>                 # activity log
+hades task sessions <key>            # session history
+```
+
+#### Codebase Knowledge Graph
+
+```bash
+hades codebase ingest .              # index Python files (AST + import edges)
+hades codebase ingest . --force      # re-process all
+hades codebase update .              # incremental
+hades codebase stats                 # collection counts
 ```
 
 #### Common Workflows

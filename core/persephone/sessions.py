@@ -361,6 +361,21 @@ def _create_session(
     doc["_id"] = resp.get("_id", f"{cols.sessions}/{key}")
     doc["_rev"] = resp.get("_rev")
     logger.info("Created session %s (agent=%s, branch=%s)", key, fp.agent_type, branch)
+
+    # Best-effort activity log
+    try:
+        from core.persephone.logging import create_log
+
+        create_log(
+            client, db_name,
+            action="session.started",
+            session_key=key,
+            details={"agent_type": fp.agent_type, "branch": branch},
+            collections=cols,
+        )
+    except Exception:
+        logger.warning("Failed to log session.started for %s", key)
+
     return doc
 
 
@@ -404,6 +419,20 @@ def end_session(
         if e.status_code != 404:
             raise
         logger.warning("Session %s not found for end", session_key)
+        return
+
+    # Best-effort activity log
+    try:
+        from core.persephone.logging import create_log
+
+        create_log(
+            client, db_name,
+            action="session.ended",
+            session_key=session_key,
+            collections=cols,
+        )
+    except Exception:
+        logger.warning("Failed to log session.ended for %s", session_key)
 
 
 def get_session(

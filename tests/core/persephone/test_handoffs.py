@@ -32,6 +32,8 @@ class TestCaptureGitState:
                 MagicMock(returncode=0, stdout="abc123def456\n"),  # rev-parse HEAD
                 MagicMock(returncode=0, stdout="feat/phase4\n"),   # branch --show-current
                 MagicMock(returncode=0, stdout="M file1.py\nA file2.py\n"),  # status --porcelain
+                MagicMock(returncode=0, stdout="file1.py\n"),      # git diff --name-only HEAD
+                MagicMock(returncode=0, stdout="file2.py\n"),      # git diff --name-only --cached
             ]
             result = _capture_git_state()
 
@@ -61,6 +63,8 @@ class TestCaptureGitState:
                 MagicMock(returncode=0, stdout="abc123\n"),  # rev-parse HEAD
                 MagicMock(returncode=0, stdout="\n"),          # branch --show-current (empty in detached HEAD)
                 MagicMock(returncode=0, stdout=""),            # status --porcelain (clean)
+                MagicMock(returncode=0, stdout=""),            # git diff --name-only HEAD
+                MagicMock(returncode=0, stdout=""),            # git diff --name-only --cached
             ]
             result = _capture_git_state()
 
@@ -74,6 +78,8 @@ class TestCaptureGitState:
                 MagicMock(returncode=0, stdout="abc123\n"),
                 MagicMock(returncode=0, stdout="main\n"),
                 MagicMock(returncode=0, stdout=""),
+                MagicMock(returncode=0, stdout=""),            # git diff --name-only HEAD
+                MagicMock(returncode=0, stdout=""),            # git diff --name-only --cached
             ]
             result = _capture_git_state()
 
@@ -130,9 +136,9 @@ class TestCreateHandoff:
             session=self.session,
         )
 
-        # Should create: 1 handoff doc + 2 edges = 3 POST requests
+        # Should create: 1 handoff doc + 2 edges + 1 activity log = 4 POST requests
         post_calls = [c for c in self.client.request.call_args_list if c[0][0] == "POST"]
-        assert len(post_calls) == 3
+        assert len(post_calls) == 4
 
         # Check edge types from the JSON payloads
         edge_types = [c[1]["json"]["type"] for c in post_calls if "type" in c[1].get("json", {})]
