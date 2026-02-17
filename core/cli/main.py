@@ -164,6 +164,15 @@ embed_gpu_app = typer.Typer(
 )
 embed_app.add_typer(embed_gpu_app, name="gpu")
 
+# Codebase knowledge graph
+codebase_app = typer.Typer(
+    name="codebase",
+    help="Codebase knowledge graph: ingest, update, and query code files.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(codebase_app, name="codebase")
+
 # Persephone task management
 task_app = typer.Typer(
     name="task",
@@ -1533,6 +1542,108 @@ def embedding_gpu_list() -> None:
 
 
 # =============================================================================
+# Codebase Commands
+# =============================================================================
+
+
+@codebase_app.command("ingest")
+def codebase_ingest_cmd(
+    path: str = typer.Argument(".", help="Repository root path", metavar="PATH"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force re-processing of all files"),
+    exclude: list[str] = typer.Option(None, "--exclude", "-x", help="Additional directories to exclude (repeatable)"),
+    gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index"),
+) -> None:
+    """Ingest repository Python files into the codebase knowledge graph.
+
+    Extracts code with TreeSitter, chunks by AST boundaries (functions/classes),
+    stores file metadata and chunks, and materializes import edges.
+
+    Examples:
+        hades codebase ingest .
+        hades codebase ingest . --force
+        hades codebase ingest /path/to/repo --exclude tests --exclude docs
+    """
+    _set_gpu(gpu)
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.codebase import codebase_ingest
+
+        response = codebase_ingest(
+            path,
+            start_time,
+            force=force,
+            exclude=exclude or None,
+        )
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="codebase.ingest",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@codebase_app.command("update")
+def codebase_update_cmd(
+    path: str = typer.Argument(".", help="Repository root path", metavar="PATH"),
+) -> None:
+    """Incrementally update changed files in the codebase graph.
+
+    Compares symbol hashes to detect changes. Only re-processes modified files.
+
+    Examples:
+        hades codebase update .
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.codebase import codebase_update
+
+        response = codebase_update(path, start_time)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="codebase.update",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@codebase_app.command("stats")
+@cli_command("codebase.stats", ErrorCode.DATABASE_ERROR)
+def codebase_stats_cmd(
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Show codebase knowledge graph statistics.
+
+    Reports counts for files, chunks, embeddings, and import edges.
+
+    Examples:
+        hades codebase stats
+    """
+    from core.cli.commands.codebase import codebase_stats
+
+    return codebase_stats(start_time)
+
+
+# =============================================================================
 # Persephone Task Commands
 # =============================================================================
 
@@ -1857,6 +1968,28 @@ def task_handoff_show_cmd(
     from core.cli.commands.persephone import task_handoff_show
 
     return task_handoff_show(key, start_time, limit=limit)
+
+
+@task_app.command("context")
+@cli_command("task.context", ErrorCode.TASK_ERROR)
+def task_context_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    no_imports: bool = typer.Option(False, "--no-imports", help="Skip import graph traversal"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Assemble full context for a task.
+
+    Traverses both the Persephone task graph and the codebase knowledge
+    graph to show: task details, latest handoff, sessions, dependencies,
+    and modified files with their import dependencies.
+
+    Examples:
+        hades task context task_abc123
+        hades task context task_abc123 --no-imports
+    """
+    from core.cli.commands.persephone import task_context
+
+    return task_context(key, start_time, include_imports=not no_imports)
 
 
 @task_app.command("dep")
