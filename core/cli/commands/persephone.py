@@ -1,7 +1,7 @@
 """Persephone task management commands for HADES CLI.
 
-CLI wrappers around core.persephone.tasks — handles client creation,
-collection auto-setup, and CLIResponse formatting.
+CLI wrappers around core.persephone.tasks and core.persephone.sessions —
+handles client creation, collection auto-setup, and CLIResponse formatting.
 """
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ from core.cli.output import (
     success_response,
 )
 from core.persephone.collections import ensure_collections
+from core.persephone.sessions import (
+    build_usage_briefing,
+    create_session_task_edge,
+    force_new_session,
+    get_or_create_session,
+)
 from core.persephone.tasks import (
     create_task,
     get_task,
@@ -194,6 +200,15 @@ def task_update(
                 message=f"Task '{key}' not found",
                 start_time=start_time,
             )
+
+        # Auto-create session-task edge when claiming a task
+        if fields.get("status") == "in_progress":
+            try:
+                session = get_or_create_session(client, db_name)
+                create_session_task_edge(client, db_name, session["_key"], key, "implements")
+            except Exception:
+                pass  # Edge creation is best-effort
+
         return success_response(
             command="task.update",
             data={"task": doc},
@@ -223,3 +238,44 @@ def task_close(
 ) -> CLIResponse:
     """Close a task (set status=closed)."""
     return task_update(key, start_time, status="closed")
+
+
+def task_usage(
+    start_time: float,
+    *,
+    new_session: bool = False,
+) -> CLIResponse:
+    """Get session briefing: current session, in-progress tasks, ready tasks."""
+    try:
+        client, _cfg, db_name = _make_client(read_only=False)
+    except Exception as e:
+        return error_response(
+            command="task.usage",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    try:
+        ensure_collections(client, db_name)
+
+        if new_session:
+            session = force_new_session(client, db_name)
+        else:
+            session = get_or_create_session(client, db_name)
+
+        briefing = build_usage_briefing(client, db_name, session)
+        return success_response(
+            command="task.usage",
+            data=briefing,
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="task.usage",
+            code=ErrorCode.TASK_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()

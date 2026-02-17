@@ -1687,6 +1687,27 @@ def task_close_cmd(
     return task_close(key, start_time)
 
 
+@task_app.command("usage")
+@cli_command("task.usage", ErrorCode.TASK_ERROR)
+def task_usage_cmd(
+    new_session: bool = typer.Option(False, "--new-session", help="Force a new session"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Get session briefing: current session, active tasks, and ready work.
+
+    Auto-detects the calling agent (Claude Code, Cursor, etc.) and
+    creates or resumes a session. Returns in-progress tasks, reviewable
+    tasks, and open work sorted by priority.
+
+    Examples:
+        hades task usage
+        hades task usage --new-session
+    """
+    from core.cli.commands.persephone import task_usage
+
+    return task_usage(start_time, new_session=new_session)
+
+
 # =============================================================================
 # Version and Help
 # =============================================================================
