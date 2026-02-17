@@ -275,12 +275,13 @@ def force_new_session(
     fp = fingerprint or detect_agent()
     branch = _get_current_branch()
 
-    # Find previous session to link
+    # Find previous session to link (scoped to same context to avoid ending other sessions)
     previous = client.query(
         """
         FOR s IN @@col
             FILTER s.agent_type == @agent_type
             FILTER s.branch == @branch
+            FILTER s.context_id == @context_id
             FILTER s.ended_at == null
             SORT s.started_at DESC
             LIMIT 1
@@ -290,6 +291,7 @@ def force_new_session(
             "@col": cols.sessions,
             "agent_type": fp.agent_type,
             "branch": branch,
+            "context_id": fp.context_id,
         },
     )
 
