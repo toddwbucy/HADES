@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -113,8 +114,6 @@ def codebase_ingest(
         chunks_created = 0
         files_skipped = 0
         file_results: list[dict[str, Any]] = []
-
-        import sys
 
         for i, rel_path in enumerate(py_files):
             abs_path = Path(repo_root) / rel_path
