@@ -164,6 +164,15 @@ embed_gpu_app = typer.Typer(
 )
 embed_app.add_typer(embed_gpu_app, name="gpu")
 
+# Persephone task management
+task_app = typer.Typer(
+    name="task",
+    help="Persephone task management.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(task_app, name="task")
+
 
 # =============================================================================
 # Top-Level Commands (Standalone Tools)
@@ -1479,6 +1488,159 @@ def embedding_gpu_list() -> None:
         )
         print_response(response)
         raise typer.Exit(1) from None
+
+
+# =============================================================================
+# Persephone Task Commands
+# =============================================================================
+
+
+@task_app.command("create")
+@cli_command("task.create", ErrorCode.TASK_ERROR)
+def task_create_cmd(
+    title: str = typer.Argument(..., help="Task title", metavar="TITLE"),
+    description: str = typer.Option(None, "--description", "-d", help="Detailed description"),
+    priority: str = typer.Option("medium", "--priority", "-p", help="Priority: critical|high|medium|low"),
+    type_: str = typer.Option("task", "--type", "-t", help="Type: task|bug|epic"),
+    labels: str = typer.Option(None, "--labels", "-l", help="Comma-separated labels"),
+    parent: str = typer.Option(None, "--parent", help="Parent task key (for epics)"),
+    acceptance: str = typer.Option(None, "--acceptance", "-a", help="Acceptance criteria"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Create a new task.
+
+    Examples:
+        hades task create "Fix login bug" --priority high --type bug
+        hades task create "Implement search" --description "Add semantic search" --labels "feature,search"
+        hades task create "Subtask" --parent task_abc123
+    """
+    from core.cli.commands.persephone import task_create
+
+    label_list = [s.strip() for s in labels.split(",") if s.strip()] if labels else None
+    return task_create(
+        title,
+        start_time,
+        description=description,
+        priority=priority,
+        type_=type_,
+        labels=label_list,
+        parent_key=parent,
+        acceptance=acceptance,
+    )
+
+
+@task_app.command("list")
+@cli_command("task.list", ErrorCode.TASK_ERROR)
+def task_list_cmd(
+    status: str = typer.Option(None, "--status", "-s", help="Filter by status: open|in_progress|in_review|closed|blocked"),
+    priority: str = typer.Option(None, "--priority", "-p", help="Filter by priority: critical|high|medium|low"),
+    type_: str = typer.Option(None, "--type", "-t", help="Filter by type: task|bug|epic"),
+    parent: str = typer.Option(None, "--parent", help="Filter by parent task key"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Maximum results"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """List tasks with optional filters.
+
+    Examples:
+        hades task list
+        hades task list --status open --priority high
+        hades task list --type bug --limit 10
+    """
+    from core.cli.commands.persephone import task_list
+
+    return task_list(
+        start_time,
+        status=status,
+        priority=priority,
+        type_=type_,
+        parent_key=parent,
+        limit=limit,
+    )
+
+
+@task_app.command("show")
+@cli_command("task.show", ErrorCode.TASK_ERROR)
+def task_show_cmd(
+    key: str = typer.Argument(..., help="Task key (e.g., task_abc123)", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Show details of a single task.
+
+    Examples:
+        hades task show task_abc123
+    """
+    from core.cli.commands.persephone import task_show
+
+    return task_show(key, start_time)
+
+
+@task_app.command("update")
+@cli_command("task.update", ErrorCode.TASK_ERROR)
+def task_update_cmd(
+    key: str = typer.Argument(..., help="Task key", metavar="KEY"),
+    title: str = typer.Option(None, "--title", help="New title"),
+    description: str = typer.Option(None, "--description", "-d", help="New description"),
+    status: str = typer.Option(None, "--status", "-s", help="New status: open|in_progress|in_review|closed|blocked"),
+    priority: str = typer.Option(None, "--priority", "-p", help="New priority: critical|high|medium|low"),
+    type_: str = typer.Option(None, "--type", "-t", help="New type: task|bug|epic"),
+    labels: str = typer.Option(None, "--labels", "-l", help="Replace labels (comma-separated)"),
+    acceptance: str = typer.Option(None, "--acceptance", "-a", help="New acceptance criteria"),
+    minor: bool = typer.Option(None, "--minor/--no-minor", help="Mark as minor task"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Update fields on an existing task.
+
+    Only specified fields are changed; others are left as-is.
+
+    Examples:
+        hades task update task_abc123 --status in_progress
+        hades task update task_abc123 --priority critical --labels "urgent,p0"
+    """
+    from core.cli.commands.persephone import task_update
+
+    fields: dict = {}
+    if title is not None:
+        fields["title"] = title
+    if description is not None:
+        fields["description"] = description
+    if status is not None:
+        fields["status"] = status
+    if priority is not None:
+        fields["priority"] = priority
+    if type_ is not None:
+        fields["type"] = type_
+    if labels is not None:
+        fields["labels"] = [s.strip() for s in labels.split(",") if s.strip()]
+    if acceptance is not None:
+        fields["acceptance"] = acceptance
+    if minor is not None:
+        fields["minor"] = minor
+
+    if not fields:
+        return error_response(
+            command="task.update",
+            code=ErrorCode.VALIDATION_ERROR,
+            message="No fields to update. Specify at least one option.",
+            start_time=start_time,
+        )
+
+    return task_update(key, start_time, **fields)
+
+
+@task_app.command("close")
+@cli_command("task.close", ErrorCode.TASK_ERROR)
+def task_close_cmd(
+    key: str = typer.Argument(..., help="Task key to close", metavar="KEY"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Close a task (shorthand for update --status closed).
+
+    Examples:
+        hades task close task_abc123
+    """
+    from core.cli.commands.persephone import task_close
+
+    return task_close(key, start_time)
 
 
 # =============================================================================
