@@ -222,6 +222,45 @@ def status_cmd() -> None:
         raise typer.Exit(1) from None
 
 
+@app.command("orient")
+def orient_cmd(
+    papers: int = typer.Option(10, "--papers", "-n", help="Number of recent papers per profile"),
+) -> None:
+    """Metadata-first context orientation for AI agents.
+
+    Returns a compact map of the current database: collection profiles with
+    document counts, recent papers, Persephone task stats, and codebase
+    graph stats. Designed for an LLM to plan its query strategy from
+    metadata alone, without loading any document content.
+
+    Examples:
+        hades orient
+        hades --database NL orient
+        hades orient --papers 20
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.orient import orient
+
+        response = orient(start_time, papers_limit=papers)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="orient",
+            code=ErrorCode.INTERNAL_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 @app.command("extract")
 def extract_cmd(
     file: str = typer.Argument(..., help="Path to document file", metavar="FILE"),

@@ -175,6 +175,10 @@ hades db create-index --metric l2
 ### Audit & Discovery
 
 ```bash
+# Context orientation (start here — compact metadata map for query planning)
+hades orient                               # profiles, counts, recent papers
+hades --database NL orient                 # orient on a specific database
+
 # System overview
 hades status                               # version, service health, collection stats
 
@@ -433,6 +437,8 @@ hades db create-index --collection sync    # for specific collection profile
 #### Audit & Discovery
 
 ```bash
+hades orient                               # compact metadata map (start here)
+hades --database NL orient                 # orient on specific database
 hades status                               # system overview
 hades db databases                         # list all accessible databases
 hades db recent                            # last 10 ingested papers
