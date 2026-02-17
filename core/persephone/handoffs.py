@@ -197,7 +197,7 @@ def create_handoff(
             collections=cols,
         )
     except Exception:
-        logger.warning("Failed to log handoff.created for %s", key)
+        logger.warning("Failed to log handoff.created for %s", key, exc_info=True)
 
     return doc
 

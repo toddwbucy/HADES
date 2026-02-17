@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from core.persephone.collections import PersephoneCollections  # noqa: F401
-from core.persephone.logging import create_log, list_logs  # noqa: F401
+from core.persephone.collections import PersephoneCollections
+from core.persephone.logging import create_log, list_logs
 from core.persephone.models import LogCreate
 
 # ── Pydantic model tests ─────────────────────────────────────────

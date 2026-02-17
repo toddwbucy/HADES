@@ -112,6 +112,8 @@ def list_logs(
     """
     _ = db_name  # Used by client config; kept for API consistency
     cols = collections or PERSEPHONE_COLLECTIONS
+    if limit <= 0:
+        raise ValueError("limit must be positive")
     filters = []
     bind_vars: dict[str, Any] = {"@col": cols.logs, "limit": limit}
 

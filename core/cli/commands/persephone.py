@@ -673,7 +673,7 @@ def task_sessions(
 ) -> CLIResponse:
     """List sessions that worked on a task (via 'implements' edges)."""
     try:
-        client, _cfg, db_name = _make_client(read_only=True)
+        client, _cfg, _db_name = _make_client(read_only=True)
     except Exception as e:
         return error_response(
             command="task.sessions",
@@ -688,14 +688,18 @@ def task_sessions(
         cols = PERSEPHONE_COLLECTIONS
         sessions = client.query(
             """
-            FOR e IN @@edges
-                FILTER e._to == @task_id
-                FILTER e.type IN ["implements", "submitted_review", "approved"]
-                FOR s IN @@sessions
-                    FILTER s._id == e._from
-                    SORT s.started_at DESC
-                    LIMIT @limit
-                    RETURN MERGE(s, {edge_type: e.type})
+            LET matched = (
+                FOR e IN @@edges
+                    FILTER e._to == @task_id
+                    FILTER e.type IN ["implements", "submitted_review", "approved"]
+                    FOR s IN @@sessions
+                        FILTER s._id == e._from
+                        RETURN MERGE(s, {edge_type: e.type})
+            )
+            FOR s IN matched
+                SORT s.started_at DESC
+                LIMIT @limit
+                RETURN s
             """,
             bind_vars={
                 "@edges": cols.edges,
