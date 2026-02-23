@@ -549,25 +549,47 @@ class DocumentProcessor:
 
         latex_source = None
         has_latex = False
-        equations = docling_result.equations or []
+        latex_extraction = None
 
         if latex_path and latex_path.exists() and self.latex_extractor:
             try:
-                # Use the public extract API - pass the Path, get ExtractionResult
+                # Use the public extract API - pass the Path, get ExtractionResult.
+                # The extractor handles .tar.gz decompression internally; do NOT
+                # attempt to re-read latex_path as raw text (it is a binary archive).
                 latex_extraction = self.latex_extractor.extract(latex_path)
                 has_latex = True
-                latex_source = latex_path.read_text(encoding="utf-8")
-                equations = latex_extraction.equations or []
+                # Use the latex_source that the extractor already extracted from the
+                # decompressed .tex file — not the original compressed archive path.
+                latex_source = latex_extraction.latex_source
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to process LaTeX source: %s", exc)
 
-        # Access ExtractionResult fields as attributes
-        full_text = docling_result.text or ""
-        extractor_version = docling_result.metadata.get("version", "unknown") if docling_result.metadata else "unknown"
+        # Prefer LaTeX-extracted content over PDF when available.
+        # PDF extraction garbles math (unicode + fragment subscripts); LaTeX source
+        # preserves equation structure, tables, and section formatting.
+        if has_latex and latex_extraction is not None:
+            full_text = latex_extraction.full_text or docling_result.text or ""
+            equations = latex_extraction.equations or docling_result.equations or []
+            tables = latex_extraction.tables or docling_result.tables or []
+            extractor_version = (
+                latex_extraction.metadata.get("version", "unknown")
+                if latex_extraction.metadata
+                else "unknown"
+            )
+            logger.info("Using LaTeX source for text extraction (preferred over PDF)")
+        else:
+            full_text = getattr(docling_result, "text", None) or getattr(docling_result, "full_text", None) or ""
+            equations = docling_result.equations or []
+            tables = docling_result.tables or []
+            extractor_version = (
+                docling_result.metadata.get("version", "unknown")
+                if docling_result.metadata
+                else "unknown"
+            )
 
         return ExtractionResult(
             full_text=full_text,
-            tables=docling_result.tables or [],
+            tables=tables,
             equations=equations,
             images=docling_result.images or [],
             figures=[],  # Not in base ExtractionResult
