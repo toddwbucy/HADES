@@ -274,3 +274,130 @@ class TestDocumentProcessorMethods:
         processor = DocumentProcessor()
         assert hasattr(processor, "cleanup")
         assert callable(processor.cleanup)
+
+
+class TestExtractContent:
+    """Tests for DocumentProcessor._extract_content LaTeX/PDF preference logic."""
+
+    def _make_processor(self, mock_docling: MagicMock) -> "DocumentProcessor":
+        mock_docling.return_value = MagicMock()
+        return DocumentProcessor()
+
+    def _docling_result(self, text: str = "pdf text") -> MagicMock:
+        # DoclingExtractor returns extractors_base.ExtractionResult which uses .text
+        # not .full_text — use a MagicMock to match the real return type's attribute.
+        mock = MagicMock()
+        mock.text = text
+        mock.full_text = text
+        mock.tables = [{"name": "pdf_table"}]
+        mock.equations = [{"latex": "pdf_eq"}]
+        mock.metadata = {"version": "docling-test"}
+        return mock
+
+    def _latex_result(self, text: str = "latex text") -> ExtractionResult:
+        return ExtractionResult(
+            full_text=text,
+            tables=[{"name": "latex_table"}],
+            equations=[{"latex": "\\alpha + \\beta"}],
+            latex_source="\\documentclass{article}\n\\begin{equation}\\alpha+\\beta\\end{equation}",
+            has_latex=True,
+        )
+
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_prefers_latex_full_text_over_pdf(self, mock_docling: MagicMock) -> None:
+        """When LaTeX extraction succeeds, full_text should come from LaTeX not PDF."""
+        processor = self._make_processor(mock_docling)
+        processor._docling_extractor = MagicMock()
+        processor._docling_extractor.extract.return_value = self._docling_result("pdf text")
+        processor._latex_extractor = MagicMock()
+        processor._latex_extractor.extract.return_value = self._latex_result("latex text")
+
+        from pathlib import Path
+        from unittest.mock import MagicMock as MM
+        latex_path = MM(spec=Path)
+        latex_path.exists.return_value = True
+
+        result = processor._extract_content(Path("/fake/paper.pdf"), latex_path)
+
+        assert result.full_text == "latex text"
+        assert result.has_latex is True
+
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_prefers_latex_equations_over_pdf(self, mock_docling: MagicMock) -> None:
+        """When LaTeX extraction succeeds, equations should come from LaTeX not PDF."""
+        processor = self._make_processor(mock_docling)
+        processor._docling_extractor = MagicMock()
+        processor._docling_extractor.extract.return_value = self._docling_result()
+        processor._latex_extractor = MagicMock()
+        processor._latex_extractor.extract.return_value = self._latex_result()
+
+        from pathlib import Path
+        from unittest.mock import MagicMock as MM
+        latex_path = MM(spec=Path)
+        latex_path.exists.return_value = True
+
+        result = processor._extract_content(Path("/fake/paper.pdf"), latex_path)
+
+        assert result.equations == [{"latex": "\\alpha + \\beta"}]
+
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_latex_source_from_extractor_not_file_read(self, mock_docling: MagicMock) -> None:
+        """latex_source must come from latex_extraction.latex_source, not file read.
+
+        Regression test: previously the code called latex_path.read_text('utf-8')
+        which fails on .tar.gz archives with UnicodeDecodeError.
+        """
+        processor = self._make_processor(mock_docling)
+        processor._docling_extractor = MagicMock()
+        processor._docling_extractor.extract.return_value = self._docling_result()
+        processor._latex_extractor = MagicMock()
+        expected_latex = "\\documentclass{article}\n\\begin{equation}x^2\\end{equation}"
+        latex_result = self._latex_result()
+        latex_result.latex_source = expected_latex
+        processor._latex_extractor.extract.return_value = latex_result
+
+        from pathlib import Path
+        from unittest.mock import MagicMock as MM
+        latex_path = MM(spec=Path)
+        latex_path.exists.return_value = True
+        # read_text should never be called — it would fail on a .tar.gz binary
+        latex_path.read_text = MM(side_effect=UnicodeDecodeError("utf-8", b"\x1f\x8b", 0, 1, "invalid"))
+
+        result = processor._extract_content(Path("/fake/paper.pdf"), latex_path)
+
+        assert result.latex_source == expected_latex
+        assert result.has_latex is True
+        latex_path.read_text.assert_not_called()
+
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_falls_back_to_pdf_when_no_latex_path(self, mock_docling: MagicMock) -> None:
+        """When no latex_path is provided, content should come from PDF extraction."""
+        processor = self._make_processor(mock_docling)
+        processor._docling_extractor = MagicMock()
+        processor._docling_extractor.extract.return_value = self._docling_result("pdf only text")
+
+        from pathlib import Path
+        result = processor._extract_content(Path("/fake/paper.pdf"), latex_path=None)
+
+        assert result.full_text == "pdf only text"
+        assert result.has_latex is False
+        assert result.latex_source is None
+
+    @patch("core.processors.document_processor.DoclingExtractor")
+    def test_falls_back_to_pdf_when_latex_extraction_fails(self, mock_docling: MagicMock) -> None:
+        """When LaTeX extraction raises, content should fall back to PDF."""
+        processor = self._make_processor(mock_docling)
+        processor._docling_extractor = MagicMock()
+        processor._docling_extractor.extract.return_value = self._docling_result("pdf fallback")
+        processor._latex_extractor = MagicMock()
+        processor._latex_extractor.extract.side_effect = RuntimeError("corrupt archive")
+
+        from pathlib import Path
+        from unittest.mock import MagicMock as MM
+        latex_path = MM(spec=Path)
+        latex_path.exists.return_value = True
+
+        result = processor._extract_content(Path("/fake/paper.pdf"), latex_path)
+
+        assert result.full_text == "pdf fallback"
+        assert result.has_latex is False
