@@ -568,7 +568,8 @@ class DocumentProcessor:
         # PDF extraction garbles math (unicode + fragment subscripts); LaTeX source
         # preserves equation structure, tables, and section formatting.
         if has_latex and latex_extraction is not None:
-            full_text = latex_extraction.full_text or docling_result.text or ""
+            # extractors_base.ExtractionResult uses .text (not .full_text)
+            full_text = latex_extraction.text or getattr(docling_result, "text", None) or getattr(docling_result, "full_text", None) or ""
             equations = latex_extraction.equations or docling_result.equations or []
             tables = latex_extraction.tables or docling_result.tables or []
             extractor_version = (

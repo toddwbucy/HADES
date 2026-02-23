@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core.extractors.extractors_base import ExtractionResult as BaseExtractionResult
 from core.processors.document_processor import (
     DocumentProcessor,
     ExtractionResult,
@@ -294,13 +295,14 @@ class TestExtractContent:
         mock.metadata = {"version": "docling-test"}
         return mock
 
-    def _latex_result(self, text: str = "latex text") -> ExtractionResult:
-        return ExtractionResult(
-            full_text=text,
+    def _latex_result(self, text: str = "latex text") -> BaseExtractionResult:
+        # LaTeXExtractor.extract() returns extractors_base.ExtractionResult with .text
+        # (not .full_text). document_processor._extract_content maps .text -> full_text.
+        return BaseExtractionResult(
+            text=text,
             tables=[{"name": "latex_table"}],
             equations=[{"latex": "\\alpha + \\beta"}],
             latex_source="\\documentclass{article}\n\\begin{equation}\\alpha+\\beta\\end{equation}",
-            has_latex=True,
         )
 
     @patch("core.processors.document_processor.DoclingExtractor")

@@ -62,7 +62,8 @@ class LaTeXExtractor(ExtractorBase):
             equations=structures.get('equations', []),
             tables=structures.get('tables', []),
             references=structures.get('citations', []),
-            processing_time=data.get('metadata', {}).get('processing_time', 0.0)
+            processing_time=data.get('metadata', {}).get('processing_time', 0.0),
+            latex_source=data.get('latex_source'),
         )
 
     def extract(self, latex_path: str | Path, **kwargs) -> ExtractionResult:  # type: ignore[override]

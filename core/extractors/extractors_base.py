@@ -29,6 +29,7 @@ class ExtractionResult:
     references: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     processing_time: float = 0.0
+    latex_source: str | None = None
 
 
 @dataclass
