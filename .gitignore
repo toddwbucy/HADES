@@ -71,3 +71,15 @@ logs/
 # Local config
 .env.local
 *.local.yaml
+.todos/
+
+# Research PDFs (large binaries — store elsewhere)
+*.pdf
+
+# AI tooling state
+.auto-claude/
+.claude_settings.json
+.sidecar/
+
+# Notes and scratch files
+notes.md
