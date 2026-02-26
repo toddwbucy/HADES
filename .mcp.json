@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "hades": {
+      "command": "/home/todd/.local/share/hades-stable/venv/bin/hades-mcp",
+      "args": [],
+      "env": {
+        "ARANGO_PASSWORD": "${ARANGO_PASSWORD}"
+      }
+    }
+  }
+}
