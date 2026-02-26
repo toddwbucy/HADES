@@ -2370,6 +2370,38 @@ def smell_report_cmd(
 
 
 # =============================================================================
+# Graph Integration Agent
+# =============================================================================
+
+
+@task_app.command("graph-integration")
+def task_graph_integration_cmd(
+    key: str = typer.Argument(..., help="Persephone task key", metavar="KEY"),
+    path: str = typer.Option(".", "--path", "-p", help="Source path to audit (file or directory)"),
+    database: str = typer.Option("bident", "--database", "--db", help="Persephone database name"),
+) -> None:
+    """Print the graph integration agent prompt for a task.
+
+    Renders the NL compliance review prompt template for the given task and
+    source path, then prints it to stdout. The output is a complete step-by-step
+    protocol that an AI agent follows to run smell check → verify → report →
+    write compliance artifact → PASS or REJECT.
+
+    Examples:
+        hades task graph-integration task_abc123 --path src/
+        hades task graph-integration task_abc123 --path . --db bident
+    """
+    from core.cli.agent_templates import render_graph_integration_prompt
+
+    prompt = render_graph_integration_prompt(
+        task_key=key,
+        path=path,
+        database=database,
+    )
+    print(prompt)
+
+
+# =============================================================================
 # Version and Help
 # =============================================================================
 

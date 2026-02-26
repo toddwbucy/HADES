@@ -547,6 +547,208 @@ AGENT_TEMPLATE = """\
 
 _HADES_SECTION_MARKER = "### HADES"
 
+# ---------------------------------------------------------------------------
+# Graph Integration Agent Prompt Template
+# ---------------------------------------------------------------------------
+
+GRAPH_INTEGRATION_TEMPLATE = """\
+# Graph Integration Review — {task_key}
+
+You are running the **automated graph integration review** for Persephone task `{task_key}`.
+
+- **Source path**: `{path}`
+- **Task database**: `{database}` (Persephone / bident)
+- **NL graph database**: `NL` (smell definitions and compliance edges)
+
+This is the automated pre-review layer of the NL compliance pipeline. Your role is to
+execute the three-stage compliance audit, classify all findings by tier, write a compliance
+report artifact to the task, and issue a PASS or REJECT verdict.
+
+---
+
+## Compliance Tiers
+
+| Tier | Smells | Decision authority |
+|------|--------|--------------------|
+| STATIC | CS-10, CS-11, CS-13, CS-40 | **Agent — autonomous PASS/FAIL** |
+| BEHAVIORAL | CS-27, CS-28, CS-32 | Agent surfaces evidence; human decides |
+| ARCHITECTURAL | CS-31 | Agent notes pattern; human decides |
+
+**STATIC violations are blockers.** Any STATIC FAIL auto-rejects the task back to `in_review`
+with explicit violation details. BEHAVIORAL and ARCHITECTURAL findings are surfaced as
+structured evidence for human review in Hermes — they do NOT trigger auto-rejection.
+
+---
+
+## Execution Protocol
+
+Run all commands in sequence. The smell commands (`smell check`, `smell verify`,
+`smell report`) always target the **NL database** where the smell graph lives.
+All `task` commands target the **{database} database** where this task lives.
+
+### Step 1 — Static Lint
+
+```bash
+hades --database NL smell check {path}
+```
+
+Parse the JSON response:
+- `data.all_pass` (bool) — `true` if no forbidden patterns found
+- `data.violations` (list) — each entry has: `smell_id`, `file`, `line`, `pattern`, `matched_text`
+- `data.smells_checked` (int) — number of smells with patterns loaded from the graph
+
+**Record every violation.** These determine the STATIC tier verdict.
+
+### Step 2 — Reference Verification
+
+```bash
+hades --database NL smell verify {path}
+```
+
+Parse the JSON response:
+- `data.files` — per-file breakdown of CS-XX/Eq-N references found in comments
+- `data.verified` — list of references that resolve to graph nodes
+- `data.unresolved` — list of references that appear in code but are NOT in the graph
+
+**Unresolved references indicate documentation drift** — code claims compliance with a smell
+that doesn't exist in the NL graph. Note these for the report.
+
+### Step 3 — Full Compliance Report
+
+```bash
+hades --database NL smell report {path}
+```
+
+This merges static lint + reference verification + embedding probe into one artifact.
+Parse the JSON response:
+- `data.static` — same structure as Step 1 output
+- `data.verify` — same structure as Step 2 output
+- `data.embedding_probe` — list of `{{file, smell_id, similarity, pass}}` entries
+  - `pass: true` — cosine similarity ≥ 0.5 (file semantically aligns with smell)
+  - `pass: false` — cosine similarity < 0.5 (semantic misalignment)
+  - `pass: null` — embedding service unavailable; skip this signal
+
+### Step 4 — Classify Findings by Tier
+
+Group all findings from Step 3 by compliance tier:
+
+**STATIC tier** (smell_id: 10, 11, 13, 40):
+- Collect all violations from `data.static.violations` where `smell_id` is in {{10, 11, 13, 40}}
+- Verdict: PASS if the list is empty, FAIL if any violations exist
+
+**BEHAVIORAL tier** (smell_id: 27, 28, 32):
+- Collect violations from `data.static.violations` where `smell_id` is in {{27, 28, 32}}
+- Collect embedding probe entries where `smell_id` is in {{27, 28, 32}} and `pass: false`
+- Do NOT auto-reject — list findings with file, line, pattern/similarity as evidence
+
+**ARCHITECTURAL tier** (smell_id: 31):
+- Collect any unresolved references to CS-31 from `data.verify`
+- Collect embedding probe entry for CS-31 if present
+- Do NOT auto-reject — describe the pattern observed
+
+### Step 5 — Write Compliance Report to Persephone
+
+Record the audit outcome on the task as a handoff:
+
+```bash
+hades --db {database} task handoff {task_key} \\
+  --done "Graph integration audit complete. [VERDICT]: [one-line summary]" \\
+  --remaining "[next action based on verdict]"
+```
+
+The `--done` message must include:
+1. **Overall verdict**: PASS or REJECT
+2. **STATIC tier**: violations count per smell (CS-10/11/13/40), with file:line for each FAIL
+3. **BEHAVIORAL tier**: findings with file:line and pattern or similarity score
+4. **ARCHITECTURAL tier**: pattern observations for CS-31
+5. **Embedding probe summary**: files analyzed, how many scored ≥0.5 vs <0.5
+6. **Unresolved references**: any CS-XX refs in code that aren't in the graph
+
+The `--remaining` message must state the concrete next action:
+- PASS: "Flag for Hermes human review. BEHAVIORAL/ARCHITECTURAL findings surfaced above."
+- REJECT: "Fix STATIC violations listed above, then re-submit for review."
+
+### Step 6 — Issue Verdict
+
+**Auto-REJECT (any STATIC violation):**
+
+If `data.static.all_pass` is `false` AND any violation has `smell_id` in {{10, 11, 13, 40}}:
+1. Do NOT advance the task status — leave it at its current state
+2. Output the rejection notice (see Output Format below)
+3. The task remains for the developer to address the violations
+
+**PASS (all STATIC checks clean):**
+
+If all STATIC tier findings are clear (BEHAVIORAL/ARCHITECTURAL findings are allowed):
+1. Transition the task toward human review (the next step in Hermes)
+2. Output the pass notice (see Output Format below)
+
+---
+
+## Output Format
+
+End your review session with this structured summary block:
+
+```
+## Graph Integration Review — {task_key}
+
+**Status**: [PASS / REJECT]
+**Path**: {path}
+
+### STATIC Tier — [PASS / FAIL]
+- CS-10 (No Manual Gradient Zeroing):         [PASS | FAIL — N violations]
+- CS-11 (No Loss.backward with create_graph):  [PASS | FAIL — N violations]
+- CS-13 (No bare optimizer.step()):            [PASS | FAIL — N violations]
+- CS-40 (Autograd Is Opt-Out Not Opt-In):      [PASS | N/A — no patterns in graph]
+
+### BEHAVIORAL Tier — [findings for human review]
+- CS-27: [clean / N findings]
+- CS-28: [clean / N findings]
+- CS-32: [clean / N findings]
+
+### ARCHITECTURAL Tier — [notes for human review]
+- CS-31: [no pattern observed / pattern: <description>]
+
+### Embedding Probe
+- Files analyzed: N
+- Semantically aligned (similarity ≥ 0.5): N / N
+- Below threshold (similarity < 0.5): N / N
+
+### Unresolved CS-XX References
+[none | list each as "CS-XX in <file>:<line>"]
+
+### Verdict
+[PASS — all static checks clean. Flagging for Hermes human review.]
+[REJECT — N static violation(s) must be fixed before merge:]
+  - <file>:<line> — CS-<id> (<smell_name>): pattern `<pattern>` matched `<text>`
+```
+
+---
+
+## Notes
+
+- The embedding probe is an **advisory signal**, not a blocker. A low similarity score (pass:
+  false) in the BEHAVIORAL or ARCHITECTURAL tier is evidence for human review, not rejection.
+- If the embedding service is unavailable (`pass: null`), proceed without the probe and note
+  this in the report. Static lint and ref verification are the authoritative signals.
+- CS-40 may show "N/A — no patterns" if forbidden_patterns is not yet populated in the graph.
+  This is expected and does not count as a failure.
+- Phase 2 (GraphSAGE structural signal) is not yet implemented. Skip that step.
+"""
+
+
+def render_graph_integration_prompt(
+    task_key: str,
+    path: str,
+    database: str = "bident",
+) -> str:
+    """Render the graph integration agent prompt for a specific task and path."""
+    return GRAPH_INTEGRATION_TEMPLATE.format(
+        task_key=task_key,
+        path=path,
+        database=database,
+    )
+
 
 def install_agent(agent_type: str) -> None:
     """Install agent integration files in the current working directory."""
