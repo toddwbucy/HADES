@@ -311,6 +311,10 @@ def ingest_cmd(
     batch: bool = typer.Option(False, "--batch", "-b", help="Enable batch mode with progress and error isolation"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Resume from previous batch state"),
     metadata: str = typer.Option(None, "--metadata", "-m", help="Custom metadata JSON to merge into document record"),
+    task: str = typer.Option(
+        None, "--task", "-t",
+        help="Embedding task type. 'code' activates Jina V4 Code LoRA. Auto-detected for .rs, .cu, .py, etc.",
+    ),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index"),
 ) -> None:
     """Ingest documents into the knowledge base.
@@ -318,6 +322,7 @@ def ingest_cmd(
     Auto-detects arxiv IDs vs file paths:
     - "2501.12345" → downloads and processes arxiv paper
     - "paper.pdf" → processes local file
+    - "file.rs" / "kernel.cu" → routes via code pipeline with Code LoRA
 
     Batch mode (--batch) provides:
     - JSON progress to stderr (stdout stays clean for final result)
@@ -331,6 +336,8 @@ def ingest_cmd(
         hades ingest paper1.pdf paper2.pdf
         hades ingest /papers/*.pdf --batch
         hades ingest --resume
+        hades ingest src/main.rs --task code --id main-rust
+        hades ingest kernels/forward.cu --id forward-cuda
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -373,6 +380,7 @@ def ingest_cmd(
             force=force,
             batch=batch,
             resume=resume,
+            task=task,
             start_time=start_time,
             extra_metadata=extra_metadata,
         )
@@ -924,6 +932,26 @@ def database_databases(
     from core.cli.commands.database import list_databases
 
     return list_databases(start_time)
+
+
+@db_app.command("create-database")
+@cli_command("database.create-database", ErrorCode.DATABASE_ERROR)
+def database_create_database(
+    name: str = typer.Argument(..., help="Database name to create", metavar="NAME"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Create a new ArangoDB database.
+
+    Creates a new database using the _system database API.
+    Requires admin privileges on the ArangoDB instance.
+
+    Examples:
+        hades db create-database NL_code_test
+        hades db create-database my_experiment
+    """
+    from core.cli.commands.database import create_database
+
+    return create_database(name, start_time)
 
 
 @db_app.command("count")

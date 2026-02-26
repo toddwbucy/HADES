@@ -41,10 +41,23 @@ from core.tools.arxiv.arxiv_api_client import ArXivAPIClient
 # Pattern for arxiv IDs: YYMM.NNNNN or category/NNNNNNN
 _ARXIV_PATTERN = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$|^[a-z-]+/\d{7}(v\d+)?$", re.IGNORECASE)
 
+# Extensions that should be routed through CodeProcessor + Jina Code LoRA
+_CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cu", ".cuh", ".rb", ".swift", ".kt",
+}
+
 
 def _is_arxiv_id(s: str) -> bool:
     """Check if a string looks like an arxiv ID."""
     return bool(_ARXIV_PATTERN.match(s))
+
+
+def _is_code_file(path: Path, task: str | None) -> bool:
+    """Return True if this file should be routed through the code pipeline."""
+    if task == "code":
+        return True
+    return task is None and path.suffix.lower() in _CODE_EXTENSIONS
 
 
 def _classify_inputs(inputs: list[str]) -> tuple[list[str], list[str]]:
@@ -80,12 +93,15 @@ def ingest(
     force: bool = False,
     batch: bool = False,
     resume: bool = False,
+    task: str | None = None,
     start_time: float = 0.0,
     extra_metadata: dict[str, Any] | None = None,
 ) -> CLIResponse:
     """Ingest documents into the knowledge base.
 
     Auto-detects arxiv IDs vs file paths and routes to appropriate handler.
+    Code files (.rs, .cu, .py, etc.) are automatically routed through
+    CodeProcessor with Jina V4 Code LoRA embeddings.
 
     Args:
         inputs: List of arxiv IDs or file paths to ingest.
@@ -93,6 +109,7 @@ def ingest(
         force: Force reprocessing even if already exists.
         batch: Enable batch mode with progress reporting and error isolation.
         resume: Resume from previous batch state (implies batch=True).
+        task: Embedding task type ('code' forces code pipeline). Auto-detected by extension.
         start_time: Command start timestamp.
         extra_metadata: Custom metadata fields to merge into the document metadata record.
 
@@ -139,7 +156,7 @@ def ingest(
     # Use batch processor for batch mode or large input sets
     if batch or len(arxiv_ids) + len(file_paths) > 5:
         all_items = arxiv_ids + file_paths
-        return _ingest_batch(all_items, None, force, resume, start_time, extra_metadata=extra_metadata)
+        return _ingest_batch(all_items, None, force, resume, start_time, task=task, extra_metadata=extra_metadata)
 
     # Standard (non-batch) mode
     progress(f"Ingesting {len(arxiv_ids)} arxiv papers and {len(file_paths)} files...")
@@ -165,7 +182,7 @@ def ingest(
     # Process file paths
     if file_paths:
         for file_path in file_paths:
-            result = _ingest_file(file_path, config, document_id, force, extra_metadata=extra_metadata)
+            result = _ingest_file(file_path, config, document_id, force, task=task, extra_metadata=extra_metadata)
             results.append(result)
 
     # Summarize
@@ -198,6 +215,7 @@ def _ingest_batch(
     force: bool,
     resume: bool,
     start_time: float,
+    task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> CLIResponse:
     """Ingest items using batch processor with progress and resume.
@@ -208,6 +226,7 @@ def _ingest_batch(
         force: Force reprocessing even if already exists.
         resume: Resume from previous batch state.
         start_time: Command start timestamp.
+        task: Embedding task type ('code' forces code pipeline).
         extra_metadata: Custom metadata fields to merge into document records.
 
     Returns:
@@ -230,7 +249,7 @@ def _ingest_batch(
         if _is_arxiv_id(item_id):
             return _ingest_arxiv_paper(item_id, config, force, extra_metadata=extra_metadata)
         else:
-            return _ingest_file(item_id, config, None, force, extra_metadata=extra_metadata)
+            return _ingest_file(item_id, config, None, force, task=task, extra_metadata=extra_metadata)
 
     processor = BatchProcessor(
         state_file=".hades-batch-state.json",
@@ -274,15 +293,21 @@ def _ingest_file(
     config: Any,
     document_id: str | None,
     force: bool,
+    task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ingest a local file (any supported format).
+
+    Code files (.rs, .cu, .py, etc.) are automatically routed through
+    CodeProcessor with Jina V4 Code LoRA embeddings. Use task='code' to
+    force code pipeline for any extension.
 
     Args:
         file_path: Path to the file.
         config: CLI configuration.
         document_id: Custom document ID (optional).
         force: Overwrite existing data.
+        task: Embedding task type. 'code' forces code pipeline; auto-detected by extension.
         extra_metadata: Custom metadata fields to merge into the document metadata record.
 
     Returns:
@@ -310,6 +335,39 @@ def _ingest_file(
                 "success": True,
                 "skipped": True,
                 "message": "Already in database",
+            }
+
+    # Route code files through the code pipeline
+    if _is_code_file(path, task):
+        progress(f"Ingesting {path.name} as {doc_id} (code pipeline, Code LoRA)...")
+        try:
+            result = _process_and_store_code(
+                file_path=path,
+                config=config,
+                document_id=doc_id,
+                force=force,
+                extra_metadata=extra_metadata,
+            )
+            if not result["success"]:
+                return {
+                    "path": file_path,
+                    "document_id": doc_id,
+                    "success": False,
+                    "error": result.get("error", "Code processing failed"),
+                }
+            return {
+                "path": file_path,
+                "document_id": doc_id,
+                "success": True,
+                "num_chunks": result.get("num_chunks", 0),
+                "pipeline": "code",
+            }
+        except Exception as e:
+            return {
+                "path": file_path,
+                "document_id": doc_id,
+                "success": False,
+                "error": str(e),
             }
 
     progress(f"Ingesting {path.name} as {doc_id}...")
@@ -670,5 +728,146 @@ def _process_and_store(
 
     finally:
         processor.cleanup()
+        if embedder is not None and hasattr(embedder, "close"):
+            embedder.close()
+
+
+def _process_and_store_code(
+    file_path: Path,
+    config: Any,
+    document_id: str | None,
+    force: bool,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Process a code file via CodeProcessor and store in arxiv profile collections.
+
+    Uses Jina V4 Code LoRA embeddings (task="code") for semantically meaningful
+    code representations. Chunks are AST-aligned (top-level functions/classes).
+
+    Args:
+        file_path: Path to the source code file.
+        config: CLI configuration.
+        document_id: Custom document ID (optional, defaults to file stem).
+        force: Overwrite existing chunks/embeddings.
+        extra_metadata: Custom metadata fields to merge into the document record.
+
+    Returns:
+        Result dict with success status and num_chunks.
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+    from core.processors.code_processor import CodeProcessor
+
+    embedder = None
+    try:
+        from core.services.embedder_client import EmbedderClient
+
+        embed_client = EmbedderClient(
+            socket_path=config.embedding.service_socket,
+            timeout=300.0,
+            fallback_to_local=True,
+        )
+        if embed_client.is_service_available():
+            embedder = embed_client
+            progress("Using persistent embedding service (code task)")
+        else:
+            embed_client.close()
+            progress("Embedding service unavailable, loading model in-process")
+    except Exception:
+        progress("Embedding service unavailable, loading model in-process")
+
+    processor = CodeProcessor(embedder=embedder)
+
+    try:
+        # Use file's parent as repo_root so rel_path is just the filename
+        result = processor.process_file(file_path, repo_root=file_path.parent)
+
+        if not result.chunks:
+            return {"success": False, "error": "CodeProcessor produced no chunks"}
+
+        # Store in arxiv profile collections (same as document ingest)
+        arango_config = get_arango_config(config, read_only=False)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            col = get_profile("arxiv")
+            doc_id = document_id or file_path.stem
+            sanitized_id = normalize_document_key(doc_id)
+            now_iso = datetime.now(UTC).isoformat()
+
+            meta_doc: dict[str, Any] = {
+                "_key": sanitized_id,
+                "document_id": doc_id,
+                "title": doc_id,
+                "source": "code",
+                "language": file_path.suffix.lstrip("."),
+                "file_path": str(file_path),
+                "num_chunks": len(result.chunks),
+                "processing_timestamp": now_iso,
+                "status": "PROCESSED",
+            }
+            if extra_metadata:
+                meta_doc.update(extra_metadata)
+                meta_doc["_key"] = sanitized_id
+                meta_doc["document_id"] = doc_id
+
+            chunk_docs: list[dict[str, Any]] = []
+            embedding_docs: list[dict[str, Any]] = []
+
+            for i, chunk in enumerate(result.chunks):
+                ck = chunk_key(sanitized_id, i)
+                chunk_docs.append(
+                    {
+                        "_key": ck,
+                        "document_id": doc_id,
+                        "paper_key": sanitized_id,
+                        "chunk_index": i,
+                        "total_chunks": len(result.chunks),
+                        "text": chunk.text,
+                        "chunk_type": chunk.chunk_type,
+                        # start_line/end_line stored as start_char/end_char for schema compat
+                        "start_char": chunk.start_line,
+                        "end_char": chunk.end_line,
+                        "created_at": now_iso,
+                    }
+                )
+
+            # Build embedding docs from parallel embedding_vectors list
+            for i, (_chunk, vec) in enumerate(
+                zip(result.chunks, result.embedding_vectors, strict=False)
+            ):
+                ck = chunk_key(sanitized_id, i)
+                embedding_docs.append(
+                    {
+                        "_key": embedding_key(ck),
+                        "chunk_key": ck,
+                        "document_id": doc_id,
+                        "paper_key": sanitized_id,
+                        "embedding": vec,
+                        "embedding_dim": len(vec),
+                        "created_at": now_iso,
+                    }
+                )
+
+            progress(f"Storing {len(chunk_docs)} code chunks in database...")
+
+            if chunk_docs:
+                client.insert_documents(col.chunks, chunk_docs, overwrite=force)
+            if embedding_docs:
+                client.insert_documents(col.embeddings, embedding_docs, overwrite=force)
+            client.insert_documents(col.metadata, [meta_doc], overwrite=force)
+
+            return {"success": True, "num_chunks": len(chunk_docs)}
+
+        finally:
+            client.close()
+
+    finally:
         if embedder is not None and hasattr(embedder, "close"):
             embedder.close()

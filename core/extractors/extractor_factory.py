@@ -210,7 +210,7 @@ class ExtractorFactory:
             elif extractor_type == "code":
                 from .extractors_code import CodeExtractor
                 cls._registry["code"] = CodeExtractor
-                for ext in [".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp"]:
+                for ext in [".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cu", ".cuh"]:
                     cls._extension_map[ext] = "code"
                 cls._auto_registered.add(extractor_type)
                 logger.debug("Auto-registered code extractor")

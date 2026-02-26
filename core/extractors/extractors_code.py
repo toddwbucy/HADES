@@ -48,6 +48,8 @@ class CodeExtractor(ExtractorBase):
             '.cpp': '//',
             '.go': '//',
             '.rs': '//',
+            '.cu': '//',
+            '.cuh': '//',
             '.rb': '#',
             '.sh': '#',
             '.yaml': '#',

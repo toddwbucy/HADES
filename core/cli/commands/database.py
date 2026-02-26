@@ -1237,6 +1237,62 @@ def list_databases(start_time: float) -> CLIResponse:
         client.close()
 
 
+def create_database(name: str, start_time: float) -> CLIResponse:
+    """Create a new ArangoDB database.
+
+    Uses the _system database endpoint to create a new database.
+    The configured user must have admin privileges.
+
+    Args:
+        name: Name of the database to create.
+        start_time: Command start timestamp.
+
+    Returns:
+        CLIResponse with creation result.
+    """
+    from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
+
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response(
+            command="database.create-database",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    arango_config = get_arango_config(config, read_only=False)
+
+    # Must use _system database to create new databases
+    client_config = ArangoHttp2Config(
+        database="_system",
+        socket_path=arango_config.get("socket_path"),
+        base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+        username=arango_config["username"],
+        password=arango_config["password"],
+    )
+
+    client = ArangoHttp2Client(client_config)
+
+    try:
+        client.request("POST", "/_db/_system/_api/database", json={"name": name})
+        return success_response(
+            command="database.create-database",
+            data={"database": name, "created": True},
+            start_time=start_time,
+        )
+    except Exception as e:
+        return error_response(
+            command="database.create-database",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+    finally:
+        client.close()
+
+
 def count_collection(
     collection_name: str,
     start_time: float,
