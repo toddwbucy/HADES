@@ -85,6 +85,12 @@ hades ingest 2409.04701 --force            # reprocess existing
 # Custom metadata
 hades ingest paper.pdf --metadata '{"project": "survey", "priority": "high"}'
 
+# Code files — auto-detected by extension (.rs, .cu, .py, .go, etc.)
+# Routes through CodeProcessor + Jina V4 Code LoRA (task="code")
+hades ingest src/m3.rs --id m3-rust        # Rust: auto-detected
+hades ingest kernels/fwd.cu --id fwd-cuda  # CUDA: auto-detected
+hades ingest any_file.txt --task code      # force code pipeline for any extension
+
 # Batch mode with progress and error isolation
 hades ingest /papers/*.pdf --batch
 hades ingest --resume                      # resume after failure
@@ -131,6 +137,10 @@ hades db check 2409.04701
 hades db stats
 hades db stats --all                       # database-wide stats (all collections)
 hades db purge 2409.04701                  # remove paper and all chunks
+
+# Database management
+hades db databases                         # list all accessible databases
+hades db create-database NL_code_test      # create a new ArangoDB database (requires admin)
 
 # CRUD operations (any collection)
 hades db collections                       # list all collections
