@@ -3166,7 +3166,15 @@ def link_code_smell(
             if summary:
                 edge_doc["summary"] = summary
 
-            client.insert_documents(edge_collection, [edge_doc], overwrite=False)
+            already_exists = False
+            try:
+                client.insert_documents(edge_collection, [edge_doc], overwrite=False)
+            except Exception as insert_err:
+                # 409 Conflict = edge key already exists — idempotent success
+                if "409" in str(insert_err) or "unique constraint" in str(insert_err).lower():
+                    already_exists = True
+                else:
+                    raise
 
             return success_response(
                 "database.link",
@@ -3178,6 +3186,7 @@ def link_code_smell(
                     "enforcement": enforcement,
                     "summary": summary,
                     "methods": methods,
+                    "already_exists": already_exists,
                 },
                 start_time,
             )

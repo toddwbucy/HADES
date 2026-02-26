@@ -147,7 +147,10 @@ def ingest(
 
     # Handle resume-only mode (no inputs needed)
     if resume and not inputs:
-        return _ingest_batch([], None, force, resume, start_time)
+        return _ingest_batch(
+            [], None, force, resume, start_time,
+            task=task, extra_metadata=extra_metadata, claims=claims,
+        )
 
     if not inputs:
         return error_response(
