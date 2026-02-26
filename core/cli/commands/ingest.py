@@ -778,11 +778,23 @@ def _process_and_store_code(
     processor = CodeProcessor(embedder=embedder)
 
     try:
-        # Use file's parent as repo_root so rel_path is just the filename
+        # Use file's parent as repo_root so rel_path is just the filename.
+        # process_file() extracts+chunks but does NOT embed (embedding is batched
+        # in process_files). Call embed_chunks() explicitly to get vectors.
         result = processor.process_file(file_path, repo_root=file_path.parent)
 
         if not result.chunks:
             return {"success": False, "error": "CodeProcessor produced no chunks"}
+
+        if embedder and result.chunks:
+            texts = [c.text for c in result.chunks]
+            # EmbedderClient exposes embed_texts; CodeProcessor.embed_chunks uses
+            # embed_batch which is not on the client — call embed_texts directly.
+            if hasattr(embedder, "embed_texts"):
+                vecs = embedder.embed_texts(texts, task="code")
+                result.embedding_vectors = [v.tolist() if hasattr(v, "tolist") else v for v in vecs]
+            else:
+                result.embedding_vectors = processor.embed_chunks(result.chunks)
 
         # Store in arxiv profile collections (same as document ingest)
         arango_config = get_arango_config(config, read_only=False)
