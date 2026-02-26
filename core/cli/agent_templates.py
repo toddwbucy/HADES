@@ -553,7 +553,7 @@ def install_agent(agent_type: str) -> None:
     cwd = Path.cwd()
 
     if agent_type == "claude":
-        hades_mcp_bin = str(Path(sys.executable).parent / "hades-mcp")
+        hades_mcp_bin = str(Path(sys.argv[0]).resolve().parent / "hades-mcp")
         mcp_config = {
             "mcpServers": {
                 "hades": {
