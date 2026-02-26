@@ -299,7 +299,9 @@ def check_paper_exists(document_id: str, start_time: float, collection: str | No
                 command="database.check",
                 data={
                     "document_id": document_id,
-                    "collection": profile_name,
+                    "collection": col.metadata,
+                    "collection_profile": profile_name,
+                    "document_id_full": f"{col.metadata}/{sanitized_id}",
                     "exists": exists,
                     "document": doc_info,
                 },
@@ -3004,3 +3006,158 @@ def _format_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
 
     return citations
+
+
+# =============================================================================
+# Compliance Edge Linking
+# =============================================================================
+
+def _smell_key_from_cs_number(cs_number: str) -> str | None:
+    """Convert 'CS-32' → 'smell-032-*' prefix for nl_code_smells lookup."""
+    import re
+    m = re.match(r"CS-(\d+)$", cs_number.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    return f"smell-{int(m.group(1)):03d}-"
+
+
+def link_code_smell(
+    source_id: str,
+    smell_id: str,
+    enforcement: str,
+    methods: list[str] | None,
+    summary: str | None,
+    smell_collection: str,
+    start_time: float,
+) -> CLIResponse:
+    """Create a compliance edge from a code node to a smell node.
+
+    Looks up source in arxiv_metadata, finds smell in nl_code_smells by CS number,
+    then inserts into nl_smell_compliance_edges.
+
+    Args:
+        source_id: Document ID in arxiv_metadata (e.g. 'conductor-rs')
+        smell_id: CS number (e.g. 'CS-32') or full smell key
+        enforcement: Enforcement type: 'static', 'behavioral', 'architectural', 'review'
+        methods: Optional list of method/function names
+        summary: Optional human-readable compliance summary
+        smell_collection: ArangoDB collection name for smells (default: nl_code_smells)
+        start_time: CLI start time for duration reporting
+
+    Returns:
+        CLIResponse with the created edge details
+    """
+    try:
+        config = get_config()
+    except ValueError as e:
+        return error_response("database.link", ErrorCode.CONFIG_ERROR, str(e), start_time)
+
+    try:
+        from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config, ArangoHttpError
+
+        arango_config = get_arango_config(config, read_only=False)
+        client_config = ArangoHttp2Config(
+            database=arango_config["database"],
+            socket_path=arango_config.get("socket_path"),
+            base_url=f"http://{arango_config['host']}:{arango_config['port']}",
+            username=arango_config["username"],
+            password=arango_config["password"],
+        )
+        client = ArangoHttp2Client(client_config)
+
+        try:
+            sanitized_source = normalize_document_key(source_id)
+            source_collection = "arxiv_metadata"
+            edge_collection = "nl_smell_compliance_edges"
+
+            # 1. Verify source exists in arxiv_metadata
+            try:
+                client.get_document(source_collection, sanitized_source)
+            except ArangoHttpError as e:
+                if e.status_code == 404:
+                    return error_response(
+                        "database.link",
+                        ErrorCode.PAPER_NOT_FOUND,
+                        f"Source '{source_id}' not found in {source_collection}",
+                        start_time,
+                    )
+                raise
+
+            # 2. Find smell by CS number or exact key
+            smell_key_prefix = _smell_key_from_cs_number(smell_id)
+            if smell_key_prefix:
+                # Search by CS number prefix
+                aql = f"""
+                    FOR s IN {smell_collection}
+                        FILTER LEFT(s._key, @prefix_len) == @prefix
+                        LIMIT 1
+                        RETURN s
+                """
+                results = client.query(
+                    aql, {"prefix": smell_key_prefix, "prefix_len": len(smell_key_prefix)}
+                )
+                if not results:
+                    return error_response(
+                        "database.link",
+                        ErrorCode.PAPER_NOT_FOUND,
+                        f"Smell '{smell_id}' not found in {smell_collection} "
+                        f"(searched for keys starting with '{smell_key_prefix}')",
+                        start_time,
+                    )
+                smell_doc = results[0]
+            else:
+                # Treat as exact key
+                try:
+                    smell_doc = client.get_document(smell_collection, smell_id)
+                except ArangoHttpError as e:
+                    if e.status_code == 404:
+                        return error_response(
+                            "database.link",
+                            ErrorCode.PAPER_NOT_FOUND,
+                            f"Smell key '{smell_id}' not found in {smell_collection}",
+                            start_time,
+                        )
+                    raise
+
+            smell_key = smell_doc["_key"]
+            smell_name = smell_doc.get("name", smell_key)
+
+            # 3. Construct composite edge key (convention: {from_coll}_{from_key}__{to_coll}_{to_key})
+            edge_key = f"{source_collection}_{sanitized_source}__{smell_collection}_{smell_key}"
+            from_id = f"{source_collection}/{sanitized_source}"
+            to_id = f"{smell_collection}/{smell_key}"
+
+            # 4. Insert edge
+            edge_doc: dict[str, Any] = {
+                "_key": edge_key,
+                "_from": from_id,
+                "_to": to_id,
+                "enforcement_type": enforcement,
+                "created_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            }
+            if methods:
+                edge_doc["methods"] = methods
+            if summary:
+                edge_doc["summary"] = summary
+
+            client.insert_documents(edge_collection, [edge_doc], overwrite=False)
+
+            return success_response(
+                "database.link",
+                {
+                    "edge_key": edge_key,
+                    "from": from_id,
+                    "to": to_id,
+                    "smell": smell_name,
+                    "enforcement": enforcement,
+                    "summary": summary,
+                    "methods": methods,
+                },
+                start_time,
+            )
+
+        finally:
+            client.close()
+
+    except Exception as e:
+        return error_response("database.link", ErrorCode.DATABASE_ERROR, str(e), start_time)
