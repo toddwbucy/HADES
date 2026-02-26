@@ -1,11 +1,12 @@
 """Agent integration templates for the HADES CLI.
 
-Generates SKILL.md (Claude Code) or AGENT.md (generic agent) files
+Generates .mcp.json (Claude Code) or AGENT.md (generic agent) files
 in the current working directory.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -552,12 +553,23 @@ def install_agent(agent_type: str) -> None:
     cwd = Path.cwd()
 
     if agent_type == "claude":
-        target = cwd / ".claude" / "skills" / "hades" / "SKILL.md"
-        target.parent.mkdir(parents=True, exist_ok=True)
+        hades_mcp_bin = str(Path(sys.executable).parent / "hades-mcp")
+        mcp_config = {
+            "mcpServers": {
+                "hades": {
+                    "command": hades_mcp_bin,
+                    "args": [],
+                    "env": {"ARANGO_PASSWORD": "${ARANGO_PASSWORD}"},
+                }
+            }
+        }
+        target = cwd / ".mcp.json"
         if target.exists():
             print(f"Updating existing {target}", file=sys.stderr)
-        target.write_text(SKILL_TEMPLATE, encoding="utf-8")
+        target.write_text(json.dumps(mcp_config, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote {target}", file=sys.stderr)
+        print(f"  hades-mcp binary: {hades_mcp_bin}", file=sys.stderr)
+        print("  Restart Claude Code to activate the MCP server.", file=sys.stderr)
 
     elif agent_type == "agent":
         target = cwd / "AGENT.md"
