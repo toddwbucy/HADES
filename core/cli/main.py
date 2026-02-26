@@ -182,6 +182,15 @@ task_app = typer.Typer(
 )
 app.add_typer(task_app, name="task")
 
+# Smell compliance checking
+smell_app = typer.Typer(
+    name="smell",
+    help="NL graph compliance: static lint, ref verification, and embedding probe.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(smell_app, name="smell")
+
 
 # =============================================================================
 # Top-Level Commands (Standalone Tools)
@@ -2208,6 +2217,156 @@ def task_dep_cmd(
         return task_dep_remove(key, remove, start_time)
     else:
         return task_blocked(key, start_time)
+
+
+# =============================================================================
+# Smell Compliance Commands
+# =============================================================================
+
+
+@smell_app.command("check")
+def smell_check_cmd(
+    path: str = typer.Argument(..., help="File or directory to lint", metavar="PATH"),
+    smell_collection: str = typer.Option(
+        "nl_code_smells", "--smell-collection", help="NL smell collection name"
+    ),
+) -> None:
+    """Static lint — check source files against NL graph forbidden patterns.
+
+    Loads forbidden_patterns from all smells in the configured database
+    and scans source files for violations. Returns autonomous PASS/FAIL.
+
+    Checks all smells that have forbidden_patterns populated in the graph.
+    Currently includes: CS-10, CS-11, CS-13 (and others with patterns).
+
+    Examples:
+        hades --database NL smell check src/conductor.rs
+        hades --database NL smell check src/
+        hades --database NL smell check . --smell-collection nl_code_smells
+    """
+    start_time = time.time()
+    try:
+        from core.cli.commands.smell import smell_check
+
+        response = smell_check(path, start_time, smell_collection=smell_collection)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+        # Exit 1 if violations found (static FAIL)
+        if response.data and not response.data.get("passed", True):
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="smell.check",
+            code=ErrorCode.INTERNAL_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@smell_app.command("verify")
+def smell_verify_cmd(
+    path: str = typer.Argument(..., help="File or directory to verify", metavar="PATH"),
+    smell_collection: str = typer.Option(
+        "nl_code_smells", "--smell-collection", help="NL smell collection name"
+    ),
+    compliance_collection: str = typer.Option(
+        "nl_smell_compliance_edges", "--compliance-collection", help="Compliance edges collection"
+    ),
+) -> None:
+    """Verify CS-XX references in source files exist in the NL graph.
+
+    Extracts CS-XX identifiers from comment lines, verifies each smell
+    node exists in the graph, and confirms compliance edges are present
+    in nl_smell_compliance_edges.
+
+    Output: verified_refs, missing_from_graph, unlinked_claims.
+
+    Examples:
+        hades --database NL smell verify src/conductor.rs
+        hades --database NL smell verify src/
+    """
+    start_time = time.time()
+    try:
+        from core.cli.commands.smell import smell_verify
+
+        response = smell_verify(
+            path, start_time,
+            smell_collection=smell_collection,
+            compliance_collection=compliance_collection,
+        )
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="smell.verify",
+            code=ErrorCode.INTERNAL_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
+@smell_app.command("report")
+def smell_report_cmd(
+    path: str = typer.Argument(..., help="File or directory to audit", metavar="PATH"),
+    smell_collection: str = typer.Option(
+        "nl_code_smells", "--smell-collection", help="NL smell collection name"
+    ),
+    compliance_collection: str = typer.Option(
+        "nl_smell_compliance_edges", "--compliance-collection", help="Compliance edges collection"
+    ),
+    pr_diff: str = typer.Option(
+        None, "--pr", help="Path to unified diff file (limits audit to changed files)"
+    ),
+) -> None:
+    """Full compliance audit: static check + ref verification + embedding probe.
+
+    Combines smell check and smell verify, then probes embedding similarity
+    between source file(s) and each claimed smell node using Jina cosine
+    similarity. Produces a structured JSON compliance report artifact.
+
+    Use --pr to limit to files changed in a PR diff.
+
+    Examples:
+        hades --database NL smell report src/conductor.rs
+        hades --database NL smell report src/ --pr pr.diff
+    """
+    start_time = time.time()
+    try:
+        from core.cli.commands.smell import smell_report
+
+        response = smell_report(
+            path, start_time,
+            smell_collection=smell_collection,
+            compliance_collection=compliance_collection,
+            pr_diff=pr_diff,
+        )
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="smell.report",
+            code=ErrorCode.INTERNAL_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
 
 
 # =============================================================================
