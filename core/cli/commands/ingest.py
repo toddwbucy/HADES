@@ -53,11 +53,38 @@ def _is_arxiv_id(s: str) -> bool:
     return bool(_ARXIV_PATTERN.match(s))
 
 
+_FILE_TYPE_MAP = {
+    ".rs": "rust_source",
+    ".cu": "cuda_kernel",
+    ".cuh": "cuda_header",
+    ".py": "python_source",
+    ".js": "javascript_source",
+    ".ts": "typescript_source",
+    ".c": "c_source",
+    ".cpp": "cpp_source",
+    ".h": "c_header",
+    ".hpp": "cpp_header",
+    ".go": "go_source",
+    ".java": "java_source",
+    ".rb": "ruby_source",
+    ".swift": "swift_source",
+    ".kt": "kotlin_source",
+}
+
+
 def _is_code_file(path: Path, task: str | None) -> bool:
     """Return True if this file should be routed through the code pipeline."""
     if task == "code":
         return True
     return task is None and path.suffix.lower() in _CODE_EXTENSIONS
+
+
+def _get_file_type(suffix: str) -> str:
+    """Map file extension to a queryable file_type string."""
+    normalized = suffix.lstrip(".").lower()
+    if not normalized:
+        return "unknown_source"
+    return _FILE_TYPE_MAP.get(suffix.lower(), f"{normalized}_source")
 
 
 def _classify_inputs(inputs: list[str]) -> tuple[list[str], list[str]]:
@@ -96,6 +123,7 @@ def ingest(
     task: str | None = None,
     start_time: float = 0.0,
     extra_metadata: dict[str, Any] | None = None,
+    claims: list[dict[str, str]] | None = None,
 ) -> CLIResponse:
     """Ingest documents into the knowledge base.
 
@@ -122,7 +150,10 @@ def ingest(
 
     # Handle resume-only mode (no inputs needed)
     if resume and not inputs:
-        return _ingest_batch([], None, force, resume, start_time)
+        return _ingest_batch(
+            [], None, force, resume, start_time,
+            task=task, extra_metadata=extra_metadata, claims=claims,
+        )
 
     if not inputs:
         return error_response(
@@ -156,7 +187,10 @@ def ingest(
     # Use batch processor for batch mode or large input sets
     if batch or len(arxiv_ids) + len(file_paths) > 5:
         all_items = arxiv_ids + file_paths
-        return _ingest_batch(all_items, None, force, resume, start_time, task=task, extra_metadata=extra_metadata)
+        return _ingest_batch(
+            all_items, None, force, resume, start_time,
+            task=task, extra_metadata=extra_metadata, claims=claims,
+        )
 
     # Standard (non-batch) mode
     progress(f"Ingesting {len(arxiv_ids)} arxiv papers and {len(file_paths)} files...")
@@ -182,7 +216,10 @@ def ingest(
     # Process file paths
     if file_paths:
         for file_path in file_paths:
-            result = _ingest_file(file_path, config, document_id, force, task=task, extra_metadata=extra_metadata)
+            result = _ingest_file(
+                file_path, config, document_id, force,
+                task=task, extra_metadata=extra_metadata, claims=claims,
+            )
             results.append(result)
 
     # Summarize
@@ -217,6 +254,7 @@ def _ingest_batch(
     start_time: float,
     task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    claims: list[dict[str, str]] | None = None,
 ) -> CLIResponse:
     """Ingest items using batch processor with progress and resume.
 
@@ -228,6 +266,7 @@ def _ingest_batch(
         start_time: Command start timestamp.
         task: Embedding task type ('code' forces code pipeline).
         extra_metadata: Custom metadata fields to merge into document records.
+        claims: Compliance claims to link after each code file ingest.
 
     Returns:
         CLIResponse with batch results.
@@ -249,7 +288,7 @@ def _ingest_batch(
         if _is_arxiv_id(item_id):
             return _ingest_arxiv_paper(item_id, config, force, extra_metadata=extra_metadata)
         else:
-            return _ingest_file(item_id, config, None, force, task=task, extra_metadata=extra_metadata)
+            return _ingest_file(item_id, config, None, force, task=task, extra_metadata=extra_metadata, claims=claims)
 
     processor = BatchProcessor(
         state_file=".hades-batch-state.json",
@@ -295,6 +334,7 @@ def _ingest_file(
     force: bool,
     task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    claims: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Ingest a local file (any supported format).
 
@@ -347,6 +387,7 @@ def _ingest_file(
                 document_id=doc_id,
                 force=force,
                 extra_metadata=extra_metadata,
+                claims=claims,
             )
             if not result["success"]:
                 return {
@@ -355,13 +396,16 @@ def _ingest_file(
                     "success": False,
                     "error": result.get("error", "Code processing failed"),
                 }
-            return {
+            out: dict[str, Any] = {
                 "path": file_path,
                 "document_id": doc_id,
                 "success": True,
                 "num_chunks": result.get("num_chunks", 0),
                 "pipeline": "code",
             }
+            if result.get("compliance_edges") is not None:
+                out["compliance_edges"] = result["compliance_edges"]
+            return out
         except Exception as e:
             return {
                 "path": file_path,
@@ -732,12 +776,79 @@ def _process_and_store(
             embedder.close()
 
 
+def _parse_claims(claims_str: str) -> list[dict[str, str]]:
+    """Parse '--claims CS-31:architectural,CS-33:behavioral' into a list of dicts.
+
+    Format: CS-NN[:enforcement][,CS-NN[:enforcement]...]
+    enforcement defaults to 'behavioral' if omitted.
+
+    Raises:
+        ValueError: If any claim has an empty smell_id or invalid enforcement.
+    """
+    from core.cli.commands.database import _ALLOWED_ENFORCEMENT
+
+    claims = []
+    for part in claims_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            smell_id, enforcement = part.split(":", 1)
+        else:
+            smell_id, enforcement = part, "behavioral"
+        smell_id = smell_id.strip()
+        enforcement = enforcement.strip().lower()
+        if not smell_id:
+            raise ValueError(f"Empty smell_id in claims: {part!r}")
+        if enforcement not in _ALLOWED_ENFORCEMENT:
+            raise ValueError(
+                f"Invalid enforcement {enforcement!r} in claims. "
+                f"Allowed: {', '.join(sorted(_ALLOWED_ENFORCEMENT))}"
+            )
+        claims.append({"smell_id": smell_id, "enforcement": enforcement})
+    return claims
+
+
+def _create_compliance_edges(
+    source_id: str,
+    claims: list[dict[str, str]],
+    smell_collection: str = "nl_code_smells",
+) -> list[dict[str, Any]]:
+    """Create nl_smell_compliance_edges for each claim after code ingest.
+
+    Returns list of result dicts (one per claim) with success/error per edge.
+    """
+    from core.cli.commands.database import link_code_smell
+
+    results = []
+    for claim in claims:
+        coll = claim.get("smell_collection", smell_collection)
+        resp = link_code_smell(
+            source_id=source_id,
+            smell_id=claim["smell_id"],
+            enforcement=claim["enforcement"],
+            methods=claim.get("methods"),
+            summary=claim.get("summary"),
+            smell_collection=coll,
+            start_time=0.0,
+        )
+        results.append({
+            "smell": claim["smell_id"],
+            "enforcement": claim["enforcement"],
+            "success": resp.success,
+            "edge_key": resp.data.get("edge_key") if resp.success else None,
+            "error": resp.error.message if not resp.success and resp.error else None,
+        })
+    return results
+
+
 def _process_and_store_code(
     file_path: Path,
     config: Any,
     document_id: str | None,
     force: bool,
     extra_metadata: dict[str, Any] | None = None,
+    claims: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Process a code file via CodeProcessor and store in arxiv profile collections.
 
@@ -826,6 +937,8 @@ def _process_and_store_code(
                 "title": doc_id,
                 "source": "code",
                 "language": file_path.suffix.lstrip("."),
+                "file_type": _get_file_type(file_path.suffix),
+                "source_path": str(file_path),
                 "file_path": str(file_path),
                 "num_chunks": len(result.chunks),
                 "processing_timestamp": now_iso,
@@ -900,7 +1013,18 @@ def _process_and_store_code(
                 client.insert_documents(col.embeddings, embedding_docs, overwrite=False)
             client.insert_documents(col.metadata, [meta_doc], overwrite=False)
 
-            return {"success": True, "num_chunks": len(chunk_docs)}
+            result_data: dict[str, Any] = {"success": True, "num_chunks": len(chunk_docs)}
+
+            # Create compliance edges if --claims were provided
+            if claims:
+                progress(f"Creating {len(claims)} compliance edge(s)...")
+                edge_results = _create_compliance_edges(doc_id, claims)
+                result_data["compliance_edges"] = edge_results
+                edge_errors = [r for r in edge_results if not r["success"]]
+                if edge_errors:
+                    progress(f"Warning: {len(edge_errors)} compliance edge(s) failed")
+
+            return result_data
 
         finally:
             client.close()

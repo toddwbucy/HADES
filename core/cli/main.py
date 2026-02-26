@@ -315,6 +315,18 @@ def ingest_cmd(
         None, "--task", "-t",
         help="Embedding task type. 'code' activates Jina V4 Code LoRA. Auto-detected for .rs, .cu, .py, etc.",
     ),
+    claims: str = typer.Option(
+        None, "--claims",
+        help=(
+            "Compliance claims to link after ingest. Format: CS-NN[:enforcement][,CS-NN[:enforcement]...] "
+            "e.g. --claims CS-32:behavioral,CS-33:architectural. "
+            "Creates edges in nl_smell_compliance_edges. Code files only."
+        ),
+    ),
+    smell_collection: str = typer.Option(
+        "nl_code_smells", "--smell-collection",
+        help="ArangoDB collection to look up smells in (default: nl_code_smells)",
+    ),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index"),
 ) -> None:
     """Ingest documents into the knowledge base.
@@ -338,12 +350,13 @@ def ingest_cmd(
         hades ingest --resume
         hades ingest src/main.rs --task code --id main-rust
         hades ingest kernels/forward.cu --id forward-cuda
+        hades ingest src/m3.rs --id m3-rs --claims CS-27:behavioral,CS-28:behavioral
     """
     _set_gpu(gpu)
     start_time = time.time()
 
     try:
-        from core.cli.commands.ingest import ingest
+        from core.cli.commands.ingest import _parse_claims, ingest
 
         # Parse custom metadata if provided
         extra_metadata = None
@@ -371,6 +384,14 @@ def ingest_cmd(
                 print_response(response)
                 raise typer.Exit(1) from None
 
+        # Parse claims if provided
+        parsed_claims = None
+        if claims:
+            parsed_claims = _parse_claims(claims)
+            # Attach smell_collection override to each claim
+            for c in parsed_claims:
+                c["smell_collection"] = smell_collection
+
         # Handle resume-only mode (no inputs required)
         actual_inputs = inputs or []
 
@@ -383,6 +404,7 @@ def ingest_cmd(
             task=task,
             start_time=start_time,
             extra_metadata=extra_metadata,
+            claims=parsed_claims,
         )
         print_response(response)
         if not response.success:
@@ -482,6 +504,57 @@ def arxiv_sync_status() -> None:
         )
         print_response(response)
         raise typer.Exit(1) from None
+
+
+# =============================================================================
+# Graph Compliance Linking
+# =============================================================================
+
+
+@app.command("link")
+@cli_command("database.link", ErrorCode.DATABASE_ERROR)
+def link_cmd(
+    source_id: str = typer.Argument(..., help="Document ID in arxiv_metadata (e.g. 'conductor-rs')", metavar="SOURCE_ID"),
+    smell: str = typer.Option(..., "--smell", "-s", help="CS number or smell key (e.g. CS-32 or smell-032-observe-then-advance)"),
+    enforcement: str = typer.Option(
+        "behavioral", "--enforcement", "-e",
+        help="Enforcement type: static | behavioral | architectural | review | documentation",
+    ),
+    methods: list[str] = typer.Option(None, "--method", "-M", help="Method/function name (repeat for multiple)"),
+    summary: str = typer.Option(None, "--summary", help="Human-readable compliance summary"),
+    smell_collection: str = typer.Option(
+        "nl_code_smells", "--smell-collection",
+        help="ArangoDB collection to look up smells in (default: nl_code_smells)",
+    ),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Create a compliance edge from a code file to a smell node.
+
+    Links an ingested source file to a code smell it claims compliance with.
+    Inserts into nl_smell_compliance_edges with full metadata.
+
+    Examples:
+        hades link conductor-rs --smell CS-32 --enforcement behavioral \\
+            --method next_chunk --method advance \\
+            --summary "Observe before advance — pulse read before step increments"
+
+        hades link m3-rs --smell CS-27 --enforcement behavioral
+        hades link m3-rs --smell CS-28 --enforcement behavioral
+
+        hades link composition-safety-rs --smell CS-31 --enforcement architectural \\
+            --summary "NLM is indivisible — marker traits prevent subsystem extraction"
+    """
+    from core.cli.commands.database import link_code_smell
+
+    return link_code_smell(
+        source_id=source_id,
+        smell_id=smell,
+        enforcement=enforcement,
+        methods=list(methods) if methods else None,
+        summary=summary,
+        smell_collection=smell_collection,
+        start_time=start_time,
+    )
 
 
 # =============================================================================
