@@ -536,17 +536,17 @@ def smell_report(
                 for ref in verified_refs
             ]
 
-    # Overall pass: static check passed AND no unlinked claims
+    # Overall pass: only STATIC violations are blockers; unlinked_claims are informational
     static_passed = check_data.get("passed", True)
     has_unlinked = len(verify_data.get("unlinked_claims", [])) > 0
-    overall_passed = static_passed and not has_unlinked
 
     return success_response(
         command="smell.report",
         data={
             "path": path,
             "pr_diff": pr_diff,
-            "passed": overall_passed,
+            "passed": static_passed,
+            "has_unlinked_claims": has_unlinked,
             "static_check": {
                 "passed": static_passed,
                 "violations": check_data.get("violations", []),
