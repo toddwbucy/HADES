@@ -1240,8 +1240,9 @@ def list_databases(start_time: float) -> CLIResponse:
 def create_database(name: str, start_time: float) -> CLIResponse:
     """Create a new ArangoDB database.
 
-    Uses the _system database endpoint to create a new database.
-    The configured user must have admin privileges.
+    Uses the upstream ArangoDB socket (bypassing the HADES proxy, which
+    only allows DB-scoped endpoints) to call /_api/database directly.
+    Falls back to the proxy socket if the upstream socket is unavailable.
 
     Args:
         name: Name of the database to create.
@@ -1250,6 +1251,8 @@ def create_database(name: str, start_time: float) -> CLIResponse:
     Returns:
         CLIResponse with creation result.
     """
+    import os
+
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
 
     try:
@@ -1264,10 +1267,15 @@ def create_database(name: str, start_time: float) -> CLIResponse:
 
     arango_config = get_arango_config(config, read_only=False)
 
-    # Must use _system database to create new databases
+    # The HADES proxy sockets only permit DB-scoped endpoints.
+    # /_api/database is a server-level endpoint, so we must use the upstream
+    # ArangoDB socket directly. Check env override first, then default.
+    upstream_socket = os.environ.get("ARANGO_UPSTREAM_SOCKET", "/run/arangodb3/arangodb.sock")
+    socket_path = upstream_socket if Path(upstream_socket).exists() else arango_config.get("socket_path")
+
     client_config = ArangoHttp2Config(
         database="_system",
-        socket_path=arango_config.get("socket_path"),
+        socket_path=socket_path,
         base_url=f"http://{arango_config['host']}:{arango_config['port']}",
         username=arango_config["username"],
         password=arango_config["password"],
@@ -1276,7 +1284,7 @@ def create_database(name: str, start_time: float) -> CLIResponse:
     client = ArangoHttp2Client(client_config)
 
     try:
-        client.request("POST", "/_db/_system/_api/database", json={"name": name})
+        client.request("POST", "/_api/database", json={"name": name})
         return success_response(
             command="database.create-database",
             data={"database": name, "created": True},

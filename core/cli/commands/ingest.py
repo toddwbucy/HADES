@@ -797,6 +797,13 @@ def _process_and_store_code(
 
         try:
             col = get_profile("arxiv")
+            # Ensure the required collections exist (new databases start empty)
+            for collection_name in (col.metadata, col.chunks, col.embeddings):
+                try:
+                    client.request("POST", "/_api/collection", json={"name": collection_name})
+                except Exception:
+                    pass  # Already exists or creation failed — insert will surface real errors
+
             doc_id = document_id or file_path.stem
             sanitized_id = normalize_document_key(doc_id)
             now_iso = datetime.now(UTC).isoformat()
