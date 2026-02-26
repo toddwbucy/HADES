@@ -3169,9 +3169,9 @@ def link_code_smell(
             already_exists = False
             try:
                 client.insert_documents(edge_collection, [edge_doc], overwrite=False)
-            except Exception as insert_err:
+            except ArangoHttpError as insert_err:
                 # 409 Conflict = edge key already exists — idempotent success
-                if "409" in str(insert_err) or "unique constraint" in str(insert_err).lower():
+                if insert_err.status_code == 409:
                     already_exists = True
                 else:
                     raise

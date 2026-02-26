@@ -81,7 +81,10 @@ def _is_code_file(path: Path, task: str | None) -> bool:
 
 def _get_file_type(suffix: str) -> str:
     """Map file extension to a queryable file_type string."""
-    return _FILE_TYPE_MAP.get(suffix.lower(), f"{suffix.lstrip('.').lower()}_source")
+    normalized = suffix.lstrip(".").lower()
+    if not normalized:
+        return "unknown_source"
+    return _FILE_TYPE_MAP.get(suffix.lower(), f"{normalized}_source")
 
 
 def _classify_inputs(inputs: list[str]) -> tuple[list[str], list[str]]:
@@ -778,7 +781,12 @@ def _parse_claims(claims_str: str) -> list[dict[str, str]]:
 
     Format: CS-NN[:enforcement][,CS-NN[:enforcement]...]
     enforcement defaults to 'behavioral' if omitted.
+
+    Raises:
+        ValueError: If any claim has an empty smell_id or invalid enforcement.
     """
+    from core.cli.commands.database import _ALLOWED_ENFORCEMENT
+
     claims = []
     for part in claims_str.split(","):
         part = part.strip()
@@ -788,7 +796,16 @@ def _parse_claims(claims_str: str) -> list[dict[str, str]]:
             smell_id, enforcement = part.split(":", 1)
         else:
             smell_id, enforcement = part, "behavioral"
-        claims.append({"smell_id": smell_id.strip(), "enforcement": enforcement.strip()})
+        smell_id = smell_id.strip()
+        enforcement = enforcement.strip().lower()
+        if not smell_id:
+            raise ValueError(f"Empty smell_id in claims: {part!r}")
+        if enforcement not in _ALLOWED_ENFORCEMENT:
+            raise ValueError(
+                f"Invalid enforcement {enforcement!r} in claims. "
+                f"Allowed: {', '.join(sorted(_ALLOWED_ENFORCEMENT))}"
+            )
+        claims.append({"smell_id": smell_id, "enforcement": enforcement})
     return claims
 
 
