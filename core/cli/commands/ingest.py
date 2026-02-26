@@ -876,11 +876,29 @@ def _process_and_store_code(
 
             progress(f"Storing {len(chunk_docs)} code chunks in database...")
 
+            # IMPORTANT: `insert_documents(..., overwrite=True)` uses ArangoDB's
+            # /_api/import?overwrite=true which TRUNCATES the entire collection.
+            # For force re-ingestion of a single document, we must delete only
+            # this document's existing data via AQL, then insert with overwrite=False.
+            if force:
+                client.query(
+                    f"FOR c IN {col.chunks} FILTER c.paper_key == @key REMOVE c IN {col.chunks}",
+                    {"key": sanitized_id},
+                )
+                client.query(
+                    f"FOR e IN {col.embeddings} FILTER e.paper_key == @key REMOVE e IN {col.embeddings}",
+                    {"key": sanitized_id},
+                )
+                client.query(
+                    f"FOR m IN {col.metadata} FILTER m._key == @key REMOVE m IN {col.metadata}",
+                    {"key": sanitized_id},
+                )
+
             if chunk_docs:
-                client.insert_documents(col.chunks, chunk_docs, overwrite=force)
+                client.insert_documents(col.chunks, chunk_docs, overwrite=False)
             if embedding_docs:
-                client.insert_documents(col.embeddings, embedding_docs, overwrite=force)
-            client.insert_documents(col.metadata, [meta_doc], overwrite=force)
+                client.insert_documents(col.embeddings, embedding_docs, overwrite=False)
+            client.insert_documents(col.metadata, [meta_doc], overwrite=False)
 
             return {"success": True, "num_chunks": len(chunk_docs)}
 
