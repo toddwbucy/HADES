@@ -518,7 +518,7 @@ def link_cmd(
     smell: str = typer.Option(..., "--smell", "-s", help="CS number or smell key (e.g. CS-32 or smell-032-observe-then-advance)"),
     enforcement: str = typer.Option(
         "behavioral", "--enforcement", "-e",
-        help="Enforcement type: static | behavioral | architectural | review",
+        help="Enforcement type: static | behavioral | architectural | review | documentation",
     ),
     methods: list[str] = typer.Option(None, "--method", "-M", help="Method/function name (repeat for multiple)"),
     summary: str = typer.Option(None, "--summary", help="Human-readable compliance summary"),

@@ -3012,8 +3012,7 @@ def _format_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # Compliance Edge Linking
 # =============================================================================
 
-_VALID_COLLECTION_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,255}$")
-_ALLOWED_ENFORCEMENT = {"static", "behavioral", "architectural", "review"}
+_ALLOWED_ENFORCEMENT = {"static", "behavioral", "architectural", "review", "documentation"}
 
 
 def _smell_key_from_cs_number(cs_number: str) -> str | None:
@@ -3106,17 +3105,22 @@ def link_code_smell(
                 raise
 
             # 2. Find smell by CS number or exact key
+            # Use @@collection bind variable (ArangoDB's safe dynamic collection syntax)
             smell_key_prefix = _smell_key_from_cs_number(smell_id)
             if smell_key_prefix:
-                # Search by CS number prefix
-                aql = f"""
-                    FOR s IN {smell_collection}
+                aql = """
+                    FOR s IN @@collection
                         FILTER LEFT(s._key, @prefix_len) == @prefix
                         LIMIT 1
                         RETURN s
                 """
                 results = client.query(
-                    aql, {"prefix": smell_key_prefix, "prefix_len": len(smell_key_prefix)}
+                    aql,
+                    {
+                        "@collection": smell_collection,
+                        "prefix": smell_key_prefix,
+                        "prefix_len": len(smell_key_prefix),
+                    },
                 )
                 if not results:
                     return error_response(
