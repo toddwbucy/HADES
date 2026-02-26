@@ -812,7 +812,6 @@ def _parse_claims(claims_str: str) -> list[dict[str, str]]:
 def _create_compliance_edges(
     source_id: str,
     claims: list[dict[str, str]],
-    config: Any,
     smell_collection: str = "nl_code_smells",
 ) -> list[dict[str, Any]]:
     """Create nl_smell_compliance_edges for each claim after code ingest.
@@ -1019,7 +1018,7 @@ def _process_and_store_code(
             # Create compliance edges if --claims were provided
             if claims:
                 progress(f"Creating {len(claims)} compliance edge(s)...")
-                edge_results = _create_compliance_edges(doc_id, claims, config)
+                edge_results = _create_compliance_edges(doc_id, claims)
                 result_data["compliance_edges"] = edge_results
                 edge_errors = [r for r in edge_results if not r["success"]]
                 if edge_errors:
