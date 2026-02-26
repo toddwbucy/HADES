@@ -181,7 +181,10 @@ def ingest(
     # Use batch processor for batch mode or large input sets
     if batch or len(arxiv_ids) + len(file_paths) > 5:
         all_items = arxiv_ids + file_paths
-        return _ingest_batch(all_items, None, force, resume, start_time, task=task, extra_metadata=extra_metadata)
+        return _ingest_batch(
+            all_items, None, force, resume, start_time,
+            task=task, extra_metadata=extra_metadata, claims=claims,
+        )
 
     # Standard (non-batch) mode
     progress(f"Ingesting {len(arxiv_ids)} arxiv papers and {len(file_paths)} files...")
@@ -245,6 +248,7 @@ def _ingest_batch(
     start_time: float,
     task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    claims: list[dict[str, str]] | None = None,
 ) -> CLIResponse:
     """Ingest items using batch processor with progress and resume.
 
@@ -256,6 +260,7 @@ def _ingest_batch(
         start_time: Command start timestamp.
         task: Embedding task type ('code' forces code pipeline).
         extra_metadata: Custom metadata fields to merge into document records.
+        claims: Compliance claims to link after each code file ingest.
 
     Returns:
         CLIResponse with batch results.
@@ -277,7 +282,7 @@ def _ingest_batch(
         if _is_arxiv_id(item_id):
             return _ingest_arxiv_paper(item_id, config, force, extra_metadata=extra_metadata)
         else:
-            return _ingest_file(item_id, config, None, force, task=task, extra_metadata=extra_metadata)
+            return _ingest_file(item_id, config, None, force, task=task, extra_metadata=extra_metadata, claims=claims)
 
     processor = BatchProcessor(
         state_file=".hades-batch-state.json",
@@ -385,13 +390,16 @@ def _ingest_file(
                     "success": False,
                     "error": result.get("error", "Code processing failed"),
                 }
-            return {
+            out: dict[str, Any] = {
                 "path": file_path,
                 "document_id": doc_id,
                 "success": True,
                 "num_chunks": result.get("num_chunks", 0),
                 "pipeline": "code",
             }
+            if result.get("compliance_edges") is not None:
+                out["compliance_edges"] = result["compliance_edges"]
+            return out
         except Exception as e:
             return {
                 "path": file_path,

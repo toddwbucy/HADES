@@ -3012,9 +3012,12 @@ def _format_citations(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # Compliance Edge Linking
 # =============================================================================
 
+_VALID_COLLECTION_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,255}$")
+_ALLOWED_ENFORCEMENT = {"static", "behavioral", "architectural", "review"}
+
+
 def _smell_key_from_cs_number(cs_number: str) -> str | None:
     """Convert 'CS-32' → 'smell-032-*' prefix for nl_code_smells lookup."""
-    import re
     m = re.match(r"CS-(\d+)$", cs_number.strip(), re.IGNORECASE)
     if not m:
         return None
@@ -3047,6 +3050,25 @@ def link_code_smell(
     Returns:
         CLIResponse with the created edge details
     """
+    # Validate enforcement before any I/O
+    enforcement = enforcement.strip().lower()
+    if enforcement not in _ALLOWED_ENFORCEMENT:
+        return error_response(
+            "database.link",
+            ErrorCode.VALIDATION_ERROR,
+            f"Invalid enforcement '{enforcement}'. Allowed: {', '.join(sorted(_ALLOWED_ENFORCEMENT))}",
+            start_time,
+        )
+
+    # Validate collection name to prevent AQL injection
+    if not _VALID_COLLECTION_NAME.match(smell_collection):
+        return error_response(
+            "database.link",
+            ErrorCode.VALIDATION_ERROR,
+            f"Invalid collection name '{smell_collection}'. Must match [a-zA-Z_][a-zA-Z0-9_-]{{0,255}}",
+            start_time,
+        )
+
     try:
         config = get_config()
     except ValueError as e:
