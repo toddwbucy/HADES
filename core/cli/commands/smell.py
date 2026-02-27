@@ -487,40 +487,39 @@ def smell_report(
         try:
             from core.services.embedder_client import EmbedderClient
 
-            embedder = EmbedderClient()
+            with EmbedderClient() as embedder:
+                for ref in verified_refs:
+                    file_str = ref.get("file", "")
+                    cs_id = ref.get("cs_id", "")
+                    smell_name = ref.get("smell_name", "")
 
-            for ref in verified_refs:
-                file_str = ref.get("file", "")
-                cs_id = ref.get("cs_id", "")
-                smell_name = ref.get("smell_name", "")
+                    try:
+                        file_text = Path(file_str).read_text(encoding="utf-8", errors="replace")
+                        # Truncate to ~8000 chars to avoid memory issues with large files
+                        if len(file_text) > 8000:
+                            file_text = file_text[:8000]
 
-                try:
-                    file_text = Path(file_str).read_text(encoding="utf-8", errors="replace")
-                    # Truncate to ~8000 chars to avoid memory issues with large files
-                    if len(file_text) > 8000:
-                        file_text = file_text[:8000]
+                        # Embed file text (as passage) and smell name (as query)
+                        file_vec = embedder.embed_texts([file_text], task="retrieval.passage")[0].tolist()
+                        smell_vec = embedder.embed_texts([smell_name], task="retrieval.query")[0].tolist()
 
-                    # Embed file text (as passage) and smell name (as query)
-                    file_vec = embedder.embed_texts([file_text], task="retrieval.passage")[0].tolist()
-                    smell_vec = embedder.embed_texts([smell_name], task="retrieval.query")[0].tolist()
+                        similarity = _cosine_similarity(file_vec, smell_vec)
+                        probe_results.append({
+                            "cs_id": cs_id,
+                            "smell_name": smell_name,
+                            "file": file_str,
+                            "cosine_similarity": round(similarity, 4),
+                            "pass": similarity >= 0.5,
+                        })
 
-                    similarity = _cosine_similarity(file_vec, smell_vec)
-                    probe_results.append({
-                        "cs_id": cs_id,
-                        "smell_name": smell_name,
-                        "file": file_str,
-                        "cosine_similarity": round(similarity, 4),
-                        "pass": similarity >= 0.5,
-                    })
-
-                except Exception as probe_err:
-                    probe_results.append({
-                        "cs_id": cs_id,
-                        "smell_name": smell_name,
-                        "file": file_str,
-                        "error": str(probe_err),
-                        "pass": None,
-                    })
+                    except Exception as probe_err:
+                        probe_results.append({
+                            "cs_id": cs_id,
+                            "smell_name": smell_name,
+                            "file": file_str,
+                            "error": str(probe_err),
+                            "pass": None,
+                        })
 
         except (ImportError, Exception) as e:
             # Embedding service not available — report without probe
