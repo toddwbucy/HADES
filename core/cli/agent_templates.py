@@ -606,12 +606,15 @@ hades --database NL smell verify {path}
 ```
 
 Parse the JSON response:
-- `data.files` — per-file breakdown of CS-XX/Eq-N references found in comments
-- `data.verified` — list of references that resolve to graph nodes
-- `data.unresolved` — list of references that appear in code but are NOT in the graph
+- `data.files_scanned` (int) — number of source files scanned
+- `data.refs_found` (int) — total number of CS-XX references found
+- `data.verified_refs` (list) — references that resolve to graph nodes with compliance edges
+- `data.missing_from_graph` (list) — references to smells that don't exist in the NL graph
+- `data.unlinked_claims` (list) — references where the smell exists but no compliance edge is present
 
-**Unresolved references indicate documentation drift** — code claims compliance with a smell
-that doesn't exist in the NL graph. Note these for the report.
+**`missing_from_graph` and `unlinked_claims` indicate documentation drift** — code claims
+compliance with a smell that isn't fully wired in the graph. Note these for the report but
+do NOT treat them as blocking violations.
 
 ### Step 3 — Full Compliance Report
 
@@ -621,8 +624,11 @@ hades --database NL smell report {path}
 
 This merges static lint + reference verification + embedding probe into one artifact.
 Parse the JSON response:
-- `data.static` — same structure as Step 1 output
-- `data.verify` — same structure as Step 2 output
+- `data.passed` (bool) — overall verdict (true only if all static checks pass)
+- `data.static_check` — static lint results:
+  - `passed` (bool), `violations` (list), `violation_count` (int), `files_checked` (int)
+- `data.ref_verification` — reference verification results:
+  - `refs_found` (int), `verified_refs` (list), `missing_from_graph` (list), `unlinked_claims` (list)
 - `data.embedding_probe` — list of `{{file, smell_id, similarity, pass}}` entries
   - `pass: true` — cosine similarity ≥ 0.5 (file semantically aligns with smell)
   - `pass: false` — cosine similarity < 0.5 (semantic misalignment)
@@ -633,16 +639,16 @@ Parse the JSON response:
 Group all findings from Step 3 by compliance tier:
 
 **STATIC tier** (smell_id: 10, 11, 13, 40):
-- Collect all violations from `data.static.violations` where `smell_id` is in {{10, 11, 13, 40}}
+- Collect all violations from `data.static_check.violations` where `smell_id` is in {{10, 11, 13, 40}}
 - Verdict: PASS if the list is empty, FAIL if any violations exist
 
 **BEHAVIORAL tier** (smell_id: 27, 28, 32):
-- Collect violations from `data.static.violations` where `smell_id` is in {{27, 28, 32}}
+- Collect violations from `data.static_check.violations` where `smell_id` is in {{27, 28, 32}}
 - Collect embedding probe entries where `smell_id` is in {{27, 28, 32}} and `pass: false`
 - Do NOT auto-reject — list findings with file, line, pattern/similarity as evidence
 
 **ARCHITECTURAL tier** (smell_id: 31):
-- Collect any unresolved references to CS-31 from `data.verify`
+- Collect any entries in `data.ref_verification.unlinked_claims` or `data.ref_verification.missing_from_graph` referencing CS-31
 - Collect embedding probe entry for CS-31 if present
 - Do NOT auto-reject — describe the pattern observed
 
@@ -672,7 +678,7 @@ The `--remaining` message must state the concrete next action:
 
 **Auto-REJECT (any STATIC violation):**
 
-If `data.static.all_pass` is `false` AND any violation has `smell_id` in {{10, 11, 13, 40}}:
+If `data.passed` is `false` (i.e., `data.static_check.passed` is `false`) AND any violation has `smell_id` in {{10, 11, 13, 40}}:
 1. Do NOT advance the task status — leave it at its current state
 2. Output the rejection notice (see Output Format below)
 3. The task remains for the developer to address the violations
