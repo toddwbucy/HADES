@@ -115,9 +115,12 @@ async def unload_model() -> None:
         state.embedder = None
         state.model_loaded = False
         try:
+            import gc
+
             import torch
 
             if torch.cuda.is_available():
+                gc.collect()  # Break reference cycles before releasing CUDA cache
                 torch.cuda.empty_cache()
                 logger.info("CUDA cache cleared")
         except Exception as e:
