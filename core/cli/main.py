@@ -1244,6 +1244,59 @@ def database_index_status(
     return vector_index_status(start_time, collection=collection)
 
 
+@db_app.command("backfill-text")
+def database_backfill_text(
+    collection: str = typer.Option(
+        None,
+        "--collection",
+        "-c",
+        help="Limit to one collection (default: all known NL graph collections)",
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Preview changes without writing (default: on). Dry runs use the read-only socket.",
+    ),
+) -> None:
+    """Backfill missing `text` fields from domain-specific content fields.
+
+    Knowledge graph nodes (equations, definitions, axioms, etc.) store their
+    content in schema-specific fields (`latex`, `description`, `nl_reframe`, etc.)
+    but lack the canonical `text` field that semantic search and agent queries rely on.
+
+    This command detects gaps and fills them by composing `text` from whatever
+    content fields are available per collection type.
+
+    Always run with --dry-run first (the default) to preview what will change.
+
+    Examples:
+        hades --db NL db backfill-text                             # dry run, all collections
+        hades --db NL db backfill-text --collection tnt_equations  # one collection, dry run
+        hades --db NL db backfill-text --no-dry-run                # apply to all collections
+    """
+    start_time = time.time()
+
+    try:
+        from core.cli.commands.database import backfill_text
+
+        response = backfill_text(start_time, collection_filter=collection, dry_run=dry_run)
+        print_response(response)
+        if not response.success:
+            raise typer.Exit(1) from None
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        response = error_response(
+            command="database.backfill-text",
+            code=ErrorCode.DATABASE_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+        print_response(response)
+        raise typer.Exit(1) from None
+
+
 # =============================================================================
 # Graph Commands
 # =============================================================================
