@@ -3342,7 +3342,30 @@ def backfill_text(
     Returns:
         CLIResponse with per-collection stats and (in dry-run) text samples
     """
-    collections = [collection_filter] if collection_filter else list(_BACKFILL_COLLECTIONS)
+    # Validate user-supplied collection name against the whitelist to prevent
+    # injection — col_name is interpolated directly into AQL strings.
+    if collection_filter:
+        validation_err = _validate_collection_name(collection_filter)
+        if validation_err:
+            return error_response(
+                command="database.backfill-text",
+                code=ErrorCode.VALIDATION_ERROR,
+                message=validation_err,
+                start_time=start_time,
+            )
+        if collection_filter not in _BACKFILL_COLLECTIONS:
+            return error_response(
+                command="database.backfill-text",
+                code=ErrorCode.VALIDATION_ERROR,
+                message=(
+                    f"Collection '{collection_filter}' is not in the backfill whitelist. "
+                    f"Known collections: {', '.join(_BACKFILL_COLLECTIONS)}"
+                ),
+                start_time=start_time,
+            )
+        collections = [collection_filter]
+    else:
+        collections = list(_BACKFILL_COLLECTIONS)
 
     try:
         # read_only=dry_run: dry runs use the RO socket (physically cannot write)
@@ -3470,6 +3493,15 @@ def backfill_text(
         summary["total_would_update"] = total_would_update
     else:
         summary["total_updated"] = total_updated
+
+    if errors:
+        return error_response(
+            command="database.backfill-text",
+            code=ErrorCode.DATABASE_ERROR,
+            message=f"{len(errors)} collection(s) failed during backfill",
+            details=summary,
+            start_time=start_time,
+        )
 
     return success_response(
         command="database.backfill-text",
