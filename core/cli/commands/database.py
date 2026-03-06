@@ -3196,3 +3196,283 @@ def link_code_smell(
 
     except Exception as e:
         return error_response("database.link", ErrorCode.DATABASE_ERROR, str(e), start_time)
+
+
+# =============================================================================
+# Text Backfill
+# =============================================================================
+
+# Collections whose nodes use domain-specific field schemas instead of `text`.
+# Ordered by paper/type for readable output.
+_BACKFILL_COLLECTIONS: list[str] = [
+    "tnt_equations", "tnt_definitions", "tnt_axioms", "tnt_abstractions",
+    "hope_equations", "hope_definitions", "hope_axioms", "hope_abstractions",
+    "atlas_equations", "atlas_definitions", "atlas_axioms", "atlas_abstractions",
+    "lattice_equations", "lattice_definitions", "lattice_axioms", "lattice_abstractions",
+    "miras_equations", "miras_definitions", "miras_axioms", "miras_abstractions",
+    "titans_equations", "titans_definitions", "titans_axioms", "titans_abstractions",
+    "titans_revisited_abstractions", "titans_revisited_axioms",
+    "trellis_equations", "trellis_definitions", "trellis_axioms", "trellis_abstractions",
+    "conveyance_equations", "conveyance_definitions",
+    "nl_axioms", "nl_code_smells", "nl_reframings",
+]
+
+
+def _get_collection_type(name: str) -> str:
+    """Map collection name to its content-field schema type."""
+    if name.endswith("_equations"):
+        return "equations"
+    if name.endswith("_definitions"):
+        return "definitions"
+    if name.endswith("_axioms"):
+        return "axioms"
+    if name.endswith("_abstractions"):
+        return "abstractions"
+    if name == "nl_reframings":
+        return "reframings"
+    if name == "nl_code_smells":
+        return "code_smells"
+    return "generic"
+
+
+def _str(doc: dict[str, Any], *keys: str) -> str:
+    """Extract the first non-empty string value from doc for the given keys.
+
+    Safely handles fields that may be dicts, lists, or None.
+    """
+    for key in keys:
+        val = doc.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def _build_node_text(doc: dict[str, Any], col_type: str) -> str | None:
+    """Construct the canonical `text` field from domain-specific content fields.
+
+    Each collection type stores its content in different field names.
+    This function normalises them into a single human-readable string
+    that semantic search can operate on.
+
+    Returns None if no usable content is found (node needs manual curation).
+    """
+    parts: list[str] = []
+
+    # Resolve display name from whichever name-like field is populated
+    name = _str(doc, "name", "label", "term", "title")
+
+    if col_type == "equations":
+        if name:
+            parts.append(name)
+        if desc := _str(doc, "description"):
+            parts.append(desc)
+        if latex := _str(doc, "latex"):
+            parts.append(f"LaTeX: {latex}")
+
+    elif col_type in ("definitions", "axioms", "abstractions", "code_smells"):
+        if name:
+            parts.append(name)
+        if desc := _str(doc, "description"):
+            parts.append(desc)
+        # conveyance_definitions uses `content` instead of `description`
+        if content := _str(doc, "content"):
+            parts.append(content)
+        # axioms may carry a `principles` list
+        if principles := doc.get("principles"):
+            if isinstance(principles, list):
+                joined = "\n".join(str(p) for p in principles if p)
+                if joined:
+                    parts.append(joined)
+            elif isinstance(principles, str) and principles.strip():
+                parts.append(principles.strip())
+        # some axioms have a `compositional_identity` string
+        if ci := _str(doc, "compositional_identity"):
+            parts.append(ci)
+
+    elif col_type == "reframings":
+        # nl_reframings has a rich multi-field schema
+        if name:
+            parts.append(name)
+        if tv := _str(doc, "traditional_view"):
+            parts.append(f"Traditional view: {tv}")
+        if nr := _str(doc, "nl_reframe"):
+            parts.append(f"NL reframing: {nr}")
+        if kr := _str(doc, "key_reframing"):
+            parts.append(f"Key insight: {kr}")
+        if qd := _str(doc, "qualitative_definition"):
+            parts.append(qd)
+        if vd := _str(doc, "verbatim_definition"):
+            parts.append(f"Verbatim: {vd}")
+        if impl := _str(doc, "implication"):
+            parts.append(f"Implication: {impl}")
+
+    else:  # generic
+        if name:
+            parts.append(name)
+        if desc := _str(doc, "description"):
+            parts.append(desc)
+
+    # Last-resort fallback: use _key so the node is at least findable by name
+    if not parts and (key := _str(doc, "_key")):
+        parts.append(key)
+
+    text = "\n\n".join(p for p in parts if p)
+    return text.strip() or None
+
+
+def backfill_text(
+    start_time: float,
+    collection_filter: str | None = None,
+    dry_run: bool = True,
+) -> CLIResponse:
+    """Backfill missing `text` fields from domain-specific content fields.
+
+    Knowledge graph nodes store their content in schema-specific fields
+    (`latex`, `description`, `nl_reframe`, etc.) but lack the canonical
+    `text` field that HADES semantic search and agent queries rely on.
+
+    In dry-run mode (default) connects via the read-only socket — writes are
+    physically impossible, not just skipped.
+
+    Args:
+        start_time: Start time for duration calculation
+        collection_filter: If set, only process this collection
+        dry_run: When True, preview changes without writing
+
+    Returns:
+        CLIResponse with per-collection stats and (in dry-run) text samples
+    """
+    collections = [collection_filter] if collection_filter else list(_BACKFILL_COLLECTIONS)
+
+    try:
+        # read_only=dry_run: dry runs use the RO socket (physically cannot write)
+        client, _arango_config, _db_name = _make_client(read_only=dry_run)
+    except ValueError as e:
+        return error_response(
+            command="database.backfill-text",
+            code=ErrorCode.CONFIG_ERROR,
+            message=str(e),
+            start_time=start_time,
+        )
+
+    col_results: list[dict[str, Any]] = []
+    total_found = 0
+    total_would_update = 0
+    total_updated = 0
+    total_skipped = 0
+    errors: list[dict[str, Any]] = []
+
+    try:
+        for col_name in collections:
+            col_type = _get_collection_type(col_name)
+            progress(f"[backfill-text] Scanning {col_name} ({col_type}) ...")
+
+            # Fetch all docs missing text
+            try:
+                docs: list[dict[str, Any]] = client.query(
+                    f"FOR d IN {col_name} FILTER d.text == null OR d.text == '' RETURN d"
+                )
+            except Exception as e:
+                err_str = str(e)
+                # Skip collections that don't exist in the target database
+                if any(
+                    marker in err_str.lower()
+                    for marker in ("1203", "collection not found", "unknown collection")
+                ):
+                    continue
+                errors.append({"collection": col_name, "error": err_str})
+                continue
+
+            if not docs:
+                col_results.append(
+                    {"collection": col_name, "found": 0, "status": "clean"}
+                )
+                continue
+
+            # Build text for each doc in Python, split into updatable vs uncuratable
+            updates: list[dict[str, Any]] = []
+            skipped_keys: list[str] = []
+            for doc in docs:
+                text = _build_node_text(doc, col_type)
+                if text:
+                    updates.append({"_key": doc["_key"], "text": text})
+                else:
+                    skipped_keys.append(doc["_key"])
+
+            found = len(docs)
+            total_found += found
+            total_skipped += len(skipped_keys)
+
+            if dry_run:
+                total_would_update += len(updates)
+                col_results.append(
+                    {
+                        "collection": col_name,
+                        "found": found,
+                        "would_update": len(updates),
+                        "skipped": len(skipped_keys),
+                        "skipped_keys": skipped_keys,
+                        "samples": [
+                            {"_key": u["_key"], "text_preview": u["text"][:150]}
+                            for u in updates[:3]
+                        ],
+                        "status": "dry_run",
+                    }
+                )
+            else:
+                updated = 0
+                if updates:
+                    try:
+                        # Single AQL call per collection: iterate precomputed list
+                        result = client.query(
+                            f"""
+                            FOR u IN @updates
+                                UPDATE {{_key: u._key}} WITH {{text: u.text}} IN {col_name}
+                                COLLECT WITH COUNT INTO n
+                                RETURN n
+                            """,
+                            bind_vars={"updates": updates},
+                        )
+                        updated = result[0] if result else len(updates)
+                    except Exception as e:
+                        errors.append({"collection": col_name, "error": str(e)})
+
+                total_updated += updated
+                col_results.append(
+                    {
+                        "collection": col_name,
+                        "found": found,
+                        "updated": updated,
+                        "skipped": len(skipped_keys),
+                        "skipped_keys": skipped_keys,
+                        "status": "updated",
+                    }
+                )
+
+            verb = "would update" if dry_run else "updated"
+            progress(
+                f"[backfill-text] {col_name}: {len(updates)} {verb}, "
+                f"{len(skipped_keys)} skipped (no content)"
+            )
+
+    finally:
+        client.close()
+
+    summary: dict[str, Any] = {
+        "dry_run": dry_run,
+        "collections_scanned": len(col_results),
+        "total_found": total_found,
+        "total_skipped": total_skipped,
+        "errors": errors,
+        "results": col_results,
+    }
+    if dry_run:
+        summary["total_would_update"] = total_would_update
+    else:
+        summary["total_updated"] = total_updated
+
+    return success_response(
+        command="database.backfill-text",
+        data=summary,
+        start_time=start_time,
+    )
