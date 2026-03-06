@@ -3394,20 +3394,22 @@ def backfill_text(
 
             # Fetch all docs missing text, including whitespace-only values
             try:
+                from core.database.arango.optimized_client import ArangoHttpError
+
                 docs: list[dict[str, Any]] = client.query(
                     f"FOR d IN {col_name}"
                     f" FILTER d.text == null OR LENGTH(TRIM(TO_STRING(d.text))) == 0"
                     f" RETURN d"
                 )
-            except Exception as e:
-                err_str = str(e)
-                # Skip collections that don't exist in the target database
-                if any(
-                    marker in err_str.lower()
-                    for marker in ("1203", "collection not found", "unknown collection")
-                ):
+            except ArangoHttpError as e:
+                # AQL collection-not-found: HTTP 400 + errorNum 1203/1228
+                if e.details.get("errorNum") in (1203, 1228):
+                    collections_attempted -= 1  # not a real attempt — collection absent
                     continue
-                errors.append({"collection": col_name, "error": err_str})
+                errors.append({"collection": col_name, "error": str(e)})
+                continue
+            except Exception as e:
+                errors.append({"collection": col_name, "error": str(e)})
                 continue
 
             if not docs:
@@ -3448,6 +3450,7 @@ def backfill_text(
                 )
             else:
                 updated = 0
+                update_failed = False
                 if updates:
                     try:
                         # Single AQL call per collection: iterate precomputed list
@@ -3463,6 +3466,7 @@ def backfill_text(
                         updated = result[0] if result else len(updates)
                     except Exception as e:
                         errors.append({"collection": col_name, "error": str(e)})
+                        update_failed = True
 
                 total_updated += updated
                 col_results.append(
@@ -3472,7 +3476,7 @@ def backfill_text(
                         "updated": updated,
                         "skipped": len(skipped_keys),
                         "skipped_keys": skipped_keys,
-                        "status": "updated",
+                        "status": "failed" if update_failed else "updated",
                     }
                 )
 
