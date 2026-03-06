@@ -3379,6 +3379,7 @@ def backfill_text(
         )
 
     col_results: list[dict[str, Any]] = []
+    collections_attempted = 0
     total_found = 0
     total_would_update = 0
     total_updated = 0
@@ -3389,11 +3390,14 @@ def backfill_text(
         for col_name in collections:
             col_type = _get_collection_type(col_name)
             progress(f"[backfill-text] Scanning {col_name} ({col_type}) ...")
+            collections_attempted += 1
 
-            # Fetch all docs missing text
+            # Fetch all docs missing text, including whitespace-only values
             try:
                 docs: list[dict[str, Any]] = client.query(
-                    f"FOR d IN {col_name} FILTER d.text == null OR d.text == '' RETURN d"
+                    f"FOR d IN {col_name}"
+                    f" FILTER d.text == null OR LENGTH(TRIM(TO_STRING(d.text))) == 0"
+                    f" RETURN d"
                 )
             except Exception as e:
                 err_str = str(e)
@@ -3483,6 +3487,7 @@ def backfill_text(
 
     summary: dict[str, Any] = {
         "dry_run": dry_run,
+        "collections_attempted": collections_attempted,
         "collections_scanned": len(col_results),
         "total_found": total_found,
         "total_skipped": total_skipped,
