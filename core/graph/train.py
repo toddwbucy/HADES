@@ -376,6 +376,80 @@ class RGCNTrainer:
         logger.info("Test: acc=%.3f, auc=%.3f", acc, auc)
         return {"test_acc": acc, "test_auc": auc}
 
+    def load_model(self, model_path: str | Path | None = None) -> dict:
+        """Load a trained RGCN model from checkpoint.
+
+        Args:
+            model_path: Path to .pt checkpoint. Defaults to models/rgcn/rgcn_{database}.pt
+
+        Returns:
+            Checkpoint config dict
+        """
+        path = Path(model_path) if model_path else self.model_dir / f"rgcn_{self.database}.pt"
+        if not path.exists():
+            raise FileNotFoundError(f"No trained model at {path}. Run 'hades graph-embed train' first.")
+
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        cfg = checkpoint["config"]
+
+        self.encoder = RGCNEncoder(
+            num_relations=cfg["num_relations"],
+            num_collection_types=cfg["num_collection_types"],
+            hidden_dim=cfg["hidden_dim"],
+            embed_dim=cfg["embed_dim"],
+            num_bases=cfg["num_bases"],
+        ).to(self.device)
+
+        self.predictor = LinkPredictor(embed_dim=cfg["embed_dim"]).to(self.device)
+
+        self.encoder.load_state_dict(
+            {k: v.to(self.device) for k, v in checkpoint["encoder_state"].items()}
+        )
+        self.predictor.load_state_dict(
+            {k: v.to(self.device) for k, v in checkpoint["predictor_state"].items()}
+        )
+
+        logger.info(
+            "Loaded model from %s (trained on %d nodes, %d edges)",
+            path,
+            checkpoint.get("num_nodes", 0),
+            checkpoint.get("num_edges", 0),
+        )
+        return cfg
+
+    def update_embeddings(self, target_database: str | None = None) -> dict:
+        """Incremental update: reload graph, re-embed with trained model, export.
+
+        This is the inductive update path — no retraining needed. The trained
+        RGCN model produces embeddings for all nodes (including newly added ones)
+        by running a single forward pass over the current graph.
+
+        Args:
+            target_database: Database to write embeddings to (defaults to source)
+
+        Returns:
+            Dict with update metrics
+        """
+        if self.encoder is None:
+            raise RuntimeError("Load a model first via load_model()")
+        if self.graph_data is None:
+            raise RuntimeError("Load graph data first via load_data()")
+
+        old_nodes = self.graph_data.get("_prev_num_nodes", self.graph_data["num_nodes"])
+        num_nodes = self.graph_data["num_nodes"]
+        num_edges = self.graph_data["num_edges"]
+
+        # export_embeddings() calls get_embeddings() internally
+        n_exported = self.export_embeddings(target_database=target_database)
+
+        return {
+            "num_nodes": num_nodes,
+            "num_edges": num_edges,
+            "new_nodes": max(0, num_nodes - old_nodes),
+            "nodes_exported": n_exported,
+            "target_database": target_database or self.database,
+        }
+
     def get_embeddings(self) -> torch.Tensor:
         """Get structural embeddings for all nodes.
 
