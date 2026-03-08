@@ -147,6 +147,41 @@ def graph_embed_node(
         )
 
 
+def graph_update(
+    database: str,
+    device: str,
+    export_to: str | None,
+    start_time: float,
+):
+    """Incremental update: reload graph, re-embed with trained model, export."""
+    try:
+        from core.graph.train import RGCNTrainer
+
+        trainer = RGCNTrainer(database=database, device=device)
+        cfg = trainer.load_model()
+        trainer.load_data()
+
+        target = export_to or database
+        result = trainer.update_embeddings(target_database=target)
+        result["database"] = database
+        result["device"] = device
+        result["model_config"] = cfg
+
+        return success_response(
+            command="graph-embed.update",
+            data=result,
+            start_time=start_time,
+        )
+
+    except Exception as e:
+        return error_response(
+            command="graph-embed.update",
+            code=ErrorCode.PROCESSING_FAILED,
+            message=str(e),
+            start_time=start_time,
+        )
+
+
 def graph_neighbors(
     node_id: str,
     database: str,

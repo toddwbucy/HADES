@@ -2533,6 +2533,36 @@ def graph_embed_node_cmd(
     return graph_embed_node(node_id=node_id, database=config.arango_database, start_time=start_time)
 
 
+@graph_embed_app.command("update")
+@cli_command("graph-embed.update", ErrorCode.PROCESSING_FAILED)
+def graph_embed_update_cmd(
+    device: str = typer.Option("cuda:0", help="Device for inference (e.g., cuda:0, cpu)"),
+    export_to: str = typer.Option(None, "--export-to", help="Export embeddings to a different database"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Incremental update: reload graph, re-embed with trained model, export.
+
+    Loads the saved RGCN checkpoint, re-reads the current graph (which may
+    have new nodes/edges since training), and exports fresh embeddings.
+    No retraining needed — this is the inductive update path.
+
+    Examples:
+        hades --db NL_graph_v0 graph-embed update
+        hades --db NL_graph_v0 graph-embed update --export-to NestedLearning
+        hades --gpu 2 --db NL_graph_v0 graph-embed update
+    """
+    from core.cli.commands.graph_embed import graph_update
+    from core.cli.config import get_config
+
+    config = get_config()
+    return graph_update(
+        database=config.arango_database,
+        device=device,
+        export_to=export_to,
+        start_time=start_time,
+    )
+
+
 @graph_embed_app.command("neighbors")
 @cli_command("graph-embed.neighbors", ErrorCode.QUERY_FAILED)
 def graph_embed_neighbors_cmd(
