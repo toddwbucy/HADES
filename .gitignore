@@ -5,6 +5,9 @@ CLAUDE.md
 # Local planning
 MIGRATION_PLAN.md
 
+# Trained models (large binary files)
+models/
+
 # Python
 __pycache__/
 *.py[cod]

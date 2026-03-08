@@ -191,6 +191,15 @@ smell_app = typer.Typer(
 )
 app.add_typer(smell_app, name="smell")
 
+# Graph structural embeddings (RGCN)
+graph_embed_app = typer.Typer(
+    name="graph-embed",
+    help="RGCN structural graph embeddings: train, query, and find neighbors.",
+    no_args_is_help=True,
+    rich_markup_mode=None,
+)
+app.add_typer(graph_embed_app, name="graph-embed")
+
 
 # =============================================================================
 # Top-Level Commands (Standalone Tools)
@@ -2452,6 +2461,107 @@ def task_graph_integration_cmd(
         database=database,
     )
     print(prompt)
+
+
+# =============================================================================
+# Graph Structural Embedding Commands (RGCN)
+# =============================================================================
+
+
+@graph_embed_app.command("train")
+@cli_command("graph-embed.train", ErrorCode.PROCESSING_FAILED)
+def graph_embed_train_cmd(
+    device: str = typer.Option("cuda:2", help="Torch device (cuda:N or cpu)"),
+    epochs: int = typer.Option(300, help="Max training epochs"),
+    patience: int = typer.Option(30, help="Early stopping patience"),
+    hidden_dim: int = typer.Option(256, help="Hidden layer dimension"),
+    embed_dim: int = typer.Option(128, help="Output embedding dimension"),
+    lr: float = typer.Option(0.005, help="Learning rate"),
+    export: bool = typer.Option(True, help="Export embeddings to ArangoDB after training"),
+    export_to: str = typer.Option(None, help="Export to a different database"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Train RGCN structural embeddings on a knowledge graph.
+
+    Loads all edges and node features from the database, trains a two-layer
+    RGCN via link prediction, and exports 128-dim structural embeddings
+    back to each node document.
+
+    Examples:
+        hades --database NL_graph_v0 graph-embed train
+        hades --database NL_graph_v0 graph-embed train --device cpu --epochs 100
+        hades --database NL_graph_v0 graph-embed train --export-to NestedLearning
+        hades --gpu 2 --database NL_graph_v0 graph-embed train
+    """
+    from core.cli.commands.graph_embed import graph_train
+    from core.cli.config import get_config
+
+    config = get_config()
+
+    return graph_train(
+        database=config.arango_database,
+        device=device,
+        epochs=epochs,
+        patience=patience,
+        hidden_dim=hidden_dim,
+        embed_dim=embed_dim,
+        lr=lr,
+        export=export,
+        export_to=export_to,
+        start_time=start_time,
+    )
+
+
+@graph_embed_app.command("embed")
+@cli_command("graph-embed.embed", ErrorCode.QUERY_FAILED)
+def graph_embed_node_cmd(
+    node_id: str = typer.Argument(..., help="Node ID (collection/key)"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Get structural embedding for a specific node.
+
+    Returns the 128-dim structural embedding vector for a node.
+
+    Examples:
+        hades --db NL_graph_v0 graph-embed embed titans_equations/eq-017-gradient-as-matmul
+        hades --db NL_graph_v0 graph-embed embed nl_code_smells/smell-022-augment-not-replace
+    """
+    from core.cli.commands.graph_embed import graph_embed_node
+    from core.cli.config import get_config
+
+    config = get_config()
+    return graph_embed_node(node_id=node_id, database=config.arango_database, start_time=start_time)
+
+
+@graph_embed_app.command("neighbors")
+@cli_command("graph-embed.neighbors", ErrorCode.QUERY_FAILED)
+def graph_embed_neighbors_cmd(
+    node_id: str = typer.Argument(..., help="Node ID (collection/key)"),
+    k: int = typer.Option(10, "-k", help="Number of nearest neighbors"),
+    collection: list[str] = typer.Option(None, "-c", "--collection", help="Restrict search to specific collections"),
+    start_time: float = typer.Option(0.0, hidden=True),
+) -> CLIResponse:
+    """Find k-nearest structural neighbors for a node.
+
+    Searches across all collections (or specified ones) for nodes with
+    the most similar structural embeddings.
+
+    Examples:
+        hades --db NL_graph_v0 graph-embed neighbors titans_equations/eq-017-gradient-as-matmul
+        hades --db NL_graph_v0 graph-embed neighbors nl_code_smells/smell-022-augment-not-replace -k 5
+        hades --db NL_graph_v0 graph-embed neighbors nl_axioms/NL_IS -c titans_equations -c hope_equations
+    """
+    from core.cli.commands.graph_embed import graph_neighbors
+    from core.cli.config import get_config
+
+    config = get_config()
+    return graph_neighbors(
+        node_id=node_id,
+        database=config.arango_database,
+        k=k,
+        collections=collection if collection else None,
+        start_time=start_time,
+    )
 
 
 # =============================================================================
