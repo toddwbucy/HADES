@@ -137,7 +137,7 @@ class CLIConfig:
     arango_password: str
     arango_host: str = "localhost"
     arango_port: int = 8529
-    arango_database: str = "arxiv_datastore"
+    arango_database: str = "NestedLearning"
     arango_ro_socket: str | None = None
     arango_rw_socket: str | None = None
 
@@ -172,7 +172,7 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
     Optional environment variables:
         ARANGO_HOST: ArangoDB host (default: localhost)
         ARANGO_PORT: ArangoDB port (default: 8529)
-        HADES_DATABASE: Database name (default: arxiv_datastore)
+        HADES_DATABASE: Database name (default: NestedLearning)
         ARANGO_RO_SOCKET: Read-only Unix socket path for ArangoDB
         ARANGO_RW_SOCKET: Read-write Unix socket path for ArangoDB
         HADES_PDF_PATH: Base path for arxiv PDF storage
@@ -267,7 +267,7 @@ def get_config(config_path: Path | None = None) -> CLIConfig:
         arango_host=os.environ.get("ARANGO_HOST") or _get_nested(yaml_config, "database", "host", default="localhost"),
         arango_port=arango_port,
         arango_database=os.environ.get("HADES_DATABASE")
-        or _get_nested(yaml_config, "database", "database", default="arxiv_datastore"),
+        or _get_nested(yaml_config, "database", "database", default="NestedLearning"),
         arango_ro_socket=ro_socket,
         arango_rw_socket=rw_socket,
         pdf_base_path=Path(

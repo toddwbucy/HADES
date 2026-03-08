@@ -15,7 +15,7 @@ database:
   # ArangoDB connection settings
   host: localhost
   port: 8529
-  database: arxiv_datastore
+  database: NestedLearning
   username: root
   # password: Set via ARANGO_PASSWORD environment variable (required)
 

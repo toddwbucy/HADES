@@ -106,7 +106,7 @@ Codebase graph:
   hades_codebase_update    — incremental update
   hades_codebase_stats     — collection counts
 
-The `database` parameter selects the ArangoDB database (e.g. "NL", "bident").
+The `database` parameter selects the ArangoDB database (e.g. "NestedLearning", "bident").
 Omit it to use the default configured database.
 """,
 )

@@ -39,8 +39,8 @@ The `hades` CLI outputs JSON to stdout; progress and logs go to stderr.
 - `--gpu` / `-g` — GPU device index for embedding commands (e.g., 0, 1, 2)
 
 ```bash
-hades --database NL db collections        # list collections in NL database
-hades --db arxiv_datastore db stats       # stats for arxiv_datastore
+hades --database NestedLearning db collections  # list collections in NestedLearning database
+hades --db arxiv_datastore db stats       # stats for a different database
 hades --gpu 2 ingest paper.pdf            # use GPU 2 for embedding
 ```
 
@@ -188,14 +188,14 @@ hades db create-index --metric l2
 ```bash
 # Context orientation (start here — compact metadata map for query planning)
 hades orient                               # profiles, counts, recent papers
-hades --database NL orient                 # orient on a specific database
+hades --database NestedLearning orient      # orient on a specific database
 
 # System overview
 hades status                               # version, service health, collection stats
 
 # Multi-database discovery
 hades db databases                         # list all accessible databases
-hades --database NL db collections         # collections in a specific database
+hades --database NestedLearning db collections  # collections in a specific database
 
 # Recent activity
 hades db recent                            # last 10 ingested papers
@@ -345,7 +345,7 @@ HADES_TOOL_SECTION = """\
 
 The `hades` CLI provides semantic search over a knowledge base of academic papers backed by ArangoDB. It provides three composable tools: Extract (Docling), Embed (Jina v4), and Store (ArangoDB). All commands output JSON to stdout; progress goes to stderr.
 
-**Global Options:** `--database` / `--db` targets a specific ArangoDB database (e.g., `hades --database NL db query "text"`). `--gpu` / `-g` selects GPU device.
+**Global Options:** `--database` / `--db` targets a specific ArangoDB database (e.g., `hades --database NestedLearning db query "text"`). `--gpu` / `-g` selects GPU device.
 
 **Important — Where to Search:** Use `hades db query --collection sync` to search 2.8M synced abstracts, `hades ingest` to download and store full papers, then `hades db query` to search over ingested full-text content.
 
@@ -449,7 +449,7 @@ hades db create-index --collection sync    # for specific collection profile
 
 ```bash
 hades orient                               # compact metadata map (start here)
-hades --database NL orient                 # orient on specific database
+hades --database NestedLearning orient      # orient on specific database
 hades status                               # system overview
 hades db databases                         # list all accessible databases
 hades db recent                            # last 10 ingested papers
@@ -558,7 +558,7 @@ You are running the **automated graph integration review** for Persephone task `
 
 - **Source path**: `{path}`
 - **Task database**: `{database}` (Persephone / bident)
-- **NL graph database**: `NL` (smell definitions and compliance edges)
+- **NL graph database**: `NestedLearning` (smell definitions and compliance edges)
 
 This is the automated pre-review layer of the NL compliance pipeline. Your role is to
 execute the three-stage compliance audit, classify all findings by tier, write a compliance
@@ -583,13 +583,13 @@ structured evidence for human review in Hermes — they do NOT trigger auto-reje
 ## Execution Protocol
 
 Run all commands in sequence. The smell commands (`smell check`, `smell verify`,
-`smell report`) always target the **NL database** where the smell graph lives.
+`smell report`) always target the **NestedLearning database** where the smell graph lives.
 All `task` commands target the **{database} database** where this task lives.
 
 ### Step 1 — Static Lint
 
 ```bash
-hades --database NL smell check {path}
+hades --database NestedLearning smell check {path}
 ```
 
 Parse the JSON response:
@@ -602,7 +602,7 @@ Parse the JSON response:
 ### Step 2 — Reference Verification
 
 ```bash
-hades --database NL smell verify {path}
+hades --database NestedLearning smell verify {path}
 ```
 
 Parse the JSON response:
@@ -619,7 +619,7 @@ do NOT treat them as blocking violations.
 ### Step 3 — Full Compliance Report
 
 ```bash
-hades --database NL smell report {path}
+hades --database NestedLearning smell report {path}
 ```
 
 This merges static lint + reference verification + embedding probe into one artifact.

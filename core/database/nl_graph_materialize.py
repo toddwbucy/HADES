@@ -17,14 +17,14 @@ Special handling:
 Usage:
     from core.database.nl_graph_materialize import NLGraphMaterializer
 
-    materializer = NLGraphMaterializer(client, database="NL")
+    materializer = NLGraphMaterializer(client, database="NestedLearning")
     stats = materializer.materialize_all()
     print(stats)
 
 CLI:
-    poetry run hades --database NL db graph materialize
-    poetry run hades --database NL db graph materialize --edge nl_axiom_basis_edges
-    poetry run hades --database NL db graph materialize --dry-run
+    poetry run hades --database NestedLearning db graph materialize
+    poetry run hades --database NestedLearning db graph materialize --edge nl_axiom_basis_edges
+    poetry run hades --database NestedLearning db graph materialize --dry-run
 """
 
 from __future__ import annotations
@@ -71,10 +71,10 @@ class NLGraphMaterializer:
 
     Args:
         client: ArangoHttp2Client instance
-        database: Target database name (default "NL")
+        database: Target database name (default "NestedLearning")
     """
 
-    def __init__(self, client: Any, database: str = "NL") -> None:
+    def __init__(self, client: Any, database: str = "NestedLearning") -> None:
         self._client = client
         self._db = database
 

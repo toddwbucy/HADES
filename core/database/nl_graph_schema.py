@@ -35,7 +35,7 @@ Usage:
     # Get named graph payloads for ArangoDB /_api/gharial
     for graph in NL_GRAPH_SCHEMA.named_graphs:
         payload = graph.to_gharial_payload()
-        client.request("POST", f"/_db/NL/_api/gharial", json=payload)
+        client.request("POST", f"/_db/NestedLearning/_api/gharial", json=payload)
 """
 
 from __future__ import annotations

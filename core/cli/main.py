@@ -247,7 +247,7 @@ def orient_cmd(
 
     Examples:
         hades orient
-        hades --database NL orient
+        hades --database NestedLearning orient
         hades orient --papers 20
         hades orient --verbose
     """
@@ -1009,7 +1009,7 @@ def database_databases(
 
     Examples:
         hades db databases
-        hades --database NL db databases
+        hades --database NestedLearning db databases
     """
     from core.cli.commands.database import list_databases
 
@@ -1270,9 +1270,9 @@ def database_backfill_text(
     Always run with --dry-run first (the default) to preview what will change.
 
     Examples:
-        hades --db NL db backfill-text                             # dry run, all collections
-        hades --db NL db backfill-text --collection tnt_equations  # one collection, dry run
-        hades --db NL db backfill-text --no-dry-run                # apply to all collections
+        hades --db NestedLearning db backfill-text                             # dry run, all collections
+        hades --db NestedLearning db backfill-text --collection tnt_equations  # one collection, dry run
+        hades --db NestedLearning db backfill-text --no-dry-run                # apply to all collections
     """
     start_time = time.time()
 
@@ -1545,10 +1545,10 @@ def graph_materialize_cmd(
     depends_on, inherits_from, etc.), and creates native ArangoDB edges.
 
     Examples:
-        hades --database NL db graph materialize --dry-run
-        hades --database NL db graph materialize
-        hades --database NL db graph materialize --edge nl_axiom_basis_edges
-        hades --database NL db graph materialize --register
+        hades --database NestedLearning db graph materialize --dry-run
+        hades --database NestedLearning db graph materialize
+        hades --database NestedLearning db graph materialize --edge nl_axiom_basis_edges
+        hades --database NestedLearning db graph materialize --register
     """
     start_time = time.time()
 
@@ -2293,9 +2293,9 @@ def smell_check_cmd(
     Currently includes: CS-10, CS-11, CS-13 (and others with patterns).
 
     Examples:
-        hades --database NL smell check src/conductor.rs
-        hades --database NL smell check src/
-        hades --database NL smell check . --smell-collection nl_code_smells
+        hades --database NestedLearning smell check src/conductor.rs
+        hades --database NestedLearning smell check src/
+        hades --database NestedLearning smell check . --smell-collection nl_code_smells
     """
     start_time = time.time()
     try:
@@ -2341,8 +2341,8 @@ def smell_verify_cmd(
     Output: verified_refs, missing_from_graph, unlinked_claims.
 
     Examples:
-        hades --database NL smell verify src/conductor.rs
-        hades --database NL smell verify src/
+        hades --database NestedLearning smell verify src/conductor.rs
+        hades --database NestedLearning smell verify src/
     """
     start_time = time.time()
     try:
@@ -2392,8 +2392,8 @@ def smell_report_cmd(
     Use --pr to limit to files changed in a PR diff.
 
     Examples:
-        hades --database NL smell report src/conductor.rs
-        hades --database NL smell report src/ --pr pr.diff
+        hades --database NestedLearning smell report src/conductor.rs
+        hades --database NestedLearning smell report src/ --pr pr.diff
     """
     start_time = time.time()
     try:

@@ -215,7 +215,7 @@ Environment variables are resolved in `config.py`:
 | ARANGO_PASSWORD | Yes | - | Database password |
 | ARANGO_HOST | No | localhost | Database host |
 | ARANGO_PORT | No | 8529 | Database port |
-| HADES_DATABASE | No | arxiv_datastore | Database name |
+| HADES_DATABASE | No | NestedLearning | Database name |
 | ARANGO_RO_SOCKET | No | - | Read-only Unix socket |
 | ARANGO_RW_SOCKET | No | - | Read-write Unix socket |
 | HADES_USE_GPU | No | true | Enable GPU for embeddings |
