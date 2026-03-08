@@ -409,10 +409,13 @@ class RGCNTrainer:
             {k: v.to(self.device) for k, v in checkpoint["predictor_state"].items()}
         )
 
+        # Store training-time node count for delta tracking in update_embeddings
+        self._checkpoint_num_nodes = checkpoint.get("num_nodes", 0)
+
         logger.info(
             "Loaded model from %s (trained on %d nodes, %d edges)",
             path,
-            checkpoint.get("num_nodes", 0),
+            self._checkpoint_num_nodes,
             checkpoint.get("num_edges", 0),
         )
         return cfg
@@ -435,7 +438,16 @@ class RGCNTrainer:
         if self.graph_data is None:
             raise RuntimeError("Load graph data first via load_data()")
 
-        old_nodes = self.graph_data.get("_prev_num_nodes", self.graph_data["num_nodes"])
+        # Validate collection type count matches checkpoint
+        current_types = len(self.graph_data["collection_names"])
+        model_types = self.encoder.type_embeddings.num_embeddings
+        if current_types > model_types:
+            raise RuntimeError(
+                f"Graph has {current_types} collection types but model was trained with {model_types}. "
+                f"New collection types were added — retrain with 'hades graph-embed train'."
+            )
+
+        old_nodes = getattr(self, "_checkpoint_num_nodes", self.graph_data["num_nodes"])
         num_nodes = self.graph_data["num_nodes"]
         num_edges = self.graph_data["num_edges"]
 
