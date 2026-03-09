@@ -32,7 +32,7 @@ def _validate_collection_name(name: str) -> str:
 
     global _SAFE_COL_RE
     if _SAFE_COL_RE is None:
-        _SAFE_COL_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+        _SAFE_COL_RE = re.compile(r"^[a-zA-Z0-9_-]{1,256}$")
     if not _SAFE_COL_RE.match(name):
         raise ValueError(f"Invalid collection name: {name!r}")
     return name
@@ -70,7 +70,7 @@ def _aql(database: str, query: str, bind_vars: dict | None = None) -> list:
         data=data,
         headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
     )
-    resp = json.loads(urllib.request.urlopen(req).read())
+    resp = json.loads(urllib.request.urlopen(req, timeout=30).read())
     if resp.get("error"):
         logger.warning("AQL error: %s", resp.get("errorMessage"))
         return []
