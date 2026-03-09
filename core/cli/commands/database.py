@@ -749,6 +749,9 @@ def semantic_query(
     rerank: bool = False,
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     collection: str | None = None,
+    structural: bool = False,
+    boost_central: bool = False,
+    near: str | None = None,
 ) -> CLIResponse:
     """Perform semantic search over stored chunks.
 
@@ -764,6 +767,9 @@ def semantic_query(
         rerank: If True, re-rank top results with cross-encoder for better precision
         rerank_model: Cross-encoder model to use for re-ranking
         collection: Collection profile name (default: from env or 'arxiv')
+        structural: If True, re-rank by structural embedding centroid similarity
+        boost_central: If True, boost results from well-connected graph nodes
+        near: Node ID to anchor structural re-ranking (e.g., 'titans_equations/eq-017')
 
     Returns:
         CLIResponse with search results
@@ -806,7 +812,7 @@ def semantic_query(
             # Fetch more if we'll be doing any reranking
             if rerank:
                 fetch_limit = max(limit * 5, 50)  # Get more candidates for cross-encoder
-            elif hybrid:
+            elif hybrid or structural or boost_central or near:
                 fetch_limit = limit * 3
             else:
                 fetch_limit = limit
@@ -825,6 +831,30 @@ def semantic_query(
         if rerank and results:
             progress(f"Re-ranking with cross-encoder ({rerank_model})...")
             results = _crossencoder_rerank(results, search_text, limit, rerank_model)
+
+        # Structural embedding fusion (composable, after text-based re-ranking)
+        if (structural or boost_central or near) and results:
+            from core.cli.commands.structural_fusion import (
+                anchor_rerank,
+                centrality_boost,
+                structural_rerank,
+            )
+
+            db_name = config.arango_database
+
+            if near:
+                progress(f"Re-ranking by structural similarity to {near}...")
+                results = anchor_rerank(results, anchor_node=near, database=db_name)
+
+            if structural:
+                progress("Re-ranking by structural embedding centroid...")
+                results = structural_rerank(results, database=db_name)
+
+            if boost_central:
+                progress("Applying centrality boost...")
+                results = centrality_boost(results, database=db_name)
+
+            results = results[:limit]
 
         # Add context chunks if requested
         if context > 0 and results:
@@ -1835,6 +1865,7 @@ def _search_embeddings(
             {
                 "similarity": round(r.get("score", 0.0), 4),
                 "arxiv_id": r.get("arxiv_id"),
+                "paper_key": r.get("paper_key"),
                 "title": r.get("title"),
                 "source": profile_name,
                 "chunk_index": r.get("chunk_index"),
