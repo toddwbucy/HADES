@@ -824,8 +824,6 @@ def semantic_query(
             if hybrid and results:
                 progress("Re-ranking with keyword matching...")
                 results = _hybrid_rerank_results(results, search_text)
-                if not rerank:
-                    results = results[:limit]  # Trim unless cross-encoder will further refine
 
         # Apply cross-encoder reranking if requested (slower, more accurate)
         if rerank and results:
@@ -854,6 +852,8 @@ def semantic_query(
                 progress("Applying centrality boost...")
                 results = centrality_boost(results, database=db_name)
 
+        # Trim to final limit after all re-ranking stages complete
+        if results:
             results = results[:limit]
 
         # Add context chunks if requested

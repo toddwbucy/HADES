@@ -14,29 +14,53 @@ embeddings with Jina V4 text similarity scores:
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
-import os
-import urllib.request
 from typing import Any
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Allowlist of collection name characters to prevent AQL injection.
+# ArangoDB collection names: letters, digits, underscores, hyphens.
+_SAFE_COL_RE = None
 
-def _get_arango_auth(database: str) -> tuple[str, str]:
-    """Return (base_url, auth_header) for ArangoDB HTTP API."""
-    pw = os.environ["ARANGO_PASSWORD"]
-    auth = base64.b64encode(f"root:{pw}".encode()).decode()
-    base_url = f"http://127.0.0.1:8529/_db/{database}"
-    return base_url, f"Basic {auth}"
+
+def _validate_collection_name(name: str) -> str:
+    """Validate collection name against AQL injection."""
+    import re
+
+    global _SAFE_COL_RE
+    if _SAFE_COL_RE is None:
+        _SAFE_COL_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+    if not _SAFE_COL_RE.match(name):
+        raise ValueError(f"Invalid collection name: {name!r}")
+    return name
+
+
+def _get_arango_config() -> dict:
+    """Get ArangoDB connection config from HADES config."""
+    from core.cli.config import get_arango_config, get_config
+
+    config = get_config()
+    return get_arango_config(config, read_only=True)
 
 
 def _aql(database: str, query: str, bind_vars: dict | None = None) -> list:
-    """Execute AQL and return results."""
-    base_url, auth = _get_arango_auth(database)
+    """Execute AQL using the configured ArangoDB connection."""
+    import base64
+    import json
+    import urllib.request
+
+    arango_cfg = _get_arango_config()
+    host = arango_cfg.get("host", "127.0.0.1")
+    port = arango_cfg.get("port", 8529)
+    username = arango_cfg.get("username", "root")
+    password = arango_cfg["password"]
+
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+    base_url = f"http://{host}:{port}/_db/{database}"
+
     payload: dict[str, Any] = {"query": query}
     if bind_vars:
         payload["bindVars"] = bind_vars
@@ -44,13 +68,38 @@ def _aql(database: str, query: str, bind_vars: dict | None = None) -> list:
     req = urllib.request.Request(
         f"{base_url}/_api/cursor",
         data=data,
-        headers={"Authorization": auth, "Content-Type": "application/json"},
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
     )
     resp = json.loads(urllib.request.urlopen(req).read())
     if resp.get("error"):
         logger.warning("AQL error: %s", resp.get("errorMessage"))
         return []
     return resp.get("result", [])
+
+
+def _result_key(r: dict[str, Any]) -> str | None:
+    """Extract the best available key for a search result."""
+    return r.get("paper_key") or r.get("arxiv_id")
+
+
+def _current_score(r: dict[str, Any]) -> float:
+    """Get the best current score from a result, respecting composition order.
+
+    Each fusion stage should build on the previous stage's output score.
+    This looks for scores in reverse-composition order (latest first).
+    """
+    for key in (
+        "boosted_score",
+        "fused_score",
+        "anchor_fused_score",
+        "cross_encoder_score",
+        "combined_score",
+        "similarity",
+    ):
+        value = r.get(key)
+        if value is not None:
+            return float(value)
+    return 0.0
 
 
 def _fetch_structural_embeddings(
@@ -62,11 +111,13 @@ def _fetch_structural_embeddings(
     (common in multi-collection graphs), falls back to scanning all
     document collections for nodes with matching _key.
 
-    Returns dict mapping paper_key → embedding vector (numpy).
+    Returns dict mapping paper_key -> embedding vector (numpy).
     Nodes without structural_embedding are omitted.
     """
     if not paper_keys:
         return {}
+
+    _validate_collection_name(metadata_collection)
 
     # Primary lookup in the metadata collection
     results = _aql(
@@ -99,6 +150,7 @@ def _fetch_structural_embeddings(
         for col_name in fallback_results:
             if col_name == metadata_collection:
                 continue
+            _validate_collection_name(col_name)
             hits = _aql(
                 database,
                 f"""
@@ -144,21 +196,20 @@ def structural_rerank(
 
     Takes the structural embeddings of the top centroid_k results,
     computes their centroid, and scores all results by structural
-    similarity to that centroid. Final score blends semantic and
-    structural signals.
+    similarity to that centroid. Final score blends the current best
+    score with the structural signal.
 
     Args:
-        results: Search results with 'similarity' and 'arxiv_id' fields
+        results: Search results (builds on previous stage scores)
         database: ArangoDB database name
-        alpha: Weight for semantic score (1-alpha = structural weight)
+        alpha: Weight for current score (1-alpha = structural weight)
         centroid_k: Number of top results to use for centroid computation
         metadata_collection: Collection containing structural_embedding field
 
     Returns:
         Re-ranked results with structural_score and fused_score fields
     """
-    # Collect unique paper keys from results
-    paper_keys = list({r.get("paper_key") or r.get("arxiv_id") for r in results if r.get("paper_key") or r.get("arxiv_id")})
+    paper_keys = list({_result_key(r) for r in results if _result_key(r)})
     embeddings = _fetch_structural_embeddings(database, paper_keys, metadata_collection)
 
     if len(embeddings) < 2:
@@ -168,7 +219,7 @@ def structural_rerank(
     # Build centroid from top-k results that have embeddings
     centroid_vecs = []
     for r in results[:centroid_k]:
-        key = r.get("paper_key") or r.get("arxiv_id")
+        key = _result_key(r)
         if key and key in embeddings:
             centroid_vecs.append(embeddings[key])
 
@@ -181,15 +232,15 @@ def structural_rerank(
     # Score all results
     reranked = []
     for r in results:
-        semantic_score = r.get("similarity", 0.0)
-        key = r.get("paper_key") or r.get("arxiv_id")
+        base_score = _current_score(r)
+        key = _result_key(r)
 
         if key and key in embeddings:
             struct_score = _cosine_similarity(embeddings[key], centroid)
         else:
             struct_score = 0.0
 
-        fused = alpha * semantic_score + (1 - alpha) * max(0, struct_score)
+        fused = alpha * base_score + (1 - alpha) * max(0, struct_score)
 
         reranked.append({
             **r,
@@ -220,7 +271,7 @@ def centrality_boost(
     requiring raw edge count queries.
 
     Args:
-        results: Search results with 'similarity' and 'arxiv_id' fields
+        results: Search results (builds on previous stage scores)
         database: ArangoDB database name
         boost_weight: Maximum score boost for the most-central node
         metadata_collection: Collection containing structural_embedding field
@@ -228,7 +279,7 @@ def centrality_boost(
     Returns:
         Results with centrality_score and boosted_score fields
     """
-    paper_keys = list({r.get("paper_key") or r.get("arxiv_id") for r in results if r.get("paper_key") or r.get("arxiv_id")})
+    paper_keys = list({_result_key(r) for r in results if _result_key(r)})
     embeddings = _fetch_structural_embeddings(database, paper_keys, metadata_collection)
 
     if len(embeddings) < 2:
@@ -257,8 +308,8 @@ def centrality_boost(
 
     boosted = []
     for r in results:
-        key = r.get("paper_key") or r.get("arxiv_id")
-        base_score = r.get("fused_score", r.get("combined_score", r.get("similarity", 0.0)))
+        key = _result_key(r)
+        base_score = _current_score(r)
         raw_centrality = centrality_map.get(key, 0.0) if key else 0.0
 
         # Normalize to [0, 1] and scale by boost_weight
@@ -294,10 +345,10 @@ def anchor_rerank(
     user knows a relevant node and wants to find text near that graph region.
 
     Args:
-        results: Search results with 'similarity' and 'arxiv_id' fields
+        results: Search results (builds on previous stage scores)
         anchor_node: Node ID in format 'collection/key' or just 'key'
         database: ArangoDB database name
-        alpha: Weight for semantic score (1-alpha = structural weight)
+        alpha: Weight for current score (1-alpha = structural weight)
         metadata_collection: Default collection if anchor_node has no slash
 
     Returns:
@@ -308,6 +359,8 @@ def anchor_rerank(
         col, key = anchor_node.split("/", 1)
     else:
         col, key = metadata_collection, anchor_node
+
+    _validate_collection_name(col)
 
     anchor_results = _aql(
         database,
@@ -322,20 +375,20 @@ def anchor_rerank(
     anchor_emb = np.array(anchor_results[0], dtype=np.float32)
 
     # Fetch structural embeddings for result nodes
-    paper_keys = list({r.get("paper_key") or r.get("arxiv_id") for r in results if r.get("paper_key") or r.get("arxiv_id")})
+    paper_keys = list({_result_key(r) for r in results if _result_key(r)})
     embeddings = _fetch_structural_embeddings(database, paper_keys, metadata_collection)
 
     reranked = []
     for r in results:
-        semantic_score = r.get("similarity", 0.0)
-        key = r.get("paper_key") or r.get("arxiv_id")
+        base_score = _current_score(r)
+        key = _result_key(r)
 
         if key and key in embeddings:
             anchor_sim = _cosine_similarity(embeddings[key], anchor_emb)
         else:
             anchor_sim = 0.0
 
-        fused = alpha * semantic_score + (1 - alpha) * max(0, anchor_sim)
+        fused = alpha * base_score + (1 - alpha) * max(0, anchor_sim)
 
         reranked.append({
             **r,
