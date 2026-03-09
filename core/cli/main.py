@@ -596,6 +596,15 @@ def database_query(
         "--rerank-model",
         help="Cross-encoder model for re-ranking",
     ),
+    structural: bool = typer.Option(
+        False, "--structural", "-S", help="Re-rank by RGCN structural embedding centroid similarity"
+    ),
+    boost_central: bool = typer.Option(
+        False, "--boost-central", help="Boost results from well-connected graph nodes"
+    ),
+    near: str = typer.Option(
+        None, "--near", help="Anchor node ID for structural re-ranking (e.g., titans_equations/eq-017)"
+    ),
     gpu: int = typer.Option(None, "--gpu", "-g", help="GPU device index to use (e.g., 0, 1, 2)"),
     collection: str = typer.Option(
         None,
@@ -617,6 +626,10 @@ def database_query(
         hades db query "flash attention" --hybrid               # Semantic + keyword matching
         hades db query "attention" --collection sync            # Query synced abstracts
         hades db query "attention" --rerank                     # Cross-encoder precision
+        hades db query "gradient" --structural                  # Fuse graph structure signal
+        hades db query "gradient" --boost-central               # Boost well-connected nodes
+        hades db query "gradient" --near titans_equations/eq-017  # Anchor to a graph node
+        hades db query "gradient" -S --boost-central --hybrid   # All signals combined
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -643,6 +656,9 @@ def database_query(
                 rerank=rerank,
                 rerank_model=rerank_model,
                 collection=profile,
+                structural=structural,
+                boost_central=boost_central,
+                near=near,
             )
         # Mode 3: Must provide search text or --chunks
         else:

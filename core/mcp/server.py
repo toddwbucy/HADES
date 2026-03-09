@@ -169,6 +169,9 @@ def hades_query(
     limit: int = 10,
     context: int = 0,
     paper: str | None = None,
+    structural: bool = False,
+    boost_central: bool = False,
+    near: str | None = None,
 ) -> str:
     """Semantic search over the HADES knowledge base.
 
@@ -179,12 +182,21 @@ def hades_query(
         limit: Maximum number of results to return.
         context: Number of adjacent chunks to include with each result.
         paper: Restrict search to chunks from this paper/document ID.
+        structural: Fuse RGCN structural embeddings via centroid re-ranking.
+        boost_central: Boost results from well-connected graph nodes.
+        near: Anchor node ID for structural re-ranking (e.g., "titans_equations/eq-017").
     """
     args = ["db", "query", text, "--limit", str(limit), "--context", str(context)]
     if collection:
         args += ["--collection", collection]
     if paper:
         args += ["--paper", paper]
+    if structural:
+        args += ["--structural"]
+    if boost_central:
+        args += ["--boost-central"]
+    if near:
+        args += ["--near", near]
     return _result(_run(*args, database=database))
 
 
