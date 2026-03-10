@@ -82,7 +82,8 @@ def _load_static_smells(client: Any, db_name: str, smell_collection: str) -> lis
                 _key: doc._key,
                 smell_id: doc.smell_id,
                 name: doc.name,
-                forbidden_patterns: doc.forbidden_patterns
+                forbidden_patterns: doc.forbidden_patterns,
+                scope: doc.scope
             }
         """,
         bind_vars={"@col": smell_collection},
@@ -261,8 +262,16 @@ def smell_gate(
     blocking: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
 
+    # Map file extensions to scope language names for scope-aware filtering
+    ext_to_scope: dict[str, str] = {
+        ".py": "python", ".rs": "rust", ".cu": "cuda", ".cuh": "cuda",
+        ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
+        ".go": "go", ".java": "java", ".js": "javascript", ".ts": "typescript",
+    }
+
     for file_path in files:
         ext = file_path.suffix.lower()
+        file_scope = ext_to_scope.get(ext)
         try:
             lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
@@ -272,6 +281,10 @@ def smell_gate(
             is_comment = _is_comment_line(line, ext)
 
             for smell in smells:
+                # Skip smells that don't apply to this file's language
+                smell_scope = smell.get("scope")
+                if smell_scope and file_scope and file_scope not in smell_scope:
+                    continue
                 for pattern in smell["forbidden_patterns"]:
                     if pattern in line:
                         if is_comment and smell.get("smell_id") == 13:

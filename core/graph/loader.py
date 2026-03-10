@@ -51,9 +51,10 @@ EDGE_COLLECTIONS: list[str] = [
     "nl_structural_embodiment_edges",  # 18
     "nl_validated_against_edges",  # 19
     "persephone_edges",  # 20
+    "nl_smell_spec_edges",  # 21  — spec → smell (Hecate)
 ]
 
-NUM_RELATIONS = len(EDGE_COLLECTIONS)  # 21 — frozen architectural constant
+NUM_RELATIONS = len(EDGE_COLLECTIONS)  # 22 — update when adding new edge types
 
 # Jina V4 embedding dimension
 JINA_DIM = 2048
