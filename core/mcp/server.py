@@ -667,6 +667,9 @@ def hades_ingest(
     task: str | None = None,
     claims: str | None = None,
     collection: str | None = None,
+    no_gate: bool = False,
+    force_ingest: bool = False,
+    justification: str | None = None,
 ) -> str:
     """Ingest a file or ArXiv paper into the knowledge base.
 
@@ -674,6 +677,10 @@ def hades_ingest(
     Automatically extracts, embeds, and stores with late chunking.
     Code files (.rs, .cu, .py, etc.) are auto-detected and routed through
     the Jina V4 Code LoRA.
+
+    Code files are scanned against NL graph smell patterns before ingest.
+    STATIC tier violations (CS-10, CS-11, CS-13, CS-40) block ingest.
+    Use force_ingest + justification to bypass the gate.
 
     Args:
         target: File path or ArXiv ID to ingest.
@@ -683,6 +690,9 @@ def hades_ingest(
         task: Embedding task type — "code" activates Jina V4 Code LoRA.
         claims: Compliance claims in "CS-32:behavioral,CS-33:architectural" format.
         collection: Collection profile for storage (arxiv, sync, default). Defaults to arxiv.
+        no_gate: Skip the smell gate for code files.
+        force_ingest: Bypass smell gate even with STATIC violations. Requires justification.
+        justification: Mandatory reason when using force_ingest.
     """
     args = ["ingest", target]
     if id:
@@ -695,6 +705,12 @@ def hades_ingest(
         args += ["--claims", claims]
     if collection:
         args += ["--collection", collection]
+    if no_gate:
+        args.append("--no-gate")
+    if force_ingest:
+        args.append("--force-ingest")
+    if justification:
+        args += ["--justification", justification]
     return _result(_run(*args, database=database, timeout=600))
 
 
