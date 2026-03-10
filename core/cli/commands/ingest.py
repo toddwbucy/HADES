@@ -124,6 +124,7 @@ def ingest(
     start_time: float = 0.0,
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
+    collection: str | None = None,
 ) -> CLIResponse:
     """Ingest documents into the knowledge base.
 
@@ -140,6 +141,7 @@ def ingest(
         task: Embedding task type ('code' forces code pipeline). Auto-detected by extension.
         start_time: Command start timestamp.
         extra_metadata: Custom metadata fields to merge into the document metadata record.
+        collection: Collection profile name (arxiv, sync, default). Defaults to arxiv.
 
     Returns:
         CLIResponse with ingestion results.
@@ -153,6 +155,7 @@ def ingest(
         return _ingest_batch(
             [], None, force, resume, start_time,
             task=task, extra_metadata=extra_metadata, claims=claims,
+            collection=collection,
         )
 
     if not inputs:
@@ -190,6 +193,7 @@ def ingest(
         return _ingest_batch(
             all_items, None, force, resume, start_time,
             task=task, extra_metadata=extra_metadata, claims=claims,
+            collection=collection,
         )
 
     # Standard (non-batch) mode
@@ -210,7 +214,10 @@ def ingest(
     # Process arxiv IDs
     if arxiv_ids:
         for arxiv_id in arxiv_ids:
-            result = _ingest_arxiv_paper(arxiv_id, config, force, extra_metadata=extra_metadata)
+            result = _ingest_arxiv_paper(
+                arxiv_id, config, force, extra_metadata=extra_metadata,
+                collection=collection,
+            )
             results.append(result)
 
     # Process file paths
@@ -219,6 +226,7 @@ def ingest(
             result = _ingest_file(
                 file_path, config, document_id, force,
                 task=task, extra_metadata=extra_metadata, claims=claims,
+                collection=collection,
             )
             results.append(result)
 
@@ -255,6 +263,7 @@ def _ingest_batch(
     task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
+    collection: str | None = None,
 ) -> CLIResponse:
     """Ingest items using batch processor with progress and resume.
 
@@ -267,6 +276,7 @@ def _ingest_batch(
         task: Embedding task type ('code' forces code pipeline).
         extra_metadata: Custom metadata fields to merge into document records.
         claims: Compliance claims to link after each code file ingest.
+        collection: Collection profile name (arxiv, sync, default).
 
     Returns:
         CLIResponse with batch results.
@@ -286,9 +296,16 @@ def _ingest_batch(
     def process_single(item_id: str) -> dict[str, Any]:
         """Process a single item (arxiv ID or file path)."""
         if _is_arxiv_id(item_id):
-            return _ingest_arxiv_paper(item_id, config, force, extra_metadata=extra_metadata)
+            return _ingest_arxiv_paper(
+                item_id, config, force, extra_metadata=extra_metadata,
+                collection=collection,
+            )
         else:
-            return _ingest_file(item_id, config, None, force, task=task, extra_metadata=extra_metadata, claims=claims)
+            return _ingest_file(
+                item_id, config, None, force, task=task,
+                extra_metadata=extra_metadata, claims=claims,
+                collection=collection,
+            )
 
     processor = BatchProcessor(
         state_file=".hades-batch-state.json",
@@ -335,6 +352,7 @@ def _ingest_file(
     task: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
+    collection: str | None = None,
 ) -> dict[str, Any]:
     """Ingest a local file (any supported format).
 
@@ -366,7 +384,7 @@ def _ingest_file(
 
     # Check if already exists (mirrors _ingest_arxiv_paper logic)
     if not force:
-        exists = _check_paper_in_db(doc_id, config)
+        exists = _check_paper_in_db(doc_id, config, collection=collection)
         if exists:
             progress(f"Document {doc_id} already in database, skipping (use --force to reprocess)")
             return {
@@ -388,6 +406,7 @@ def _ingest_file(
                 force=force,
                 extra_metadata=extra_metadata,
                 claims=claims,
+                collection=collection,
             )
             if not result["success"]:
                 return {
@@ -426,6 +445,7 @@ def _ingest_file(
             document_id=doc_id,
             force=force,
             extra_metadata=extra_metadata,
+            collection=collection,
         )
 
         if not result["success"]:
@@ -462,6 +482,7 @@ def _ingest_arxiv_paper(
     config: Any,
     force: bool,
     extra_metadata: dict[str, Any] | None = None,
+    collection: str | None = None,
 ) -> dict[str, Any]:
     """Ingest a single arxiv paper.
 
@@ -485,7 +506,7 @@ def _ingest_arxiv_paper(
 
         # Check if already exists
         if not force:
-            exists = _check_paper_in_db(arxiv_id, config)
+            exists = _check_paper_in_db(arxiv_id, config, collection=collection)
             if exists:
                 progress(f"Paper {arxiv_id} already in database, skipping (use --force to reprocess)")
                 return {
@@ -523,6 +544,7 @@ def _ingest_arxiv_paper(
             config=config,
             force=force,
             extra_metadata=extra_metadata,
+            collection=collection,
         )
 
         if not processing_result["success"]:
@@ -551,7 +573,7 @@ def _ingest_arxiv_paper(
         client.close()
 
 
-def _check_paper_in_db(arxiv_id: str, config: Any) -> bool:
+def _check_paper_in_db(arxiv_id: str, config: Any, collection: str | None = None) -> bool:
     """Check if a paper already exists in the database."""
     try:
         from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
@@ -567,7 +589,7 @@ def _check_paper_in_db(arxiv_id: str, config: Any) -> bool:
 
         client = ArangoHttp2Client(client_config)
         try:
-            col = get_profile("arxiv")
+            col = get_profile(collection or "arxiv")
             sanitized_id = normalize_document_key(arxiv_id)
             client.get_document(col.metadata, sanitized_id)
             return True
@@ -588,6 +610,7 @@ def _process_and_store(
     document_id: str | None = None,
     force: bool = False,
     extra_metadata: dict[str, Any] | None = None,
+    collection: str | None = None,
 ) -> dict[str, Any]:
     """Process a PDF and store results in the database."""
     from core.database.arango.optimized_client import ArangoHttp2Client, ArangoHttp2Config
@@ -655,7 +678,7 @@ def _process_and_store(
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
+            col = get_profile(collection or "arxiv")
             sanitized_id = normalize_document_key(doc_id)
             now_iso = datetime.now(UTC).isoformat()
 
@@ -849,8 +872,9 @@ def _process_and_store_code(
     force: bool,
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
+    collection: str | None = None,
 ) -> dict[str, Any]:
-    """Process a code file via CodeProcessor and store in arxiv profile collections.
+    """Process a code file via CodeProcessor and store in the specified profile collections.
 
     Uses Jina V4 Code LoRA embeddings (task="code") for semantically meaningful
     code representations. Chunks are AST-aligned (top-level functions/classes).
@@ -919,7 +943,7 @@ def _process_and_store_code(
         client = ArangoHttp2Client(client_config)
 
         try:
-            col = get_profile("arxiv")
+            col = get_profile(collection or "arxiv")
             # Ensure the required collections exist (new databases start empty)
             for collection_name in (col.metadata, col.chunks, col.embeddings):
                 try:

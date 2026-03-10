@@ -170,7 +170,12 @@ class GraphLoader:
         all_rel: list[int] = []
 
         for rel_idx, col_name in enumerate(EDGE_COLLECTIONS):
-            edges = self._aql(f"FOR e IN {col_name} RETURN [e._from, e._to]")
+            try:
+                edges = self._aql(f"FOR e IN {col_name} RETURN [e._from, e._to]")
+            except (RuntimeError, OSError):
+                # Collection doesn't exist yet (future slot) — skip silently
+                logger.debug("  %s: not found (future slot)", col_name)
+                continue
             if not edges:
                 logger.debug("  %s: empty (future slot)", col_name)
                 continue
@@ -219,7 +224,14 @@ class GraphLoader:
             # Batch-fetch embeddings
             # AQL with IN filter for all keys at once
             keys_str = ", ".join(f'"{k}"' for k in keys)
-            results = self._aql(f"FOR d IN {col_name} FILTER d._key IN [{keys_str}] " f"RETURN [d._key, d.embedding]")
+            try:
+                results = self._aql(
+                    f"FOR d IN {col_name} FILTER d._key IN [{keys_str}] " f"RETURN [d._key, d.embedding]"
+                )
+            except (RuntimeError, OSError):
+                # Collection exists in edges but not as a queryable document collection
+                logger.debug("  %s: not queryable for embeddings, skipping", col_name)
+                continue
 
             key_to_embedding = {}
             for key, emb in results:
