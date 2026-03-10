@@ -245,8 +245,14 @@ def smell_gate(
         client.close()
 
     if not smells:
-        # No patterns to check — gate passes
-        return {"passed": True, "blocking": [], "warnings": [], "files_checked": 0, "smells_loaded": 0}
+        return {
+            "passed": False,
+            "error": f"No smells with forbidden_patterns found in {smell_collection}",
+            "blocking": [],
+            "warnings": [],
+            "files_checked": 0,
+            "smells_loaded": 0,
+        }
 
     files = _collect_source_files(path)
     if not files:

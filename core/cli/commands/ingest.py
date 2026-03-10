@@ -417,7 +417,13 @@ def _ingest_file(
             progress(f"Running smell gate on {path.name}...")
             gate_result = smell_gate(str(path))
             if gate_result.get("error"):
-                progress(f"Smell gate error: {gate_result['error']} (proceeding with ingest)")
+                return {
+                    "path": file_path,
+                    "document_id": doc_id,
+                    "success": False,
+                    "error": f"Smell gate failed: {gate_result['error']}",
+                    "gate_result": gate_result,
+                }
             elif not gate_result["passed"]:
                 blocking = gate_result["blocking"]
                 summary = "; ".join(
@@ -445,6 +451,9 @@ def _ingest_file(
             extra_metadata = dict(extra_metadata) if extra_metadata else {}
             extra_metadata["gate_bypassed"] = True
             extra_metadata["gate_justification"] = justification or "no justification provided"
+            # Don't create compliance edges for a bypassed gate — the claims
+            # haven't been validated, so edges would be semantically incorrect.
+            claims = None
 
         progress(f"Ingesting {path.name} as {doc_id} (code pipeline, Code LoRA)...")
         try:
