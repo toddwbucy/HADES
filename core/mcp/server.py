@@ -668,6 +668,7 @@ def hades_ingest(
     claims: str | None = None,
     collection: str | None = None,
     no_gate: bool = False,
+    no_trace: bool = False,
     force_ingest: bool = False,
     justification: str | None = None,
 ) -> str:
@@ -680,6 +681,8 @@ def hades_ingest(
 
     Code files are scanned against NL graph smell patterns before ingest.
     STATIC tier violations (CS-10, CS-11, CS-13, CS-40) block ingest.
+    When --claims are provided, equation trace validation verifies the
+    smell → spec → equation → paper provenance chain before graph writes.
     Use force_ingest + justification to bypass the gate.
 
     Args:
@@ -691,6 +694,7 @@ def hades_ingest(
         claims: Compliance claims in "CS-32:behavioral,CS-33:architectural" format.
         collection: Collection profile for storage (arxiv, sync, default). Defaults to arxiv.
         no_gate: Skip the smell gate for code files.
+        no_trace: Skip equation trace validation for claims.
         force_ingest: Bypass smell gate even with STATIC violations. Requires justification.
         justification: Mandatory reason when using force_ingest.
     """
@@ -707,6 +711,8 @@ def hades_ingest(
         args += ["--collection", collection]
     if no_gate:
         args.append("--no-gate")
+    if no_trace:
+        args.append("--no-trace")
     if force_ingest:
         args.append("--force-ingest")
     if justification:
