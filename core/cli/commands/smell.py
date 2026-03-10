@@ -339,7 +339,7 @@ def trace_validate(
         return {"passed": True, "traced": [], "gaps": []}
 
     try:
-        client, _cfg, db_name = _make_client(read_only=True)
+        client, _cfg, _db_name = _make_client(read_only=True)
     except Exception as e:
         return {"passed": False, "error": f"Database connection failed: {e}"}
 
@@ -349,7 +349,7 @@ def trace_validate(
 
         for claim in claims:
             cs_id = claim["smell_id"]
-            num = cs_id.lstrip("CS-") if cs_id.startswith("CS-") else cs_id
+            num = cs_id.removeprefix("CS-") if cs_id.startswith("CS-") else cs_id
 
             # Find the smell node
             smell_nodes = client.query(

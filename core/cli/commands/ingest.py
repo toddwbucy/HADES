@@ -463,7 +463,8 @@ def _ingest_file(
             from core.cli.commands.smell import trace_validate
 
             progress("Running equation trace validation on claims...")
-            trace_result = trace_validate(claims)
+            smell_col = claims[0].get("smell_collection", "nl_code_smells") if claims else "nl_code_smells"
+            trace_result = trace_validate(claims, smell_collection=smell_col)
             if trace_result.get("error"):
                 return {
                     "path": file_path,
