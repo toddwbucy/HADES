@@ -315,6 +315,135 @@ def smell_gate(
     }
 
 
+def trace_validate(
+    claims: list[dict[str, str]],
+    smell_collection: str = "nl_code_smells",
+) -> dict[str, Any]:
+    """Validate equation traceability chain for claimed smells.
+
+    For each claimed smell, verifies the chain:
+        smell → spec (nl_smell_spec_edges) → equation (nl_hecate_trace_edges)
+                → paper chunk (nl_equation_source_edges)
+
+    Args:
+        claims: List of claim dicts with "smell_id" key (e.g. "CS-32").
+        smell_collection: NL smell collection name.
+
+    Returns:
+        Dict with: passed (bool), traced (list), gaps (list).
+        A gap means the chain is incomplete for that claim.
+    """
+    from core.cli.commands.database import _make_client
+
+    if not claims:
+        return {"passed": True, "traced": [], "gaps": []}
+
+    try:
+        client, _cfg, _db_name = _make_client(read_only=True)
+    except Exception as e:
+        return {"passed": False, "error": f"Database connection failed: {e}"}
+
+    try:
+        traced: list[dict[str, Any]] = []
+        gaps: list[dict[str, Any]] = []
+
+        for claim in claims:
+            cs_id = claim["smell_id"]
+            num = cs_id.removeprefix("CS-") if cs_id.startswith("CS-") else cs_id
+
+            # Find the smell node
+            smell_nodes = client.query(
+                """
+                FOR doc IN @@col
+                    FILTER doc.smell_id == TO_NUMBER(@num) OR STARTS_WITH(doc.name, @prefix)
+                    LIMIT 1
+                    RETURN {_id: doc._id, _key: doc._key, name: doc.name}
+                """,
+                bind_vars={"@col": smell_collection, "num": num, "prefix": f"CS-{num}:"},
+            )
+            if not smell_nodes:
+                gaps.append({"claim": cs_id, "reason": "smell node not found", "chain": []})
+                continue
+
+            smell_node = smell_nodes[0]
+
+            # Traverse: smell ←[nl_smell_spec_edges]— spec —[nl_hecate_trace_edges]→ eq
+            #           —[nl_equation_source_edges]→ paper chunk
+            chain_results = client.query(
+                """
+                FOR spec, se IN 1..1 INBOUND @smell nl_smell_spec_edges
+                    FOR eq, te IN 1..1 OUTBOUND spec nl_hecate_trace_edges
+                        FOR chunk, ce IN 1..1 OUTBOUND eq nl_equation_source_edges
+                            LIMIT 1
+                            RETURN {
+                                spec: spec._key,
+                                equation: eq._key,
+                                chunk: chunk._key,
+                                spec_id: spec._id,
+                                equation_id: eq._id,
+                                chunk_id: chunk._id
+                            }
+                """,
+                bind_vars={"smell": smell_node["_id"]},
+            )
+
+            if chain_results:
+                traced.append({
+                    "claim": cs_id,
+                    "smell": smell_node["_key"],
+                    "chain": chain_results[0],
+                })
+            else:
+                # Find where the chain breaks
+                specs = client.query(
+                    "FOR v IN 1..1 INBOUND @smell nl_smell_spec_edges RETURN v._key",
+                    bind_vars={"smell": smell_node["_id"]},
+                )
+                if not specs:
+                    gaps.append({
+                        "claim": cs_id,
+                        "smell": smell_node["_key"],
+                        "reason": "no spec linked to smell (nl_smell_spec_edges)",
+                        "chain": [],
+                    })
+                    continue
+
+                eqs = client.query(
+                    """
+                    FOR spec IN 1..1 INBOUND @smell nl_smell_spec_edges
+                        FOR eq IN 1..1 OUTBOUND spec nl_hecate_trace_edges
+                            LIMIT 1
+                            RETURN eq._key
+                    """,
+                    bind_vars={"smell": smell_node["_id"]},
+                )
+                if not eqs:
+                    gaps.append({
+                        "claim": cs_id,
+                        "smell": smell_node["_key"],
+                        "reason": "spec has no equation trace (nl_hecate_trace_edges)",
+                        "chain": {"specs": specs[:5]},
+                    })
+                else:
+                    gaps.append({
+                        "claim": cs_id,
+                        "smell": smell_node["_key"],
+                        "reason": "equation has no paper source (nl_equation_source_edges)",
+                        "chain": {"specs": specs[:5], "equations": eqs[:5]},
+                    })
+
+        return {
+            "passed": len(gaps) == 0,
+            "traced": traced,
+            "gaps": gaps,
+        }
+
+    except Exception as e:
+        return {"passed": False, "error": f"Trace validation failed: {e}"}
+    finally:
+        client.close()
+
+
 def _extract_cs_refs_from_file(file_path: Path) -> dict[str, list[int]]:
     """Extract all CS-XX references from comment lines in a source file.
 

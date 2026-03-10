@@ -126,6 +126,7 @@ def ingest(
     claims: list[dict[str, str]] | None = None,
     collection: str | None = None,
     gate: bool = True,
+    trace: bool = True,
     force_ingest: bool = False,
     justification: str | None = None,
 ) -> CLIResponse:
@@ -159,7 +160,7 @@ def ingest(
             [], None, force, resume, start_time,
             task=task, extra_metadata=extra_metadata, claims=claims,
             collection=collection,
-            gate=gate, force_ingest=force_ingest, justification=justification,
+            gate=gate, trace=trace, force_ingest=force_ingest, justification=justification,
         )
 
     if not inputs:
@@ -198,7 +199,7 @@ def ingest(
             all_items, None, force, resume, start_time,
             task=task, extra_metadata=extra_metadata, claims=claims,
             collection=collection,
-            gate=gate, force_ingest=force_ingest, justification=justification,
+            gate=gate, trace=trace, force_ingest=force_ingest, justification=justification,
         )
 
     # Standard (non-batch) mode
@@ -232,7 +233,7 @@ def ingest(
                 file_path, config, document_id, force,
                 task=task, extra_metadata=extra_metadata, claims=claims,
                 collection=collection,
-                gate=gate, force_ingest=force_ingest, justification=justification,
+                gate=gate, trace=trace, force_ingest=force_ingest, justification=justification,
             )
             results.append(result)
 
@@ -271,6 +272,7 @@ def _ingest_batch(
     claims: list[dict[str, str]] | None = None,
     collection: str | None = None,
     gate: bool = True,
+    trace: bool = True,
     force_ingest: bool = False,
     justification: str | None = None,
 ) -> CLIResponse:
@@ -314,7 +316,7 @@ def _ingest_batch(
                 item_id, config, None, force, task=task,
                 extra_metadata=extra_metadata, claims=claims,
                 collection=collection,
-                gate=gate, force_ingest=force_ingest, justification=justification,
+                gate=gate, trace=trace, force_ingest=force_ingest, justification=justification,
             )
 
     processor = BatchProcessor(
@@ -364,6 +366,7 @@ def _ingest_file(
     claims: list[dict[str, str]] | None = None,
     collection: str | None = None,
     gate: bool = True,
+    trace: bool = True,
     force_ingest: bool = False,
     justification: str | None = None,
 ) -> dict[str, Any]:
@@ -454,6 +457,42 @@ def _ingest_file(
             # Don't create compliance edges for a bypassed gate — the claims
             # haven't been validated, so edges would be semantically incorrect.
             claims = None
+
+        # --- Trace Validation: verify claim → spec → equation → paper chain ---
+        if gate and trace and not force_ingest and claims:
+            from core.cli.commands.smell import trace_validate
+
+            progress("Running equation trace validation on claims...")
+            smell_col = claims[0].get("smell_collection", "nl_code_smells") if claims else "nl_code_smells"
+            trace_result = trace_validate(claims, smell_collection=smell_col)
+            if trace_result.get("error"):
+                return {
+                    "path": file_path,
+                    "document_id": doc_id,
+                    "success": False,
+                    "error": f"Trace validation failed: {trace_result['error']}",
+                    "trace_result": trace_result,
+                }
+            elif not trace_result["passed"]:
+                gap_summary = "; ".join(
+                    f"{g['claim']}: {g['reason']}"
+                    for g in trace_result["gaps"][:5]
+                )
+                if len(trace_result["gaps"]) > 5:
+                    gap_summary += f" (+{len(trace_result['gaps']) - 5} more)"
+                return {
+                    "path": file_path,
+                    "document_id": doc_id,
+                    "success": False,
+                    "error": (
+                        f"Trace validation BLOCKED: {len(trace_result['gaps'])} claim(s) "
+                        f"have incomplete provenance chain. {gap_summary}"
+                    ),
+                    "trace_result": trace_result,
+                }
+            else:
+                traced = trace_result.get("traced", [])
+                progress(f"Trace validation passed ({len(traced)} claim(s) fully traced)")
 
         progress(f"Ingesting {path.name} as {doc_id} (code pipeline, Code LoRA)...")
         try:

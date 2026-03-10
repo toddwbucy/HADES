@@ -349,6 +349,10 @@ def ingest_cmd(
         False, "--no-gate",
         help="Skip the smell gate for code files (not recommended).",
     ),
+    no_trace: bool = typer.Option(
+        False, "--no-trace",
+        help="Skip equation trace validation for --claims (not recommended).",
+    ),
     force_ingest: bool = typer.Option(
         False, "--force-ingest",
         help="Bypass smell gate even with STATIC violations. Requires --justification.",
@@ -387,6 +391,7 @@ def ingest_cmd(
         hades ingest src/m3.rs --id m3-rs --claims CS-27:behavioral,CS-28:behavioral
         hades ingest spec.tex --collection default --id my-spec
         hades ingest src/main.rs --no-gate                        # skip smell gate
+        hades ingest src/main.rs --claims CS-32:behavioral --no-trace  # skip trace validation
         hades ingest src/main.rs --force-ingest --justification "prototype, will fix later"
     """
     _set_gpu(gpu)
@@ -455,6 +460,7 @@ def ingest_cmd(
             claims=parsed_claims,
             collection=collection,
             gate=not no_gate,
+            trace=not no_trace,
             force_ingest=force_ingest,
             justification=justification,
         )
