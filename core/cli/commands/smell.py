@@ -186,6 +186,116 @@ def smell_check(
     )
 
 
+# ---------------------------------------------------------------------------
+# Smell tier classification — canonical source, keep in sync with
+# core/cli/agent_templates.py GRAPH_INTEGRATION_TEMPLATE tiers.
+# ---------------------------------------------------------------------------
+
+# STATIC tier: autonomous PASS/FAIL — violations block ingest.
+STATIC_SMELL_IDS: frozenset[int] = frozenset({10, 11, 13, 40})
+
+# BEHAVIORAL tier: agent surfaces evidence, human decides — informational.
+BEHAVIORAL_SMELL_IDS: frozenset[int] = frozenset({27, 28, 32})
+
+# ARCHITECTURAL tier: agent notes pattern, human decides — informational.
+ARCHITECTURAL_SMELL_IDS: frozenset[int] = frozenset({31})
+
+
+def _smell_tier(smell_id: int | None) -> str:
+    """Classify a smell by its enforcement tier."""
+    if smell_id in STATIC_SMELL_IDS:
+        return "static"
+    if smell_id in BEHAVIORAL_SMELL_IDS:
+        return "behavioral"
+    if smell_id in ARCHITECTURAL_SMELL_IDS:
+        return "architectural"
+    return "unknown"
+
+
+def smell_gate(
+    path: str,
+    smell_collection: str = "nl_code_smells",
+) -> dict[str, Any]:
+    """Pre-ingest smell gate — returns pass/block decision with violations by tier.
+
+    Runs the same pattern scan as smell_check but classifies violations by tier.
+    Only STATIC tier violations block ingest; BEHAVIORAL and ARCHITECTURAL
+    violations are surfaced as warnings.
+
+    Args:
+        path: File path to scan.
+        smell_collection: NL smell collection name.
+
+    Returns:
+        Dict with keys: passed (bool), blocking (list), warnings (list),
+        files_checked (int), smells_loaded (int).
+    """
+    from core.cli.commands.database import _make_client
+
+    try:
+        client, _cfg, db_name = _make_client(read_only=True)
+    except Exception as e:
+        return {"passed": False, "error": f"Database connection failed: {e}"}
+
+    try:
+        smells = _load_static_smells(client, db_name, smell_collection)
+    except Exception as e:
+        return {"passed": False, "error": f"Failed to load smell patterns: {e}"}
+    finally:
+        client.close()
+
+    if not smells:
+        # No patterns to check — gate passes
+        return {"passed": True, "blocking": [], "warnings": [], "files_checked": 0, "smells_loaded": 0}
+
+    files = _collect_source_files(path)
+    if not files:
+        return {"passed": True, "blocking": [], "warnings": [], "files_checked": 0, "smells_loaded": len(smells)}
+
+    blocking: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+
+    for file_path in files:
+        ext = file_path.suffix.lower()
+        try:
+            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+
+        for line_no, line in enumerate(lines, start=1):
+            is_comment = _is_comment_line(line, ext)
+
+            for smell in smells:
+                for pattern in smell["forbidden_patterns"]:
+                    if pattern in line:
+                        if is_comment and smell.get("smell_id") == 13:
+                            continue
+                        sid = smell.get("smell_id")
+                        tier = _smell_tier(sid)
+                        violation = {
+                            "smell_key": smell["_key"],
+                            "smell_id": sid,
+                            "smell_name": smell["name"],
+                            "tier": tier,
+                            "file": str(file_path),
+                            "line": line_no,
+                            "pattern": pattern,
+                            "content": line.rstrip(),
+                        }
+                        if tier == "static":
+                            blocking.append(violation)
+                        else:
+                            warnings.append(violation)
+
+    return {
+        "passed": len(blocking) == 0,
+        "blocking": blocking,
+        "warnings": warnings,
+        "files_checked": len(files),
+        "smells_loaded": len(smells),
+    }
+
+
 def _extract_cs_refs_from_file(file_path: Path) -> dict[str, list[int]]:
     """Extract all CS-XX references from comment lines in a source file.
 

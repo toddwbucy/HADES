@@ -345,6 +345,18 @@ def ingest_cmd(
         None, "--collection", "-c",
         help="Collection profile for storage (arxiv, sync, default). Defaults to arxiv.",
     ),
+    no_gate: bool = typer.Option(
+        False, "--no-gate",
+        help="Skip the smell gate for code files (not recommended).",
+    ),
+    force_ingest: bool = typer.Option(
+        False, "--force-ingest",
+        help="Bypass smell gate even with STATIC violations. Requires --justification.",
+    ),
+    justification: str = typer.Option(
+        None, "--justification",
+        help="Mandatory justification string when using --force-ingest. Stored in document metadata.",
+    ),
     smell_collection: str = typer.Option(
         "nl_code_smells", "--smell-collection",
         help="ArangoDB collection to look up smells in (default: nl_code_smells)",
@@ -374,6 +386,8 @@ def ingest_cmd(
         hades ingest kernels/forward.cu --id forward-cuda
         hades ingest src/m3.rs --id m3-rs --claims CS-27:behavioral,CS-28:behavioral
         hades ingest spec.tex --collection default --id my-spec
+        hades ingest src/main.rs --no-gate                        # skip smell gate
+        hades ingest src/main.rs --force-ingest --justification "prototype, will fix later"
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -415,6 +429,17 @@ def ingest_cmd(
             for c in parsed_claims:
                 c["smell_collection"] = smell_collection
 
+        # Validate --force-ingest requires --justification
+        if force_ingest and not justification:
+            response = error_response(
+                command="ingest",
+                code=ErrorCode.CONFIG_ERROR,
+                message="--force-ingest requires --justification to document why the gate was bypassed",
+                start_time=start_time,
+            )
+            print_response(response)
+            raise typer.Exit(1) from None
+
         # Handle resume-only mode (no inputs required)
         actual_inputs = inputs or []
 
@@ -429,6 +454,9 @@ def ingest_cmd(
             extra_metadata=extra_metadata,
             claims=parsed_claims,
             collection=collection,
+            gate=not no_gate,
+            force_ingest=force_ingest,
+            justification=justification,
         )
         print_response(response)
         if not response.success:

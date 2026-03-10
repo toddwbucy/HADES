@@ -125,6 +125,9 @@ def ingest(
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
     collection: str | None = None,
+    gate: bool = True,
+    force_ingest: bool = False,
+    justification: str | None = None,
 ) -> CLIResponse:
     """Ingest documents into the knowledge base.
 
@@ -156,6 +159,7 @@ def ingest(
             [], None, force, resume, start_time,
             task=task, extra_metadata=extra_metadata, claims=claims,
             collection=collection,
+            gate=gate, force_ingest=force_ingest, justification=justification,
         )
 
     if not inputs:
@@ -194,6 +198,7 @@ def ingest(
             all_items, None, force, resume, start_time,
             task=task, extra_metadata=extra_metadata, claims=claims,
             collection=collection,
+            gate=gate, force_ingest=force_ingest, justification=justification,
         )
 
     # Standard (non-batch) mode
@@ -227,6 +232,7 @@ def ingest(
                 file_path, config, document_id, force,
                 task=task, extra_metadata=extra_metadata, claims=claims,
                 collection=collection,
+                gate=gate, force_ingest=force_ingest, justification=justification,
             )
             results.append(result)
 
@@ -264,6 +270,9 @@ def _ingest_batch(
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
     collection: str | None = None,
+    gate: bool = True,
+    force_ingest: bool = False,
+    justification: str | None = None,
 ) -> CLIResponse:
     """Ingest items using batch processor with progress and resume.
 
@@ -305,6 +314,7 @@ def _ingest_batch(
                 item_id, config, None, force, task=task,
                 extra_metadata=extra_metadata, claims=claims,
                 collection=collection,
+                gate=gate, force_ingest=force_ingest, justification=justification,
             )
 
     processor = BatchProcessor(
@@ -353,6 +363,9 @@ def _ingest_file(
     extra_metadata: dict[str, Any] | None = None,
     claims: list[dict[str, str]] | None = None,
     collection: str | None = None,
+    gate: bool = True,
+    force_ingest: bool = False,
+    justification: str | None = None,
 ) -> dict[str, Any]:
     """Ingest a local file (any supported format).
 
@@ -397,6 +410,42 @@ def _ingest_file(
 
     # Route code files through the code pipeline
     if _is_code_file(path, task):
+        # --- Smell Gate: scan for STATIC tier violations before any graph writes ---
+        if gate and not force_ingest:
+            from core.cli.commands.smell import smell_gate
+
+            progress(f"Running smell gate on {path.name}...")
+            gate_result = smell_gate(str(path))
+            if gate_result.get("error"):
+                progress(f"Smell gate error: {gate_result['error']} (proceeding with ingest)")
+            elif not gate_result["passed"]:
+                blocking = gate_result["blocking"]
+                summary = "; ".join(
+                    f"{v['smell_name']} at {Path(v['file']).name}:{v['line']}"
+                    for v in blocking[:5]
+                )
+                if len(blocking) > 5:
+                    summary += f" (+{len(blocking) - 5} more)"
+                return {
+                    "path": file_path,
+                    "document_id": doc_id,
+                    "success": False,
+                    "error": f"Smell gate BLOCKED: {len(blocking)} STATIC violation(s). {summary}",
+                    "gate_result": gate_result,
+                }
+            else:
+                warnings = gate_result.get("warnings", [])
+                if warnings:
+                    progress(f"Smell gate passed ({len(warnings)} non-blocking warning(s))")
+                else:
+                    progress("Smell gate passed")
+        elif force_ingest:
+            progress(f"Smell gate bypassed (--force-ingest, justification: {justification or 'none'})")
+            # Record the bypass in document metadata for audit trail
+            extra_metadata = dict(extra_metadata) if extra_metadata else {}
+            extra_metadata["gate_bypassed"] = True
+            extra_metadata["gate_justification"] = justification or "no justification provided"
+
         progress(f"Ingesting {path.name} as {doc_id} (code pipeline, Code LoRA)...")
         try:
             result = _process_and_store_code(
