@@ -341,6 +341,10 @@ def ingest_cmd(
             "Creates edges in nl_smell_compliance_edges. Code files only."
         ),
     ),
+    collection: str = typer.Option(
+        None, "--collection", "-c",
+        help="Collection profile for storage (arxiv, sync, default). Defaults to arxiv.",
+    ),
     smell_collection: str = typer.Option(
         "nl_code_smells", "--smell-collection",
         help="ArangoDB collection to look up smells in (default: nl_code_smells)",
@@ -369,6 +373,7 @@ def ingest_cmd(
         hades ingest src/main.rs --task code --id main-rust
         hades ingest kernels/forward.cu --id forward-cuda
         hades ingest src/m3.rs --id m3-rs --claims CS-27:behavioral,CS-28:behavioral
+        hades ingest spec.tex --collection default --id my-spec
     """
     _set_gpu(gpu)
     start_time = time.time()
@@ -423,6 +428,7 @@ def ingest_cmd(
             start_time=start_time,
             extra_metadata=extra_metadata,
             claims=parsed_claims,
+            collection=collection,
         )
         print_response(response)
         if not response.success:

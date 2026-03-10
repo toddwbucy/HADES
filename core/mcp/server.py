@@ -666,6 +666,7 @@ def hades_ingest(
     force: bool = False,
     task: str | None = None,
     claims: str | None = None,
+    collection: str | None = None,
 ) -> str:
     """Ingest a file or ArXiv paper into the knowledge base.
 
@@ -681,6 +682,7 @@ def hades_ingest(
         force: Re-process even if document already exists.
         task: Embedding task type — "code" activates Jina V4 Code LoRA.
         claims: Compliance claims in "CS-32:behavioral,CS-33:architectural" format.
+        collection: Collection profile for storage (arxiv, sync, default). Defaults to arxiv.
     """
     args = ["ingest", target]
     if id:
@@ -691,6 +693,8 @@ def hades_ingest(
         args += ["--task", task]
     if claims:
         args += ["--claims", claims]
+    if collection:
+        args += ["--collection", collection]
     return _result(_run(*args, database=database, timeout=600))
 
 

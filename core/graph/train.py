@@ -496,6 +496,7 @@ class RGCNTrainer:
         import base64
         import json
         import os
+        import urllib.error
         import urllib.request
 
         target_db = target_database or self.database
@@ -530,6 +531,7 @@ class RGCNTrainer:
                 FOR u IN @updates
                   UPDATE u._key WITH {{ structural_embedding: u.structural_embedding }}
                   IN {col}
+                  OPTIONS {{ ignoreErrors: true }}
                   RETURN 1
                 """
                 data = json.dumps(
@@ -546,7 +548,12 @@ class RGCNTrainer:
                         "Content-Type": "application/json",
                     },
                 )
-                resp = json.loads(urllib.request.urlopen(req).read())
+                try:
+                    resp = json.loads(urllib.request.urlopen(req).read())
+                except urllib.error.HTTPError as exc:
+                    body = exc.read().decode("utf-8", errors="replace")
+                    logger.warning("  %s: HTTP %d — %s", col, exc.code, body[:200])
+                    continue  # try next chunk, don't skip entire collection
                 if not resp.get("error"):
                     updated += len(resp.get("result", []))
                 else:
