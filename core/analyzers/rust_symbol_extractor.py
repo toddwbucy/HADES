@@ -40,14 +40,14 @@ _SYMBOL_KIND_MAP: dict[int, str] = {
     25: "operator", 26: "type_parameter",
 }
 
-# PyO3 attribute patterns
+# PyO3 attribute patterns — matches parameterized forms like #[pyclass(name = "...")]
 _PYO3_PATTERNS = re.compile(
-    r"#\[(pyclass|pymethods|pyfunction|pymodule|pyo3\(|pyproto)]"
+    r"#\[(?:pyclass|pymethods|pyfunction|pymodule|pyproto)(?:\([^]]*\))?\]|#\[pyo3\([^]]*\)\]"
 )
 
-# FFI patterns
+# FFI patterns — matches Rust 2024 unsafe-wrapped forms like #[unsafe(no_mangle)]
 _FFI_PATTERNS = re.compile(
-    r'(extern\s+"C"|#\[no_mangle\]|#\[export_name)'
+    r'(extern\s+"C"|#\[(?:unsafe\()?no_mangle(?:\))?\]|#\[(?:unsafe\()?export_name\s*=\s*"[^"]+"(?:\))?\])'
 )
 
 # Visibility patterns in detail/signature strings
@@ -184,6 +184,8 @@ class RustSymbolExtractor:
             parent_name: str | None = None,
             parent_kind: str | None = None,
             impl_trait: str | None = None,
+            parent_is_pyo3: bool = False,
+            parent_is_ffi: bool = False,
         ) -> None:
             name = sym.get("name", "")
             kind_id = sym.get("kind", 0)
@@ -211,6 +213,27 @@ class RustSymbolExtractor:
                 else:
                     impl_self_type = impl_body.strip()
 
+            # Scan source lines for attributes
+            attrs = self._scan_attributes(lines, start_line, sel_line)
+
+            is_pyo3 = any(_PYO3_PATTERNS.search(a) for a in attrs) or parent_is_pyo3
+            is_ffi = any(_FFI_PATTERNS.search(a) for a in attrs) or parent_is_ffi
+            is_unsafe = "unsafe" in (detail or "") or any("unsafe" in a for a in attrs)
+
+            # impl blocks are containers, not symbols — skip emitting them
+            # but propagate their metadata (PyO3, FFI, trait) to children
+            if name.startswith("impl "):
+                for child in sym.get("children", []):
+                    walk(
+                        child,
+                        parent_name=name,
+                        parent_kind=kind,
+                        impl_trait=current_impl_trait,
+                        parent_is_pyo3=is_pyo3,
+                        parent_is_ffi=is_ffi,
+                    )
+                return
+
             # Build qualified name
             if impl_self_type and impl_self_type != parent_name:
                 # Method inside impl block — qualify under the struct
@@ -233,12 +256,6 @@ class RustSymbolExtractor:
                     if hover_sig:
                         signature = hover_sig
 
-            # Scan source lines for attributes
-            attrs = self._scan_attributes(lines, start_line, sel_line)
-
-            is_pyo3 = any(_PYO3_PATTERNS.search(a) for a in attrs)
-            is_ffi = any(_FFI_PATTERNS.search(a) for a in attrs)
-            is_unsafe = "unsafe" in (detail or "") or any("unsafe" in a for a in attrs)
             derives = self._extract_derives(attrs)
 
             # Extract python_name from #[pyo3(name = "...")]
@@ -278,13 +295,9 @@ class RustSymbolExtractor:
 
             symbols.append(symbol)
 
-            # Recurse into children
+            # Recurse into children (non-impl containers like struct, enum, module)
             for child in sym.get("children", []):
-                # For impl blocks (kind 19 / "object"), pass the impl name so children
-                # can extract struct name and trait from it
-                if name.startswith("impl "):
-                    child_parent = name  # "impl Foo" or "impl Bar for Foo"
-                elif kind in ("struct", "enum", "module", "interface"):
+                if kind in ("struct", "enum", "module", "interface"):
                     child_parent = qualified
                 else:
                     child_parent = parent_name
@@ -294,6 +307,8 @@ class RustSymbolExtractor:
                     parent_name=child_parent,
                     parent_kind=kind,
                     impl_trait=current_impl_trait,
+                    parent_is_pyo3=is_pyo3,
+                    parent_is_ffi=is_ffi,
                 )
 
         for sym in raw_symbols:

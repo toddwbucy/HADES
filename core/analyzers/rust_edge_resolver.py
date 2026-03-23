@@ -54,8 +54,9 @@ class RustEdgeResolver:
 
     def __init__(self, file_nodes: list[dict[str, Any]]) -> None:
         self._file_nodes = file_nodes
-        # Index: qualified_name → (file_rel_path, symbol_key) for cross-file resolution
-        self._symbol_index: dict[str, tuple[str, str]] = {}
+        # Index: qualified_name → list of (file_rel_path, symbol_key)
+        # Lists handle name collisions (e.g., "add" in multiple files)
+        self._symbol_index: dict[str, list[tuple[str, str]]] = {}
         self._build_index()
 
     def _build_index(self) -> None:
@@ -67,12 +68,13 @@ class RustEdgeResolver:
                 qname = sym.get("qualified_name", "")
                 if qname:
                     sk = symbol_key(rel_path, qname)
-                    self._symbol_index[qname] = (rel_path, sk)
+                    entry = (rel_path, sk)
+                    self._symbol_index.setdefault(qname, []).append(entry)
                     # Also index by file-scoped name for cross-file call resolution
                     name = sym.get("name", "")
                     if name and name != qname:
                         file_qname = f"{rel_path}::{name}"
-                        self._symbol_index[file_qname] = (rel_path, sk)
+                        self._symbol_index.setdefault(file_qname, []).append(entry)
 
     def build_symbol_nodes(self) -> list[dict[str, Any]]:
         """Build codebase_symbols documents from file-node data.
@@ -186,10 +188,10 @@ class RustEdgeResolver:
                 # 3. implements: method with impl_trait → trait symbol
                 impl_trait = sym.get("impl_trait")
                 if impl_trait and sym.get("kind") in ("method", "function"):
-                    # Look for the trait in the index
-                    trait_info = self._symbol_index.get(impl_trait)
-                    if trait_info:
-                        _, trait_sk = trait_info
+                    # Look for the trait in the index — prefer same-file match
+                    trait_entries = self._symbol_index.get(impl_trait, [])
+                    trait_sk = self._pick_best_match(trait_entries, rel_path)
+                    if trait_sk:
                         edge_key = (f"codebase_symbols/{sk}", f"codebase_symbols/{trait_sk}", "implements")
                         if edge_key not in seen:
                             seen.add(edge_key)
@@ -242,6 +244,7 @@ class RustEdgeResolver:
         1. Exact qualified_name match in the symbol index
         2. File-scoped match (target_file::name)
         3. Same-file match (caller_file::name)
+        4. Bare name with file preference
 
         Returns:
             The target symbol key, or None if unresolvable.
@@ -250,24 +253,55 @@ class RustEdgeResolver:
         target_name = call.get("name", "")
         target_file = call.get("file", "")
 
-        # Strategy 1: exact qualified name
+        # Strategy 1: exact qualified name — prefer target file match
         if target_qname and target_qname in self._symbol_index:
-            return self._symbol_index[target_qname][1]
+            prefer_file = target_file or caller_file
+            sk = self._pick_best_match(self._symbol_index[target_qname], prefer_file)
+            if sk:
+                return sk
 
         # Strategy 2: file-scoped name
         if target_file and target_name:
             file_scoped = f"{target_file}::{target_name}"
-            if file_scoped in self._symbol_index:
-                return self._symbol_index[file_scoped][1]
+            entries = self._symbol_index.get(file_scoped, [])
+            sk = self._pick_best_match(entries, target_file)
+            if sk:
+                return sk
 
         # Strategy 3: same-file name
         if target_name:
             same_file = f"{caller_file}::{target_name}"
-            if same_file in self._symbol_index:
-                return self._symbol_index[same_file][1]
+            entries = self._symbol_index.get(same_file, [])
+            sk = self._pick_best_match(entries, caller_file)
+            if sk:
+                return sk
 
-        # Strategy 4: bare name (last resort — may match wrong symbol)
+        # Strategy 4: bare name — prefer target file, fallback to first
         if target_name and target_name in self._symbol_index:
-            return self._symbol_index[target_name][1]
+            prefer_file = target_file or caller_file
+            sk = self._pick_best_match(self._symbol_index[target_name], prefer_file)
+            if sk:
+                return sk
 
         return None
+
+    @staticmethod
+    def _pick_best_match(
+        entries: list[tuple[str, str]], prefer_file: str
+    ) -> str | None:
+        """Pick the best symbol key from a list of candidates.
+
+        Prefers entries whose file matches prefer_file.
+        Falls back to the first entry if no file match.
+
+        Returns:
+            The symbol key, or None if entries is empty.
+        """
+        if not entries:
+            return None
+        # Prefer same-file match
+        for rel_path, sk in entries:
+            if rel_path == prefer_file:
+                return sk
+        # Fallback: first entry
+        return entries[0][1]

@@ -191,8 +191,8 @@ class TestCallHierarchy:
         calls = forward.get("calls", [])
         if calls:
             files = {c.get("file", "") for c in calls}
-            # At least one call should be to math.rs or within model.rs
-            assert any("math" in f or "model" in f for f in files) or len(calls) > 0
+            # At least one call should resolve to math.rs
+            assert any(f.endswith("src/math.rs") for f in files)
 
 
 class TestExtractCrate:
