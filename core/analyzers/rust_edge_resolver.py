@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from core.database.keys import file_key
@@ -28,14 +29,22 @@ def symbol_key(file_rel_path: str, qualified_name: str) -> str:
     """Build an ArangoDB-safe key for a codebase_symbols document.
 
     Combines the file key with the qualified symbol name.
+    Strips all characters unsafe for ArangoDB keys (generics, lifetimes,
+    angle brackets, spaces, etc.) — keeps only alphanumeric + underscore.
 
     Examples:
         >>> symbol_key("src/model.rs", "Model::new")
         'src_model_rs__Model__new'
+        >>> symbol_key("src/tape.rs", "impl<T> Tape<T>")
+        'src_tape_rs__impl_T__Tape_T_'
     """
     fk = file_key(file_rel_path)
-    # Replace :: with __ for ArangoDB key safety
-    safe_name = qualified_name.replace("::", "__").replace(".", "_").replace("/", "_")
+    # Replace :: with double underscore (deliberate separator)
+    safe_name = qualified_name.replace("::", "__")
+    # Replace all non-alphanumeric/underscore chars with single underscore
+    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", safe_name)
+    # Collapse 3+ underscores to 2 (preserve __ as path separator)
+    safe_name = re.sub(r"_{3,}", "__", safe_name).strip("_")
     return f"{fk}__{safe_name}"
 
 
