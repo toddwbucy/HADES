@@ -1,7 +1,7 @@
 """Codebase knowledge graph CLI commands.
 
 Provides ingest, update, and stats commands for indexing the
-repository's Python files into the codebase knowledge graph.
+repository's Python and Rust files into the codebase knowledge graph.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from core.database.keys import chunk_key
 logger = logging.getLogger(__name__)
 
 # Directories to always skip
-_DEFAULT_EXCLUDE = {"Acheron", "__pycache__", ".git", ".tox", ".mypy_cache", ".ruff_cache"}
+_DEFAULT_EXCLUDE = {"Acheron", "__pycache__", ".git", ".tox", ".mypy_cache", ".ruff_cache", "target"}
 
 
 def _git_python_files(repo_root: str, exclude: set[str] | None = None) -> list[str]:
@@ -59,6 +59,199 @@ def _git_python_files(repo_root: str, exclude: set[str] | None = None) -> list[s
     return files
 
 
+def _git_rust_files(repo_root: str, exclude: set[str] | None = None) -> list[str]:
+    """List tracked + untracked (but not ignored) Rust files via git."""
+    out = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.rs"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=repo_root,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"git ls-files failed: {out.stderr.strip()}")
+
+    skip = exclude or _DEFAULT_EXCLUDE
+    files: list[str] = []
+    for line in out.stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = Path(line).parts
+        if any(p in skip for p in parts):
+            continue
+        files.append(line)
+
+    return files
+
+
+def _find_crate_roots(repo_root: str, rs_files: list[str]) -> dict[str, list[str]]:
+    """Group .rs files by their nearest Cargo.toml crate root.
+
+    Returns:
+        Dict mapping crate root (relative to repo_root) to list of .rs file
+        paths (relative to repo_root).
+    """
+    crate_map: dict[str, list[str]] = {}
+
+    for rs_file in rs_files:
+        # Walk up from the .rs file to find the nearest Cargo.toml
+        rs_path = Path(repo_root) / rs_file
+        candidate = rs_path.parent
+        crate_root = None
+        while candidate != Path(repo_root).parent:
+            if (candidate / "Cargo.toml").exists():
+                crate_root = str(candidate)
+                break
+            candidate = candidate.parent
+
+        if crate_root is None:
+            continue  # No Cargo.toml found — skip this file
+
+        crate_map.setdefault(crate_root, []).append(rs_file)
+
+    return crate_map
+
+
+def _analyze_rust_crate(
+    crate_root: str,
+    rs_files: list[str],
+    repo_root: str,
+    client: Any,
+    db_name: str,
+    cols: CodebaseCollections,
+) -> dict[str, int]:
+    """Analyze Rust files in a single crate and store results.
+
+    1. Start rust-analyzer session for the crate
+    2. Extract symbols from each .rs file
+    3. Store rust_analyzer attribute on file nodes
+    4. Materialize symbol nodes and edges via RustEdgeResolver
+
+    Returns:
+        Dict with counts: symbols_created, edges_created
+    """
+    import shutil
+
+    from core.analyzers.rust_analyzer_client import RustAnalyzerSession
+    from core.analyzers.rust_edge_resolver import RustEdgeResolver
+    from core.analyzers.rust_symbol_extractor import RustSymbolExtractor
+    from core.database.keys import file_key
+
+    if not shutil.which("rust-analyzer"):
+        logger.warning("rust-analyzer not installed — skipping Rust analysis")
+        return {"rust_symbols_created": 0, "rust_edges_created": 0}
+
+    crate_name = Path(crate_root).name
+    print(f"  rust-analyzer: analyzing crate '{crate_name}'...", file=sys.stderr)
+
+    try:
+        with RustAnalyzerSession(crate_root, timeout=120) as session:
+            extractor = RustSymbolExtractor(session, include_calls=True, include_incoming=False)
+
+            # Convert repo-relative paths to crate-relative paths
+            file_nodes: list[dict[str, Any]] = []
+
+            for rs_file in rs_files:
+                abs_path = Path(repo_root) / rs_file
+                crate_rel = str(abs_path.relative_to(crate_root))
+
+                try:
+                    ra_data = extractor.extract_file(crate_rel)
+                except Exception:
+                    logger.warning("Failed to extract symbols from %s", rs_file)
+                    continue
+
+                # Update the file node with rust_analyzer attribute
+                fk = file_key(rs_file)
+                client.request(
+                    "PATCH",
+                    f"/_db/{db_name}/_api/document/{cols.files}/{fk}",
+                    json={"rust_analyzer": ra_data},
+                )
+
+                file_nodes.append({
+                    "rel_path": rs_file,
+                    "rust_analyzer": ra_data,
+                })
+
+                logger.debug(
+                    "Analyzed %s: %d symbols",
+                    rs_file,
+                    len(ra_data.get("symbols", [])),
+                )
+
+            if not file_nodes:
+                return {"rust_symbols_created": 0, "rust_edges_created": 0}
+
+            # Materialize symbol nodes and edges
+            resolver = RustEdgeResolver(file_nodes)
+            symbol_docs = resolver.build_symbol_nodes()
+            edge_docs = resolver.build_edges()
+
+            # Clear stale rust symbols for these files
+            file_paths = [n["rel_path"] for n in file_nodes]
+            try:
+                client.query(
+                    "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
+                    bind_vars={"@symbols": cols.symbols, "paths": file_paths},
+                )
+            except Exception:
+                logger.debug("No existing symbols to clear (collection may be new)")
+
+            # Clear stale rust edges (defines, calls, implements, pyo3_exposes, ffi_exposes)
+            rust_edge_types = ["defines", "calls", "implements", "pyo3_exposes", "ffi_exposes"]
+            file_ids = [f"{cols.files}/{file_key(p)}" for p in file_paths]
+            symbol_ids = [f"{cols.symbols}/{s['_key']}" for s in symbol_docs]
+            source_ids = file_ids + symbol_ids
+            if source_ids:
+                try:
+                    client.query(
+                        "FOR e IN @@edges FILTER e.type IN @types AND e._from IN @ids REMOVE e IN @@edges",
+                        bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": source_ids},
+                    )
+                except Exception:
+                    logger.debug("No existing rust edges to clear")
+
+            # Insert symbol nodes
+            symbols_created = 0
+            for doc in symbol_docs:
+                client.request(
+                    "POST",
+                    f"/_db/{db_name}/_api/document/{cols.symbols}",
+                    json=doc,
+                    params={"overwriteMode": "replace"},
+                )
+                symbols_created += 1
+
+            # Insert edges
+            edges_created = 0
+            for edge in edge_docs:
+                edge_key = f"{edge['_from'].split('/')[1]}__{edge['_to'].split('/')[1]}__{edge['type']}"
+                edge["_key"] = edge_key[:254]  # ArangoDB key limit
+                client.request(
+                    "POST",
+                    f"/_db/{db_name}/_api/document/{cols.edges}",
+                    json=edge,
+                    params={"overwriteMode": "replace"},
+                )
+                edges_created += 1
+
+            print(
+                f"  rust-analyzer: {symbols_created} symbols, {edges_created} edges from {len(file_nodes)} files",
+                file=sys.stderr,
+            )
+
+            return {
+                "rust_symbols_created": symbols_created,
+                "rust_edges_created": edges_created,
+            }
+
+    except Exception:
+        logger.exception("Rust analysis failed for crate %s", crate_root)
+        return {"rust_symbols_created": 0, "rust_edges_created": 0}
+
+
 def codebase_ingest(
     path: str,
     start_time: float,
@@ -67,12 +260,13 @@ def codebase_ingest(
     exclude: list[str] | None = None,
     collections: CodebaseCollections | None = None,
 ) -> CLIResponse:
-    """Ingest repository Python files into the codebase knowledge graph.
+    """Ingest repository Python and Rust files into the codebase knowledge graph.
 
-    1. git ls-files to get file list
-    2. Extract + AST-chunk each file via CodeProcessor
+    1. git ls-files to get Python + Rust file lists
+    2. Extract + AST-chunk each Python file via CodeProcessor
     3. Store file docs, chunks, embeddings
-    4. Resolve imports → create edges
+    4. Resolve Python imports → create edges
+    5. If Rust files exist: run rust-analyzer → store symbols + edges
     """
     repo_root = str(Path(path).resolve())
     cols = collections or CODEBASE_COLLECTIONS
@@ -90,14 +284,15 @@ def codebase_ingest(
     try:
         ensure_codebase_collections(client, db_name, cols)
 
-        # Get file list
+        # Get file lists
         exclude_set = _DEFAULT_EXCLUDE | set(exclude or [])
         py_files = _git_python_files(repo_root, exclude_set)
-        if not py_files:
+        rs_files = _git_rust_files(repo_root, exclude_set)
+        if not py_files and not rs_files:
             return error_response(
                 command="codebase.ingest",
                 code=ErrorCode.FILE_NOT_FOUND,
-                message="No Python files found in repository",
+                message="No Python or Rust files found in repository",
                 start_time=start_time,
             )
 
@@ -226,14 +421,49 @@ def codebase_ingest(
             )
             edges_created += 1
 
+        # ── Rust analysis ──────────────────────────────────────────
+        rust_stats: dict[str, int] = {"rust_symbols_created": 0, "rust_edges_created": 0}
+
+        if rs_files:
+            # Store basic file docs for .rs files (so rust_analyzer attribute can be PATCHed)
+            from core.database.keys import file_key as _file_key
+
+            for rs_file in rs_files:
+                abs_path = Path(repo_root) / rs_file
+                if not abs_path.exists():
+                    continue
+                fk = _file_key(rs_file)
+                rs_doc: dict[str, Any] = {
+                    "_key": fk,
+                    "rel_path": rs_file,
+                    "language": "rust",
+                }
+                client.request(
+                    "POST",
+                    f"/_db/{db_name}/_api/document/{cols.files}",
+                    json=rs_doc,
+                    params={"overwriteMode": "update"},
+                )
+
+            # Group .rs files by crate and analyze each
+            crate_map = _find_crate_roots(repo_root, rs_files)
+            for crate_root_path, crate_rs_files in crate_map.items():
+                crate_stats = _analyze_rust_crate(
+                    crate_root_path, crate_rs_files, repo_root, client, db_name, cols,
+                )
+                rust_stats["rust_symbols_created"] += crate_stats["rust_symbols_created"]
+                rust_stats["rust_edges_created"] += crate_stats["rust_edges_created"]
+
         return success_response(
             command="codebase.ingest",
             data={
                 "files_processed": files_processed,
                 "files_skipped": files_skipped,
-                "files_total": len(py_files),
+                "files_total": len(py_files) + len(rs_files),
                 "chunks_created": chunks_created,
                 "edges_created": edges_created,
+                "rust_files": len(rs_files),
+                **rust_stats,
             },
             start_time=start_time,
         )
@@ -283,7 +513,7 @@ def codebase_stats(
 
     try:
         counts: dict[str, int] = {}
-        for name in (cols.files, cols.chunks, cols.embeddings, cols.edges):
+        for name in (cols.files, cols.symbols, cols.chunks, cols.embeddings, cols.edges):
             resp = client.request("GET", f"/_db/{db_name}/_api/collection/{name}/count")
             if resp.get("error"):
                 counts[name] = -1
@@ -294,6 +524,7 @@ def codebase_stats(
             command="codebase.stats",
             data={
                 "files": counts.get(cols.files, 0),
+                "symbols": counts.get(cols.symbols, 0),
                 "chunks": counts.get(cols.chunks, 0),
                 "embeddings": counts.get(cols.embeddings, 0),
                 "edges": counts.get(cols.edges, 0),
