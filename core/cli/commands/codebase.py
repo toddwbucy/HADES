@@ -148,7 +148,7 @@ def _analyze_rust_crate(
     print(f"  rust-analyzer: analyzing crate '{crate_name}'...", file=sys.stderr)
 
     try:
-        with RustAnalyzerSession(crate_root, timeout=120) as session:
+        with RustAnalyzerSession(crate_root, timeout=600) as session:
             extractor = RustSymbolExtractor(session, include_calls=True, include_incoming=False)
 
             file_nodes: list[dict[str, Any]] = []
