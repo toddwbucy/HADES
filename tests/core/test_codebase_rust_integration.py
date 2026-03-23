@@ -122,3 +122,4 @@ class TestAnalyzeRustCrate:
             )
         assert result["rust_symbols_created"] == 0
         assert result["rust_edges_created"] == 0
+        assert result["ok"] is False

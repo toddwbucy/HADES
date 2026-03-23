@@ -129,7 +129,8 @@ def _analyze_rust_crate(
     4. Materialize symbol nodes and edges via RustEdgeResolver
 
     Returns:
-        Dict with counts: symbols_created, edges_created
+        Dict with counts and success flag: rust_symbols_created,
+        rust_edges_created, ok (True if analysis ran to completion).
     """
     import hashlib
     import shutil
@@ -141,7 +142,7 @@ def _analyze_rust_crate(
 
     if not shutil.which("rust-analyzer"):
         logger.warning("rust-analyzer not installed — skipping Rust analysis")
-        return {"rust_symbols_created": 0, "rust_edges_created": 0}
+        return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": False}
 
     crate_name = Path(crate_root).name
     print(f"  rust-analyzer: analyzing crate '{crate_name}'...", file=sys.stderr)
@@ -228,7 +229,8 @@ def _analyze_rust_crate(
                 )
 
             if not file_nodes:
-                return {"rust_symbols_created": 0, "rust_edges_created": 0}
+                # Analysis ran but no files produced data (all failed individually)
+                return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": True}
 
             # Materialize symbol nodes and edges
             resolver = RustEdgeResolver(file_nodes)
@@ -267,11 +269,12 @@ def _analyze_rust_crate(
             return {
                 "rust_symbols_created": symbols_created,
                 "rust_edges_created": edges_created,
+                "ok": True,
             }
 
     except Exception:
         logger.exception("Rust analysis failed for crate %s", crate_root)
-        return {"rust_symbols_created": 0, "rust_edges_created": 0}
+        return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": False}
 
 
 def codebase_ingest(
@@ -451,11 +454,21 @@ def codebase_ingest(
 
             from core.database.keys import file_key as _file_key
 
+            # Build crate map up-front so we only hash/upsert files that belong to a crate
+            full_crate_map = _find_crate_roots(repo_root, rs_files)
+            files_in_crates: set[str] = set()
+            for crate_files in full_crate_map.values():
+                files_in_crates.update(crate_files)
+
             changed_rs_files: list[str] = []
             rs_hashes: dict[str, str] = {}  # rel_path → content_hash (written after success)
             rs_skipped = 0
 
             for rs_file in rs_files:
+                # Skip files not in any crate (no Cargo.toml ancestor)
+                if rs_file not in files_in_crates:
+                    continue
+
                 abs_path = Path(repo_root) / rs_file
                 if not abs_path.exists():
                     continue
@@ -485,12 +498,10 @@ def codebase_ingest(
 
             files_skipped += rs_skipped
 
-            # Group changed .rs files by crate. When any file in a crate changed,
-            # re-analyze the ENTIRE crate (Rust analysis is crate-scoped — a change
-            # in one file can alter calls/implements edges for siblings).
+            # When any file in a crate changed, re-analyze the ENTIRE crate
+            # (Rust analysis is crate-scoped — a change in one file can alter
+            # calls/implements edges for siblings).
             if changed_rs_files:
-                # Build full crate map for ALL .rs files so we know every file per crate
-                full_crate_map = _find_crate_roots(repo_root, rs_files)
                 changed_crate_map = _find_crate_roots(repo_root, changed_rs_files)
                 analyzed_files: set[str] = set()
 
@@ -502,8 +513,7 @@ def codebase_ingest(
                     )
                     rust_stats["rust_symbols_created"] += crate_stats["rust_symbols_created"]
                     rust_stats["rust_edges_created"] += crate_stats["rust_edges_created"]
-                    # Only mark files as up-to-date if analysis produced results
-                    if crate_stats["rust_symbols_created"] > 0 or crate_stats["rust_edges_created"] > 0:
+                    if crate_stats["ok"]:
                         analyzed_files.update(all_crate_files)
 
                 # Write content hash only for files whose crate was successfully analyzed
