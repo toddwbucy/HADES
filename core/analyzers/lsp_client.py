@@ -96,6 +96,7 @@ class LspClient:
 
         # Notification queue (bounded to prevent unbounded memory growth)
         self._notifications: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._notifications_lock = threading.Lock()
 
         # Tracks whether the reader thread hit EOF or an error
         self._reader_error: Exception | None = None
@@ -114,7 +115,7 @@ class LspClient:
                 self._command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 cwd=self._cwd,
                 env=self._env,
             )
@@ -241,10 +242,11 @@ class LspClient:
         Returns:
             List of notification messages (oldest first).
         """
-        if method is None:
-            result = list(self._notifications)
-        else:
-            result = [n for n in self._notifications if n.get("method") == method]
+        with self._notifications_lock:
+            if method is None:
+                result = list(self._notifications)
+            else:
+                result = [n for n in self._notifications if n.get("method") == method]
         return result
 
     def drain_notifications(self, method: str | None = None) -> list[dict[str, Any]]:
@@ -256,18 +258,19 @@ class LspClient:
         Returns:
             List of notification messages (oldest first).
         """
-        if method is None:
-            result = list(self._notifications)
-            self._notifications.clear()
-        else:
-            result = []
-            remaining: deque[dict[str, Any]] = deque(maxlen=1000)
-            for n in self._notifications:
-                if n.get("method") == method:
-                    result.append(n)
-                else:
-                    remaining.append(n)
-            self._notifications = remaining
+        with self._notifications_lock:
+            if method is None:
+                result = list(self._notifications)
+                self._notifications.clear()
+            else:
+                result = []
+                remaining: deque[dict[str, Any]] = deque(maxlen=1000)
+                for n in self._notifications:
+                    if n.get("method") == method:
+                        result.append(n)
+                    else:
+                        remaining.append(n)
+                self._notifications = remaining
         return result
 
     @property
@@ -353,12 +356,16 @@ class LspClient:
                 # Read headers until blank line
                 content_length = self._read_headers(stdout)
                 if content_length is None:
-                    break  # EOF
+                    if not self._shutting_down:
+                        self._reader_error = LspProcessError("EOF from language server")
+                    break
 
                 # Read body
                 body = self._read_exactly(stdout, content_length)
                 if body is None:
-                    break  # EOF
+                    if not self._shutting_down:
+                        self._reader_error = LspProcessError("EOF from language server (truncated message)")
+                    break
 
                 # Parse JSON
                 try:
@@ -374,10 +381,11 @@ class LspClient:
                 self._reader_error = e
                 logger.error("LSP reader thread error: %s", e)
 
-                # Wake up any pending requests so they don't hang
-                with self._pending_lock:
-                    for event in self._pending.values():
-                        event.set()
+        finally:
+            # Wake all pending requests so they don't hang on EOF or error
+            with self._pending_lock:
+                for event in self._pending.values():
+                    event.set()
 
     def _read_headers(self, stream: Any) -> int | None:
         """Read LSP headers and return the Content-Length value.
@@ -438,7 +446,8 @@ class LspClient:
 
         else:
             # Notification from the server (no id)
-            self._notifications.append(message)
+            with self._notifications_lock:
+                self._notifications.append(message)
             method = message.get("method", "?")
             if method not in ("$/progress", "textDocument/publishDiagnostics"):
                 logger.debug("Server notification: %s", method)

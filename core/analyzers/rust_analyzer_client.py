@@ -53,19 +53,20 @@ class RustAnalyzerSession:
     ) -> None:
         self._crate_root = Path(crate_root).resolve()
         self._timeout = timeout
-        self._rust_analyzer_cmd = rust_analyzer_cmd or self._find_rust_analyzer()
         self._client: LspClient | None = None
         self._server_capabilities: dict[str, Any] = {}
         self._open_files: dict[str, int] = {}  # uri → version
         self._ready = False
 
-        # Validate crate root
+        # Validate crate root before resolving the binary
         cargo_toml = self._crate_root / "Cargo.toml"
         if not cargo_toml.exists():
             raise RustAnalyzerError(
                 f"No Cargo.toml found at {self._crate_root}. "
                 "RustAnalyzerSession requires a valid Rust crate."
             )
+
+        self._rust_analyzer_cmd = rust_analyzer_cmd or self._find_rust_analyzer()
 
     @property
     def crate_root(self) -> Path:
@@ -87,17 +88,32 @@ class RustAnalyzerSession:
 
         Blocks until indexing is complete or timeout is reached.
         """
-        self._client = LspClient(
+        if self._client is not None:
+            return  # Already started
+
+        client = LspClient(
             command=[self._rust_analyzer_cmd],
             cwd=str(self._crate_root),
         )
-        self._client.start()
 
-        # Initialize handshake
-        self._initialize()
+        try:
+            client.start()
+            self._client = client
 
-        # Wait for indexing
-        self._wait_for_ready()
+            # Initialize handshake
+            self._initialize()
+
+            # Wait for indexing
+            self._wait_for_ready()
+        except Exception:
+            # Clean up on partial failure
+            try:
+                client.shutdown()
+            except Exception:
+                pass
+            self._client = None
+            self._ready = False
+            raise
 
     def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> Any:
         """Send an LSP request to rust-analyzer.
@@ -225,6 +241,7 @@ class RustAnalyzerSession:
         """
         uri = self.open_file(file_path)
 
+        last_error: LspError | None = None
         for attempt in range(retries + 1):
             try:
                 result = self.request(
@@ -239,12 +256,15 @@ class RustAnalyzerSession:
                     return result
                 if attempt < retries:
                     time.sleep(retry_delay)
-            except LspError:
+            except LspError as e:
+                last_error = e
                 if attempt < retries:
                     time.sleep(retry_delay)
                 else:
-                    return None
+                    raise
 
+        if last_error is not None:
+            raise last_error
         return None
 
     def call_hierarchy_outgoing(
@@ -351,6 +371,7 @@ class RustAnalyzerSession:
         """
         uri = self.open_file(file_path)
 
+        last_error: LspError | None = None
         for attempt in range(retries + 1):
             try:
                 result = self.request(
@@ -367,12 +388,15 @@ class RustAnalyzerSession:
                     return refs
                 if attempt < retries:
                     time.sleep(retry_delay)
-            except LspError:
+            except LspError as e:
+                last_error = e
                 if attempt < retries:
                     time.sleep(retry_delay)
                 else:
-                    return []
+                    raise
 
+        if last_error is not None:
+            raise last_error
         return []
 
     def goto_definition(
@@ -402,6 +426,7 @@ class RustAnalyzerSession:
         """
         uri = self.open_file(file_path)
 
+        last_error: LspError | None = None
         for attempt in range(retries + 1):
             try:
                 result = self.request(
@@ -425,12 +450,15 @@ class RustAnalyzerSession:
                     return locations
                 if attempt < retries:
                     time.sleep(retry_delay)
-            except LspError:
+            except LspError as e:
+                last_error = e
                 if attempt < retries:
                     time.sleep(retry_delay)
                 else:
-                    return []
+                    raise
 
+        if last_error is not None:
+            raise last_error
         return []
 
     def shutdown(self) -> None:
@@ -567,17 +595,16 @@ class RustAnalyzerSession:
 
             time.sleep(poll_interval)
 
-        # Timeout — proceed anyway but warn
+        # Timeout — warn but do not mark as ready
         elapsed = time.monotonic() - start
         logger.warning(
-            "rust-analyzer did not confirm readiness within %ds (proceeding anyway)",
+            "rust-analyzer did not confirm readiness within %ds",
             self._timeout,
         )
         print(
-            f"  rust-analyzer: timeout after {elapsed:.1f}s (proceeding anyway)",
+            f"  rust-analyzer: timeout after {elapsed:.1f}s (not ready)",
             file=sys.stderr,
         )
-        self._ready = True  # Proceed optimistically
 
     def _check_started(self) -> None:
         """Raise if the session has not been started."""
