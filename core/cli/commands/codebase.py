@@ -149,17 +149,30 @@ def _analyze_rust_crate(
         with RustAnalyzerSession(crate_root, timeout=120) as session:
             extractor = RustSymbolExtractor(session, include_calls=True, include_incoming=False)
 
-            # Convert repo-relative paths to crate-relative paths
             file_nodes: list[dict[str, Any]] = []
+
+            # Track all files we attempt (for stale cleanup even on failure)
+            all_attempted_paths: list[str] = []
 
             for rs_file in rs_files:
                 abs_path = Path(repo_root) / rs_file
                 crate_rel = str(abs_path.relative_to(crate_root))
+                all_attempted_paths.append(rs_file)
 
                 try:
                     ra_data = extractor.extract_file(crate_rel)
                 except Exception:
                     logger.warning("Failed to extract symbols from %s", rs_file)
+                    # Clear stale data for this file on failure
+                    fk = file_key(rs_file)
+                    try:
+                        client.request(
+                            "PATCH",
+                            f"/_db/{db_name}/_api/document/{cols.files}/{fk}",
+                            json={"rust_analyzer": None},
+                        )
+                    except Exception:
+                        pass
                     continue
 
                 # Update the file node with rust_analyzer attribute
@@ -181,6 +194,34 @@ def _analyze_rust_crate(
                     len(ra_data.get("symbols", [])),
                 )
 
+            # Clear stale symbols and edges for ALL attempted files BEFORE inserting new ones.
+            # This uses the OLD symbol IDs so renamed/removed symbols get cleaned up.
+            rust_edge_types = ["defines", "calls", "implements", "pyo3_exposes", "ffi_exposes"]
+
+            try:
+                # Get old symbol keys before deletion
+                stale_keys = client.query(
+                    "FOR s IN @@symbols FILTER s.file_path IN @paths RETURN s._key",
+                    bind_vars={"@symbols": cols.symbols, "paths": all_attempted_paths},
+                )
+                stale_symbol_ids = [f"{cols.symbols}/{k}" for k in stale_keys]
+                file_ids = [f"{cols.files}/{file_key(p)}" for p in all_attempted_paths]
+                stale_ids = file_ids + stale_symbol_ids
+
+                if stale_ids:
+                    client.query(
+                        "FOR e IN @@edges FILTER e.type IN @types AND (e._from IN @ids OR e._to IN @ids) REMOVE e IN @@edges",
+                        bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": stale_ids},
+                    )
+
+                # Now remove old symbols
+                client.query(
+                    "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
+                    bind_vars={"@symbols": cols.symbols, "paths": all_attempted_paths},
+                )
+            except Exception:
+                logger.debug("No existing symbols/edges to clear (collection may be new)")
+
             if not file_nodes:
                 return {"rust_symbols_created": 0, "rust_edges_created": 0}
 
@@ -188,30 +229,6 @@ def _analyze_rust_crate(
             resolver = RustEdgeResolver(file_nodes)
             symbol_docs = resolver.build_symbol_nodes()
             edge_docs = resolver.build_edges()
-
-            # Clear stale rust symbols for these files
-            file_paths = [n["rel_path"] for n in file_nodes]
-            try:
-                client.query(
-                    "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
-                    bind_vars={"@symbols": cols.symbols, "paths": file_paths},
-                )
-            except Exception:
-                logger.debug("No existing symbols to clear (collection may be new)")
-
-            # Clear stale rust edges (defines, calls, implements, pyo3_exposes, ffi_exposes)
-            rust_edge_types = ["defines", "calls", "implements", "pyo3_exposes", "ffi_exposes"]
-            file_ids = [f"{cols.files}/{file_key(p)}" for p in file_paths]
-            symbol_ids = [f"{cols.symbols}/{s['_key']}" for s in symbol_docs]
-            source_ids = file_ids + symbol_ids
-            if source_ids:
-                try:
-                    client.query(
-                        "FOR e IN @@edges FILTER e.type IN @types AND e._from IN @ids REMOVE e IN @@edges",
-                        bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": source_ids},
-                    )
-                except Exception:
-                    logger.debug("No existing rust edges to clear")
 
             # Insert symbol nodes
             symbols_created = 0
@@ -425,18 +442,31 @@ def codebase_ingest(
         rust_stats: dict[str, int] = {"rust_symbols_created": 0, "rust_edges_created": 0}
 
         if rs_files:
-            # Store basic file docs for .rs files (so rust_analyzer attribute can be PATCHed)
+            import hashlib
+
             from core.database.keys import file_key as _file_key
+
+            changed_rs_files: list[str] = []
+            rs_skipped = 0
 
             for rs_file in rs_files:
                 abs_path = Path(repo_root) / rs_file
                 if not abs_path.exists():
                     continue
+
+                content_hash = hashlib.sha256(abs_path.read_bytes()).hexdigest()
                 fk = _file_key(rs_file)
+
+                # Skip unchanged files when not forcing
+                if not force and existing_hashes.get(fk) == content_hash:
+                    rs_skipped += 1
+                    continue
+
                 rs_doc: dict[str, Any] = {
                     "_key": fk,
                     "rel_path": rs_file,
                     "language": "rust",
+                    "symbol_hash": content_hash,
                 }
                 client.request(
                     "POST",
@@ -444,15 +474,19 @@ def codebase_ingest(
                     json=rs_doc,
                     params={"overwriteMode": "update"},
                 )
+                changed_rs_files.append(rs_file)
 
-            # Group .rs files by crate and analyze each
-            crate_map = _find_crate_roots(repo_root, rs_files)
-            for crate_root_path, crate_rs_files in crate_map.items():
-                crate_stats = _analyze_rust_crate(
-                    crate_root_path, crate_rs_files, repo_root, client, db_name, cols,
-                )
-                rust_stats["rust_symbols_created"] += crate_stats["rust_symbols_created"]
-                rust_stats["rust_edges_created"] += crate_stats["rust_edges_created"]
+            files_skipped += rs_skipped
+
+            # Group changed .rs files by crate and analyze each
+            if changed_rs_files:
+                crate_map = _find_crate_roots(repo_root, changed_rs_files)
+                for crate_root_path, crate_rs_files in crate_map.items():
+                    crate_stats = _analyze_rust_crate(
+                        crate_root_path, crate_rs_files, repo_root, client, db_name, cols,
+                    )
+                    rust_stats["rust_symbols_created"] += crate_stats["rust_symbols_created"]
+                    rust_stats["rust_edges_created"] += crate_stats["rust_edges_created"]
 
         return success_response(
             command="codebase.ingest",
