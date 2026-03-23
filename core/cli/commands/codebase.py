@@ -142,7 +142,7 @@ def _analyze_rust_crate(
 
     if not shutil.which("rust-analyzer"):
         logger.warning("rust-analyzer not installed — skipping Rust analysis")
-        return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": False}
+        return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": False, "analyzed_paths": []}
 
     crate_name = Path(crate_root).name
     print(f"  rust-analyzer: analyzing crate '{crate_name}'...", file=sys.stderr)
@@ -152,6 +152,7 @@ def _analyze_rust_crate(
             extractor = RustSymbolExtractor(session, include_calls=True, include_incoming=False)
 
             file_nodes: list[dict[str, Any]] = []
+            analyzed_paths: list[str] = []  # files that succeeded extraction
 
             # Track all files we attempt (for stale cleanup even on failure)
             all_attempted_paths: list[str] = []
@@ -189,6 +190,7 @@ def _analyze_rust_crate(
                     "rel_path": rs_file,
                     "rust_analyzer": ra_data,
                 })
+                analyzed_paths.append(rs_file)
 
                 logger.debug(
                     "Analyzed %s: %d symbols",
@@ -230,7 +232,7 @@ def _analyze_rust_crate(
 
             if not file_nodes:
                 # Analysis ran but no files produced data (all failed individually)
-                return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": True}
+                return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": True, "analyzed_paths": analyzed_paths}
 
             # Materialize symbol nodes and edges
             resolver = RustEdgeResolver(file_nodes)
@@ -270,11 +272,12 @@ def _analyze_rust_crate(
                 "rust_symbols_created": symbols_created,
                 "rust_edges_created": edges_created,
                 "ok": True,
+                "analyzed_paths": analyzed_paths,
             }
 
     except Exception:
         logger.exception("Rust analysis failed for crate %s", crate_root)
-        return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": False}
+        return {"rust_symbols_created": 0, "rust_edges_created": 0, "ok": False, "analyzed_paths": []}
 
 
 def codebase_ingest(
@@ -513,8 +516,7 @@ def codebase_ingest(
                     )
                     rust_stats["rust_symbols_created"] += crate_stats["rust_symbols_created"]
                     rust_stats["rust_edges_created"] += crate_stats["rust_edges_created"]
-                    if crate_stats["ok"]:
-                        analyzed_files.update(all_crate_files)
+                    analyzed_files.update(crate_stats.get("analyzed_paths", []))
 
                 # Write content hash only for files whose crate was successfully analyzed
                 for rs_file in analyzed_files:
