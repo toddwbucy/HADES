@@ -131,6 +131,7 @@ def _analyze_rust_crate(
     Returns:
         Dict with counts: symbols_created, edges_created
     """
+    import hashlib
     import shutil
 
     from core.analyzers.rust_analyzer_client import RustAnalyzerSession
@@ -198,7 +199,13 @@ def _analyze_rust_crate(
             # This uses the OLD symbol IDs so renamed/removed symbols get cleaned up.
             rust_edge_types = ["defines", "calls", "implements", "pyo3_exposes", "ffi_exposes"]
 
-            try:
+            # Check whether symbol/edge collections exist yet (they may not on first run)
+            col_resp = client.request("GET", f"/_db/{db_name}/_api/collection")
+            existing_cols = {c["name"] for c in col_resp.get("result", [])}
+            has_symbols = cols.symbols in existing_cols
+            has_edges = cols.edges in existing_cols
+
+            if has_symbols:
                 # Get old symbol keys before deletion
                 stale_keys = client.query(
                     "FOR s IN @@symbols FILTER s.file_path IN @paths RETURN s._key",
@@ -208,7 +215,7 @@ def _analyze_rust_crate(
                 file_ids = [f"{cols.files}/{file_key(p)}" for p in all_attempted_paths]
                 stale_ids = file_ids + stale_symbol_ids
 
-                if stale_ids:
+                if has_edges and stale_ids:
                     client.query(
                         "FOR e IN @@edges FILTER e.type IN @types AND (e._from IN @ids OR e._to IN @ids) REMOVE e IN @@edges",
                         bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": stale_ids},
@@ -219,8 +226,6 @@ def _analyze_rust_crate(
                     "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
                     bind_vars={"@symbols": cols.symbols, "paths": all_attempted_paths},
                 )
-            except Exception:
-                logger.debug("No existing symbols/edges to clear (collection may be new)")
 
             if not file_nodes:
                 return {"rust_symbols_created": 0, "rust_edges_created": 0}
@@ -244,8 +249,8 @@ def _analyze_rust_crate(
             # Insert edges
             edges_created = 0
             for edge in edge_docs:
-                edge_key = f"{edge['_from'].split('/')[1]}__{edge['_to'].split('/')[1]}__{edge['type']}"
-                edge["_key"] = edge_key[:254]  # ArangoDB key limit
+                identity = f"{edge['_from']}|{edge['_to']}|{edge['type']}"
+                edge["_key"] = hashlib.sha256(identity.encode()).hexdigest()
                 client.request(
                     "POST",
                     f"/_db/{db_name}/_api/document/{cols.edges}",
@@ -447,6 +452,7 @@ def codebase_ingest(
             from core.database.keys import file_key as _file_key
 
             changed_rs_files: list[str] = []
+            rs_hashes: dict[str, str] = {}  # rel_path → content_hash (written after success)
             rs_skipped = 0
 
             for rs_file in rs_files:
@@ -462,11 +468,11 @@ def codebase_ingest(
                     rs_skipped += 1
                     continue
 
+                # Store file doc WITHOUT symbol_hash — hash is written after analysis succeeds
                 rs_doc: dict[str, Any] = {
                     "_key": fk,
                     "rel_path": rs_file,
                     "language": "rust",
-                    "symbol_hash": content_hash,
                 }
                 client.request(
                     "POST",
@@ -475,18 +481,41 @@ def codebase_ingest(
                     params={"overwriteMode": "update"},
                 )
                 changed_rs_files.append(rs_file)
+                rs_hashes[rs_file] = content_hash
 
             files_skipped += rs_skipped
 
-            # Group changed .rs files by crate and analyze each
+            # Group changed .rs files by crate. When any file in a crate changed,
+            # re-analyze the ENTIRE crate (Rust analysis is crate-scoped — a change
+            # in one file can alter calls/implements edges for siblings).
             if changed_rs_files:
-                crate_map = _find_crate_roots(repo_root, changed_rs_files)
-                for crate_root_path, crate_rs_files in crate_map.items():
+                # Build full crate map for ALL .rs files so we know every file per crate
+                full_crate_map = _find_crate_roots(repo_root, rs_files)
+                changed_crate_map = _find_crate_roots(repo_root, changed_rs_files)
+                analyzed_files: set[str] = set()
+
+                for crate_root_path in changed_crate_map:
+                    # Analyze all files in the crate, not just the changed ones
+                    all_crate_files = full_crate_map.get(crate_root_path, changed_crate_map[crate_root_path])
                     crate_stats = _analyze_rust_crate(
-                        crate_root_path, crate_rs_files, repo_root, client, db_name, cols,
+                        crate_root_path, all_crate_files, repo_root, client, db_name, cols,
                     )
                     rust_stats["rust_symbols_created"] += crate_stats["rust_symbols_created"]
                     rust_stats["rust_edges_created"] += crate_stats["rust_edges_created"]
+                    # Only mark files as up-to-date if analysis produced results
+                    if crate_stats["rust_symbols_created"] > 0 or crate_stats["rust_edges_created"] > 0:
+                        analyzed_files.update(all_crate_files)
+
+                # Write content hash only for files whose crate was successfully analyzed
+                for rs_file in analyzed_files:
+                    content_hash = rs_hashes.get(rs_file)
+                    if content_hash:
+                        fk = _file_key(rs_file)
+                        client.request(
+                            "PATCH",
+                            f"/_db/{db_name}/_api/document/{cols.files}/{fk}",
+                            json={"symbol_hash": content_hash},
+                        )
 
         return success_response(
             command="codebase.ingest",
