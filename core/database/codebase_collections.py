@@ -22,6 +22,7 @@ class CodebaseCollections:
     """ArangoDB collection names for the codebase knowledge graph."""
 
     files: str = "codebase_files"
+    symbols: str = "codebase_symbols"
     chunks: str = "codebase_chunks"
     embeddings: str = "codebase_embeddings"
     edges: str = "codebase_edges"
@@ -53,7 +54,7 @@ def ensure_codebase_collections(
     existing = {c["name"] for c in resp.get("result", [])}
 
     # Document collections (type=2)
-    for name in (cols.files, cols.chunks, cols.embeddings):
+    for name in (cols.files, cols.symbols, cols.chunks, cols.embeddings):
         if name not in existing:
             create_resp = client.request(
                 "POST",
