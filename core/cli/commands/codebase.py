@@ -213,36 +213,42 @@ def _analyze_rust_crate(
             has_edges = cols.edges in existing_cols
 
             if has_symbols:
-                # Batch path lists to avoid AQL cursor pagination.
-                # ArangoDB on Unix domain sockets returns HTTP 501 for
-                # Transfer-Encoding: chunked, which cursor PUT triggers
-                # when result sets exceed batchSize.
+                # Perform stale cleanup entirely server-side to avoid
+                # materializing symbol lists in Python (which can trigger
+                # HTTP 501 cursor pagination on ArangoDB UDS).  Batched
+                # by paths to keep bind-var payloads small.
                 _BATCH = 30
-                stale_keys: list[str] = []
+
                 for i in range(0, len(all_attempted_paths), _BATCH):
                     batch = all_attempted_paths[i : i + _BATCH]
-                    stale_keys.extend(
+                    file_ids = [f"{cols.files}/{file_key(p)}" for p in batch]
+
+                    if has_edges:
+                        # Remove edges referencing stale symbols or file
+                        # nodes — symbol lookup stays inside AQL.
                         client.query(
-                            "FOR s IN @@symbols FILTER s.file_path IN @paths RETURN s._key",
-                            bind_vars={"@symbols": cols.symbols, "paths": batch},
+                            """
+                            LET sym_ids = (
+                                FOR s IN @@symbols
+                                    FILTER s.file_path IN @paths
+                                    RETURN s._id
+                            )
+                            LET all_ids = APPEND(sym_ids, @file_ids)
+                            FOR e IN @@edges
+                                FILTER e.type IN @types
+                                    AND (e._from IN all_ids OR e._to IN all_ids)
+                                REMOVE e IN @@edges
+                            """,
+                            bind_vars={
+                                "@symbols": cols.symbols,
+                                "@edges": cols.edges,
+                                "paths": batch,
+                                "file_ids": file_ids,
+                                "types": rust_edge_types,
+                            },
                         )
-                    )
 
-                stale_symbol_ids = [f"{cols.symbols}/{k}" for k in stale_keys]
-                file_ids = [f"{cols.files}/{file_key(p)}" for p in all_attempted_paths]
-                stale_ids = file_ids + stale_symbol_ids
-
-                if has_edges and stale_ids:
-                    for i in range(0, len(stale_ids), _BATCH):
-                        batch_ids = stale_ids[i : i + _BATCH]
-                        client.query(
-                            "FOR e IN @@edges FILTER e.type IN @types AND (e._from IN @ids OR e._to IN @ids) REMOVE e IN @@edges",
-                            bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": batch_ids},
-                        )
-
-                # Now remove old symbols (also batched)
-                for i in range(0, len(all_attempted_paths), _BATCH):
-                    batch = all_attempted_paths[i : i + _BATCH]
+                    # Remove the symbols themselves
                     client.query(
                         "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
                         bind_vars={"@symbols": cols.symbols, "paths": batch},

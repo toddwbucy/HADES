@@ -851,7 +851,12 @@ def _process_and_store(
             progress(f"Storing {len(chunk_docs)} chunks in database...")
 
             if force:
-                # Delete only THIS document's existing data (safe)
+                # Delete only THIS document's existing data (safe).
+                # Not wrapped in a transaction: ArangoDB stream transactions
+                # do not support /_api/import (used by insert_documents),
+                # and the JS transaction API is incompatible with our HTTP/2
+                # client.  If insert fails after delete, re-running --force
+                # recovers cleanly.  This matches the code-file ingest path.
                 client.query(
                     f"FOR c IN {col.chunks} FILTER c.paper_key == @key REMOVE c IN {col.chunks}",
                     {"key": sanitized_id},
