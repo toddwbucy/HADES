@@ -157,7 +157,11 @@ def _analyze_rust_crate(
             # Track all files we attempt (for stale cleanup even on failure)
             all_attempted_paths: list[str] = []
 
-            for rs_file in rs_files:
+            for i, rs_file in enumerate(rs_files):
+                print(
+                    f"  [{i + 1}/{len(rs_files)}] {rs_file}",
+                    file=sys.stderr,
+                )
                 abs_path = Path(repo_root) / rs_file
                 crate_rel = str(abs_path.relative_to(crate_root))
                 all_attempted_paths.append(rs_file)
@@ -209,26 +213,40 @@ def _analyze_rust_crate(
             has_edges = cols.edges in existing_cols
 
             if has_symbols:
-                # Get old symbol keys before deletion
-                stale_keys = client.query(
-                    "FOR s IN @@symbols FILTER s.file_path IN @paths RETURN s._key",
-                    bind_vars={"@symbols": cols.symbols, "paths": all_attempted_paths},
-                )
+                # Batch path lists to avoid AQL cursor pagination.
+                # ArangoDB on Unix domain sockets returns HTTP 501 for
+                # Transfer-Encoding: chunked, which cursor PUT triggers
+                # when result sets exceed batchSize.
+                _BATCH = 30
+                stale_keys: list[str] = []
+                for i in range(0, len(all_attempted_paths), _BATCH):
+                    batch = all_attempted_paths[i : i + _BATCH]
+                    stale_keys.extend(
+                        client.query(
+                            "FOR s IN @@symbols FILTER s.file_path IN @paths RETURN s._key",
+                            bind_vars={"@symbols": cols.symbols, "paths": batch},
+                        )
+                    )
+
                 stale_symbol_ids = [f"{cols.symbols}/{k}" for k in stale_keys]
                 file_ids = [f"{cols.files}/{file_key(p)}" for p in all_attempted_paths]
                 stale_ids = file_ids + stale_symbol_ids
 
                 if has_edges and stale_ids:
-                    client.query(
-                        "FOR e IN @@edges FILTER e.type IN @types AND (e._from IN @ids OR e._to IN @ids) REMOVE e IN @@edges",
-                        bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": stale_ids},
-                    )
+                    for i in range(0, len(stale_ids), _BATCH):
+                        batch_ids = stale_ids[i : i + _BATCH]
+                        client.query(
+                            "FOR e IN @@edges FILTER e.type IN @types AND (e._from IN @ids OR e._to IN @ids) REMOVE e IN @@edges",
+                            bind_vars={"@edges": cols.edges, "types": rust_edge_types, "ids": batch_ids},
+                        )
 
-                # Now remove old symbols
-                client.query(
-                    "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
-                    bind_vars={"@symbols": cols.symbols, "paths": all_attempted_paths},
-                )
+                # Now remove old symbols (also batched)
+                for i in range(0, len(all_attempted_paths), _BATCH):
+                    batch = all_attempted_paths[i : i + _BATCH]
+                    client.query(
+                        "FOR s IN @@symbols FILTER s.file_path IN @paths REMOVE s IN @@symbols",
+                        bind_vars={"@symbols": cols.symbols, "paths": batch},
+                    )
 
             if not file_nodes:
                 # Analysis ran but no files produced data (all failed individually)
@@ -338,7 +356,11 @@ def codebase_ingest(
         files_skipped = 0
         file_results: list[dict[str, Any]] = []
 
+        if py_files:
+            print(f"  Python: processing {len(py_files)} files...", file=sys.stderr)
+
         for i, rel_path in enumerate(py_files):
+            print(f"  [{i + 1}/{len(py_files)}] {rel_path}", file=sys.stderr)
             abs_path = Path(repo_root) / rel_path
             if not abs_path.exists():
                 continue
@@ -406,11 +428,11 @@ def codebase_ingest(
                 "symbols": result.metadata.get("symbols", {}),
             })
 
-            if (i + 1) % 50 == 0:
-                print(
-                    f"  [{i + 1}/{len(py_files)}] processed...",
-                    file=sys.stderr,
-                )
+        if py_files:
+            print(
+                f"  Python: {files_processed} processed, {files_skipped} unchanged, {chunks_created} chunks",
+                file=sys.stderr,
+            )
 
         # Resolve imports and create edges
         from core.database.import_resolver import ImportResolver
