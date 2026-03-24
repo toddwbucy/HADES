@@ -62,14 +62,13 @@ class CodeExtractor(ExtractorBase):
         if use_tree_sitter:
             try:
                 self.tree_sitter = TreeSitterExtractor()
-                logger.info("Initialized CodeExtractor with Tree-sitter support")
+                logger.debug("Initialized CodeExtractor with Tree-sitter support")
             except Exception as e:
-                logger.warning(f"Failed to initialize Tree-sitter: {e}")
+                logger.debug("Tree-sitter unavailable, chunking will use whole-file fallback: %s", e)
                 self.tree_sitter = None
                 self.use_tree_sitter = False
         else:
             self.tree_sitter = None
-            logger.info("Initialized CodeExtractor without Tree-sitter")
 
     def extract(self, file_path: str | Path, **kwargs) -> ExtractionResult:
         """

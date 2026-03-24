@@ -18,7 +18,6 @@ try:
     TREE_SITTER_AVAILABLE = True
 except ImportError:
     TREE_SITTER_AVAILABLE = False
-    logging.warning("Tree-sitter not available - symbol extraction disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,7 @@ class TreeSitterExtractor:
         self.parsers: dict[str, Any] = {}
 
         if not TREE_SITTER_AVAILABLE:
-            logger.warning("Tree-sitter not available - symbol extraction will be skipped")
+            logger.debug("Tree-sitter not installed — symbol extraction unavailable")
             return
 
         # Pre-load common language parsers
