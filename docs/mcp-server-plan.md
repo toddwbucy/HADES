@@ -1,6 +1,6 @@
 # HADES MCP Server Plan
 
-**Status**: Design — not yet started
+**Status**: Implemented — see `core/mcp/server.py`
 **Bident task**: `task_hades_mcp`
 **Priority**: Critical — blocks Hermes deep integration
 
@@ -152,17 +152,12 @@ Only worth doing if latency profiling shows subprocess overhead is significant
 
 ---
 
-## Files to Create
+## Implementation Status
 
-```
-core/mcp/
-├── __init__.py
-├── server.py          # Entry point — creates and runs the MCP server
-└── tools.py           # Tool definitions and handlers
-
-pyproject.toml         # Add: mcp>=1.0 dependency
-                       # Add: [project.scripts] hades-mcp = "core.mcp.server:main"
-```
+The MCP server has been implemented in:
+- `core/mcp/server.py` — FastMCP-based server with subprocess CLI wrappers
+- Tool definitions are embedded in server.py (40+ tools exposed)
+- Binary registered as `hades-mcp` in pyproject.toml
 
 ## Files to Modify
 
