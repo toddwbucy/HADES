@@ -124,11 +124,15 @@ class RustSymbolExtractor:
         pyo3_exports = [s["name"] for s in symbols if s.get("is_pyo3")]
         ffi_boundaries = [s["name"] for s in symbols if s.get("is_ffi")]
 
+        # Extract use-imports via goto_definition (file-level)
+        imports = self._extract_use_imports(file_path, file_content)
+
         return {
             "symbols": symbols,
             "impl_blocks": impl_blocks,
             "pyo3_exports": pyo3_exports,
             "ffi_boundaries": ffi_boundaries,
+            "imports": imports,
             "analyzed_at": datetime.now(UTC).isoformat(),
         }
 
@@ -493,6 +497,150 @@ class RustSymbolExtractor:
             for (parent, trait), methods in blocks.items()
         ]
 
+    # ── Use-import extraction ─────────────────────────────────────
+
+    def _extract_use_imports(
+        self, file_path: str | Path, file_content: str
+    ) -> list[dict[str, Any]]:
+        """Extract ``use`` declarations and resolve each imported name via LSP.
+
+        Parses file content for ``use`` statements, identifies the terminal
+        identifiers (the names actually brought into scope), and calls
+        ``goto_definition`` on each to resolve to the definition site.
+
+        Only imports that resolve to files within the crate root are kept
+        (external crates like ``std``, ``serde`` are filtered out).
+
+        Returns:
+            List of import dicts::
+
+                {
+                    "name": "HashMap",
+                    "use_statement": "use std::collections::HashMap;",
+                    "source_line": 5,
+                    "target_file": "src/collections/hash/map.rs",
+                    "target_line": 42,
+                    "target_name": "HashMap",
+                    "qualified_name": "HashMap",
+                }
+
+            Only internal (in-crate) imports are included.
+        """
+        imports: list[dict[str, Any]] = []
+        lines = file_content.splitlines()
+
+        for line_no, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped.startswith("use "):
+                continue
+
+            # Parse terminal identifiers and their character positions
+            positions = self._parse_use_positions(line, line_no)
+            if not positions:
+                continue
+
+            for name, lsp_line, lsp_char in positions:
+                try:
+                    locations = self._session.goto_definition(
+                        file_path, lsp_line, lsp_char,
+                        timeout=5.0, retries=1, retry_delay=0.5,
+                    )
+                except Exception:
+                    logger.debug(
+                        "goto_definition failed for use '%s' at %s:%d:%d",
+                        name, file_path, lsp_line, lsp_char,
+                    )
+                    continue
+
+                if not locations:
+                    continue
+
+                loc = locations[0]
+                target_uri = loc.get("uri", "")
+                target_file = self._uri_to_rel_path(target_uri)
+
+                # Filter: only keep imports that resolve within the crate
+                if target_file.startswith("/") or target_file == target_uri:
+                    # Absolute path or unresolvable URI → external crate
+                    continue
+
+                target_line = loc.get("range", {}).get("start", {}).get("line", 0)
+
+                imports.append({
+                    "name": name,
+                    "use_statement": stripped,
+                    "source_line": line_no,
+                    "target_file": target_file,
+                    "target_line": target_line,
+                    "target_name": name,
+                    "qualified_name": name,
+                })
+
+        logger.debug(
+            "Extracted %d internal use-imports from %s", len(imports), file_path,
+        )
+        return imports
+
+    @staticmethod
+    def _parse_use_positions(
+        line: str, line_no: int
+    ) -> list[tuple[str, int, int]]:
+        """Parse a ``use`` line and return ``(name, line, col)`` per imported symbol.
+
+        Handles common Rust ``use`` patterns:
+
+        - Simple: ``use crate::module::Name;``
+        - Grouped: ``use crate::module::{A, B, C};``
+        - Aliased: ``use crate::module::Name as Alias;``
+        - Self: ``use crate::module::{self, Name};`` (``self`` skipped)
+        - Glob: ``use crate::module::*;`` (skipped entirely)
+        - Nested groups: ``use std::{io::{Read, Write}, fmt};``
+
+        Returns:
+            List of (name, 0-based line, 0-based character offset) tuples.
+        """
+        stripped = line.strip()
+        if not stripped.startswith("use "):
+            return []
+
+        # Skip glob imports — can't resolve individually
+        if stripped.rstrip(";").rstrip().endswith("*"):
+            return []
+
+        results: list[tuple[str, int, int]] = []
+
+        # Check for grouped imports (any braces present)
+        brace_open = stripped.find("{")
+        if brace_open != -1:
+            # Extract all terminal identifiers inside braces (handles nesting)
+            # We find identifiers that are followed by , or } or " as " or ;
+            # but NOT followed by :: (those are path segments, not terminals)
+            _extract_group_terminals(stripped, line, line_no, results)
+        else:
+            # Simple: use path::to::Name; or use path::to::Name as Alias;
+            body = stripped[4:].rstrip(";").strip()
+
+            # Remove alias: "Name as Alias" → "Name"
+            if " as " in body:
+                body = body.split(" as ")[0].strip()
+
+            # Get the terminal identifier (last path segment)
+            parts = body.split("::")
+            name = parts[-1].strip()
+            if name and name.isidentifier() and name != "self":
+                # Find the character position in the original line
+                # Search backwards from end to find the terminal name
+                idx = line.rfind(name)
+                if " as " in line:
+                    # Make sure we find the name before "as", not after
+                    as_pos = line.find(" as ")
+                    # Search for name only in the portion before "as"
+                    idx = line.rfind(name, 0, as_pos) if as_pos != -1 else idx
+                if idx >= 0:
+                    results.append((name, line_no, idx))
+
+        return results
+
     def _uri_to_rel_path(self, uri: str) -> str:
         """Convert a file:// URI to a path relative to the crate root."""
         if uri.startswith("file://"):
@@ -511,5 +659,82 @@ class RustSymbolExtractor:
             "impl_blocks": [],
             "pyo3_exports": [],
             "ffi_boundaries": [],
+            "imports": [],
             "analyzed_at": datetime.now(UTC).isoformat(),
         }
+
+
+# ── Module-level helpers for use-statement parsing ──────────────
+
+
+def _extract_group_terminals(
+    use_stmt: str,
+    original_line: str,
+    line_no: int,
+    results: list[tuple[str, int, int]],
+) -> None:
+    """Extract terminal identifiers from grouped/nested ``use`` statements.
+
+    Walks the characters inside braces to find identifiers that are
+    terminal (not followed by ``::``).  Handles nested groups like
+    ``use std::{io::{Read, Write}, fmt::Display};``
+    """
+    brace_start = use_stmt.find("{")
+    brace_end = use_stmt.rfind("}")
+    if brace_start == -1 or brace_end == -1:
+        return
+
+    inner = use_stmt[brace_start + 1 : brace_end]
+    items = _split_respecting_braces(inner)
+
+    for item in items:
+        item = item.strip()
+        if not item or item == "self":
+            continue
+
+        if "{" in item:
+            # Nested group: "io::{Read, Write}" — recurse
+            synthetic = f"use {item};"
+            _extract_group_terminals(synthetic, original_line, line_no, results)
+            continue
+
+        # Remove alias
+        if " as " in item:
+            item = item.split(" as ")[0].strip()
+
+        # Skip globs
+        if item.endswith("*"):
+            continue
+
+        # Get terminal name (last path segment)
+        parts = item.split("::")
+        name = parts[-1].strip()
+        if name and name.isidentifier() and name != "self":
+            idx = original_line.find(name)
+            if idx >= 0:
+                results.append((name, line_no, idx))
+
+
+def _split_respecting_braces(s: str) -> list[str]:
+    """Split a string on commas, but respect nested ``{...}`` groups."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+
+    for ch in s:
+        if ch == "{":
+            depth += 1
+            current.append(ch)
+        elif ch == "}":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+
+    if current:
+        parts.append("".join(current))
+
+    return parts
