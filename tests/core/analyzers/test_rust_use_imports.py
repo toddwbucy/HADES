@@ -84,10 +84,22 @@ class TestParseUsePositions:
         assert results[0][0] == "Bar"
 
     def test_pub_use(self) -> None:
-        """pub use is not a 'use ' line (starts with 'pub'), should be skipped."""
-        # pub use re-exports are different from imports — skip for now
+        """pub use re-exports create a dependency — should be parsed."""
         results = self._parse("pub use crate::foo::Bar;")
-        assert len(results) == 0
+        assert len(results) == 1
+        assert results[0][0] == "Bar"
+
+    def test_pub_crate_use(self) -> None:
+        """pub(crate) use should also be parsed."""
+        results = self._parse("pub(crate) use crate::foo::Baz;")
+        assert len(results) == 1
+        assert results[0][0] == "Baz"
+
+    def test_pub_use_grouped(self) -> None:
+        """pub use with grouped imports."""
+        results = self._parse("pub use crate::foo::{Alpha, Beta};")
+        names = {r[0] for r in results}
+        assert names == {"Alpha", "Beta"}
 
     def test_single_segment(self) -> None:
         """use SomeName; (no :: path) should capture the name."""

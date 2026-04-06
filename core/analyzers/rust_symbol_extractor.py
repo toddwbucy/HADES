@@ -632,6 +632,10 @@ class RustSymbolExtractor:
             List of (name, 0-based line, 0-based character offset) tuples.
         """
         stripped = line.strip()
+
+        # Normalize visibility prefix: "pub use", "pub(crate) use" → "use"
+        stripped = _strip_visibility(stripped)
+
         if not stripped.startswith("use "):
             return []
 
@@ -705,6 +709,21 @@ class RustSymbolExtractor:
 
 
 # ── Module-level helpers for use-statement parsing ──────────────
+
+_VIS_PREFIX_RE = re.compile(r"^pub\s*(?:\([^)]*\)\s*)?")
+
+
+def _strip_visibility(s: str) -> str:
+    """Remove a leading visibility qualifier from a statement.
+
+    ``pub use ...``          → ``use ...``
+    ``pub(crate) use ...``   → ``use ...``
+    ``pub(in path) use ...`` → ``use ...``
+    ``use ...``              → ``use ...``  (unchanged)
+    """
+    if s.startswith("pub"):
+        return _VIS_PREFIX_RE.sub("", s, count=1)
+    return s
 
 
 def _is_word_boundary(line: str, start: int, length: int) -> bool:
@@ -856,7 +875,8 @@ def _collect_use_statements(
                 current = None
             continue
 
-        if not stripped.startswith("use "):
+        # Normalize visibility prefix so "pub use" / "pub(crate) use" are recognized
+        if not _strip_visibility(stripped).startswith("use "):
             continue
 
         if ";" in stripped:
