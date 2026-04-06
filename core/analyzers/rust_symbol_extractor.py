@@ -529,13 +529,44 @@ class RustSymbolExtractor:
         imports: list[dict[str, Any]] = []
         lines = file_content.splitlines()
 
-        for line_no, line in enumerate(lines):
-            stripped = line.strip()
-            if not stripped.startswith("use "):
-                continue
+        # Assemble complete use statements (may span multiple lines) and
+        # record which original lines they came from.  Each entry is
+        # (start_line_no, list_of_(line_no, raw_line) pairs).
+        use_stmts = _collect_use_statements(lines)
 
-            # Parse terminal identifiers and their character positions
-            positions = self._parse_use_positions(line, line_no)
+        for start_line, span_lines in use_stmts:
+            # Build a single normalized statement for parsing:
+            # join continuation lines, strip inline comments.
+            joined = " ".join(raw.strip() for _, raw in span_lines)
+            # Strip trailing inline comment (after the semicolon)
+            semi_pos = joined.find(";")
+            if semi_pos != -1:
+                joined = joined[: semi_pos + 1]
+
+            # For single-line statements we pass the original line so
+            # column positions map directly to the source.  For multiline
+            # we pass the joined form and use (start_line, col) — the LSP
+            # still resolves correctly because goto_definition only needs
+            # a position that lands on the identifier token, and for
+            # multiline use-stmts rust-analyzer associates the whole
+            # statement with the opening line.
+            if len(span_lines) == 1:
+                orig_line_no, orig_line = span_lines[0]
+                # Truncate at semicolon to strip inline comments.
+                # Column positions are preserved since the prefix is unchanged.
+                semi_pos = orig_line.find(";")
+                parse_line = orig_line[: semi_pos + 1] if semi_pos != -1 else orig_line
+                positions = self._parse_use_positions(parse_line, orig_line_no)
+            else:
+                # Multiline: parse from joined text.  Column positions
+                # refer to the joined string, but we need real (line, col)
+                # for goto_definition.  Build a mapping from joined-offset
+                # back to (line_no, col).
+                positions_raw = self._parse_use_positions(joined, start_line)
+                positions = _remap_multiline_positions(
+                    positions_raw, span_lines, joined,
+                )
+
             if not positions:
                 continue
 
@@ -560,7 +591,7 @@ class RustSymbolExtractor:
                 target_file = self._uri_to_rel_path(target_uri)
 
                 # Filter: only keep imports that resolve within the crate
-                if target_file.startswith("/") or target_file == target_uri:
+                if Path(target_file).is_absolute() or target_file == target_uri:
                     # Absolute path or unresolvable URI → external crate
                     continue
 
@@ -568,8 +599,8 @@ class RustSymbolExtractor:
 
                 imports.append({
                     "name": name,
-                    "use_statement": stripped,
-                    "source_line": line_no,
+                    "use_statement": joined.strip(),
+                    "source_line": start_line,
                     "target_file": target_file,
                     "target_line": target_line,
                     "target_name": name,
@@ -791,3 +822,92 @@ def _split_respecting_braces(s: str) -> list[str]:
         parts.append("".join(current))
 
     return parts
+
+
+def _collect_use_statements(
+    lines: list[str],
+) -> list[tuple[int, list[tuple[int, str]]]]:
+    """Collect complete ``use`` statements, joining continuation lines.
+
+    Rust ``use`` statements may span multiple lines::
+
+        use std::{
+            io::Read,
+            fmt::Display,
+        };
+
+    Returns a list of ``(start_line_no, [(line_no, raw_line), ...])``.
+    Each entry is one complete ``use ...;`` statement with all its
+    contributing source lines.
+    """
+    result: list[tuple[int, list[tuple[int, str]]]] = []
+    current: list[tuple[int, str]] | None = None
+    start_line = 0
+
+    for line_no, line in enumerate(lines):
+        stripped = line.strip()
+
+        if current is not None:
+            # Continuation of a multiline use statement
+            current.append((line_no, line))
+            if ";" in stripped:
+                result.append((start_line, current))
+                current = None
+            continue
+
+        if not stripped.startswith("use "):
+            continue
+
+        if ";" in stripped:
+            # Single-line use statement (most common case)
+            result.append((line_no, [(line_no, line)]))
+        else:
+            # Multiline use statement — starts here, continues until ";"
+            current = [(line_no, line)]
+            start_line = line_no
+
+    # Unterminated use statement at EOF — include as-is so partial
+    # parsing can still extract what it can.
+    if current is not None:
+        result.append((start_line, current))
+
+    return result
+
+
+def _remap_multiline_positions(
+    positions: list[tuple[str, int, int]],
+    span_lines: list[tuple[int, str]],
+    joined: str,
+) -> list[tuple[str, int, int]]:
+    """Map column positions in a joined string back to real (line, col).
+
+    ``_parse_use_positions`` was given the joined (single-line) form of a
+    multiline ``use`` statement.  The returned column offsets refer to that
+    joined string.  This function finds which original source line each
+    name actually lives on and computes the real column.
+
+    Args:
+        positions: ``(name, start_line, col_in_joined)`` from the parser.
+        span_lines: ``[(line_no, raw_line), ...]`` — the original lines.
+        joined: The joined string that was parsed.
+
+    Returns:
+        ``(name, real_line_no, real_col)`` tuples.
+    """
+    remapped: list[tuple[str, int, int]] = []
+    for name, _, col_in_joined in positions:
+        # For each name, find which original line contains it by
+        # searching for the name token in each contributing line.
+        found = False
+        for real_line_no, raw_line in span_lines:
+            idx = _find_word(raw_line, name)
+            if idx != -1:
+                remapped.append((name, real_line_no, idx))
+                found = True
+                break
+        if not found:
+            # Fallback: use the start line and joined column.
+            # This can happen if the name only appears in the joined
+            # form (unlikely but defensive).
+            remapped.append((name, span_lines[0][0], col_in_joined))
+    return remapped

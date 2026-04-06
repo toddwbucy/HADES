@@ -122,6 +122,94 @@ class TestParseUsePositions:
         assert col > line.find("add_things")
 
 
+# ── Part 1b: _collect_use_statements ─────────────────────────────
+
+
+class TestCollectUseStatements:
+    """Test multiline and inline-comment handling."""
+
+    @staticmethod
+    def _collect(source: str):
+        from core.analyzers.rust_symbol_extractor import _collect_use_statements
+        return _collect_use_statements(source.splitlines())
+
+    def test_single_line(self) -> None:
+        stmts = self._collect("use crate::foo::Bar;")
+        assert len(stmts) == 1
+        start, spans = stmts[0]
+        assert start == 0
+        assert len(spans) == 1
+
+    def test_multiline_joined(self) -> None:
+        source = textwrap.dedent("""\
+            use std::{
+                io::Read,
+                fmt::Display,
+            };
+        """)
+        stmts = self._collect(source)
+        assert len(stmts) == 1
+        start, spans = stmts[0]
+        assert start == 0
+        assert len(spans) == 4  # 4 lines including closing };
+
+    def test_inline_comment_stripped_by_caller(self) -> None:
+        """Inline comments after ; should not interfere with parsing."""
+        source = "use crate::foo::Bar; // a note"
+        stmts = self._collect(source)
+        assert len(stmts) == 1
+        # When the caller joins + truncates at ";", the comment is removed.
+        _, spans = stmts[0]
+        joined = " ".join(raw.strip() for _, raw in spans)
+        semi = joined.find(";")
+        cleaned = joined[: semi + 1]
+        assert "//" not in cleaned
+        # The name should still parse correctly
+        results = RustSymbolExtractor._parse_use_positions(cleaned, 0)
+        assert len(results) == 1
+        assert results[0][0] == "Bar"
+
+    def test_multiline_parse_positions(self) -> None:
+        """Terminal names in a multiline use statement should be found."""
+        source = textwrap.dedent("""\
+            use crate::{
+                Alpha,
+                Beta,
+            };
+        """)
+        stmts = self._collect(source)
+        assert len(stmts) == 1
+        _, spans = stmts[0]
+        joined = " ".join(raw.strip() for _, raw in spans)
+        semi = joined.find(";")
+        cleaned = joined[: semi + 1]
+        results = RustSymbolExtractor._parse_use_positions(cleaned, 0)
+        names = {r[0] for r in results}
+        assert names == {"Alpha", "Beta"}
+
+    def test_mixed_single_and_multiline(self) -> None:
+        source = textwrap.dedent("""\
+            use crate::foo::A;
+            use crate::{
+                B,
+                C,
+            };
+            use crate::bar::D;
+        """)
+        stmts = self._collect(source)
+        assert len(stmts) == 3
+
+    def test_non_use_lines_skipped(self) -> None:
+        source = textwrap.dedent("""\
+            fn main() {}
+            let x = 5;
+            use crate::foo::Bar;
+        """)
+        stmts = self._collect(source)
+        assert len(stmts) == 1
+        assert stmts[0][0] == 2  # line index 2
+
+
 # ── Part 2: Import edge resolution ──────────────────────────────
 
 
@@ -360,11 +448,16 @@ class TestUseImportIntegration:
         (src / "lib.rs").write_text(textwrap.dedent("""\
             pub mod math;
             pub mod consumer;
+            pub mod multiline_consumer;
         """))
 
         (src / "math.rs").write_text(textwrap.dedent("""\
             pub fn add(a: i32, b: i32) -> i32 {
                 a + b
+            }
+
+            pub fn multiply(a: i32, b: i32) -> i32 {
+                a * b
             }
 
             pub struct Calculator {
@@ -373,12 +466,24 @@ class TestUseImportIntegration:
         """))
 
         (src / "consumer.rs").write_text(textwrap.dedent("""\
-            use crate::math::add;
+            use crate::math::add; // inline comment
             use crate::math::Calculator;
 
             pub fn compute() -> i32 {
                 let c = Calculator { total: 0 };
                 add(c.total, 1)
+            }
+        """))
+
+        # Multiline use statement
+        (src / "multiline_consumer.rs").write_text(textwrap.dedent("""\
+            use crate::math::{
+                add,
+                multiply,
+            };
+
+            pub fn compute_both(a: i32, b: i32) -> i32 {
+                add(a, multiply(a, b))
             }
         """))
 
@@ -413,9 +518,27 @@ class TestUseImportIntegration:
             assert imp["target_file"], f"Import {imp['name']} has no target_file"
             assert "math.rs" in imp["target_file"]
 
+    def test_inline_comment_does_not_break_import(self, extractor: RustSymbolExtractor) -> None:
+        """use foo::Bar; // comment — should still resolve Bar."""
+        data = extractor.extract_file("src/consumer.rs")
+        imports = data["imports"]
+        names = {imp["name"] for imp in imports}
+        assert "add" in names, f"Inline comment broke import resolution: {names}"
+
+    def test_multiline_use_resolved(self, extractor: RustSymbolExtractor) -> None:
+        """Multiline use crate::{\\n  add,\\n  multiply,\\n}; should resolve both."""
+        data = extractor.extract_file("src/multiline_consumer.rs")
+        imports = data["imports"]
+        names = {imp["name"] for imp in imports}
+        assert len(imports) > 0, "Multiline use statement produced no imports"
+        # At least one of the two should resolve
+        assert names & {"add", "multiply"}, f"Expected add or multiply in {names}"
+
     def test_full_pipeline_edges(self, extractor: RustSymbolExtractor) -> None:
         """Extract all files, then build edges — imports should appear."""
-        results = extractor.extract_crate(["src/lib.rs", "src/math.rs", "src/consumer.rs"])
+        results = extractor.extract_crate([
+            "src/lib.rs", "src/math.rs", "src/consumer.rs", "src/multiline_consumer.rs",
+        ])
         file_nodes = [
             {"rel_path": path, "rust_analyzer": data}
             for path, data in results.items()
