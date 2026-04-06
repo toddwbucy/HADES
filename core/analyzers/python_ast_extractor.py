@@ -96,33 +96,41 @@ def _function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 def _extract_calls(body: list[ast.stmt]) -> list[dict[str, str]]:
     """Walk a function body and extract call targets.
 
+    Only collects calls at the current scope — does NOT descend into
+    nested function/class definitions (those belong to the nested symbol).
+
     Returns a list of dicts with ``name`` and optionally ``qualified_name``
     (for attribute calls like ``self.foo()`` or ``module.func()``).
     """
     calls: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
-        if not isinstance(node, ast.Call):
-            continue
+    def _visit(nodes: list[ast.AST]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name):
+                    name = func.id
+                    if name not in seen:
+                        seen.add(name)
+                        calls.append({"name": name, "qualified_name": name})
+                elif isinstance(func, ast.Attribute):
+                    attr = func.attr
+                    try:
+                        full = ast.unparse(func)
+                    except Exception:
+                        full = attr
+                    if full not in seen:
+                        seen.add(full)
+                        calls.append({"name": attr, "qualified_name": full})
+            # Skip nested definitions — their calls belong to their own symbol
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            # Recurse into child nodes
+            for child in ast.iter_child_nodes(node):
+                _visit([child])
 
-        func = node.func
-        if isinstance(func, ast.Name):
-            name = func.id
-            if name not in seen:
-                seen.add(name)
-                calls.append({"name": name, "qualified_name": name})
-        elif isinstance(func, ast.Attribute):
-            attr = func.attr
-            # Reconstruct the full dotted path for simple cases
-            try:
-                full = ast.unparse(func)
-            except Exception:
-                full = attr
-            if full not in seen:
-                seen.add(full)
-                calls.append({"name": attr, "qualified_name": full})
-
+    _visit(body)
     return calls
 
 

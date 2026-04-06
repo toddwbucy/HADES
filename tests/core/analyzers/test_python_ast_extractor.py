@@ -209,6 +209,22 @@ class TestCallExtraction:
         assert "inner" in call_names
         assert "print" in call_names
 
+    def test_nested_calls_not_leaked(self, extractor, tmp_path):
+        """Calls inside nested functions must not leak to the outer scope."""
+        src = tmp_path / "mod.py"
+        src.write_text(textwrap.dedent("""\
+            def outer():
+                def inner():
+                    helper()
+                inner()
+        """))
+        data = extractor.extract_file(str(src))
+        outer_fn = [s for s in data["symbols"] if s["name"] == "outer"][0]
+        outer_calls = {c["name"] for c in outer_fn.get("calls", [])}
+        # outer should call inner, but NOT helper (belongs to inner)
+        assert "inner" in outer_calls
+        assert "helper" not in outer_calls
+
     def test_method_calls(self, extractor, tmp_path):
         src = tmp_path / "mod.py"
         src.write_text(textwrap.dedent("""\

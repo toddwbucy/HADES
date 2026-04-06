@@ -138,21 +138,20 @@ def _analyze_python_files(
 
     extractor = PythonAstExtractor()
     file_nodes: list[dict[str, Any]] = []
+    attempted_paths: list[str] = []
 
     for file_meta in file_results:
         rel_path = file_meta.get("rel_path", "")
         abs_path = Path(repo_root) / rel_path
         if not abs_path.exists():
             continue
+        attempted_paths.append(rel_path)
 
         try:
             ast_data = extractor.extract_file(abs_path, repo_root)
         except Exception:
             logger.warning("Failed to extract AST from %s", rel_path)
-            continue
-
-        if not ast_data.get("symbols") and not ast_data.get("imports"):
-            continue
+            ast_data = {"symbols": [], "imports": [], "analyzed_at": ""}
 
         # Update file_meta with structured imports so ImportResolver
         # gets the right format (module/name keys) without re-extraction
@@ -170,17 +169,18 @@ def _analyze_python_files(
             },
         )
 
-        file_nodes.append({
-            "rel_path": rel_path,
-            "python_ast": ast_data,
-        })
+        if ast_data.get("symbols") or ast_data.get("imports"):
+            file_nodes.append({
+                "rel_path": rel_path,
+                "python_ast": ast_data,
+            })
 
-    if not file_nodes:
+    if not attempted_paths:
         return {"python_symbols_created": 0, "python_edges_created": 0}
 
     # Clear stale Python symbols and edges before inserting new ones
     python_edge_types = ["defines", "calls"]
-    all_paths = [n["rel_path"] for n in file_nodes]
+    all_paths = attempted_paths
 
     col_resp = client.request("GET", f"/_db/{db_name}/_api/collection")
     existing_cols = {c["name"] for c in col_resp.get("result", [])}

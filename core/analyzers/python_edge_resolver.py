@@ -77,11 +77,6 @@ class PythonEdgeResolver:
                     sk = symbol_key(rel_path, qname)
                     entry = (rel_path, sk)
                     self._symbol_index.setdefault(qname, []).append(entry)
-                    # Also index by bare name for cross-file call resolution
-                    name = sym.get("name", "")
-                    if name and name != qname:
-                        file_qname = f"{rel_path}::{name}"
-                        self._symbol_index.setdefault(file_qname, []).append(entry)
 
     def build_symbol_nodes(self) -> list[dict[str, Any]]:
         """Build codebase_symbols documents from file-node data.
@@ -197,12 +192,10 @@ class PythonEdgeResolver:
     ) -> str | None:
         """Resolve a call target to a symbol key.
 
-        Resolution strategies (parallel to ``RustEdgeResolver``):
+        Resolution strategies:
         1. Exact qualified_name match
         2. ``self.method`` → look up ``ClassName.method`` in parent class
-        3. File-scoped match (file::name)
-        4. Same-file bare name match
-        5. Cross-file bare name (prefer same file)
+        3. Bare name match (prefer same file)
         """
         target_qname = call.get("qualified_name", "")
         target_name = call.get("name", "")
@@ -223,15 +216,7 @@ class PythonEdgeResolver:
                 if sk:
                     return sk
 
-        # Strategy 3: file-scoped
-        if target_name:
-            file_scoped = f"{caller_file}::{target_name}"
-            entries = self._symbol_index.get(file_scoped, [])
-            sk = self._pick_best_match(entries, caller_file)
-            if sk:
-                return sk
-
-        # Strategy 4: bare name — prefer same file
+        # Strategy 3: bare name — prefer same file
         if target_name and target_name in self._symbol_index:
             sk = self._pick_best_match(self._symbol_index[target_name], caller_file)
             if sk:
