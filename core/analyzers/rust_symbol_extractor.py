@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.analyzers.lsp_client import LspError
 from core.analyzers.rust_analyzer_client import RustAnalyzerSession
 
 logger = logging.getLogger(__name__)
@@ -576,10 +577,10 @@ class RustSymbolExtractor:
                         file_path, lsp_line, lsp_char,
                         timeout=5.0, retries=1, retry_delay=0.5,
                     )
-                except Exception:
+                except LspError as e:
                     logger.debug(
-                        "goto_definition failed for use '%s' at %s:%d:%d",
-                        name, file_path, lsp_line, lsp_char,
+                        "goto_definition failed for use '%s' at %s:%d:%d: %s",
+                        name, file_path, lsp_line, lsp_char, e,
                     )
                     continue
 
