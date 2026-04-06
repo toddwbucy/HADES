@@ -628,16 +628,24 @@ class RustSymbolExtractor:
             parts = body.split("::")
             name = parts[-1].strip()
             if name and name.isidentifier() and name != "self":
-                # Find the character position in the original line
-                # Search backwards from end to find the terminal name
-                idx = line.rfind(name)
+                # Find the character position in the original line (word-boundary safe)
+                search_end = len(line)
                 if " as " in line:
-                    # Make sure we find the name before "as", not after
+                    # Constrain search to before the alias keyword
                     as_pos = line.find(" as ")
-                    # Search for name only in the portion before "as"
-                    idx = line.rfind(name, 0, as_pos) if as_pos != -1 else idx
-                if idx >= 0:
-                    results.append((name, line_no, idx))
+                    if as_pos != -1:
+                        search_end = as_pos
+                # Search backwards for a whole-word match
+                idx = search_end
+                while idx > 0:
+                    idx = line.rfind(name, 0, idx)
+                    if idx == -1:
+                        break
+                    if _is_word_boundary(line, idx, len(name)):
+                        results.append((name, line_no, idx))
+                        break
+                    # Not a word boundary — keep searching leftward
+                    idx -= 1
 
         return results
 
@@ -667,18 +675,55 @@ class RustSymbolExtractor:
 # ── Module-level helpers for use-statement parsing ──────────────
 
 
+def _is_word_boundary(line: str, start: int, length: int) -> bool:
+    """Check that ``line[start:start+length]`` is a whole-word match.
+
+    The character before *start* and after *start+length-1* (if they exist)
+    must not be identifier characters (letter, digit, underscore).
+    """
+    if start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
+        return False
+    end = start + length
+    if end < len(line) and (line[end].isalnum() or line[end] == "_"):
+        return False
+    return True
+
+
+def _find_word(line: str, name: str, start: int = 0) -> int:
+    """Find ``name`` in ``line`` at a word boundary, searching from *start*.
+
+    Returns the index, or -1 if not found.
+    """
+    idx = start
+    while True:
+        idx = line.find(name, idx)
+        if idx == -1:
+            return -1
+        if _is_word_boundary(line, idx, len(name)):
+            return idx
+        idx += 1
+
+
 def _extract_group_terminals(
     use_stmt: str,
     original_line: str,
     line_no: int,
     results: list[tuple[str, int, int]],
+    used_cols: set[int] | None = None,
 ) -> None:
     """Extract terminal identifiers from grouped/nested ``use`` statements.
 
     Walks the characters inside braces to find identifiers that are
     terminal (not followed by ``::``).  Handles nested groups like
     ``use std::{io::{Read, Write}, fmt::Display};``
+
+    *used_cols* tracks column positions already claimed on this line so
+    that duplicate identifiers (e.g. ``use a::{Foo, b::Foo}``) resolve
+    to distinct positions.
     """
+    if used_cols is None:
+        used_cols = set()
+
     brace_start = use_stmt.find("{")
     brace_end = use_stmt.rfind("}")
     if brace_start == -1 or brace_end == -1:
@@ -695,7 +740,7 @@ def _extract_group_terminals(
         if "{" in item:
             # Nested group: "io::{Read, Write}" — recurse
             synthetic = f"use {item};"
-            _extract_group_terminals(synthetic, original_line, line_no, results)
+            _extract_group_terminals(synthetic, original_line, line_no, results, used_cols)
             continue
 
         # Remove alias
@@ -710,9 +755,17 @@ def _extract_group_terminals(
         parts = item.split("::")
         name = parts[-1].strip()
         if name and name.isidentifier() and name != "self":
-            idx = original_line.find(name)
-            if idx >= 0:
-                results.append((name, line_no, idx))
+            # Search for a word-boundary match not yet claimed
+            search_from = 0
+            while True:
+                idx = _find_word(original_line, name, search_from)
+                if idx == -1:
+                    break
+                if idx not in used_cols:
+                    used_cols.add(idx)
+                    results.append((name, line_no, idx))
+                    break
+                search_from = idx + 1
 
 
 def _split_respecting_braces(s: str) -> list[str]:

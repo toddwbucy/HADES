@@ -102,6 +102,25 @@ class TestParseUsePositions:
         assert "Bar" in names
         assert "F" not in names
 
+    def test_duplicate_name_in_group_gets_distinct_positions(self) -> None:
+        """use a::{Foo, b::Foo} — each Foo should get a distinct column."""
+        line = "use a::{Foo, b::Foo};"
+        results = self._parse(line)
+        assert len(results) == 2
+        cols = [r[2] for r in results]
+        assert cols[0] != cols[1], f"Both Foo got the same column: {cols}"
+
+    def test_substring_not_matched(self) -> None:
+        """use crate::add_things::add — should match 'add' not inside 'add_things'."""
+        line = "use crate::add_things::add;"
+        results = self._parse(line)
+        assert len(results) == 1
+        name, _, col = results[0]
+        assert name == "add"
+        # The column should point to the terminal "add", not inside "add_things"
+        assert line[col:col + 3] == "add"
+        assert col > line.find("add_things")
+
 
 # ── Part 2: Import edge resolution ──────────────────────────────
 
@@ -368,10 +387,8 @@ class TestUseImportIntegration:
     @pytest.fixture
     def session(self, rust_crate: Path):
         from core.analyzers.rust_analyzer_client import RustAnalyzerSession
-        s = RustAnalyzerSession(rust_crate, timeout=60)
-        s.start()
-        yield s
-        s.shutdown()
+        with RustAnalyzerSession(rust_crate, timeout=60) as s:
+            yield s
 
     @pytest.fixture
     def extractor(self, session):
