@@ -113,6 +113,152 @@ def _find_crate_roots(repo_root: str, rs_files: list[str]) -> dict[str, list[str
     return crate_map
 
 
+def _analyze_python_files(
+    file_results: list[dict[str, Any]],
+    repo_root: str,
+    client: Any,
+    db_name: str,
+    cols: CodebaseCollections,
+) -> dict[str, int]:
+    """Analyze Python files via ``ast`` and store symbols + edges.
+
+    Parallel to ``_analyze_rust_crate``:
+    1. Extract symbols from each .py file using PythonAstExtractor
+    2. Store python_ast attribute on file nodes
+    3. Materialize symbol nodes and edges via PythonEdgeResolver
+
+    Returns:
+        Dict with counts: python_symbols_created, python_edges_created.
+    """
+    import hashlib
+
+    from core.analyzers.python_ast_extractor import PythonAstExtractor
+    from core.analyzers.python_edge_resolver import PythonEdgeResolver
+    from core.database.keys import file_key as _file_key
+
+    extractor = PythonAstExtractor()
+    file_nodes: list[dict[str, Any]] = []
+
+    for file_meta in file_results:
+        rel_path = file_meta.get("rel_path", "")
+        abs_path = Path(repo_root) / rel_path
+        if not abs_path.exists():
+            continue
+
+        try:
+            ast_data = extractor.extract_file(abs_path, repo_root)
+        except Exception:
+            logger.warning("Failed to extract AST from %s", rel_path)
+            continue
+
+        if not ast_data.get("symbols") and not ast_data.get("imports"):
+            continue
+
+        # Update file_meta with structured imports so ImportResolver
+        # gets the right format (module/name keys) without re-extraction
+        if ast_data.get("imports"):
+            file_meta["symbols"] = {"imports": ast_data["imports"]}
+
+        # Update the file node with python_ast attribute
+        fk = _file_key(rel_path)
+        client.request(
+            "PATCH",
+            f"/_db/{db_name}/_api/document/{cols.files}/{fk}",
+            json={
+                "python_ast": ast_data,
+                "language": "python",
+            },
+        )
+
+        file_nodes.append({
+            "rel_path": rel_path,
+            "python_ast": ast_data,
+        })
+
+    if not file_nodes:
+        return {"python_symbols_created": 0, "python_edges_created": 0}
+
+    # Clear stale Python symbols and edges before inserting new ones
+    python_edge_types = ["defines", "calls"]
+    all_paths = [n["rel_path"] for n in file_nodes]
+
+    col_resp = client.request("GET", f"/_db/{db_name}/_api/collection")
+    existing_cols = {c["name"] for c in col_resp.get("result", [])}
+    has_symbols = cols.symbols in existing_cols
+    has_edges = cols.edges in existing_cols
+
+    if has_symbols:
+        _BATCH = 30
+        for i in range(0, len(all_paths), _BATCH):
+            batch = all_paths[i : i + _BATCH]
+            file_ids = [f"{cols.files}/{_file_key(p)}" for p in batch]
+
+            if has_edges:
+                client.query(
+                    """
+                    LET sym_ids = (
+                        FOR s IN @@symbols
+                            FILTER s.file_path IN @paths AND s.language == "python"
+                            RETURN s._id
+                    )
+                    LET all_ids = APPEND(sym_ids, @file_ids)
+                    FOR e IN @@edges
+                        FILTER e.type IN @types
+                            AND (e._from IN all_ids OR e._to IN all_ids)
+                        REMOVE e IN @@edges
+                    """,
+                    bind_vars={
+                        "@symbols": cols.symbols,
+                        "@edges": cols.edges,
+                        "paths": batch,
+                        "file_ids": file_ids,
+                        "types": python_edge_types,
+                    },
+                )
+
+            client.query(
+                'FOR s IN @@symbols FILTER s.file_path IN @paths AND s.language == "python" REMOVE s IN @@symbols',
+                bind_vars={"@symbols": cols.symbols, "paths": batch},
+            )
+
+    # Materialize symbol nodes and edges
+    resolver = PythonEdgeResolver(file_nodes)
+    symbol_docs = resolver.build_symbol_nodes()
+    edge_docs = resolver.build_edges()
+
+    symbols_created = 0
+    for doc in symbol_docs:
+        client.request(
+            "POST",
+            f"/_db/{db_name}/_api/document/{cols.symbols}",
+            json=doc,
+            params={"overwriteMode": "replace"},
+        )
+        symbols_created += 1
+
+    edges_created = 0
+    for edge in edge_docs:
+        identity = f"{edge['_from']}|{edge['_to']}|{edge['type']}"
+        edge["_key"] = hashlib.sha256(identity.encode()).hexdigest()
+        client.request(
+            "POST",
+            f"/_db/{db_name}/_api/document/{cols.edges}",
+            json=edge,
+            params={"overwriteMode": "replace"},
+        )
+        edges_created += 1
+
+    print(
+        f"  python-ast: {symbols_created} symbols, {edges_created} edges from {len(file_nodes)} files",
+        file=sys.stderr,
+    )
+
+    return {
+        "python_symbols_created": symbols_created,
+        "python_edges_created": edges_created,
+    }
+
+
 def _analyze_rust_crate(
     crate_root: str,
     rs_files: list[str],
@@ -440,7 +586,18 @@ def codebase_ingest(
                 file=sys.stderr,
             )
 
-        # Resolve imports and create edges
+        # ── Python AST analysis ───────────────────────────────────
+        # Run BEFORE import resolution: _analyze_python_files updates
+        # file_results with structured import data (module/name keys)
+        # that ImportResolver needs.
+        python_stats: dict[str, int] = {"python_symbols_created": 0, "python_edges_created": 0}
+
+        if file_results:
+            python_stats = _analyze_python_files(
+                file_results, repo_root, client, db_name, cols,
+            )
+
+        # Resolve imports and create edges (using AST-structured import data)
         from core.database.import_resolver import ImportResolver
 
         known_rel_paths = {fr["rel_path"] for fr in file_results}
@@ -565,6 +722,8 @@ def codebase_ingest(
                 "files_total": len(py_files) + len(rs_files),
                 "chunks_created": chunks_created,
                 "edges_created": edges_created,
+                "python_files": len(py_files),
+                **python_stats,
                 "rust_files": len(rs_files),
                 **rust_stats,
             },
