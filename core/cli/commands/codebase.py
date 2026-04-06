@@ -204,7 +204,7 @@ def _analyze_rust_crate(
 
             # Clear stale symbols and edges for ALL attempted files BEFORE inserting new ones.
             # This uses the OLD symbol IDs so renamed/removed symbols get cleaned up.
-            rust_edge_types = ["defines", "calls", "implements", "pyo3_exposes", "ffi_exposes"]
+            rust_edge_types = ["defines", "calls", "implements", "pyo3_exposes", "ffi_exposes", "imports"]
 
             # Check whether symbol/edge collections exist yet (they may not on first run)
             col_resp = client.request("GET", f"/_db/{db_name}/_api/collection")

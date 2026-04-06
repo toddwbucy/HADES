@@ -147,6 +147,7 @@ class RustEdgeResolver:
         - defines: codebase_files/{file_key} → codebase_symbols/{symbol_key}
         - calls: codebase_symbols/{caller} → codebase_symbols/{callee}
         - implements: codebase_symbols/{method} → codebase_symbols/{trait}
+        - imports: codebase_files/{file_key} → codebase_symbols/{imported_symbol}
         - pyo3_exposes: codebase_symbols/{rust_fn} → (marker edge, no target)
         - ffi_exposes: codebase_symbols/{rust_fn} → (marker edge, no target)
 
@@ -237,6 +238,22 @@ class RustEdgeResolver:
                             "symbol_name": qname,
                         })
 
+            # 6. imports: file → imported symbol (from use-import extraction)
+            for imp in ra.get("imports", []):
+                target_sk = self._resolve_import_target(imp)
+                if target_sk:
+                    edge_key = (f"codebase_files/{fk}", f"codebase_symbols/{target_sk}", "imports")
+                    if edge_key not in seen:
+                        seen.add(edge_key)
+                        edges.append({
+                            "_from": f"codebase_files/{fk}",
+                            "_to": f"codebase_symbols/{target_sk}",
+                            "type": "imports",
+                            "import_name": imp.get("name", ""),
+                            "use_statement": imp.get("use_statement", ""),
+                            "source_line": imp.get("source_line", 0),
+                        })
+
         logger.info(
             "Built %d edges from %d files",
             len(edges),
@@ -289,6 +306,65 @@ class RustEdgeResolver:
         if target_name and target_name in self._symbol_index:
             prefer_file = target_file or caller_file
             sk = self._pick_best_match(self._symbol_index[target_name], prefer_file)
+            if sk:
+                return sk
+
+        return None
+
+    def _resolve_import_target(self, imp: dict[str, Any]) -> str | None:
+        """Resolve a use-import to a symbol key.
+
+        Uses the goto_definition result (target_file + target_line) to find
+        the symbol defined at that location. Falls back to name-based
+        resolution if line matching fails.
+
+        Args:
+            imp: Import dict from RustSymbolExtractor._extract_use_imports().
+                Expected keys: target_file, target_line, target_name, name.
+
+        Returns:
+            The target symbol key, or None if unresolvable.
+        """
+        target_file = imp.get("target_file", "")
+        target_line = imp.get("target_line", -1)
+        target_name = imp.get("target_name", "") or imp.get("name", "")
+
+        if not target_file:
+            return None
+
+        # Strategy 1: match by file + line — find the symbol whose
+        # definition range contains the target line
+        for node in self._file_nodes:
+            if node.get("rel_path") != target_file:
+                continue
+            ra = node.get("rust_analyzer", {})
+            for sym in ra.get("symbols", []):
+                # Symbol selection_range start line matches the goto_definition target
+                if sym.get("start_line", -1) <= target_line <= sym.get("end_line", -1):
+                    # Prefer exact name match within range
+                    if sym.get("name") == target_name:
+                        qname = sym.get("qualified_name", "")
+                        if qname:
+                            return symbol_key(target_file, qname)
+
+            # Fallback: any symbol at that start line
+            for sym in ra.get("symbols", []):
+                if sym.get("start_line") == target_line:
+                    qname = sym.get("qualified_name", "")
+                    if qname:
+                        return symbol_key(target_file, qname)
+
+        # Strategy 2: file-scoped name lookup in the symbol index
+        if target_name and target_file:
+            file_scoped = f"{target_file}::{target_name}"
+            entries = self._symbol_index.get(file_scoped, [])
+            sk = self._pick_best_match(entries, target_file)
+            if sk:
+                return sk
+
+        # Strategy 3: bare name with file preference
+        if target_name and target_name in self._symbol_index:
+            sk = self._pick_best_match(self._symbol_index[target_name], target_file)
             if sk:
                 return sk
 

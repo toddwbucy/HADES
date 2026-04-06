@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.analyzers.lsp_client import LspError
 from core.analyzers.rust_analyzer_client import RustAnalyzerSession
 
 logger = logging.getLogger(__name__)
@@ -124,11 +125,15 @@ class RustSymbolExtractor:
         pyo3_exports = [s["name"] for s in symbols if s.get("is_pyo3")]
         ffi_boundaries = [s["name"] for s in symbols if s.get("is_ffi")]
 
+        # Extract use-imports via goto_definition (file-level)
+        imports = self._extract_use_imports(file_path, file_content)
+
         return {
             "symbols": symbols,
             "impl_blocks": impl_blocks,
             "pyo3_exports": pyo3_exports,
             "ffi_boundaries": ffi_boundaries,
+            "imports": imports,
             "analyzed_at": datetime.now(UTC).isoformat(),
         }
 
@@ -493,6 +498,193 @@ class RustSymbolExtractor:
             for (parent, trait), methods in blocks.items()
         ]
 
+    # ── Use-import extraction ─────────────────────────────────────
+
+    def _extract_use_imports(
+        self, file_path: str | Path, file_content: str
+    ) -> list[dict[str, Any]]:
+        """Extract ``use`` declarations and resolve each imported name via LSP.
+
+        Parses file content for ``use`` statements, identifies the terminal
+        identifiers (the names actually brought into scope), and calls
+        ``goto_definition`` on each to resolve to the definition site.
+
+        Only imports that resolve to files within the crate root are kept
+        (external crates like ``std``, ``serde`` are filtered out).
+
+        Returns:
+            List of import dicts::
+
+                {
+                    "name": "HashMap",
+                    "use_statement": "use std::collections::HashMap;",
+                    "source_line": 5,
+                    "target_file": "src/collections/hash/map.rs",
+                    "target_line": 42,
+                    "target_name": "HashMap",
+                    "qualified_name": "HashMap",
+                }
+
+            Only internal (in-crate) imports are included.
+        """
+        imports: list[dict[str, Any]] = []
+        lines = file_content.splitlines()
+
+        # Assemble complete use statements (may span multiple lines) and
+        # record which original lines they came from.  Each entry is
+        # (start_line_no, list_of_(line_no, raw_line) pairs).
+        use_stmts = _collect_use_statements(lines)
+
+        for start_line, span_lines in use_stmts:
+            # Build a single normalized statement for parsing:
+            # join continuation lines, strip inline comments.
+            joined = " ".join(raw.strip() for _, raw in span_lines)
+            # Strip trailing inline comment (after the semicolon)
+            semi_pos = joined.find(";")
+            if semi_pos != -1:
+                joined = joined[: semi_pos + 1]
+
+            # For single-line statements we pass the original line so
+            # column positions map directly to the source.  For multiline
+            # we pass the joined form and use (start_line, col) — the LSP
+            # still resolves correctly because goto_definition only needs
+            # a position that lands on the identifier token, and for
+            # multiline use-stmts rust-analyzer associates the whole
+            # statement with the opening line.
+            if len(span_lines) == 1:
+                orig_line_no, orig_line = span_lines[0]
+                # Truncate at semicolon to strip inline comments.
+                # Column positions are preserved since the prefix is unchanged.
+                semi_pos = orig_line.find(";")
+                parse_line = orig_line[: semi_pos + 1] if semi_pos != -1 else orig_line
+                positions = self._parse_use_positions(parse_line, orig_line_no)
+            else:
+                # Multiline: parse from joined text.  Column positions
+                # refer to the joined string, but we need real (line, col)
+                # for goto_definition.  Build a mapping from joined-offset
+                # back to (line_no, col).
+                positions_raw = self._parse_use_positions(joined, start_line)
+                positions = _remap_multiline_positions(
+                    positions_raw, span_lines, joined,
+                )
+
+            if not positions:
+                continue
+
+            for name, lsp_line, lsp_char in positions:
+                try:
+                    locations = self._session.goto_definition(
+                        file_path, lsp_line, lsp_char,
+                        timeout=5.0, retries=1, retry_delay=0.5,
+                    )
+                except LspError as e:
+                    logger.debug(
+                        "goto_definition failed for use '%s' at %s:%d:%d: %s",
+                        name, file_path, lsp_line, lsp_char, e,
+                    )
+                    continue
+
+                if not locations:
+                    continue
+
+                loc = locations[0]
+                target_uri = loc.get("uri", "")
+                target_file = self._uri_to_rel_path(target_uri)
+
+                # Filter: only keep imports that resolve within the crate
+                if Path(target_file).is_absolute() or target_file == target_uri:
+                    # Absolute path or unresolvable URI → external crate
+                    continue
+
+                target_line = loc.get("range", {}).get("start", {}).get("line", 0)
+
+                imports.append({
+                    "name": name,
+                    "use_statement": joined.strip(),
+                    "source_line": start_line,
+                    "target_file": target_file,
+                    "target_line": target_line,
+                    "target_name": name,
+                    "qualified_name": name,
+                })
+
+        logger.debug(
+            "Extracted %d internal use-imports from %s", len(imports), file_path,
+        )
+        return imports
+
+    @staticmethod
+    def _parse_use_positions(
+        line: str, line_no: int
+    ) -> list[tuple[str, int, int]]:
+        """Parse a ``use`` line and return ``(name, line, col)`` per imported symbol.
+
+        Handles common Rust ``use`` patterns:
+
+        - Simple: ``use crate::module::Name;``
+        - Grouped: ``use crate::module::{A, B, C};``
+        - Aliased: ``use crate::module::Name as Alias;``
+        - Self: ``use crate::module::{self, Name};`` (``self`` skipped)
+        - Glob: ``use crate::module::*;`` (skipped entirely)
+        - Nested groups: ``use std::{io::{Read, Write}, fmt};``
+
+        Returns:
+            List of (name, 0-based line, 0-based character offset) tuples.
+        """
+        stripped = line.strip()
+
+        # Normalize visibility prefix: "pub use", "pub(crate) use" → "use"
+        stripped = _strip_visibility(stripped)
+
+        if not stripped.startswith("use "):
+            return []
+
+        # Skip glob imports — can't resolve individually
+        if stripped.rstrip(";").rstrip().endswith("*"):
+            return []
+
+        results: list[tuple[str, int, int]] = []
+
+        # Check for grouped imports (any braces present)
+        brace_open = stripped.find("{")
+        if brace_open != -1:
+            # Extract all terminal identifiers inside braces (handles nesting)
+            # We find identifiers that are followed by , or } or " as " or ;
+            # but NOT followed by :: (those are path segments, not terminals)
+            _extract_group_terminals(stripped, line, line_no, results)
+        else:
+            # Simple: use path::to::Name; or use path::to::Name as Alias;
+            body = stripped[4:].rstrip(";").strip()
+
+            # Remove alias: "Name as Alias" → "Name"
+            if " as " in body:
+                body = body.split(" as ")[0].strip()
+
+            # Get the terminal identifier (last path segment)
+            parts = body.split("::")
+            name = parts[-1].strip()
+            if name and name.isidentifier() and name != "self":
+                # Find the character position in the original line (word-boundary safe)
+                search_end = len(line)
+                if " as " in line:
+                    # Constrain search to before the alias keyword
+                    as_pos = line.find(" as ")
+                    if as_pos != -1:
+                        search_end = as_pos
+                # Search backwards for a whole-word match
+                idx = search_end
+                while idx > 0:
+                    idx = line.rfind(name, 0, idx)
+                    if idx == -1:
+                        break
+                    if _is_word_boundary(line, idx, len(name)):
+                        results.append((name, line_no, idx))
+                        break
+                    # Not a word boundary — keep searching leftward
+                    idx -= 1
+
+        return results
+
     def _uri_to_rel_path(self, uri: str) -> str:
         """Convert a file:// URI to a path relative to the crate root."""
         if uri.startswith("file://"):
@@ -511,5 +703,232 @@ class RustSymbolExtractor:
             "impl_blocks": [],
             "pyo3_exports": [],
             "ffi_boundaries": [],
+            "imports": [],
             "analyzed_at": datetime.now(UTC).isoformat(),
         }
+
+
+# ── Module-level helpers for use-statement parsing ──────────────
+
+_VIS_PREFIX_RE = re.compile(r"^pub\s*(?:\([^)]*\)\s*)?")
+
+
+def _strip_visibility(s: str) -> str:
+    """Remove a leading visibility qualifier from a statement.
+
+    ``pub use ...``          → ``use ...``
+    ``pub(crate) use ...``   → ``use ...``
+    ``pub(in path) use ...`` → ``use ...``
+    ``use ...``              → ``use ...``  (unchanged)
+    """
+    if s.startswith("pub"):
+        return _VIS_PREFIX_RE.sub("", s, count=1)
+    return s
+
+
+def _is_word_boundary(line: str, start: int, length: int) -> bool:
+    """Check that ``line[start:start+length]`` is a whole-word match.
+
+    The character before *start* and after *start+length-1* (if they exist)
+    must not be identifier characters (letter, digit, underscore).
+    """
+    if start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
+        return False
+    end = start + length
+    if end < len(line) and (line[end].isalnum() or line[end] == "_"):
+        return False
+    return True
+
+
+def _find_word(line: str, name: str, start: int = 0) -> int:
+    """Find ``name`` in ``line`` at a word boundary, searching from *start*.
+
+    Returns the index, or -1 if not found.
+    """
+    idx = start
+    while True:
+        idx = line.find(name, idx)
+        if idx == -1:
+            return -1
+        if _is_word_boundary(line, idx, len(name)):
+            return idx
+        idx += 1
+
+
+def _extract_group_terminals(
+    use_stmt: str,
+    original_line: str,
+    line_no: int,
+    results: list[tuple[str, int, int]],
+    used_cols: set[int] | None = None,
+) -> None:
+    """Extract terminal identifiers from grouped/nested ``use`` statements.
+
+    Walks the characters inside braces to find identifiers that are
+    terminal (not followed by ``::``).  Handles nested groups like
+    ``use std::{io::{Read, Write}, fmt::Display};``
+
+    *used_cols* tracks column positions already claimed on this line so
+    that duplicate identifiers (e.g. ``use a::{Foo, b::Foo}``) resolve
+    to distinct positions.
+    """
+    if used_cols is None:
+        used_cols = set()
+
+    brace_start = use_stmt.find("{")
+    brace_end = use_stmt.rfind("}")
+    if brace_start == -1 or brace_end == -1:
+        return
+
+    inner = use_stmt[brace_start + 1 : brace_end]
+    items = _split_respecting_braces(inner)
+
+    for item in items:
+        item = item.strip()
+        if not item or item == "self":
+            continue
+
+        if "{" in item:
+            # Nested group: "io::{Read, Write}" — recurse
+            synthetic = f"use {item};"
+            _extract_group_terminals(synthetic, original_line, line_no, results, used_cols)
+            continue
+
+        # Remove alias
+        if " as " in item:
+            item = item.split(" as ")[0].strip()
+
+        # Skip globs
+        if item.endswith("*"):
+            continue
+
+        # Get terminal name (last path segment)
+        parts = item.split("::")
+        name = parts[-1].strip()
+        if name and name.isidentifier() and name != "self":
+            # Search for a word-boundary match not yet claimed
+            search_from = 0
+            while True:
+                idx = _find_word(original_line, name, search_from)
+                if idx == -1:
+                    break
+                if idx not in used_cols:
+                    used_cols.add(idx)
+                    results.append((name, line_no, idx))
+                    break
+                search_from = idx + 1
+
+
+def _split_respecting_braces(s: str) -> list[str]:
+    """Split a string on commas, but respect nested ``{...}`` groups."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+
+    for ch in s:
+        if ch == "{":
+            depth += 1
+            current.append(ch)
+        elif ch == "}":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+
+    if current:
+        parts.append("".join(current))
+
+    return parts
+
+
+def _collect_use_statements(
+    lines: list[str],
+) -> list[tuple[int, list[tuple[int, str]]]]:
+    """Collect complete ``use`` statements, joining continuation lines.
+
+    Rust ``use`` statements may span multiple lines::
+
+        use std::{
+            io::Read,
+            fmt::Display,
+        };
+
+    Returns a list of ``(start_line_no, [(line_no, raw_line), ...])``.
+    Each entry is one complete ``use ...;`` statement with all its
+    contributing source lines.
+    """
+    result: list[tuple[int, list[tuple[int, str]]]] = []
+    current: list[tuple[int, str]] | None = None
+    start_line = 0
+
+    for line_no, line in enumerate(lines):
+        stripped = line.strip()
+
+        if current is not None:
+            # Continuation of a multiline use statement
+            current.append((line_no, line))
+            if ";" in stripped:
+                result.append((start_line, current))
+                current = None
+            continue
+
+        # Normalize visibility prefix so "pub use" / "pub(crate) use" are recognized
+        if not _strip_visibility(stripped).startswith("use "):
+            continue
+
+        if ";" in stripped:
+            # Single-line use statement (most common case)
+            result.append((line_no, [(line_no, line)]))
+        else:
+            # Multiline use statement — starts here, continues until ";"
+            current = [(line_no, line)]
+            start_line = line_no
+
+    # Unterminated use statement at EOF — include as-is so partial
+    # parsing can still extract what it can.
+    if current is not None:
+        result.append((start_line, current))
+
+    return result
+
+
+def _remap_multiline_positions(
+    positions: list[tuple[str, int, int]],
+    span_lines: list[tuple[int, str]],
+    joined: str,
+) -> list[tuple[str, int, int]]:
+    """Map column positions in a joined string back to real (line, col).
+
+    ``_parse_use_positions`` was given the joined (single-line) form of a
+    multiline ``use`` statement.  The returned column offsets refer to that
+    joined string.  This function finds which original source line each
+    name actually lives on and computes the real column.
+
+    Args:
+        positions: ``(name, start_line, col_in_joined)`` from the parser.
+        span_lines: ``[(line_no, raw_line), ...]`` — the original lines.
+        joined: The joined string that was parsed.
+
+    Returns:
+        ``(name, real_line_no, real_col)`` tuples.
+    """
+    remapped: list[tuple[str, int, int]] = []
+    for name, _, col_in_joined in positions:
+        # For each name, find which original line contains it by
+        # searching for the name token in each contributing line.
+        found = False
+        for real_line_no, raw_line in span_lines:
+            idx = _find_word(raw_line, name)
+            if idx != -1:
+                remapped.append((name, real_line_no, idx))
+                found = True
+                break
+        if not found:
+            # Fallback: use the start line and joined column.
+            # This can happen if the name only appears in the joined
+            # form (unlikely but defensive).
+            remapped.append((name, span_lines[0][0], col_in_joined))
+    return remapped
