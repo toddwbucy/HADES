@@ -357,11 +357,6 @@ impl EmbeddingClient {
         })
     }
 
-    /// Send a single `POST /embeddings` request for the given texts.
-    ///
-    /// Sends `POST {base}/embeddings` in the OpenAI-compatible shape:
-    /// `{"model": ..., "input": [...]}`. The HADES-specific `task` hint
-    /// (e.g. `"retrieval.query"`, `"retrieval.passage"` for Jina V4) and
     /// Embed each input in ONE forward pass, pooling per supplied boundary.
     ///
     /// This is late chunking. Contrast [`Self::embed`], which sends chunks as
@@ -431,25 +426,95 @@ impl EmbeddingClient {
                 .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'data' array".into()))?;
 
             for item in data {
+                // Every field below is required rather than defaulted. A
+                // default here is indistinguishable from a correct answer: an
+                // engine that ignores the non-standard `late_chunk` field
+                // returns plain embeddings with no chunk metadata, and
+                // `unwrap_or(0)` would collapse every vector of the input onto
+                // chunk 0 and write one embedding where the caller expected N.
                 let embedding: Vec<f32> = item["embedding"]
                     .as_array()
                     .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'embedding'".into()))?
                     .iter()
-                    .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-                    .collect();
+                    .map(|v| {
+                        v.as_f64().map(|f| f as f32).ok_or_else(|| {
+                            EmbeddingError::InvalidResponse(
+                                "embedding contains a non-numeric element".into(),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<f32>, EmbeddingError>>()?;
                 if dimension == 0 {
                     dimension = embedding.len() as u32;
                 }
+                let field = |name: &str| -> Result<usize, EmbeddingError> {
+                    item[name].as_u64().map(|v| v as usize).ok_or_else(|| {
+                        EmbeddingError::InvalidResponse(format!(
+                            "late-chunked response item has no '{name}', so the server did \
+                             not honour the 'late_chunk' request field and returned plain \
+                             embeddings instead of pooled chunk vectors"
+                        ))
+                    })
+                };
                 per_input[i].push(LateChunkVector {
                     embedding,
-                    chunk_index: item["chunk_index"].as_u64().unwrap_or(0) as usize,
-                    char_start: item["char_start"].as_u64().unwrap_or(0) as usize,
-                    char_end: item["char_end"].as_u64().unwrap_or(0) as usize,
+                    chunk_index: field("chunk_index")?,
+                    char_start: field("char_start")?,
+                    char_end: field("char_end")?,
                 });
             }
             // The server may return chunks out of order under concurrency;
             // sort so callers can rely on positional alignment.
             per_input[i].sort_by_key(|c| c.chunk_index);
+
+            // One vector per boundary, or the caller is about to write fewer
+            // embeddings than chunks and report success. This is the shape of
+            // three separate defects already found in this pipeline, so it is
+            // checked rather than assumed.
+            if per_input[i].len() != boundaries[i].len() {
+                return Err(EmbeddingError::InvalidResponse(format!(
+                    "input {i}: sent {} boundaries and received {} vectors",
+                    boundaries[i].len(),
+                    per_input[i].len()
+                )));
+            }
+            for (k, v) in per_input[i].iter().enumerate() {
+                if v.chunk_index != k {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i}: chunk indices are not contiguous from zero, \
+                         expected {k} and found {}",
+                        v.chunk_index
+                    )));
+                }
+            }
+
+            // The returned range is token-aligned, so it lands on the token
+            // boundary at or before the requested character. A large gap means
+            // this vector was labelled with a different chunk's range, which
+            // is what happened when the server reconciled its span list
+            // against its vector list by length after skipping one in the
+            // middle.
+            //
+            // This does NOT catch a caller sending byte offsets for character
+            // offsets. The server has no idea the caller meant bytes: it pools
+            // the range it was given and echoes back where it pooled, so
+            // requested and returned agree exactly while both point at the
+            // wrong text. Verified against the live embedder. Sending
+            // characters is the fix for that, and `byte_offsets_to_chars` on
+            // the ingest side is what does it.
+            const MAX_ALIGNMENT_DRIFT: usize = 64;
+            for (k, v) in per_input[i].iter().enumerate() {
+                let requested = boundaries[i][k].0;
+                if requested.abs_diff(v.char_start) > MAX_ALIGNMENT_DRIFT {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i} chunk {k}: requested character {requested} and the \
+                         server pooled from {}, a drift of {} that token alignment \
+                         cannot explain",
+                        v.char_start,
+                        requested.abs_diff(v.char_start)
+                    )));
+                }
+            }
         }
 
         Ok(LateChunkEmbedResult {
@@ -460,6 +525,11 @@ impl EmbeddingClient {
         })
     }
 
+    /// Send a single `POST /embeddings` request for the given texts.
+    ///
+    /// Sends `POST {base}/embeddings` in the OpenAI-compatible shape:
+    /// `{"model": ..., "input": [...]}`. The HADES-specific `task` hint
+    /// (e.g. `"retrieval.query"`, `"retrieval.passage"` for Jina V4) and
     /// `batch_size` are sent as non-standard top-level fields — engines
     /// that don't understand them ignore them.
     async fn embed_single_request(
@@ -746,9 +816,8 @@ fn parse_endpoint(endpoint_str: &str) -> Result<EmbeddingEndpoint, EmbeddingErro
     }
 }
 
-/// Result of an embedding operation.
-#[derive(Debug, Clone)]
 /// One late-chunked vector and where it came from in the source text.
+#[derive(Debug, Clone)]
 pub struct LateChunkVector {
     /// The pooled, L2-normalized embedding.
     pub embedding: Vec<f32>,
@@ -763,6 +832,7 @@ pub struct LateChunkVector {
 }
 
 /// Result of a late-chunked embed: per input, the chunks it produced.
+#[derive(Debug, Clone)]
 pub struct LateChunkEmbedResult {
     /// One entry per input text, in input order.
     pub per_input: Vec<Vec<LateChunkVector>>,
@@ -771,6 +841,8 @@ pub struct LateChunkEmbedResult {
     pub duration_ms: u64,
 }
 
+/// Result of an embedding operation.
+#[derive(Debug, Clone)]
 pub struct EmbedResult {
     /// Embedding vectors, one per input text.
     pub embeddings: Vec<Vec<f32>>,

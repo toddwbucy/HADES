@@ -402,10 +402,6 @@ class JinaV4Embedder:
         # offset from everything already stored. Same prefix, same space.
         prefix = "Query" if task == "retrieval.query" else "Passage"
         prefixed = f"{prefix}: {text}"
-        # Tokens the prefix occupies, so reported spans stay relative to the
-        # document rather than to the prefixed string a caller never sent.
-        prefix_len = len(self.tokenizer(f"{prefix}: ", add_special_tokens=False)["input_ids"])
-
         with self._infer_lock, torch.no_grad():
             encoded = self.tokenizer(
                 [prefixed],
@@ -439,6 +435,16 @@ class JinaV4Embedder:
             # from the full hidden states so each chunk still sees the whole
             # encoded sequence around it.
             prefix_chars = len(f"{prefix}: ")
+            # Index of the first document token, taken from this encoding's own
+            # offset mapping rather than by tokenizing the prefix separately.
+            # A separate tokenization omits the special tokens this one adds and
+            # assumes the prefix tokenizes identically standalone, which BPE
+            # does not guarantee. Leading special tokens carry (0, 0) offsets,
+            # so they fall before the prefix and are counted here too.
+            first_doc_token = next(
+                (i for i, (ts, te) in enumerate(offsets[:n_tokens]) if te > prefix_chars),
+                n_tokens,
+            )
             spans: list[tuple[int, int]] = []
             if boundaries:
                 # Map each character range to the tokens covering it. A token
@@ -472,7 +478,7 @@ class JinaV4Embedder:
                     )
             else:
                 step = chunk_size_tokens - overlap_tokens
-                start = prefix_len
+                start = first_doc_token
                 while start < n_tokens:
                     end = min(start + chunk_size_tokens, n_tokens)
                     spans.append((start, end))
@@ -480,6 +486,12 @@ class JinaV4Embedder:
                         break
                     start += step
 
+            # Keep each span next to the vector pooled from it. Reconciling
+            # the two lists afterwards with spans[:len(vectors)] truncated from
+            # the front, so a span skipped anywhere in the middle relabelled
+            # every vector after it with the previous span's range and shifted
+            # every chunk_index by one.
+            kept: list[tuple[int, int]] = []
             vectors = []
             for s, e in spans:
                 span_mask = mask[s:e].unsqueeze(-1)
@@ -488,6 +500,16 @@ class JinaV4Embedder:
                     continue
                 pooled = (hidden[s:e] * span_mask).sum(dim=0) / denom
                 vectors.append(torch.nn.functional.normalize(pooled, dim=-1))
+                kept.append((s, e))
+
+            # With caller-supplied boundaries the count is a contract: one
+            # vector per boundary. Returning fewer is the silent-omission
+            # failure this path exists to end.
+            if boundaries and len(kept) != len(spans):
+                raise ValueError(
+                    f"{len(spans) - len(kept)} of {len(spans)} boundaries fell "
+                    f"entirely on padding and produced no vector"
+                )
 
             if not vectors:
                 return np.empty((0, EMBEDDING_DIM), dtype=np.float32), []
@@ -496,19 +518,33 @@ class JinaV4Embedder:
         # Report spans relative to the document, not the prefixed string, and
         # include character ranges so callers can intersect with symbol spans.
         out_spans: list[tuple[int, int, int, int]] = []
-        for s, e in spans[: len(vectors)]:
+        for s, e in kept:
             c_start = max(0, offsets[s][0] - prefix_chars) if s < len(offsets) else 0
             c_end = max(0, offsets[e - 1][1] - prefix_chars) if e - 1 < len(offsets) else 0
             # Clamp at zero: a prefix token can overlap the document's first
             # character (the tokenizer may merge ": " with what follows), which
             # would otherwise report a negative document-relative index.
-            out_spans.append((max(0, s - prefix_len), max(0, e - prefix_len), c_start, c_end))
+            out_spans.append(
+                (max(0, s - first_doc_token), max(0, e - first_doc_token), c_start, c_end)
+            )
         return self._to_numpy(stacked), out_spans
 
     def _embed_batch(self, batch: list[str], task: str) -> np.ndarray:
-        """Embed a single batch, choosing the best available API."""
+        """Embed a single batch, choosing the best available API.
+
+        Holds the inference lock for the same reason ``embed_late_chunked``
+        does. Both branches below reach the Rust-backed fast tokenizer, one
+        directly and one inside ``encode_text``, and it raises "Already
+        borrowed" when two threads touch it at once. The HTTP server runs
+        inference in a thread pool, so a plain request overlapping a
+        late-chunked one is enough to hit it.
+        """
         model = self.model  # triggers lazy load
 
+        with self._infer_lock:
+            return self._embed_batch_locked(model, batch, task)
+
+    def _embed_batch_locked(self, model, batch: list[str], task: str) -> np.ndarray:
         # Prefer Jina's high-level encode_text() when available
         if hasattr(model, "encode_text"):
             jina_task = _TASK_TO_ADAPTER.get(task, "retrieval")

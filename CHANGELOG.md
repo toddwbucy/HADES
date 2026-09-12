@@ -25,6 +25,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   repository a new release wanted changes, which is how CI came to be red
   from the first push and stayed there. This keeps the eventual bump one
   release wide.
+- Late chunking on the code ingest path. A file's chunks are grouped into
+  windows that fit the embedder's context, each window is encoded in one
+  forward pass, and a vector is pooled per AST boundary, so every chunk
+  vector carries the surrounding file's context instead of being encoded
+  blind. `PE-API` gains an opt-in `late_chunk` request object and per-chunk
+  response metadata (`chunk_index`, `token_start`/`token_end`,
+  `char_start`/`char_end`). Set `HADES_DISABLE_LATE_CHUNKING=1` to fall back
+  to per-chunk embedding.
 - `hades-viewer` (`crates/hades-frontend`) — a local WebGL graph viewer for
   any HADES graph, plus a shared-reference channel between a human and an
   agent. Renders a named graph as a force-directed view with styling driven
@@ -146,6 +154,33 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   `RUSTUP_TOOLCHAIN` would have restored the drift silently.
 - The workspace declares `rust-version`, so a build that bypasses rustup gets
   cargo's version diagnostic rather than a missing-method error.
+- PE-API `boundaries` are documented as character offsets and the Rust client
+  now sends character offsets. It previously sent `TextChunk` byte offsets,
+  which the tokenizer's character-indexed offset mapping read as characters,
+  so on any file containing a multibyte character every chunk was pooled from
+  a span that drifted further from its code through the file. Nothing failed,
+  because the pooling was correct over whatever range it was given. The client
+  now compares the returned `char_start` against the boundary it sent and
+  errors on a drift token alignment cannot explain.
+- A late-chunked response missing `chunk_index` is an error rather than a
+  default of 0, which previously collapsed every vector of an input onto its
+  first chunk when a backend ignored the `late_chunk` field.
+- Vector counts are checked against boundary counts on both sides of the wire,
+  and a mismatch fails the file rather than storing it with fewer embeddings
+  than chunks.
+- Spans are paired with the vectors pooled from them in the embedder rather
+  than reconciled by list length afterwards, which mislabelled every vector
+  after a skipped span.
+- `POST /v1/embeddings` rejects `late_chunk.boundaries` alongside multiple
+  inputs instead of applying one input's character ranges to all of them.
+- The inference lock covers the plain embedding path as well as the
+  late-chunked one. Both reach the Rust-backed fast tokenizer, which raises
+  "Already borrowed" when two pooled threads touch it at once.
+- Embed windows are sliced with `str::get` and skipped when the offsets do not
+  land on character boundaries, instead of panicking mid-ingest.
+- `EmbedResult` regained the `Debug` and `Clone` derives and the doc comment it
+  lost when `LateChunkVector` was inserted between the attribute and the
+  struct it decorated.
 - `codebase drift` reported one tree's file nodes as `stale` for another,
   on a delete path. File keys are relative to the ingest root, so they
   carry no evidence of which tree produced them, and the graph side of

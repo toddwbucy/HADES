@@ -766,6 +766,79 @@ struct EmbedWindow {
     first_chunk_index: usize,
 }
 
+/// Finalize one embed window: slice its text and convert its boundaries.
+///
+/// Skips the window rather than panicking when the offsets do not describe a
+/// valid slice. `TextChunk` offsets come from AST spans and from line
+/// arithmetic that can drift, since `str::lines()` strips `\r` and so a CRLF
+/// source undercounts by one byte per line. Before late chunking these offsets
+/// were only ever stored as metadata, so drift was harmless. Slicing with them
+/// makes it fatal, and `&str[a..b]` panics on an index inside a multibyte
+/// sequence.
+#[allow(clippy::too_many_arguments)]
+fn push_embed_window(
+    windows: &mut Vec<EmbedWindow>,
+    source: &str,
+    start: usize,
+    end: usize,
+    byte_boundaries: Vec<(usize, usize)>,
+    first_chunk_index: usize,
+    rel_path: &str,
+) {
+    let end = end.min(source.len());
+    let Some(text) = source.get(start..end) else {
+        warn!(
+            path = rel_path,
+            start, end, "chunk offsets do not land on character boundaries, window skipped"
+        );
+        return;
+    };
+    windows.push(EmbedWindow {
+        boundaries: byte_offsets_to_chars(text, &byte_boundaries),
+        text: text.to_string(),
+        first_chunk_index,
+    });
+}
+
+/// Convert byte offsets into `text` to character offsets.
+///
+/// `TextChunk::start_char` and `end_char` are byte offsets despite their
+/// names. The embedding server maps boundaries against the tokenizer's offset
+/// mapping, which is character-indexed, so passing bytes straight through made
+/// the two sides disagree on every file containing a multibyte character, with
+/// the gap widening through the file. Nothing failed, because the pooling was
+/// correct over whatever range it was given.
+///
+/// An offset landing inside a multibyte sequence rounds down to the character
+/// containing it, which is the only interpretation that keeps ranges ordered.
+fn byte_offsets_to_chars(text: &str, offsets: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut wanted: Vec<usize> = offsets.iter().flat_map(|(s, e)| [*s, *e]).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+
+    let mut map: HashMap<usize, usize> = HashMap::new();
+    let mut w = 0usize;
+    for (char_idx, (byte_idx, _)) in text.char_indices().enumerate() {
+        while w < wanted.len() && wanted[w] < byte_idx {
+            map.insert(wanted[w], char_idx.saturating_sub(1));
+            w += 1;
+        }
+        if w < wanted.len() && wanted[w] == byte_idx {
+            map.insert(wanted[w], char_idx);
+            w += 1;
+        }
+    }
+    // Anything at or past the end maps to the character count, so an exclusive
+    // end offset of `text.len()` stays exclusive.
+    let total_chars = text.chars().count();
+    while w < wanted.len() {
+        map.insert(wanted[w], total_chars);
+        w += 1;
+    }
+
+    offsets.iter().map(|(s, e)| (map[s], map[e])).collect()
+}
+
 // ── Collection setup ────────────────────────────────────────────────────
 
 /// Ensure all codebase collections, named graph, and indices exist.
@@ -1513,15 +1586,20 @@ async fn ingest_file(
                 let would_span = c.end_char.saturating_sub(cur_start);
                 if !cur.is_empty() && would_span > WINDOW_CHARS {
                     let end = chunks[first_index + cur.len() - 1].end_char;
-                    windows.push(EmbedWindow {
-                        text: source[cur_start..end.min(source.len())].to_string(),
-                        boundaries: std::mem::take(&mut cur),
-                        first_chunk_index: first_index,
-                    });
+                    push_embed_window(
+                        &mut windows,
+                        &source,
+                        cur_start,
+                        end,
+                        std::mem::take(&mut cur),
+                        first_index,
+                        rel_path,
+                    );
                     cur_start = c.start_char;
                     first_index = i;
                 }
-                // Boundaries are relative to the window, not the file.
+                // Boundaries are relative to the window, not the file, and are
+                // byte offsets at this point. `push_embed_window` converts.
                 cur.push((
                     c.start_char.saturating_sub(cur_start),
                     c.end_char.saturating_sub(cur_start),
@@ -1529,11 +1607,15 @@ async fn ingest_file(
             }
             if !cur.is_empty() {
                 let end = chunks[first_index + cur.len() - 1].end_char;
-                windows.push(EmbedWindow {
-                    text: source[cur_start..end.min(source.len())].to_string(),
-                    boundaries: cur,
-                    first_chunk_index: first_index,
-                });
+                push_embed_window(
+                    &mut windows,
+                    &source,
+                    cur_start,
+                    end,
+                    cur,
+                    first_index,
+                    rel_path,
+                );
             }
             if windows.len() > 1 {
                 debug!(
@@ -1559,26 +1641,48 @@ async fn ingest_file(
                                 let base = windows[w].first_chunk_index;
                                 vecs.iter().map(move |v| (base + v.chunk_index, v))
                             })
+                            // A chunk index past the end would mint an
+                            // embedding pointing at a chunk key that does not
+                            // exist, which reads as a healthy row.
+                            .filter(|(i, _)| *i < chunks.len())
                             .collect();
-                    let docs = flat
-                        .iter()
-                        .map(|(i, lcv)| {
-                            let i = *i;
-                            let vec = &lcv.embedding;
-                            let ckey = keys::chunk_key(&fkey, i);
-                            let ekey = keys::embedding_key(&ckey);
-                            json!({
-                                "_key": ekey,
-                                "chunk_key": ckey,
-                                "file_key": fkey,
-                                "embedding": vec,
-                                "model": embed_result.model,
-                                "model_hash": keys::model_hash(&embed_result.model),
-                                "dimension": embed_result.dimension,
+                    if flat.len() != chunks.len() {
+                        warn!(
+                            path = rel_path,
+                            chunks = chunks.len(),
+                            vectors = flat.len(),
+                            "embedder returned a vector count that does not match the \
+                             chunk count, storing without vectors"
+                        );
+                        (
+                            Vec::new(),
+                            Some(format!(
+                                "{} chunks produced {} vectors",
+                                chunks.len(),
+                                flat.len()
+                            )),
+                        )
+                    } else {
+                        let docs = flat
+                            .iter()
+                            .map(|(i, lcv)| {
+                                let i = *i;
+                                let vec = &lcv.embedding;
+                                let ckey = keys::chunk_key(&fkey, i);
+                                let ekey = keys::embedding_key(&ckey);
+                                json!({
+                                    "_key": ekey,
+                                    "chunk_key": ckey,
+                                    "file_key": fkey,
+                                    "embedding": vec,
+                                    "model": embed_result.model,
+                                    "model_hash": keys::model_hash(&embed_result.model),
+                                    "dimension": embed_result.dimension,
+                                })
                             })
-                        })
-                        .collect::<Vec<Value>>();
-                    (docs, None)
+                            .collect::<Vec<Value>>();
+                        (docs, None)
+                    }
                 }
                 Err(e) => {
                     warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
@@ -1854,7 +1958,18 @@ async fn ingest_unparsed_file(
     delete_file_chunks(db, &fkey).await;
     delete_file_embeddings(db, &fkey).await;
 
-    // Embed chunks (skipped if embedder unavailable). Same path/task as parsed.
+    // Embed chunks (skipped if embedder unavailable).
+    //
+    // NOT the same path as parsed files any more. The parsed path encodes whole
+    // windows and pools per AST boundary, so each vector carries its file's
+    // context. This one still sends chunks as separate inputs, so every chunk
+    // is encoded blind to the rest of its document.
+    //
+    // That leaves markdown and every unsupported language on the old
+    // behaviour, which includes the specs and PRDs the late-chunking work was
+    // undertaken for. These chunks have offsets too, so the same treatment
+    // applies. Not done here because it is a second change and this one is
+    // already under review.
     let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
     let (embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
         Some(emb) if !chunk_texts.is_empty() => {
@@ -3999,5 +4114,93 @@ mod tests {
             to.starts_with("codebase_files/"),
             "expected file edge fallback, got: {to}"
         );
+    }
+
+    // ── Embed window construction ───────────────────────────────────────
+    //
+    // These cover the arithmetic that silently corrupted a corpus: chunk
+    // offsets are bytes, the embedding server reads them as characters, and
+    // nothing downstream can tell the difference because pooling is correct
+    // over whatever range it is handed.
+
+    #[test]
+    fn byte_offsets_equal_char_offsets_for_ascii() {
+        let text = "fn main() { println!(\"hi\"); }";
+        let got = byte_offsets_to_chars(text, &[(0, 9), (10, text.len())]);
+        assert_eq!(got, vec![(0, 9), (10, text.chars().count())]);
+    }
+
+    #[test]
+    fn byte_offsets_shift_after_a_multibyte_character() {
+        // The em-dash is three bytes and one character, so every offset past
+        // it differs by two. Passing bytes through unconverted is exactly the
+        // drift that pointed chunks at the wrong code.
+        let text = "let a = 1; // \u{2014} note\nlet b = 2;";
+        let dash_bytes = text.find('\u{2014}').unwrap();
+        let after_bytes = dash_bytes + '\u{2014}'.len_utf8();
+        let got = byte_offsets_to_chars(text, &[(0, dash_bytes), (after_bytes, text.len())]);
+
+        let dash_chars = text.chars().take_while(|c| *c != '\u{2014}').count();
+        assert_eq!(got[0], (0, dash_chars));
+        assert_eq!(got[1], (dash_chars + 1, text.chars().count()));
+        assert_ne!(
+            got[1].0, after_bytes,
+            "byte and character offsets must not be treated as interchangeable"
+        );
+    }
+
+    #[test]
+    fn byte_offset_inside_a_multibyte_sequence_rounds_down() {
+        let text = "a\u{2014}b";
+        // Byte 2 is the middle of the em-dash, which no character starts at.
+        // Byte 2 rounds down to the em-dash at character 1, and byte 4 is the
+        // start of 'b' at character 2.
+        let got = byte_offsets_to_chars(text, &[(2, 4)]);
+        assert_eq!(got, vec![(1, 2)]);
+    }
+
+    #[test]
+    fn window_with_unaligned_offsets_is_skipped_not_panicked() {
+        let source = "a\u{2014}b".to_string();
+        let mut windows = Vec::new();
+        // Byte 2 is inside the em-dash. Slicing here would panic before this
+        // guard existed, aborting the whole ingest run.
+        push_embed_window(
+            &mut windows,
+            &source,
+            2,
+            source.len(),
+            vec![(0, 1)],
+            0,
+            "t.rs",
+        );
+        assert!(windows.is_empty(), "unaligned window must be dropped");
+    }
+
+    #[test]
+    fn window_with_reversed_offsets_is_skipped() {
+        let source = "abcdef".to_string();
+        let mut windows = Vec::new();
+        push_embed_window(&mut windows, &source, 4, 2, vec![(0, 1)], 0, "t.rs");
+        assert!(windows.is_empty());
+    }
+
+    #[test]
+    fn window_boundaries_are_relative_to_the_window() {
+        let source = "aaaabbbbcccc".to_string();
+        let mut windows = Vec::new();
+        push_embed_window(
+            &mut windows,
+            &source,
+            4,
+            12,
+            vec![(0, 4), (4, 8)],
+            3,
+            "t.rs",
+        );
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].text, "bbbbcccc");
+        assert_eq!(windows[0].boundaries, vec![(0, 4), (4, 8)]);
+        assert_eq!(windows[0].first_chunk_index, 3);
     }
 }

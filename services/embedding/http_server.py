@@ -304,6 +304,20 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
             # chunks and its own token spans.
             lc = req.late_chunk
 
+            # `boundaries` describes one input. Applying the same character
+            # ranges to every element of a multi-input request would pool
+            # input 0's spans out of inputs 1 and 2, silently, whenever the
+            # later documents happen to be long enough to contain them.
+            if lc.boundaries is not None and len(texts) > 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "late_chunk.boundaries applies to a single input, but "
+                        f"{len(texts)} inputs were sent. Send one input per "
+                        "request when supplying boundaries."
+                    ),
+                )
+
             def _late() -> tuple[list, list]:
                 vecs: list = []
                 meta: list = []
@@ -315,7 +329,11 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
                         overlap_tokens=lc.overlap_tokens,
                         boundaries=lc.boundaries,
                     )
-                    for c, (s, e, cs, ce) in enumerate(spans[: len(m)]):
+                    if len(spans) != len(m):
+                        raise RuntimeError(
+                            f"input {i}: {len(m)} vectors for {len(spans)} spans"
+                        )
+                    for c, (s, e, cs, ce) in enumerate(spans):
                         vecs.append(m[c])
                         meta.append((i, c, s, e, cs, ce))
                 return vecs, meta
@@ -329,6 +347,12 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
                     texts, task=task, batch_size=batch_override
                 ),
             )
+    except HTTPException:
+        # Request validation raised inside this block already carries the right
+        # status. Without this the broad handler below rewrapped a deliberate
+        # 400 as a 500, which tells a client to retry something that will never
+        # succeed.
+        raise
     except ValueError as e:
         # `JinaV4Embedder.embed_texts` raises ValueError for invalid
         # batch_size; surface that as a 400 not a 500.
