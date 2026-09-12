@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight runs of the same workflow on the same ref when a new
+# commit lands. Avoids burning CI minutes on stale PR pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  check:
+    name: build / test / lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # hades-proto pulls in prost-build via tonic-build, which shells out
+      # to `protoc` at build time. Workstations typically have protobuf-compiler
+      # installed system-wide; CI runners don't.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo build
+        run: cargo build --workspace --verbose
+
+      # Unit tests only: lib targets AND bin targets. `--lib` alone silently
+      # excluded hades-cli entirely (a binary crate has no lib target), so none
+      # of the CLI's ~54 tests had ever run in CI — including the regression
+      # guards for the destructive codebase commands (#163). DB-backed tests
+      # inside those targets self-skip when the ArangoDB socket is absent,
+      # which is CI's case; that gap is #93's scope. Integration-test files
+      # under tests/ that require a running ArangoDB or embedder service
+      # (e.g. tests/graph_loader.rs) remain out of scope until #93 lands.
+      - name: cargo test --lib --bins
+        run: cargo test --workspace --lib --bins --verbose
+
+      # Service-free tests/ targets, named explicitly. A blanket --workspace
+      # is unsafe here: the tests/ directory mixes three classes and only the
+      # arango_* + graph_loader targets self-skip when their service is
+      # absent. The other two classes would fail on a bare runner:
+      #   needs-a-service:  embedding_client, extraction_client,
+      #                     training_client (no self-skip guards)
+      #   needs-an-analyzer-binary: clang_cuda_probe (libclang),
+      #                     gopls_semantic (gopls), ra_span_agreement
+      #                     (rust-analyzer)
+      # Those remain #93's scope (uniform self-skip or a serviced runner).
+      # The three below are pure logic and run anywhere.
+      - name: cargo test (service-free tests/ targets)
+        run: |
+          cargo test -p hades-proto --test proto_types --verbose
+          cargo test -p hades-core --test pipeline --verbose
+          cargo test -p hades-core --test config_integration --verbose

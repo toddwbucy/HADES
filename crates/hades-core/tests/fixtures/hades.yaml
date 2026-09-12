@@ -1,0 +1,66 @@
+# Test fixture — exercises every field that config_integration.rs asserts
+# against. Values are intentionally generic; tests verify YAML parsing, not
+# any specific deployment's data.
+
+database:
+  host: localhost
+  port: 8529
+  database: test_db
+  username: root
+  sockets:
+    readonly: /run/arangodb3/arangodb.sock
+    readwrite: /run/arangodb3/arangodb.sock
+
+embedding:
+  service:
+    socket: http://localhost:8087/v1
+    fallback_to_local: true
+    timeout_ms: 30000
+    idle_timeout: 0
+  model:
+    name: jinaai/jina-embeddings-v4
+    dimension: 2048
+    max_tokens: 32768
+    use_fp16: true
+    normalize: true
+  batch:
+    size: 48
+    size_small: 8
+  chunking:
+    size_tokens: 500
+    overlap_tokens: 200
+
+gpu:
+  device: "cuda:2"
+  enabled: true
+
+vector_index:
+  default_n_probe: 10
+  metric: cosine
+  auto_n_lists: true
+
+search:
+  limit: 10
+  max_limit: 100
+  hybrid:
+    vector_weight: 0.7
+    keyword_weight: 0.3
+
+rocchio:
+  alpha: 1.0
+  beta: 0.75
+  gamma: 0.15
+
+sync:
+  default_lookback_days: 7
+  batch_size: 8
+  max_results: 1000
+
+batch_processing:
+  concurrency: 1
+  progress_interval_secs: 1.0
+  rate_limit_rps: 0.0
+  rate_limit_retries: 3
+
+logging:
+  level: INFO

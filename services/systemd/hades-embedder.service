@@ -1,0 +1,51 @@
+[Unit]
+Description=HADES Embedding Service (Jina V4 / OpenAI-compatible HTTP)
+Documentation=https://github.com/toddwbucy/HADES
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=hades
+Group=hades
+# This service does NOT need ArangoDB or weaver-admin access — it only
+# serves embeddings to local clients (HADES daemon, etc.) over HTTP.
+# The HADES service user has those memberships for other roles
+# (DBA tooling, forensic embedder access); the embedder service itself
+# does not exercise them.
+
+WorkingDirectory=@SERVICES_DIR@
+ExecStart=@SERVICES_DIR@/.venv/bin/python -m embedding.http_server
+
+EnvironmentFile=-/etc/hades/embedder.conf
+
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+# /var/cache/hades for HF model cache; ProtectHome=read-only blocks ~/.cache.
+CacheDirectory=hades
+CacheDirectoryMode=0755
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# If HF_HOME is set to a path outside /var/cache/hades (e.g.
+# /opt/weaver/huggingface for shared-cache deployments), add that path here:
+#   ReadWritePaths=/var/cache/hades /opt/weaver/huggingface
+# Without this, ProtectSystem=strict makes the cache directory read-only and
+# transformers' lock-file creation fails on first model load.
+ReadWritePaths=/var/cache/hades
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hades-embedder
+
+[Install]
+WantedBy=multi-user.target

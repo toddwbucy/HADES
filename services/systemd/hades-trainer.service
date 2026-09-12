@@ -1,0 +1,54 @@
+[Unit]
+Description=HADES RGCN Training Service (gRPC, GPU)
+Documentation=https://github.com/toddwbucy/HADES
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+# UMask=0007 ensures the Unix domain socket is created group-connectable
+# (0660/0770 family) at bind time — no post-bind chmod race. Matches the
+# daemon unit. The in-server chmod remains as a fallback for non-systemd
+# invocations and as an abort-if-unusable check.
+UMask=0007
+Type=simple
+User=hades
+Group=hades
+SupplementaryGroups=weaver-admin arangodb
+
+# /run/hades is created solely by tmpfiles.d/hades.conf. Deliberately NO
+# RuntimeDirectory= here: the three hades units shared RuntimeDirectory=hades,
+# and systemd removes a unit's RuntimeDirectory on stop — so any one service
+# stopping unlinked the OTHER services' live sockets (observed 2026-07-20:
+# starting the extractor clobbered hades.sock and training.sock).
+CacheDirectory=hades
+CacheDirectoryMode=0755
+
+# @SERVICES_DIR@ is substituted with the actual services/ path at install time
+# (`make install-trainer`), so this unit isn't pinned to any one workstation.
+WorkingDirectory=@SERVICES_DIR@
+ExecStart=@SERVICES_DIR@/.venv/bin/python -m training.server
+
+# Environment from config file (GPU device, socket)
+EnvironmentFile=/etc/hades/trainer.conf
+
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+# Security hardening. NOTE: PrivateTmp is intentionally NOT enabled — the Rust
+# orchestrator hands the trainer a safetensors graph file by path, which may
+# live in a shared temp/runtime dir; a private /tmp would hide it.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/hades /var/cache/hades /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hades-trainer
+
+[Install]
+WantedBy=multi-user.target

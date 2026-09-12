@@ -1,0 +1,423 @@
+//! Runtime schema — database-local ontology definitions.
+//!
+//! Each database has a `hades_schema` collection storing its edge definitions,
+//! named graphs, and metadata as documents. The schema is pure data: there is
+//! no compile-time fallback. Databases must seed `hades_schema` (e.g. via
+//! `db schema init --seed empty` or by direct insert) before runtime
+//! operations like `graph::load` can succeed.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use crate::db::ArangoPool;
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+/// Errors encountered while loading or validating a runtime schema.
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaError {
+    #[error("hades_schema collection not found")]
+    NoSchemaCollection,
+
+    #[error("schema metadata document missing (expected _key: \"meta\")")]
+    NoMetaDocument,
+
+    #[error("failed to query hades_schema: {0}")]
+    Query(String),
+
+    #[error("failed to deserialize schema document: {0}")]
+    Deserialize(String),
+
+    #[error("schema validation failed: {0}")]
+    Validation(String),
+}
+
+// ---------------------------------------------------------------------------
+// Runtime types (owned strings, loaded from `hades_schema`)
+// ---------------------------------------------------------------------------
+
+/// Runtime edge collection definition.
+///
+/// Mirrors [`super::schema::EdgeCollectionDef`] but with owned `String`s
+/// so it can be deserialized from ArangoDB documents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeEdgeDef {
+    /// ArangoDB edge collection name.
+    pub name: String,
+    /// Document field that holds the reference(s) used to materialize edges
+    /// from this source. `None` for edge collections that aren't materialized
+    /// from a source-document field (e.g., compliance edges authored directly
+    /// via `hades link`).
+    #[serde(default)]
+    pub source_field: Option<String>,
+    /// Vertex collections that can appear as `_from`.
+    pub from_collections: Vec<String>,
+    /// Vertex collections that can appear as `_to`.
+    pub to_collections: Vec<String>,
+    /// Human-readable description. `None` when the YAML omitted it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Whether `source_field` holds a list of references.
+    #[serde(default)]
+    pub is_array: bool,
+    /// Additional fields to copy from the source doc onto edges.
+    #[serde(default)]
+    pub edge_attributes: Vec<String>,
+    /// Materialization strategy: "standard", "lineage", "cross_paper".
+    #[serde(default = "default_strategy")]
+    pub materialize_strategy: String,
+    /// Stable RGCN relation index (position in `relation_order`).
+    #[serde(default)]
+    pub relation_index: Option<u32>,
+}
+
+fn default_strategy() -> String {
+    "standard".to_string()
+}
+
+/// Runtime named graph definition.
+///
+/// References edge definitions **by name**, not by index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeNamedGraph {
+    /// Graph name (used in `GRAPH "name"` AQL clauses).
+    pub name: String,
+    /// Edge collection names composing this graph.
+    pub edge_definitions: Vec<String>,
+    /// Human-readable purpose.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Schema metadata — one per database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaMeta {
+    /// Incremented on any schema mutation.
+    #[serde(default = "default_version")]
+    pub schema_version: u32,
+    /// Name of the seed used to initialize (e.g. "nl", "empty"), if any.
+    #[serde(default)]
+    pub seed_name: Option<String>,
+    /// Ordered list of edge collection names for RGCN training.
+    /// Index position = relation type index. **Append-only.**
+    #[serde(default)]
+    pub relation_order: Vec<String>,
+    /// Cached `relation_order.len()`.
+    #[serde(default)]
+    pub num_relations: usize,
+    /// Embedding feature dimension (e.g. 2048 for Jina V4).
+    #[serde(default = "default_feature_dim")]
+    pub feature_dim: usize,
+    /// Structural-embedding encoder: `"rgcn"` (transductive) or `"hetero_sage"`
+    /// (inductive relational GraphSAGE). `None`/absent → `"rgcn"` for backward
+    /// compatibility with schemas seeded before #137.
+    #[serde(default)]
+    pub model_type: Option<String>,
+    /// SHA-256 of canonicalized `relation_order`.
+    #[serde(default)]
+    pub schema_checksum: String,
+}
+
+/// The structural-embedding architectures HADES recognises — the single Rust
+/// source of truth for the allowlist (schema validation references this).
+/// The Python training service keeps its own matching `_ARCHITECTURES` map:
+/// it is a separate runtime and cannot share this compile-time constant, and
+/// `architecture` is deliberately a human-readable string in the schema YAML
+/// rather than a proto enum.
+pub const KNOWN_MODEL_TYPES: &[&str] = &["rgcn", "hetero_sage"];
+
+/// The default structural-embedding architecture when a schema omits
+/// `model_type` (pre-#137 schemas). One of [`KNOWN_MODEL_TYPES`].
+pub const DEFAULT_MODEL_TYPE: &str = "rgcn";
+
+impl SchemaMeta {
+    /// Resolved structural-embedding architecture: the schema's `model_type`,
+    /// or [`DEFAULT_MODEL_TYPE`] when unset/blank. This is the string sent to
+    /// the training service as `ModelConfig.architecture`.
+    pub fn resolved_model_type(&self) -> &str {
+        match self.model_type.as_deref() {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => DEFAULT_MODEL_TYPE,
+        }
+    }
+}
+
+fn default_version() -> u32 {
+    1
+}
+
+fn default_feature_dim() -> usize {
+    2048
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeSchema — the loaded, queryable schema
+// ---------------------------------------------------------------------------
+
+/// Complete runtime schema loaded from `hades_schema` collection.
+#[derive(Debug, Clone)]
+pub struct RuntimeSchema {
+    pub meta: SchemaMeta,
+    pub edge_definitions: Vec<RuntimeEdgeDef>,
+    pub named_graphs: Vec<RuntimeNamedGraph>,
+    /// Whether the schema was loaded from the database. Always `true` after
+    /// PR #77 removed the compile-time fallback; retained for compatibility
+    /// with serialized snapshots and for forward-compatibility with
+    /// alternative load sources (e.g. ahead-of-time exports).
+    pub from_database: bool,
+}
+
+impl RuntimeSchema {
+    /// Load schema from the `hades_schema` collection.
+    ///
+    /// Returns [`SchemaError::NoSchemaCollection`] if `hades_schema` is
+    /// missing. Seed it first with `db schema init --seed empty` (or via
+    /// direct insert).
+    pub async fn load(pool: &ArangoPool) -> Result<Self, SchemaError> {
+        // Check if hades_schema collection exists.
+        let collections = crate::db::crud::list_collections(pool, false)
+            .await
+            .map_err(|e| SchemaError::Query(e.to_string()))?;
+
+        let has_schema = collections.iter().any(|c| c.name == "hades_schema");
+        if !has_schema {
+            return Err(SchemaError::NoSchemaCollection);
+        }
+
+        // Load all documents from hades_schema.
+        let aql = "FOR d IN hades_schema RETURN d";
+        let result = crate::db::query::query(
+            pool,
+            aql,
+            None,
+            None,
+            false,
+            crate::db::query::ExecutionTarget::Reader,
+        )
+        .await
+        .map_err(|e| SchemaError::Query(e.to_string()))?;
+        let docs = result.results;
+
+        if docs.is_empty() {
+            return Err(SchemaError::Validation(
+                "hades_schema collection exists but contains no documents — \
+                 re-run `db schema init` to seed it"
+                    .into(),
+            ));
+        }
+
+        let mut meta: Option<SchemaMeta> = None;
+        let mut edge_defs: Vec<RuntimeEdgeDef> = Vec::new();
+        let mut named_graphs: Vec<RuntimeNamedGraph> = Vec::new();
+
+        for doc in &docs {
+            let schema_type: &str = doc.get("schema_type").and_then(Value::as_str).unwrap_or("");
+
+            match schema_type {
+                "schema_meta" => {
+                    meta = Some(
+                        serde_json::from_value(doc.clone())
+                            .map_err(|e| SchemaError::Deserialize(e.to_string()))?,
+                    );
+                }
+                "edge_definition" => {
+                    edge_defs.push(
+                        serde_json::from_value(doc.clone())
+                            .map_err(|e| SchemaError::Deserialize(e.to_string()))?,
+                    );
+                }
+                "named_graph" => {
+                    named_graphs.push(
+                        serde_json::from_value(doc.clone())
+                            .map_err(|e| SchemaError::Deserialize(e.to_string()))?,
+                    );
+                }
+                _ => {} // Ignore unknown document types.
+            }
+        }
+
+        let meta = meta.ok_or(SchemaError::NoMetaDocument)?;
+
+        // Validate loaded schema integrity.
+        if meta.num_relations != meta.relation_order.len() {
+            return Err(SchemaError::Validation(format!(
+                "num_relations ({}) does not match relation_order length ({})",
+                meta.num_relations,
+                meta.relation_order.len()
+            )));
+        }
+
+        let expected_checksum = compute_checksum(&meta.relation_order);
+        if !meta.schema_checksum.is_empty() && meta.schema_checksum != expected_checksum {
+            return Err(SchemaError::Validation(format!(
+                "schema_checksum mismatch: stored={}, computed={}",
+                meta.schema_checksum, expected_checksum
+            )));
+        }
+
+        // Check named graphs don't reference missing edge definitions.
+        for ng in &named_graphs {
+            for edge_name in &ng.edge_definitions {
+                if !edge_defs.iter().any(|e| &e.name == edge_name) {
+                    return Err(SchemaError::Validation(format!(
+                        "named graph '{}' references edge definition '{}' which is not in schema",
+                        ng.name, edge_name
+                    )));
+                }
+            }
+        }
+
+        Ok(Self {
+            meta,
+            edge_definitions: edge_defs,
+            named_graphs,
+            from_database: true,
+        })
+    }
+
+    /// Look up an edge definition by name.
+    pub fn get_edge_def(&self, name: &str) -> Option<&RuntimeEdgeDef> {
+        self.edge_definitions.iter().find(|e| e.name == name)
+    }
+
+    /// Look up a named graph by name.
+    pub fn get_named_graph(&self, name: &str) -> Option<&RuntimeNamedGraph> {
+        self.named_graphs.iter().find(|g| g.name == name)
+    }
+
+    /// Return the RGCN relation index for an edge collection name.
+    pub fn relation_index(&self, collection_name: &str) -> Option<usize> {
+        self.meta
+            .relation_order
+            .iter()
+            .position(|n| n == collection_name)
+    }
+
+    /// Build a Gharial API payload for a named graph.
+    ///
+    /// Returns `None` if the graph name isn't found.
+    pub fn to_gharial_payload(&self, graph_name: &str) -> Option<Value> {
+        let ng = self.get_named_graph(graph_name)?;
+
+        // Group edge definitions by collection name, merging from/to sets.
+        let mut edge_map: std::collections::BTreeMap<
+            &str,
+            (
+                std::collections::BTreeSet<&str>,
+                std::collections::BTreeSet<&str>,
+            ),
+        > = std::collections::BTreeMap::new();
+
+        for edge_name in &ng.edge_definitions {
+            if let Some(edef) = self.get_edge_def(edge_name) {
+                let entry = edge_map.entry(&edef.name).or_default();
+                for fc in &edef.from_collections {
+                    entry.0.insert(fc);
+                }
+                for tc in &edef.to_collections {
+                    entry.1.insert(tc);
+                }
+            }
+        }
+
+        let edge_defs: Vec<Value> = edge_map
+            .into_iter()
+            .map(|(collection, (from, to))| {
+                serde_json::json!({
+                    "collection": collection,
+                    "from": from.into_iter().collect::<Vec<_>>(),
+                    "to": to.into_iter().collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+
+        Some(serde_json::json!({
+            "name": ng.name,
+            "edgeDefinitions": edge_defs,
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Seed generation
+// ---------------------------------------------------------------------------
+
+/// Generate an empty seed — metadata only, no edge definitions or graphs.
+pub fn empty_seed_documents() -> Vec<Value> {
+    vec![serde_json::json!({
+        "_key": "meta",
+        "schema_type": "schema_meta",
+        "schema_version": 1,
+        "seed_name": serde_json::Value::Null,
+        "relation_order": [],
+        "num_relations": 0,
+        "feature_dim": 2048,
+        "model_type": DEFAULT_MODEL_TYPE,
+        "schema_checksum": compute_checksum(&[]),
+    })]
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Compute SHA-256 checksum of the relation order.
+pub fn compute_checksum(relation_order: &[String]) -> String {
+    let canonical = serde_json::to_string(relation_order).unwrap_or_default();
+    let hash = Sha256::digest(canonical.as_bytes());
+    // Convert hash bytes to hex string.
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256:{hex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_seed() {
+        let docs = empty_seed_documents();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["schema_type"], "schema_meta");
+        assert_eq!(docs[0]["num_relations"], 0);
+        assert!(docs[0]["seed_name"].is_null());
+    }
+
+    #[test]
+    fn test_resolved_model_type() {
+        // Absent / blank → default rgcn; an explicit value passes through.
+        let mut meta: SchemaMeta = serde_json::from_value(serde_json::json!({
+            "schema_type": "schema_meta",
+            "relation_order": [],
+            "num_relations": 0,
+        }))
+        .unwrap();
+        assert_eq!(meta.model_type, None);
+        assert_eq!(meta.resolved_model_type(), "rgcn");
+
+        meta.model_type = Some("  ".to_string());
+        assert_eq!(meta.resolved_model_type(), "rgcn");
+
+        meta.model_type = Some("hetero_sage".to_string());
+        assert_eq!(meta.resolved_model_type(), "hetero_sage");
+    }
+
+    #[test]
+    fn test_checksum_deterministic() {
+        let order = vec!["a".to_string(), "b".to_string()];
+        let c1 = compute_checksum(&order);
+        let c2 = compute_checksum(&order);
+        assert_eq!(c1, c2);
+        assert!(c1.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_checksum_changes_on_reorder() {
+        let order1 = vec!["a".to_string(), "b".to_string()];
+        let order2 = vec!["b".to_string(), "a".to_string()];
+        assert_ne!(compute_checksum(&order1), compute_checksum(&order2));
+    }
+}

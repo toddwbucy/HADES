@@ -1,0 +1,35 @@
+# Dev instance for Seshat/HADES, built from source at ~/git/arangodb.
+# Mirrors the tracked system config in workstation-olympus where it still
+# applies, with paths pointed at the build tree and a user-owned data dir.
+
+experimental-vector-index = true
+
+[server]
+endpoint = tcp://127.0.0.1:8529
+endpoint = unix://${ARANGO_HOME}/run/arangodb.sock
+storage-engine = rocksdb
+authentication = false
+threads = 32
+
+[database]
+directory = ${ARANGO_HOME}/data
+
+[javascript]
+startup-directory = ${ARANGO_SRC}/js
+app-path = ${ARANGO_HOME}/apps
+
+[log]
+file = ${ARANGO_HOME}/log/arangod.log
+level = info
+
+[rocksdb]
+write-buffer-size = 268435456
+max-write-buffer-number = 6
+max-background-jobs = 16
+block-cache-size = 4294967296
+
+[query]
+memory-limit = 8589934592
+
+[cache]
+size = 2147483648

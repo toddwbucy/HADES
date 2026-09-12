@@ -1,0 +1,33 @@
+# HADES daemon: Unix socket query server, optional MCP endpoint.
+#
+# Install to ~/.config/systemd/user/ for a user-level run, or adapt for a
+# system unit. Every deployment-specific value comes from the environment
+# file, so this unit contains nothing about your network.
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hades-daemon
+#
+# loginctl enable-linger $USER if it should survive logout, otherwise systemd
+# stops user services when your last session closes and remote clients lose
+# the endpoint.
+
+[Unit]
+Description=HADES Knowledge-Graph Daemon
+After=network-online.target
+
+[Service]
+Type=simple
+
+# HADES_MCP_BIND, HADES_MCP_TOKEN_FILE and HADES_MCP_DBS are read from here.
+# Leaving HADES_MCP_BIND unset runs the Unix socket only, with no network
+# listener at all, which is the safe default.
+EnvironmentFile=%h/.config/hades/daemon.env
+
+ExecStart=%h/.local/bin/hades daemon --socket %h/.local/share/hades/run/hades.sock
+
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

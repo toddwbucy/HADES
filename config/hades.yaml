@@ -1,0 +1,135 @@
+# HADES Configuration
+# ===================
+# Override priority (highest wins):
+#   1. CLI arguments (--db, --gpu)
+#   2. Environment variables (ARANGO_*, HADES_*)
+#   3. This config file
+#   4. Compiled-in defaults
+
+# -----------------------------------------------------------------------------
+# Database Configuration
+# -----------------------------------------------------------------------------
+database:
+  host: localhost
+  port: 8529
+  # No `database:` field by design — every command must specify --db <name>
+  # (or set HADES_DATABASE) explicitly. There is no implicit default; an
+  # unconfigured command fails with a clear "no database specified" error
+  # rather than silently targeting some shared/production database.
+  # Connect as the dedicated `hades` ArangoDB user, not root. HADES is DBA
+  # tooling — it gets broad grants by default (rw on _system, rw on new
+  # databases). Restrictions on specific production databases are managed
+  # by the operator in arangosh, not by HADES code. Bootstrap the user with
+  # scripts/install/setup-arangodb-user.sh (or the manual curl recipe in
+  # the README).
+  username: hades
+  # password: always from ARANGO_PASSWORD env var
+
+  sockets:
+    # metis proxy is planned but not built; talk to arangod directly for now.
+    # Read/write separation is enforced by ArangoDB ACLs on the `hades` user,
+    # not by HADES code — both sockets point at the same socket file.
+    readonly: /run/arangodb3/arangodb.sock
+    readwrite: /run/arangodb3/arangodb.sock
+
+# -----------------------------------------------------------------------------
+# Embedding Service Configuration
+# -----------------------------------------------------------------------------
+embedding:
+  service:
+    # OpenAI-compatible embedding endpoint (`POST {endpoint}/embeddings`,
+    # `GET {endpoint}/models`). HADES is engine-agnostic at the protocol
+    # layer; any backend exposing `/v1/embeddings` works (vLLM, TEI, etc.).
+    #
+    # For Weaver coexistence, run `hades-weaver-bridge` and point at:
+    #   socket: unix:///run/hades-weaver-bridge/v1
+    socket: http://localhost:8087/v1
+    fallback_to_local: true
+    timeout_ms: 30000
+    idle_timeout: 0
+
+  model:
+    name: jinaai/jina-embeddings-v4
+    dimension: 2048
+    max_tokens: 32768
+    use_fp16: true
+    normalize: true
+
+  batch:
+    size: 48          # tuned for A6000 49GB VRAM; reduce to 8 on 16GB GPUs
+    size_small: 8     # conservative fallback for smaller GPUs
+
+  chunking:
+    # Chunk size is a recall-vs-VRAM lever. The 500/200 default is tuned for
+    # late-chunking recall with Jina V4 on a 49 GiB A6000. Per-embedding GPU
+    # allocation scales with chunk size, so shrinking chunks cuts memory
+    # pressure: e.g. 200/50 lowers per-embedding allocation by ~2.5×.
+    #
+    # Tradeoff: smaller chunks → more chunks per file → more embeddings stored
+    # (marginally more storage), and shorter context per embedding (slightly
+    # lower late-chunking recall).
+    #
+    # Lower these when the embedder service returns intermittent 500 OOMs while
+    # ingesting large source files — e.g. on a 16 GiB GPU (RTX 2000 Ada):
+    #     size_tokens: 200
+    #     overlap_tokens: 50
+    size_tokens: 500
+    overlap_tokens: 200  # 40% overlap — high for late-chunking recall with Jina V4
+
+# -----------------------------------------------------------------------------
+# GPU Configuration
+# -----------------------------------------------------------------------------
+gpu:
+  # cuda:2 = RTX 2000 Ada, the application-safety GPU (frequent inference-side ops).
+  # GNN training does NOT read this default: graph-embed train/update require --gpu N.
+  # Override with: --gpu N or CUDA_VISIBLE_DEVICES
+  device: cuda:2
+  enabled: true
+
+# -----------------------------------------------------------------------------
+# Vector Index Settings
+# -----------------------------------------------------------------------------
+vector_index:
+  default_n_probe: 10
+  metric: cosine
+  auto_n_lists: true
+
+# -----------------------------------------------------------------------------
+# Search Defaults
+# -----------------------------------------------------------------------------
+search:
+  limit: 10
+  max_limit: 100
+  hybrid:
+    vector_weight: 0.7
+    keyword_weight: 0.3
+
+# -----------------------------------------------------------------------------
+# Relevance Feedback (Rocchio Algorithm)
+# -----------------------------------------------------------------------------
+rocchio:
+  alpha: 1.0
+  beta: 0.75
+  gamma: 0.15
+
+# -----------------------------------------------------------------------------
+# Sync Settings (generic batch lookback / pagination — used by any sync-style
+# ingest workflow that polls a source for new documents)
+# -----------------------------------------------------------------------------
+sync:
+  default_lookback_days: 7
+  batch_size: 8
+  max_results: 1000
+
+# -----------------------------------------------------------------------------
+# External analyzers (codebase ingest enrichment)
+# -----------------------------------------------------------------------------
+# Optional pinned binaries. When set, used verbatim (no PATH search). When
+# unset, the PATH lookup applies and `codebase ingest` probes the binary FROM
+# the ingest root before touching any file (the rustup shim resolves
+# per-directory, so probing anywhere else validates the wrong toolchain).
+# Env overrides: HADES_RUST_ANALYZER_PATH, HADES_GOPLS_PATH.
+# Inspect with: hades tools status --workspace <ingest-root>
+#analyzers:
+#  rust_analyzer: /usr/local/lib/hades/tools/rust-analyzer
+#  gopls: /usr/local/lib/hades/tools/gopls

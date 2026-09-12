@@ -1,0 +1,50 @@
+[package]
+name = "hades-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core library: config, DB client, graph engine, pipeline logic"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+hyperlocal.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+base64.workspace = true
+futures.workspace = true
+regex.workspace = true
+moka.workspace = true
+tonic.workspace = true
+hades-proto.workspace = true
+tower.workspace = true
+reqwest.workspace = true
+roxmltree.workspace = true
+chrono.workspace = true
+urlencoding.workspace = true
+url.workspace = true
+tokio-util.workspace = true
+rand.workspace = true
+
+# Code analysis
+rustpython-parser.workspace = true
+syn.workspace = true
+sha2.workspace = true
+proc-macro2.workspace = true
+clang.workspace = true
+tree-sitter.workspace = true
+tree-sitter-cpp.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

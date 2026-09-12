@@ -1,0 +1,769 @@
+//! Edge resolution from language-server extraction data.
+//!
+//! Materializes symbol nodes and edges from file-level extraction data
+//! for storage in ArangoDB graph collections:
+//! - `codebase_symbols` — per-symbol documents
+//! - `codebase_defines_edges`, `codebase_calls_edges`, `codebase_implements_edges`, `codebase_imports_edges`
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use tracing::info;
+
+use super::symbols::FileExtraction;
+use crate::db::{collections::CODEBASE, keys};
+
+/// Edge types produced by the resolver.
+///
+/// Each variant maps to a dedicated ArangoDB edge collection.
+/// `Pyo3Exposes` and `FfiExposes` were retired — those are now
+/// boolean attributes on the symbol document (`is_pyo3`, `is_ffi`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeKind {
+    /// File defines a symbol.
+    Defines,
+    /// Symbol calls another symbol.
+    Calls,
+    /// Symbol implements a trait method.
+    Implements,
+    /// File imports a symbol from another file.
+    Imports,
+}
+
+impl EdgeKind {
+    /// String representation used in `edge_key()` hashing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Defines => "defines",
+            Self::Calls => "calls",
+            Self::Implements => "implements",
+            Self::Imports => "imports",
+        }
+    }
+
+    /// The ArangoDB edge collection name for this edge kind.
+    ///
+    /// Derived from the [`CODEBASE`] singleton to prevent drift between
+    /// the edge kind enum and the collection registry.
+    pub fn collection(&self) -> &'static str {
+        match self {
+            Self::Defines => CODEBASE.defines_edges,
+            Self::Calls => CODEBASE.calls_edges,
+            Self::Implements => CODEBASE.implements_edges,
+            Self::Imports => CODEBASE.imports_edges,
+        }
+    }
+}
+
+/// A resolved edge ready for ArangoDB insertion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrateEdge {
+    /// Source vertex ID (e.g., `codebase_files/src_lib_rs`).
+    pub from: String,
+    /// Target vertex ID (e.g., `codebase_symbols/src_lib_rs__Config__new`).
+    pub to: String,
+    /// Edge type.
+    pub kind: EdgeKind,
+    /// Additional metadata.
+    #[serde(flatten)]
+    pub metadata: serde_json::Value,
+}
+
+/// Map an LSP symbol kind string to a universal graph primitive.
+///
+/// Returns `None` for kinds that are not graph primitives (e.g., `"unknown"`,
+/// `"string"`, `"number"`). Callers should skip non-primitive symbols.
+///
+/// **Keep in sync with [`SymbolKind::universal_kind()`](crate::code::symbols::SymbolKind::universal_kind).**
+/// That method maps the syn `SymbolKind` enum to the same four primitives.
+/// The two functions accept different input types (LSP strings vs enum) but
+/// must agree on which primitives exist: `callable`, `type`, `value`, `module`.
+fn universal_kind_from_lsp(lsp_kind: &str) -> Option<&'static str> {
+    match lsp_kind {
+        "function" | "method" | "constructor" | "macro" => Some("callable"),
+        "struct" | "enum" | "interface" | "class" | "type_parameter" => Some("type"),
+        "constant" | "variable" | "enum_member" | "field" | "property" => Some("value"),
+        "module" | "namespace" | "package" => Some("module"),
+        _ => None,
+    }
+}
+
+/// A symbol document ready for ArangoDB insertion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolDocument {
+    /// ArangoDB document key.
+    #[serde(rename = "_key")]
+    pub key: String,
+    pub name: String,
+    pub qualified_name: String,
+    /// Universal graph primitive: `"callable"`, `"type"`, `"value"`, `"module"`.
+    pub kind: String,
+    /// Original LSP kind string (e.g., `"function"`, `"struct"`, `"interface"`).
+    pub lang_kind: String,
+    pub visibility: String,
+    pub signature: String,
+    pub file_path: String,
+    /// Key of the file node this symbol belongs to (`keys::file_key(file_path)`).
+    /// Must be stored explicitly — the document `_key` is *derived* from it, but
+    /// downstream queries (coverage, RGCN feature loading, `symbol_count_consistency`)
+    /// read this field. See #124.
+    pub file_key: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub parent_symbol: Option<String>,
+    pub impl_trait: Option<String>,
+    pub is_pyo3: bool,
+    pub is_ffi: bool,
+    pub is_unsafe: bool,
+    pub derives: Vec<String>,
+    pub python_name: Option<String>,
+    pub analyzed_at: String,
+    pub analysis_tier: String,
+    pub analyzer: String,
+}
+
+/// Resolves file-level extraction data into symbol documents and edges.
+///
+/// Takes a map of `rel_path → FileExtraction` (produced by
+/// a language-specific semantic extractor) and produces:
+/// - Symbol documents for the `codebase_symbols` collection
+/// - Edge documents for the `codebase_edges` collection
+pub struct LspEdgeResolver {
+    /// Input: rel_path → extraction data.
+    file_data: HashMap<String, FileExtraction>,
+    /// Index: qualified_name → vec of (rel_path, symbol_key).
+    symbol_index: HashMap<String, Vec<(String, String)>>,
+    /// Analyzer provenance written to every semantic symbol document.
+    analyzer: &'static str,
+}
+
+impl LspEdgeResolver {
+    /// Create a new resolver from extraction data.
+    pub fn new(file_data: HashMap<String, FileExtraction>, analyzer: &'static str) -> Self {
+        let mut resolver = Self {
+            file_data,
+            symbol_index: HashMap::new(),
+            analyzer,
+        };
+        resolver.build_index();
+        resolver
+    }
+
+    /// Build symbol documents for the `codebase_symbols` collection.
+    pub fn build_symbol_documents(&self) -> Vec<SymbolDocument> {
+        let mut documents = Vec::new();
+
+        for (rel_path, extraction) in &self.file_data {
+            for sym in &extraction.symbols {
+                // Only emit documents for graph primitives.
+                let Some(universal) = universal_kind_from_lsp(&sym.kind) else {
+                    continue;
+                };
+
+                let fk = keys::file_key(rel_path);
+                let sk = keys::symbol_key(&fk, &sym.qualified_name, sym.start_line as usize + 1);
+
+                documents.push(SymbolDocument {
+                    key: sk,
+                    name: sym.name.clone(),
+                    qualified_name: sym.qualified_name.clone(),
+                    kind: universal.to_string(),
+                    lang_kind: sym.kind.clone(),
+                    visibility: sym.visibility.clone(),
+                    signature: sym.signature.clone(),
+                    file_path: rel_path.clone(),
+                    file_key: fk,
+                    // LSP positions are zero-based; graph line metadata and
+                    // symbol keys are consistently one-based.
+                    start_line: sym.start_line + 1,
+                    end_line: sym.end_line + 1,
+                    parent_symbol: sym.parent_symbol.clone(),
+                    impl_trait: sym.impl_trait.clone(),
+                    is_pyo3: sym.is_pyo3,
+                    is_ffi: sym.is_ffi,
+                    is_unsafe: sym.is_unsafe,
+                    derives: sym.derives.clone(),
+                    python_name: sym.python_name.clone(),
+                    analyzed_at: extraction.analyzed_at.clone(),
+                    analysis_tier: "semantic".to_string(),
+                    analyzer: self.analyzer.to_string(),
+                });
+            }
+        }
+
+        info!(
+            "built {} symbol documents from {} files",
+            documents.len(),
+            self.file_data.len()
+        );
+        documents
+    }
+
+    /// Build edges for the codebase edge collections.
+    pub fn build_edges(&self) -> Vec<CrateEdge> {
+        let mut edges = Vec::new();
+        let mut seen: HashSet<(String, String, &str)> = HashSet::new();
+
+        for (rel_path, extraction) in &self.file_data {
+            let fk = keys::file_key(rel_path);
+
+            for sym in &extraction.symbols {
+                let sk = keys::symbol_key(&fk, &sym.qualified_name, sym.start_line as usize + 1);
+
+                // 1. defines: file → symbol
+                let from = format!("codebase_files/{fk}");
+                let to = format!("codebase_symbols/{sk}");
+                if seen.insert((from.clone(), to.clone(), "defines")) {
+                    edges.push(CrateEdge {
+                        from,
+                        to,
+                        kind: EdgeKind::Defines,
+                        metadata: serde_json::json!({
+                            "file_path": rel_path,
+                            "symbol_name": sym.qualified_name,
+                        }),
+                    });
+                }
+
+                // 2. calls: symbol → called symbol
+                for call in &sym.calls {
+                    if let Some(target_sk) = self.resolve_call_target(call, rel_path) {
+                        let from = format!("codebase_symbols/{sk}");
+                        let to = format!("codebase_symbols/{target_sk}");
+                        if seen.insert((from.clone(), to.clone(), "calls")) {
+                            edges.push(CrateEdge {
+                                from,
+                                to,
+                                kind: EdgeKind::Calls,
+                                metadata: serde_json::json!({
+                                    "caller": sym.qualified_name,
+                                    "callee": call.qualified_name,
+                                }),
+                            });
+                        }
+                    }
+                }
+
+                // 3. implements: method with impl_trait → trait symbol
+                if let Some(ref trait_name) = sym.impl_trait
+                    && matches!(sym.kind.as_str(), "method" | "function")
+                    && let Some(trait_sk) = self.resolve_trait(trait_name, rel_path)
+                {
+                    let from = format!("codebase_symbols/{sk}");
+                    let to = format!("codebase_symbols/{trait_sk}");
+                    if seen.insert((from.clone(), to.clone(), "implements")) {
+                        edges.push(CrateEdge {
+                            from,
+                            to,
+                            kind: EdgeKind::Implements,
+                            metadata: serde_json::json!({
+                                "implementor": sym.qualified_name,
+                                "trait": trait_name,
+                            }),
+                        });
+                    }
+                }
+
+                // PyO3/FFI are symbol attributes, not edges (see ontology spec D5)
+            }
+
+            // Go interface satisfaction is implicit. gopls resolves the
+            // implementing type locations; convert those into explicit graph
+            // edges without pretending Tree-sitter inferred them.
+            for implementation in &extraction.implementations {
+                let Some(interface_key) = self
+                    .symbol_index
+                    .get(&implementation.interface_qualified_name)
+                    .and_then(|entries| pick_best_match(entries, rel_path))
+                    .or_else(|| {
+                        self.symbol_index
+                            .get(&implementation.interface_name)
+                            .and_then(|entries| pick_best_match(entries, rel_path))
+                    })
+                else {
+                    continue;
+                };
+                let Some(implementor_key) = self.resolve_location(
+                    &implementation.implementor_file,
+                    implementation.implementor_line,
+                ) else {
+                    continue;
+                };
+                let from = format!("codebase_symbols/{implementor_key}");
+                let to = format!("codebase_symbols/{interface_key}");
+                if seen.insert((from.clone(), to.clone(), "implements")) {
+                    edges.push(CrateEdge {
+                        from,
+                        to,
+                        kind: EdgeKind::Implements,
+                        metadata: serde_json::json!({
+                            "interface": implementation.interface_qualified_name,
+                            "resolution": "semantic",
+                        }),
+                    });
+                }
+            }
+        }
+
+        info!(
+            "built {} edges from {} files",
+            edges.len(),
+            self.file_data.len()
+        );
+        edges
+    }
+
+    // ── Internal ─────────────────────────────────────────────────
+
+    /// Build the symbol index for call resolution.
+    fn build_index(&mut self) {
+        for (rel_path, extraction) in &self.file_data {
+            let fk = keys::file_key(rel_path);
+            for sym in &extraction.symbols {
+                if sym.qualified_name.is_empty() {
+                    continue;
+                }
+                let sk = keys::symbol_key(&fk, &sym.qualified_name, sym.start_line as usize + 1);
+                let entry = (rel_path.clone(), sk);
+
+                self.symbol_index
+                    .entry(sym.qualified_name.clone())
+                    .or_default()
+                    .push(entry.clone());
+
+                // Also index by bare name for cross-file resolution.
+                if sym.name != sym.qualified_name {
+                    let file_scoped = format!("{}::{}", rel_path, sym.name);
+                    self.symbol_index
+                        .entry(file_scoped)
+                        .or_default()
+                        .push(entry);
+                }
+            }
+        }
+    }
+
+    /// Resolve a call target to a symbol key.
+    fn resolve_call_target(
+        &self,
+        call: &super::symbols::CallTarget,
+        caller_file: &str,
+    ) -> Option<String> {
+        // Language servers provide the declaration file and line. Prefer that
+        // precise identity over a name lookup: Go permits the same method name
+        // on many receiver types, including within one file.
+        if !call.file.is_empty() {
+            return self.resolve_location_named(&call.file, call.line, Some(&call.name));
+        }
+
+        let prefer_file = if call.file.is_empty() {
+            caller_file
+        } else {
+            &call.file
+        };
+
+        // Strategy 1: exact qualified name.
+        if let Some(entries) = self.symbol_index.get(&call.qualified_name)
+            && let Some(sk) = pick_best_match(entries, prefer_file)
+        {
+            return Some(sk);
+        }
+
+        // Strategy 2: file-scoped name.
+        if !call.file.is_empty() {
+            let file_scoped = format!("{}::{}", call.file, call.name);
+            if let Some(entries) = self.symbol_index.get(&file_scoped)
+                && let Some(sk) = pick_best_match(entries, &call.file)
+            {
+                return Some(sk);
+            }
+        }
+
+        // Strategy 3: same-file name.
+        let same_file = format!("{}::{}", caller_file, call.name);
+        if let Some(entries) = self.symbol_index.get(&same_file)
+            && let Some(sk) = pick_best_match(entries, caller_file)
+        {
+            return Some(sk);
+        }
+
+        // Strategy 4: bare name.
+        if let Some(entries) = self.symbol_index.get(&call.name)
+            && let Some(sk) = pick_best_match(entries, prefer_file)
+        {
+            return Some(sk);
+        }
+
+        None
+    }
+
+    /// Resolve a trait name to a symbol key.
+    fn resolve_trait(&self, trait_name: &str, prefer_file: &str) -> Option<String> {
+        if let Some(entries) = self.symbol_index.get(trait_name) {
+            return pick_best_match(entries, prefer_file);
+        }
+        None
+    }
+
+    fn resolve_location(&self, file: &str, line: u32) -> Option<String> {
+        self.resolve_location_named(file, line, None)
+    }
+
+    fn resolve_location_named(
+        &self,
+        file: &str,
+        line: u32,
+        expected_name: Option<&str>,
+    ) -> Option<String> {
+        let (actual_path, extraction) = self.find_file(file)?;
+        let name_matches = |symbol: &&super::symbols::ExtractedSymbol| {
+            expected_name.is_none_or(|name| symbol.name == name)
+        };
+        let symbol = extraction
+            .symbols
+            .iter()
+            .filter(name_matches)
+            .find(|symbol| symbol.start_line == line)
+            .or_else(|| {
+                extraction
+                    .symbols
+                    .iter()
+                    .filter(name_matches)
+                    .filter(|symbol| symbol.start_line <= line && line <= symbol.end_line)
+                    .min_by_key(|symbol| symbol.end_line - symbol.start_line)
+            })?;
+        let file_key = keys::file_key(actual_path);
+        Some(keys::symbol_key(
+            &file_key,
+            &symbol.qualified_name,
+            symbol.start_line as usize + 1,
+        ))
+    }
+
+    fn find_file(&self, file: &str) -> Option<(&String, &FileExtraction)> {
+        if let Some(exact) = self.file_data.get_key_value(file) {
+            return Some(exact);
+        }
+
+        // Compatibility for language servers that return a shorter relative
+        // path. Only accept a component-wise suffix when it is unique; shared
+        // suffixes such as `pkg/run.go` must never select an arbitrary module.
+        let suffix = Path::new(file);
+        let mut matches = self
+            .file_data
+            .iter()
+            .filter(|(path, _)| Path::new(path).ends_with(suffix));
+        let candidate = matches.next()?;
+        matches.next().is_none().then_some(candidate)
+    }
+}
+
+/// Pick the best symbol key from candidates, preferring same-file matches.
+fn pick_best_match(entries: &[(String, String)], prefer_file: &str) -> Option<String> {
+    if entries.is_empty() {
+        return None;
+    }
+    // Prefer same-file match.
+    for (rel_path, sk) in entries {
+        if rel_path == prefer_file {
+            return Some(sk.clone());
+        }
+    }
+    // A unique cross-file candidate is safe; multiple candidates are
+    // ambiguous and should be dropped rather than turned into a wrong edge.
+    (entries.len() == 1).then(|| entries[0].1.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::symbols::{CallTarget, ExtractedSymbol, FileExtraction};
+    use super::*;
+
+    fn make_symbol(name: &str, kind: &str) -> ExtractedSymbol {
+        ExtractedSymbol {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind: kind.to_string(),
+            visibility: "pub".to_string(),
+            signature: String::new(),
+            start_line: 0,
+            end_line: 10,
+            parent_symbol: None,
+            impl_trait: None,
+            is_pyo3: false,
+            is_ffi: false,
+            is_unsafe: false,
+            derives: Vec::new(),
+            python_name: None,
+            calls: Vec::new(),
+        }
+    }
+
+    fn make_extraction(symbols: Vec<ExtractedSymbol>) -> FileExtraction {
+        FileExtraction {
+            symbols,
+            impl_blocks: Vec::new(),
+            implementations: Vec::new(),
+            pyo3_exports: Vec::new(),
+            ffi_boundaries: Vec::new(),
+            analyzed_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_defines_edges() {
+        let mut file_data = HashMap::new();
+        file_data.insert(
+            "src/lib.rs".to_string(),
+            make_extraction(vec![make_symbol("Config", "struct")]),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        let edges = resolver.build_edges();
+
+        let defines: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Defines)
+            .collect();
+        assert_eq!(defines.len(), 1);
+        assert!(defines[0].from.starts_with("codebase_files/"));
+        assert!(defines[0].to.starts_with("codebase_symbols/"));
+    }
+
+    #[test]
+    fn test_calls_edges() {
+        let mut file_data = HashMap::new();
+
+        let mut caller = make_symbol("main", "function");
+        caller.calls = vec![CallTarget {
+            qualified_name: "Config".to_string(),
+            name: "Config".to_string(),
+            file: "src/config.rs".to_string(),
+            line: 5,
+        }];
+
+        file_data.insert("src/main.rs".to_string(), make_extraction(vec![caller]));
+        file_data.insert(
+            "src/config.rs".to_string(),
+            make_extraction(vec![make_symbol("Config", "struct")]),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        let edges = resolver.build_edges();
+
+        let calls: Vec<_> = edges.iter().filter(|e| e.kind == EdgeKind::Calls).collect();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn call_location_disambiguates_same_named_go_methods() {
+        let mut first_run = make_symbol("Run", "method");
+        first_run.start_line = 10;
+        first_run.end_line = 12;
+        first_run.parent_symbol = Some("First".to_string());
+        let mut second_run = make_symbol("Run", "method");
+        second_run.start_line = 30;
+        second_run.end_line = 32;
+        second_run.parent_symbol = Some("Second".to_string());
+        let mut caller = make_symbol("Execute", "function");
+        caller.calls.push(CallTarget {
+            qualified_name: "Run".to_string(),
+            name: "Run".to_string(),
+            file: "module/pkg/worker.go".to_string(),
+            line: 30,
+        });
+
+        let mut file_data = HashMap::new();
+        file_data.insert(
+            "module/pkg/worker.go".to_string(),
+            make_extraction(vec![first_run, second_run]),
+        );
+        file_data.insert(
+            "module/pkg/caller.go".to_string(),
+            make_extraction(vec![caller]),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "gopls");
+        let calls: Vec<_> = resolver
+            .build_edges()
+            .into_iter()
+            .filter(|edge| edge.kind == EdgeKind::Calls)
+            .collect();
+        let file_key = keys::file_key("module/pkg/worker.go");
+        let expected = keys::symbol_key(&file_key, "Run", 31);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].to, format!("codebase_symbols/{expected}"));
+    }
+
+    #[test]
+    fn ambiguous_file_suffix_does_not_emit_call_edge() {
+        let mut target_a = make_symbol("Run", "method");
+        target_a.start_line = 5;
+        target_a.end_line = 7;
+        let target_b = target_a.clone();
+        let mut caller = make_symbol("Execute", "function");
+        caller.calls.push(CallTarget {
+            qualified_name: "Run".to_string(),
+            name: "Run".to_string(),
+            file: "pkg/run.go".to_string(),
+            line: 5,
+        });
+
+        let mut file_data = HashMap::new();
+        file_data.insert(
+            "module_a/pkg/run.go".to_string(),
+            make_extraction(vec![target_a]),
+        );
+        file_data.insert(
+            "module_b/pkg/run.go".to_string(),
+            make_extraction(vec![target_b]),
+        );
+        file_data.insert("caller.go".to_string(), make_extraction(vec![caller]));
+
+        let resolver = LspEdgeResolver::new(file_data, "gopls");
+        assert!(
+            resolver
+                .build_edges()
+                .iter()
+                .all(|edge| edge.kind != EdgeKind::Calls)
+        );
+    }
+
+    #[test]
+    fn exact_workspace_path_wins_when_crates_share_a_suffix() {
+        let mut target = make_symbol("target", "function");
+        target.start_line = 5;
+        target.end_line = 7;
+        let mut caller = make_symbol("caller", "function");
+        caller.start_line = 20;
+        caller.end_line = 22;
+        caller.calls.push(CallTarget {
+            qualified_name: "target".to_string(),
+            name: "target".to_string(),
+            file: "crates/core/src/lib.rs".to_string(),
+            line: 5,
+        });
+
+        let mut file_data = HashMap::new();
+        file_data.insert(
+            "crates/core/src/lib.rs".to_string(),
+            make_extraction(vec![target, caller]),
+        );
+        file_data.insert(
+            "crates/proto/src/lib.rs".to_string(),
+            make_extraction(Vec::new()),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        assert_eq!(
+            resolver
+                .build_edges()
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Calls)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_pyo3_is_attribute_not_edge() {
+        // PyO3 exposure is a symbol attribute, not an edge (ontology D5).
+        let mut file_data = HashMap::new();
+        let mut sym = make_symbol("my_func", "function");
+        sym.is_pyo3 = true;
+        sym.python_name = Some("my_func".to_string());
+        file_data.insert("src/lib.rs".to_string(), make_extraction(vec![sym]));
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        let edges = resolver.build_edges();
+
+        // Should only have a "defines" edge, no pyo3 self-edge.
+        assert!(edges.iter().all(|e| e.kind == EdgeKind::Defines));
+        // PyO3 info lives on the symbol document instead.
+        let docs = resolver.build_symbol_documents();
+        assert!(docs[0].is_pyo3);
+    }
+
+    #[test]
+    fn test_implements_edge() {
+        let mut file_data = HashMap::new();
+
+        let trait_sym = make_symbol("Display", "interface");
+        let mut method = make_symbol("fmt", "method");
+        method.impl_trait = Some("Display".to_string());
+        method.parent_symbol = Some("Config".to_string());
+
+        file_data.insert(
+            "src/lib.rs".to_string(),
+            make_extraction(vec![trait_sym, method]),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        let edges = resolver.build_edges();
+
+        let implements: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1);
+    }
+
+    #[test]
+    fn test_symbol_documents() {
+        let mut file_data = HashMap::new();
+        file_data.insert(
+            "src/lib.rs".to_string(),
+            make_extraction(vec![
+                make_symbol("Config", "struct"),
+                make_symbol("new", "function"),
+            ]),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        let docs = resolver.build_symbol_documents();
+        assert_eq!(docs.len(), 2);
+        assert!(docs.iter().all(|d| !d.key.is_empty()));
+
+        // #124: every symbol must carry a non-null file_key equal to
+        // file_key(file_path), and the document _key must be prefixed by it.
+        let expected_fk = keys::file_key("src/lib.rs");
+        assert_eq!(expected_fk, "src_lib_rs");
+        for d in &docs {
+            assert_eq!(d.file_key, expected_fk);
+            assert_eq!(d.file_key, keys::file_key(&d.file_path));
+            assert!(d.key.starts_with(&expected_fk));
+        }
+    }
+
+    #[test]
+    fn test_edge_deduplication() {
+        let mut file_data = HashMap::new();
+        file_data.insert(
+            "src/lib.rs".to_string(),
+            make_extraction(vec![make_symbol("Config", "struct")]),
+        );
+
+        let resolver = LspEdgeResolver::new(file_data, "rust-analyzer");
+        let edges = resolver.build_edges();
+
+        // Only one defines edge for Config.
+        let defines: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Defines)
+            .collect();
+        assert_eq!(defines.len(), 1);
+    }
+
+    #[test]
+    fn test_edge_kind_collection_names() {
+        assert_eq!(EdgeKind::Defines.collection(), "codebase_defines_edges");
+        assert_eq!(EdgeKind::Calls.collection(), "codebase_calls_edges");
+        assert_eq!(
+            EdgeKind::Implements.collection(),
+            "codebase_implements_edges"
+        );
+        assert_eq!(EdgeKind::Imports.collection(), "codebase_imports_edges");
+    }
+}
