@@ -750,6 +750,22 @@ pub async fn run(
     Ok(())
 }
 
+/// One unit of text handed to the embedder in a single forward pass.
+///
+/// A file smaller than the model's context window is one window. A larger file
+/// is split into several, which is the pre-chunking escape hatch: chunk
+/// boundaries inside a window keep their AST alignment, so only the seams
+/// between windows lose cross-chunk context.
+struct EmbedWindow {
+    /// The window's source text, sent to the embedder whole.
+    text: String,
+    /// Chunk boundaries as character ranges relative to `text`, not the file.
+    boundaries: Vec<(usize, usize)>,
+    /// Index of this window's first chunk within the file, used to map
+    /// per-window chunk positions back to file-order indices.
+    first_chunk_index: usize,
+}
+
 // ── Collection setup ────────────────────────────────────────────────────
 
 /// Ensure all codebase collections, named graph, and indices exist.
@@ -1485,7 +1501,7 @@ async fn ingest_file(
             // loudly rather than silently dropping chunks.
             const WINDOW_CHARS: usize = 12_000;
 
-            let mut windows: Vec<(String, Vec<(usize, usize)>, usize)> = Vec::new();
+            let mut windows: Vec<EmbedWindow> = Vec::new();
             let mut cur: Vec<(usize, usize)> = Vec::new();
             let mut cur_start = 0usize;
             let mut first_index = 0usize;
@@ -1497,11 +1513,11 @@ async fn ingest_file(
                 let would_span = c.end_char.saturating_sub(cur_start);
                 if !cur.is_empty() && would_span > WINDOW_CHARS {
                     let end = chunks[first_index + cur.len() - 1].end_char;
-                    windows.push((
-                        source[cur_start..end.min(source.len())].to_string(),
-                        std::mem::take(&mut cur),
-                        first_index,
-                    ));
+                    windows.push(EmbedWindow {
+                        text: source[cur_start..end.min(source.len())].to_string(),
+                        boundaries: std::mem::take(&mut cur),
+                        first_chunk_index: first_index,
+                    });
                     cur_start = c.start_char;
                     first_index = i;
                 }
@@ -1513,11 +1529,11 @@ async fn ingest_file(
             }
             if !cur.is_empty() {
                 let end = chunks[first_index + cur.len() - 1].end_char;
-                windows.push((
-                    source[cur_start..end.min(source.len())].to_string(),
-                    cur,
-                    first_index,
-                ));
+                windows.push(EmbedWindow {
+                    text: source[cur_start..end.min(source.len())].to_string(),
+                    boundaries: cur,
+                    first_chunk_index: first_index,
+                });
             }
             if windows.len() > 1 {
                 debug!(
@@ -1527,9 +1543,9 @@ async fn ingest_file(
                 );
             }
 
-            let texts: Vec<String> = windows.iter().map(|w| w.0.clone()).collect();
+            let texts: Vec<String> = windows.iter().map(|w| w.text.clone()).collect();
             let bounds: Vec<Vec<(usize, usize)>> =
-                windows.iter().map(|w| w.1.clone()).collect();
+                windows.iter().map(|w| w.boundaries.clone()).collect();
 
             match emb.embed_late_chunked(&texts, "code", &bounds).await {
                 Ok(embed_result) => {
@@ -1540,7 +1556,7 @@ async fn ingest_file(
                             .iter()
                             .enumerate()
                             .flat_map(|(w, vecs)| {
-                                let base = windows[w].2;
+                                let base = windows[w].first_chunk_index;
                                 vecs.iter().map(move |v| (base + v.chunk_index, v))
                             })
                             .collect();

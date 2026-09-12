@@ -426,16 +426,14 @@ impl EmbeddingClient {
             let resp = self
                 .request(Method::POST, "/embeddings", Some(&body))
                 .await?;
-            let data = resp["data"].as_array().ok_or_else(|| {
-                EmbeddingError::InvalidResponse("missing 'data' array".into())
-            })?;
+            let data = resp["data"]
+                .as_array()
+                .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'data' array".into()))?;
 
             for item in data {
                 let embedding: Vec<f32> = item["embedding"]
                     .as_array()
-                    .ok_or_else(|| {
-                        EmbeddingError::InvalidResponse("missing 'embedding'".into())
-                    })?
+                    .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'embedding'".into()))?
                     .iter()
                     .map(|v| v.as_f64().unwrap_or(0.0) as f32)
                     .collect();
