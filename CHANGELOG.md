@@ -107,6 +107,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- CI now passes. `clippy::result_large_err` fires on every tonic-generated
+  client and server method, because `tonic::Status` is 176 bytes and each
+  returns `Result<_, tonic::Status>`. Allowed at the `hades-proto` crate root,
+  since the signatures are generated and the lint's suggested fix is not
+  available. It started failing when the stable toolchain moved to 1.98, which
+  is also why a local run on 1.97 passes while CI does not.
+
 - `codebase drift` reported one tree's file nodes as `stale` for another,
   on a delete path. File keys are relative to the ingest root, so they
   carry no evidence of which tree produced them, and the graph side of
