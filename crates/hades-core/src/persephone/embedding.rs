@@ -362,6 +362,106 @@ impl EmbeddingClient {
     /// Sends `POST {base}/embeddings` in the OpenAI-compatible shape:
     /// `{"model": ..., "input": [...]}`. The HADES-specific `task` hint
     /// (e.g. `"retrieval.query"`, `"retrieval.passage"` for Jina V4) and
+    /// Embed each input in ONE forward pass, pooling per supplied boundary.
+    ///
+    /// This is late chunking. Contrast [`Self::embed`], which sends chunks as
+    /// separate inputs so each is encoded blind to the rest of its document.
+    /// Here the whole text is encoded once and chunk vectors are pooled from
+    /// that single pass, so every vector carries the surrounding context.
+    ///
+    /// `boundaries` are character ranges, one list per input. Pass AST
+    /// definition spans or document sections to keep chunks aligned to
+    /// meaningful units. The server maps them to token spans and returns the
+    /// character ranges back, so symbol intersection still works.
+    ///
+    /// Pooling happens server-side deliberately: token-level embeddings are
+    /// `seq_len x 2048`, roughly 120 MB per long document in float32, which
+    /// should not cross the wire.
+    ///
+    /// Each input must fit the model's context window. Pre-chunking at
+    /// section boundaries is the escape hatch for documents that exceed it.
+    pub async fn embed_late_chunked(
+        &self,
+        texts: &[String],
+        task: &str,
+        boundaries: &[Vec<(usize, usize)>],
+    ) -> Result<LateChunkEmbedResult, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(LateChunkEmbedResult {
+                per_input: Vec::new(),
+                model: self.config.model.clone(),
+                dimension: 0,
+                duration_ms: 0,
+            });
+        }
+        if boundaries.len() != texts.len() {
+            return Err(EmbeddingError::InvalidResponse(format!(
+                "boundaries has {} entries for {} inputs",
+                boundaries.len(),
+                texts.len()
+            )));
+        }
+
+        let mut per_input: Vec<Vec<LateChunkVector>> = vec![Vec::new(); texts.len()];
+        let mut dimension = 0u32;
+        let started = std::time::Instant::now();
+
+        // One request per input. Each yields its own number of chunks, and
+        // batching them would only obscure which vectors belong to which text.
+        for (i, text) in texts.iter().enumerate() {
+            let bounds: Vec<[usize; 2]> = boundaries[i].iter().map(|(s, e)| [*s, *e]).collect();
+            if bounds.is_empty() {
+                continue;
+            }
+            let mut body = serde_json::json!({
+                "model": self.config.model,
+                "input": [text],
+                "encoding_format": "float",
+                "late_chunk": { "boundaries": bounds },
+            });
+            if !task.is_empty() {
+                body["task"] = serde_json::json!(task);
+            }
+
+            let resp = self
+                .request(Method::POST, "/embeddings", Some(&body))
+                .await?;
+            let data = resp["data"].as_array().ok_or_else(|| {
+                EmbeddingError::InvalidResponse("missing 'data' array".into())
+            })?;
+
+            for item in data {
+                let embedding: Vec<f32> = item["embedding"]
+                    .as_array()
+                    .ok_or_else(|| {
+                        EmbeddingError::InvalidResponse("missing 'embedding'".into())
+                    })?
+                    .iter()
+                    .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                    .collect();
+                if dimension == 0 {
+                    dimension = embedding.len() as u32;
+                }
+                per_input[i].push(LateChunkVector {
+                    embedding,
+                    chunk_index: item["chunk_index"].as_u64().unwrap_or(0) as usize,
+                    char_start: item["char_start"].as_u64().unwrap_or(0) as usize,
+                    char_end: item["char_end"].as_u64().unwrap_or(0) as usize,
+                });
+            }
+            // The server may return chunks out of order under concurrency;
+            // sort so callers can rely on positional alignment.
+            per_input[i].sort_by_key(|c| c.chunk_index);
+        }
+
+        Ok(LateChunkEmbedResult {
+            per_input,
+            model: self.config.model.clone(),
+            dimension,
+            duration_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
     /// `batch_size` are sent as non-standard top-level fields — engines
     /// that don't understand them ignore them.
     async fn embed_single_request(
@@ -650,6 +750,29 @@ fn parse_endpoint(endpoint_str: &str) -> Result<EmbeddingEndpoint, EmbeddingErro
 
 /// Result of an embedding operation.
 #[derive(Debug, Clone)]
+/// One late-chunked vector and where it came from in the source text.
+pub struct LateChunkVector {
+    /// The pooled, L2-normalized embedding.
+    pub embedding: Vec<f32>,
+    /// Position of this chunk within its input.
+    pub chunk_index: usize,
+    /// Character range over the original input.
+    ///
+    /// Character ranges rather than token indices, because callers intersect
+    /// chunks with symbol spans and token positions cannot express that.
+    pub char_start: usize,
+    pub char_end: usize,
+}
+
+/// Result of a late-chunked embed: per input, the chunks it produced.
+pub struct LateChunkEmbedResult {
+    /// One entry per input text, in input order.
+    pub per_input: Vec<Vec<LateChunkVector>>,
+    pub model: String,
+    pub dimension: u32,
+    pub duration_ms: u64,
+}
+
 pub struct EmbedResult {
     /// Embedding vectors, one per input text.
     pub embeddings: Vec<Vec<f32>>,

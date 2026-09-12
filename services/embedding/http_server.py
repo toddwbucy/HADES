@@ -60,12 +60,53 @@ class EmbedRequest(BaseModel):
         default=None,
         description="Server-side batch size override",
     )
+    late_chunk: Optional["LateChunkSpec"] = Field(
+        default=None,
+        description=(
+            "Enable late chunking. Each input is encoded in ONE pass and then "
+            "pooled per chunk, so every chunk vector is conditioned on the "
+            "surrounding document. Returns N vectors per input rather than 1."
+        ),
+    )
+
+
+class LateChunkSpec(BaseModel):
+    """Late-chunking parameters.
+
+    Pooling happens server-side on purpose. Token-level embeddings are
+    seq_len x 2048, so a 15,000-token document is roughly 120 MB in float32
+    before pooling, which cannot sensibly cross the wire as JSON. Sending the
+    text and receiving pooled chunk vectors keeps the response small and puts
+    the arithmetic next to the model that produced the tokens.
+    """
+
+    chunk_size_tokens: int = Field(default=500, gt=0)
+    overlap_tokens: int = Field(default=200, ge=0)
+    boundaries: Optional[list[tuple[int, int]]] = Field(
+        default=None,
+        description=(
+            "Character ranges over the input to pool at, e.g. AST definition "
+            "spans or document sections. Keeps chunks aligned to meaningful "
+            "units instead of arbitrary token windows. Omit for uniform "
+            "windows of chunk_size_tokens."
+        ),
+    )
 
 
 class EmbedItem(BaseModel):
     object: str = "embedding"
     embedding: list[float]
     index: int
+    # Late chunking only. `index` stays the input's position so OpenAI-shaped
+    # clients keep working; these say which chunk of that input this is and
+    # which token range it covers.
+    chunk_index: Optional[int] = None
+    token_start: Optional[int] = None
+    token_end: Optional[int] = None
+    # Character range over the original input. Callers need this to intersect
+    # a chunk with symbol spans; token indices cannot express that.
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
 
 
 class Usage(BaseModel):
@@ -256,12 +297,38 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
         # Inference is sync (PyTorch); run in the default executor pool to
         # avoid blocking the event loop. Don't share a future across requests
         # — each call creates its own.
-        vectors = await loop.run_in_executor(
-            None,
-            lambda: state.embedder.embed_texts(
-                texts, task=task, batch_size=batch_override
-            ),
-        )
+        if req.late_chunk is not None:
+            # Late chunking: one forward pass per input, pooled per chunk, so
+            # each vector carries the surrounding document's context. Inputs
+            # are handled one at a time because each yields its own number of
+            # chunks and its own token spans.
+            lc = req.late_chunk
+
+            def _late() -> tuple[list, list]:
+                vecs: list = []
+                meta: list = []
+                for i, text in enumerate(texts):
+                    m, spans = state.embedder.embed_late_chunked(
+                        text,
+                        task=task,
+                        chunk_size_tokens=lc.chunk_size_tokens,
+                        overlap_tokens=lc.overlap_tokens,
+                        boundaries=lc.boundaries,
+                    )
+                    for c, (s, e, cs, ce) in enumerate(spans[: len(m)]):
+                        vecs.append(m[c])
+                        meta.append((i, c, s, e, cs, ce))
+                return vecs, meta
+
+            vectors, late_meta = await loop.run_in_executor(None, _late)
+        else:
+            late_meta = None
+            vectors = await loop.run_in_executor(
+                None,
+                lambda: state.embedder.embed_texts(
+                    texts, task=task, batch_size=batch_override
+                ),
+            )
     except ValueError as e:
         # `JinaV4Embedder.embed_texts` raises ValueError for invalid
         # batch_size; surface that as a 400 not a 500.
@@ -278,10 +345,27 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
         "Embed: %d texts, task=%s, %dms", len(texts), task, duration_ms
     )
 
-    items = [
-        EmbedItem(embedding=row.tolist(), index=i)
-        for i, row in enumerate(vectors)
-    ]
+    if late_meta is not None:
+        # `index` stays the input's position so OpenAI-shaped clients still
+        # read it correctly; chunk_index and the token span say which slice of
+        # that input this vector covers.
+        items = [
+            EmbedItem(
+                embedding=row.tolist(),
+                index=inp_i,
+                chunk_index=chunk_i,
+                token_start=ts,
+                token_end=te,
+                char_start=cs,
+                char_end=ce,
+            )
+            for row, (inp_i, chunk_i, ts, te, cs, ce) in zip(vectors, late_meta)
+        ]
+    else:
+        items = [
+            EmbedItem(embedding=row.tolist(), index=i)
+            for i, row in enumerate(vectors)
+        ]
     return EmbedResponse(
         data=items,
         model=state.embedder.model_name,

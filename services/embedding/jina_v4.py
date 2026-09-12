@@ -155,6 +155,12 @@ class JinaV4Embedder:
         )
 
         self._load_lock = threading.Lock()
+        # HuggingFace's fast tokenizer is Rust-backed and NOT thread-safe:
+        # concurrent calls raise "RuntimeError: Already borrowed". The HTTP
+        # server runs inference in a thread pool, so two overlapping requests
+        # collide. Serializing is correct regardless, since the GPU is a single
+        # resource and parallel forward passes only contend for it.
+        self._infer_lock = threading.Lock()
         self._model = None
         self._tokenizer = None
 
@@ -332,6 +338,172 @@ class JinaV4Embedder:
         if all_embeddings:
             return np.vstack(all_embeddings).astype(np.float32, copy=False)
         return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+
+    def embed_late_chunked(
+        self,
+        text: str,
+        task: str = "retrieval.passage",
+        chunk_size_tokens: int = 500,
+        overlap_tokens: int = 200,
+        boundaries: list[tuple[int, int]] | None = None,
+    ) -> tuple[np.ndarray, list[tuple[int, int, int, int]]]:
+        """Encode `text` in ONE pass, then pool per chunk (late chunking).
+
+        The whole document is encoded once, so every chunk vector is
+        conditioned on the surrounding document. Contrast `embed_texts`, which
+        encodes each chunk independently and loses that context entirely.
+
+        **Pools `vlm_last_hidden_states`, not `multi_vec_emb`.** The model's own
+        single-vector path is mean-pooling over the sequence followed by L2
+        normalisation:
+
+            pooled = sum(hidden * mask) / sum(mask);  normalize(pooled)
+
+        Doing that over a chunk's token range instead of the whole sequence
+        puts the result in the *same vector space* as every single-vector
+        embedding, so late-chunked and whole-document vectors stay comparable.
+        `multi_vec_emb` passes through `multi_vector_projector` into a
+        ColBERT-style late-interaction space and is NOT interchangeable.
+
+        `hidden_states` is computed on every forward pass regardless, since
+        both pooling paths consume it. It simply has to be requested back with
+        output_vlm_last_hidden_states.
+
+        `boundaries` are character ranges over `text`. Pass them to pool at
+        meaningful places — AST definitions, document sections — instead of
+        arbitrary token windows. This is what lets a code ingest keep chunks
+        aligned to symbols while still gaining whole-file context. Ranges are
+        mapped to token spans through the fast tokenizer's offset mapping.
+        Omit them to fall back to uniform windows of `chunk_size_tokens`.
+
+        Returns the `[num_chunks, 2048]` matrix and, per chunk,
+        `(token_start, token_end, char_start, char_end)`. Character ranges are
+        returned because callers need them to intersect chunks with symbol
+        spans, which token indices cannot express.
+
+        Callers must keep `text` within max_sequence_length. Pre-chunking at
+        section boundaries is the escape hatch for documents that exceed it.
+        """
+        if chunk_size_tokens <= 0:
+            raise ValueError(f"chunk_size_tokens must be positive, got {chunk_size_tokens}")
+        if overlap_tokens < 0 or overlap_tokens >= chunk_size_tokens:
+            raise ValueError(
+                f"overlap_tokens must be in [0, chunk_size_tokens), got {overlap_tokens}"
+            )
+
+        model = self.model
+        task_label = _TASK_TO_ADAPTER.get(task, "retrieval")
+
+        # **The prefix is not optional.** The normal path calls
+        # encode_text(prompt_name=...), and the model's processor prepends
+        # "Passage: " or "Query: " before tokenizing. Embedding raw text here
+        # instead put late-chunked vectors at cosine 0.978 against the
+        # single-vector path for identical input, so they were systematically
+        # offset from everything already stored. Same prefix, same space.
+        prefix = "Query" if task == "retrieval.query" else "Passage"
+        prefixed = f"{prefix}: {text}"
+        # Tokens the prefix occupies, so reported spans stay relative to the
+        # document rather than to the prefixed string a caller never sent.
+        prefix_len = len(self.tokenizer(f"{prefix}: ", add_special_tokens=False)["input_ids"])
+
+        with self._infer_lock, torch.no_grad():
+            encoded = self.tokenizer(
+                [prefixed],
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=MAX_TOKENS,
+                return_offsets_mapping=True,
+            )
+            # offset_mapping is not a model input; keep it here and strip it.
+            offsets = encoded.pop("offset_mapping")[0].tolist()
+            inputs = encoded.to(self._device)
+
+            outputs = model(
+                **inputs,
+                task_label=task_label,
+                output_vlm_last_hidden_states=True,
+            )
+            hidden = outputs.vlm_last_hidden_states
+            if hidden is None:
+                raise AttributeError(
+                    "model did not return vlm_last_hidden_states; late chunking "
+                    "requires it and cannot fall back to single_vec_emb"
+                )
+
+            mask = inputs["attention_mask"][0]           # [seq]
+            hidden = hidden[0]                            # [seq, dim]
+            n_tokens = int(mask.sum().item())
+
+            # Chunk over document tokens only, skipping the prefix, but pool
+            # from the full hidden states so each chunk still sees the whole
+            # encoded sequence around it.
+            prefix_chars = len(f"{prefix}: ")
+            spans: list[tuple[int, int]] = []
+            if boundaries:
+                # Map each character range to the tokens covering it. A token
+                # counts as inside when it overlaps the range at all, so a
+                # boundary landing mid-token still captures that token.
+                unmapped: list[tuple[int, int]] = []
+                for c_start, c_end in boundaries:
+                    ps, pe = c_start + prefix_chars, c_end + prefix_chars
+                    toks = [
+                        i
+                        for i, (ts, te) in enumerate(offsets)
+                        if i < n_tokens and te > ts and ts < pe and te > ps
+                    ]
+                    if toks:
+                        spans.append((toks[0], toks[-1] + 1))
+                    else:
+                        unmapped.append((c_start, c_end))
+
+                # **Refuse rather than silently drop.** A boundary maps to no
+                # tokens when the input was truncated at max_length, so the
+                # caller sent more text than the context window holds. Skipping
+                # those quietly returns fewer vectors than boundaries and the
+                # caller has no way to notice: chunks end up stored with no
+                # embedding and are silently unsearchable.
+                if unmapped:
+                    raise ValueError(
+                        f"{len(unmapped)} of {len(boundaries)} boundaries mapped to no "
+                        f"tokens, so the input exceeded the {MAX_TOKENS}-token window "
+                        f"and was truncated. First unmapped char range: {unmapped[0]}. "
+                        f"Send smaller windows."
+                    )
+            else:
+                step = chunk_size_tokens - overlap_tokens
+                start = prefix_len
+                while start < n_tokens:
+                    end = min(start + chunk_size_tokens, n_tokens)
+                    spans.append((start, end))
+                    if end >= n_tokens:
+                        break
+                    start += step
+
+            vectors = []
+            for s, e in spans:
+                span_mask = mask[s:e].unsqueeze(-1)
+                denom = span_mask.sum()
+                if denom.item() == 0:
+                    continue
+                pooled = (hidden[s:e] * span_mask).sum(dim=0) / denom
+                vectors.append(torch.nn.functional.normalize(pooled, dim=-1))
+
+            if not vectors:
+                return np.empty((0, EMBEDDING_DIM), dtype=np.float32), []
+            stacked = torch.stack(vectors)
+
+        # Report spans relative to the document, not the prefixed string, and
+        # include character ranges so callers can intersect with symbol spans.
+        out_spans: list[tuple[int, int, int, int]] = []
+        for s, e in spans[: len(vectors)]:
+            c_start = max(0, offsets[s][0] - prefix_chars) if s < len(offsets) else 0
+            c_end = max(0, offsets[e - 1][1] - prefix_chars) if e - 1 < len(offsets) else 0
+            # Clamp at zero: a prefix token can overlap the document's first
+            # character (the tokenizer may merge ": " with what follows), which
+            # would otherwise report a negative document-relative index.
+            out_spans.append((max(0, s - prefix_len), max(0, e - prefix_len), c_start, c_end))
+        return self._to_numpy(stacked), out_spans
 
     def _embed_batch(self, batch: list[str], task: str) -> np.ndarray:
         """Embed a single batch, choosing the best available API."""

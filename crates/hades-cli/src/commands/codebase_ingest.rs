@@ -1421,20 +1421,134 @@ async fn ingest_file(
     // from a previous run (which embed outdated text) don't linger.
     delete_file_embeddings(db, &fkey).await;
 
-    // Embed chunks (skipped if embedder is unavailable).
-    let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+    // Embed with LATE CHUNKING: encode each window of the file in one pass and
+    // pool per AST boundary, so every chunk vector is conditioned on the code
+    // around it. Embedding chunks independently (the previous behaviour) threw
+    // that context away — the model computes token-level states either way, so
+    // it cost nothing and gained nothing.
+    //
+    // Files larger than the model's context window are pre-chunked first: the
+    // AST chunks are grouped into windows that fit, and each window is encoded
+    // whole. Boundaries within a window keep their AST alignment, so symbol
+    // intersection is unaffected. This is the escape hatch, not the norm.
+    // Escape hatch, and what makes the two strategies comparable: with this
+    // set, chunks are embedded independently as before. Useful if late
+    // chunking ever misbehaves, and required to A/B the two on one corpus.
+    let late_chunking_disabled = std::env::var("HADES_DISABLE_LATE_CHUNKING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     let (embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
-        Some(emb) if !chunk_texts.is_empty() => {
+        Some(emb) if !chunks.is_empty() && late_chunking_disabled => {
+            let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
             match emb
                 .embed(&chunk_texts, "code", Some(config.embedding.batch.size))
                 .await
             {
-                Ok(embed_result) => {
-                    let docs = embed_result
-                        .embeddings
+                Ok(r) => (
+                    r.embeddings
                         .iter()
                         .enumerate()
                         .map(|(i, vec)| {
+                            let ckey = keys::chunk_key(&fkey, i);
+                            json!({
+                                "_key": keys::embedding_key(&ckey),
+                                "chunk_key": ckey,
+                                "file_key": fkey,
+                                "embedding": vec,
+                                "model": r.model,
+                                "model_hash": keys::model_hash(&r.model),
+                                "dimension": r.dimension,
+                            })
+                        })
+                        .collect::<Vec<Value>>(),
+                    None,
+                ),
+                Err(e) => {
+                    warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
+                    (Vec::new(), Some(e.to_string()))
+                }
+            }
+        }
+        Some(emb) if !chunks.is_empty() => {
+            // Character budget per window, sized well below the server's token
+            // ceiling because characters are a poor proxy for tokens.
+            //
+            // 24_000 was the first attempt and it was too large: dense Rust
+            // tokenizes at roughly 1.5 chars per token, so a full window could
+            // exceed a 15_000-token context, get truncated, and leave the tail
+            // boundaries mapping to no tokens. Five chunks were stored with no
+            // embedding and nothing reported a failure.
+            //
+            // 12_000 leaves roughly 2x headroom at that density. The server now
+            // refuses truncated boundaries outright, so a bad value here fails
+            // loudly rather than silently dropping chunks.
+            const WINDOW_CHARS: usize = 12_000;
+
+            let mut windows: Vec<(String, Vec<(usize, usize)>, usize)> = Vec::new();
+            let mut cur: Vec<(usize, usize)> = Vec::new();
+            let mut cur_start = 0usize;
+            let mut first_index = 0usize;
+            for (i, c) in chunks.iter().enumerate() {
+                if cur.is_empty() {
+                    cur_start = c.start_char;
+                    first_index = i;
+                }
+                let would_span = c.end_char.saturating_sub(cur_start);
+                if !cur.is_empty() && would_span > WINDOW_CHARS {
+                    let end = chunks[first_index + cur.len() - 1].end_char;
+                    windows.push((
+                        source[cur_start..end.min(source.len())].to_string(),
+                        std::mem::take(&mut cur),
+                        first_index,
+                    ));
+                    cur_start = c.start_char;
+                    first_index = i;
+                }
+                // Boundaries are relative to the window, not the file.
+                cur.push((
+                    c.start_char.saturating_sub(cur_start),
+                    c.end_char.saturating_sub(cur_start),
+                ));
+            }
+            if !cur.is_empty() {
+                let end = chunks[first_index + cur.len() - 1].end_char;
+                windows.push((
+                    source[cur_start..end.min(source.len())].to_string(),
+                    cur,
+                    first_index,
+                ));
+            }
+            if windows.len() > 1 {
+                debug!(
+                    path = rel_path,
+                    windows = windows.len(),
+                    "file exceeds the context window, pre-chunked before late chunking"
+                );
+            }
+
+            let texts: Vec<String> = windows.iter().map(|w| w.0.clone()).collect();
+            let bounds: Vec<Vec<(usize, usize)>> =
+                windows.iter().map(|w| w.1.clone()).collect();
+
+            match emb.embed_late_chunked(&texts, "code", &bounds).await {
+                Ok(embed_result) => {
+                    // Flatten windows back to file-order chunk indices.
+                    let flat: Vec<(usize, &hades_core::persephone::embedding::LateChunkVector)> =
+                        embed_result
+                            .per_input
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(w, vecs)| {
+                                let base = windows[w].2;
+                                vecs.iter().map(move |v| (base + v.chunk_index, v))
+                            })
+                            .collect();
+                    let docs = flat
+                        .iter()
+                        .map(|(i, lcv)| {
+                            let i = *i;
+                            let vec = &lcv.embedding;
                             let ckey = keys::chunk_key(&fkey, i);
                             let ekey = keys::embedding_key(&ckey);
                             json!({
