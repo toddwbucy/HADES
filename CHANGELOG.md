@@ -134,6 +134,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   that existed only to convert a slice to an array. The two tensor readers
   gained the `len % 4` guard the export path already had: `as_chunks` drops a
   ragged tail silently, and these read a caller-supplied mmap.
+- CI actions are pinned to commit SHAs with a `permissions: contents: read`
+  block. A tag can be moved and a branch moves by design, so `@v4` or
+  `@master` let upstream change what runs here with no change landing in this
+  repository, and the drift job hands its token to a third-party action.
 - `ci.yml` reads the pinned toolchain from `rust-toolchain.toml` and asserts
   the running `rustc` matches it. It previously asked the action for `@stable`,
   so the pin held only by rustup's per-command override, and anything setting
