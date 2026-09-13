@@ -19,6 +19,19 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- `services/adapters/weavertools/write_graph.py`, the half of the conformance chain
+  that reaches a database. The extractor in that package computes assertions,
+  terms, axioms and the `cites` edges joining code to the documents claiming it,
+  and imports no database driver by design. Nothing consumed it, so `hades ingest`
+  produced code nodes and document nodes with no edge between them: a graph that
+  can find code and can find prose and cannot ask whether one satisfies the other.
+  The writer attaches each `cites` edge to the `codebase_files` node HADES already
+  created rather than to a private copy of the source list, so the result is one
+  graph instead of three collections sharing a database. Node kinds get one
+  collection each and relations one each, which is the notation the 2026-08-08
+  graph used. The extractor's notes land in `wt_ingest_report`, because 48 sources
+  owing a header and a malformed node id left in a terminal become a graph that
+  reads as complete.
 - The MCP server's `instructions`, which a client reads on `initialize` before it
   looks at any tool, now carry the three things that otherwise cost a round trip
   each: that `db_query` takes a collection *profile* and code and documents are
@@ -170,6 +183,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The routing table claimed `html`, `htm`, `csv`, `docx`, `pptx` and `xlsx` as
+  documents on the assumption that docling's unknown-format fallback would take
+  them. `docling_backend.py:122` refuses anything outside `{pdf, txt, text, md}`,
+  so 13 `.html` templates in a real corpus were claimed by the walk and then failed
+  extraction, turning a readable `unrouted` entry into a failed document in a
+  summary. The list is now what the service verifiably accepts: markdown and text
+  through the plain-read path, `pdf` through docling, `tex` and `gz` through the
+  LaTeX backend. Adding one back means teaching the extractor first.
 - The embed window is sized from the backend's reported ceiling instead of a
   constant, so the full context of whichever card the embedder is loaded on gets
   used. `WINDOW_CHARS = 12_000` was justified by a comment claiming dense Rust

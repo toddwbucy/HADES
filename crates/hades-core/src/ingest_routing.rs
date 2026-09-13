@@ -30,15 +30,23 @@ pub enum Route {
 
 /// Extensions the extraction service can turn into text.
 ///
-/// Mirrors `services/extraction/server.py`'s own table, which routes PDF to
-/// docling, `.tex` and `.gz` to the LaTeX backend, markdown and text to a plain
-/// read, and anything unknown to docling. Office formats are listed because
-/// docling handles them through that unknown-format fallback, so naming them
-/// here makes the routing visible instead of accidental.
-const DOCUMENT_EXTENSIONS: &[&str] = &[
-    "md", "markdown", "txt", "text", "rst", "pdf", "tex", "docx", "pptx", "xlsx", "html", "htm",
-    "csv",
-];
+/// This list is what the service *accepts*, verified against it rather than
+/// inferred from what docling can do in principle:
+///
+/// - `md`, `markdown`, `txt`, `text`, `rst` take the server's plain-read path
+/// - `pdf` goes to docling, whose `SUPPORTED_EXTENSIONS` is `{pdf, txt, text, md}`
+/// - `tex` and `gz` go to the LaTeX backend
+///
+/// **`html`, `htm`, `csv`, `docx`, `pptx` and `xlsx` were briefly listed here** on
+/// the assumption that docling's unknown-format fallback would take them. It does
+/// not: `docling_backend.py:122` returns "Unsupported format" for anything outside
+/// that four-extension set, and the 13 `.html` templates in one real corpus failed
+/// extraction after the walk had already claimed them. Claiming a file and failing
+/// it is worse than declining it, because `unrouted` is a list an operator reads
+/// while a failed document is a line in a summary.
+///
+/// Adding one back means teaching the extractor first and this table second.
+const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "text", "rst", "pdf", "tex", "gz"];
 
 /// Route one path by its extension.
 ///
@@ -86,12 +94,30 @@ mod tests {
             "README.md",
             "spec.markdown",
             "notes.txt",
+            "guide.rst",
             "paper.pdf",
             "paper.tex",
-            "report.docx",
-            "TABLE.CSV",
+            "arxiv.gz",
         ] {
             assert_eq!(route_for(&PathBuf::from(file)), Route::Document, "{file}");
+        }
+    }
+
+    /// Formats the extraction service refuses must be declined by the router,
+    /// not claimed and then failed. 13 `.html` templates in one corpus were
+    /// routed to extraction and came back "Unsupported format", which turns a
+    /// readable `unrouted` entry into a failed document in a summary.
+    #[test]
+    fn formats_the_extractor_refuses_are_not_claimed() {
+        for file in [
+            "templates/instrument.html",
+            "page.htm",
+            "table.csv",
+            "report.docx",
+            "deck.pptx",
+            "book.xlsx",
+        ] {
+            assert_eq!(route_for(&PathBuf::from(file)), Route::Unrouted, "{file}");
         }
     }
 
