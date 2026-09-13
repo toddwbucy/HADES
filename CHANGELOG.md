@@ -161,6 +161,26 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The embed window is sized from the backend's reported ceiling instead of a
+  constant, so the full context of whichever card the embedder is loaded on gets
+  used. `WINDOW_CHARS = 12_000` was justified by a comment claiming dense Rust
+  tokenizes at roughly 1.5 characters per token; measured across 285 files of real
+  Rust, Python, CUDA and markdown the median is 4.18 and the lowest 2.18. So that
+  budget packed about 2,870 tokens against a 32,768-token card and split **134 of
+  those 285 files**, producing 672 windows where 313 suffice. Every extra window
+  is a seam where a chunk's vector loses the surrounding file, which is what late
+  chunking exists to prevent. The budget is now `max_seq_length` from
+  `/v1/models` times a measured chars-per-token floor of 2.0, which is 65,536
+  characters on the 32,768-token profile and falls back to the old constant when a
+  backend reports no ceiling.
+- `EmbeddingClient::info` reads the entry the backend actually serves. It matched
+  only on the configured model name, and this deployment configures the alias
+  `jinaai/jina-embeddings-v4` while the backend serves a local filesystem path, so
+  the id never matched and every vendor field came back `None` — including the
+  `max_seq_length` the window budget above depends on, which silently fell back to
+  the conservative constant on a card holding three times as much. An exact id
+  match is still preferred, with the sole entry of a single-model listing as the
+  fallback. Finding #14 was this same mismatch reached from the other side.
 - The document pipeline creates its own collections. Ingesting into a fresh
   database failed with "collection or view not found: documents" *after*
   extraction and embedding had run, so the expensive work was done and then

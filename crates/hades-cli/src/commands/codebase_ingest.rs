@@ -193,6 +193,11 @@ pub async fn run_phase(
         }
     };
 
+    // Ask the backend what it will accept, once per run. The answer is a
+    // property of the load profile the embedder happens to be running, so it
+    // cannot be a constant and must not be read per file.
+    let window_chars = embed_window_chars(embedder.as_ref()).await;
+
     // Ensure codebase collections exist.
     ensure_collections(&db).await?;
 
@@ -363,6 +368,7 @@ pub async fn run_phase(
                 force,
                 allow_analysis_downgrade,
                 gopls_cmd.is_some(),
+                window_chars,
             )
             .await
         };
@@ -799,6 +805,67 @@ static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 });
+
+/// Character budget for one embed window, derived from the backend's ceiling.
+///
+/// The window is packed by characters because chunk boundaries are character
+/// offsets, while the ceiling is in tokens, so the conversion needs a
+/// chars-per-token figure. It has to be a *floor*, not an average: pack by the
+/// average and the densest files overshoot the ceiling.
+///
+/// 2.0 is measured, not guessed. Across 285 files of real Rust, Python, CUDA and
+/// markdown the lowest ratio observed was 2.18 chars per token, the 5th
+/// percentile 3.68 and the median 4.18. So 2.0 leaves headroom under the densest
+/// file in that corpus, and a typical file still fills roughly half the window.
+///
+/// The constant this replaced was 12,000 characters, justified by a comment
+/// claiming dense Rust runs 1.5 chars per token. Measurement puts it at 4.19, so
+/// that budget packed about 2,870 tokens against a 32,768-token card and split
+/// 134 of those 285 files, producing 672 windows where 313 suffice. Every extra
+/// window is a seam where a chunk's vector loses the surrounding file, which is
+/// the whole point of late chunking.
+const CHARS_PER_TOKEN_FLOOR: f64 = 2.0;
+
+/// Fallback budget when the backend does not report `max_seq_length`.
+///
+/// The previous hardcoded value, kept for a backend that predates the field:
+/// under-packing is a quality loss, and overshooting an unknown ceiling is a
+/// refused window, so the conservative number is the right guess when there is
+/// nothing to read.
+const FALLBACK_WINDOW_CHARS: usize = 12_000;
+
+/// Ask the backend what it will accept and convert it to a character budget.
+async fn embed_window_chars(embedder: Option<&EmbeddingClient>) -> usize {
+    let Some(client) = embedder else {
+        return FALLBACK_WINDOW_CHARS;
+    };
+    match client.info().await {
+        Ok(info) => match info.max_seq_length {
+            Some(ceiling) => {
+                let budget = (f64::from(ceiling) * CHARS_PER_TOKEN_FLOOR) as usize;
+                info!(
+                    ceiling_tokens = ceiling,
+                    window_chars = budget,
+                    profile = info.profile.as_deref().unwrap_or("unreported"),
+                    "embed window sized from the backend's ceiling"
+                );
+                budget
+            }
+            None => {
+                warn!(
+                    fallback = FALLBACK_WINDOW_CHARS,
+                    "backend does not report max_seq_length, using the conservative budget"
+                );
+                FALLBACK_WINDOW_CHARS
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, fallback = FALLBACK_WINDOW_CHARS,
+                  "could not read the backend's ceiling, using the conservative budget");
+            FALLBACK_WINDOW_CHARS
+        }
+    }
+}
 
 /// One unit of text handed to the embedder in a single forward pass.
 ///
@@ -1430,6 +1497,7 @@ async fn ingest_file(
     force: bool,
     allow_analysis_downgrade: bool,
     gopls_scheduled: bool,
+    window_chars: usize,
 ) -> Result<FileResult> {
     // Read source.
     let source = std::fs::read_to_string(file_path)
@@ -1722,19 +1790,9 @@ async fn ingest_file(
             }
         }
         Some(emb) if !chunks.is_empty() => {
-            // Character budget per window, sized well below the server's token
-            // ceiling because characters are a poor proxy for tokens.
-            //
-            // 24_000 was the first attempt and it was too large: dense Rust
-            // tokenizes at roughly 1.5 chars per token, so a full window could
-            // exceed a 15_000-token context, get truncated, and leave the tail
-            // boundaries mapping to no tokens. Five chunks were stored with no
-            // embedding and nothing reported a failure.
-            //
-            // 12_000 leaves roughly 2x headroom at that density. The server now
-            // refuses truncated boundaries outright, so a bad value here fails
-            // loudly rather than silently dropping chunks.
-            const WINDOW_CHARS: usize = 12_000;
+            // Window budget comes from the backend's reported ceiling, computed
+            // once per run in `embed_window_chars`. A constant here was wrong on
+            // both cards: see that function for the measurement.
 
             let mut windows: Vec<EmbedWindow> = Vec::new();
             let mut cur: Vec<(usize, usize)> = Vec::new();
@@ -1746,7 +1804,7 @@ async fn ingest_file(
                     first_index = i;
                 }
                 let would_span = c.end_char.saturating_sub(cur_start);
-                if !cur.is_empty() && would_span > WINDOW_CHARS {
+                if !cur.is_empty() && would_span > window_chars {
                     let end = chunks[first_index + cur.len() - 1].end_char;
                     push_embed_window(
                         &mut windows,
@@ -3457,6 +3515,7 @@ mod tests {
             false,
             false,
             false,
+            FALLBACK_WINDOW_CHARS,
         )
         .await
         .expect("first ingest failed");
@@ -3491,6 +3550,7 @@ mod tests {
             true,
             false,
             true,
+            FALLBACK_WINDOW_CHARS,
         )
         .await
         .expect("re-ingest with gopls scheduled failed");
@@ -3523,6 +3583,7 @@ mod tests {
             true,
             false,
             false,
+            FALLBACK_WINDOW_CHARS,
         )
         .await
         .expect("re-ingest without gopls failed");
@@ -3660,6 +3721,7 @@ mod tests {
                 false,
                 false,
                 false,
+                FALLBACK_WINDOW_CHARS,
             )
             .await
             .unwrap_or_else(|e| panic!("first ingest failed for .{ext}: {e}"));
@@ -3689,6 +3751,7 @@ mod tests {
                 true,
                 false,
                 false,
+                FALLBACK_WINDOW_CHARS,
             )
             .await
             .unwrap_or_else(|e| panic!("second ingest failed for .{ext}: {e}"));

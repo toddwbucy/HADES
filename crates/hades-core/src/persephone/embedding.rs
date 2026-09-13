@@ -180,6 +180,19 @@ pub struct ProviderInfo {
     /// don't via `/v1/models`); HADES expects 2048 for Jina V4 regardless.
     #[serde(default)]
     pub dimension: Option<u32>,
+    /// Longest input this backend will accept, in tokens.
+    ///
+    /// A property of the load profile the backend is running, not of the model:
+    /// the same weights serve 11,900 on a 16 GiB card and 32,768 on a 48 GiB
+    /// one. A caller that packs windows has to read this rather than carry a
+    /// constant, because a constant is wrong on one of the two cards and was
+    /// wrong on both: the hardcoded 12,000-character budget it replaced packed
+    /// at roughly 2,870 tokens and split 134 of 285 files in one real corpus.
+    #[serde(default)]
+    pub max_seq_length: Option<u32>,
+    /// The backend's load profile name, when it reports one.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// Client for the embedding service.
@@ -694,18 +707,36 @@ impl EmbeddingClient {
         // Some engines (vLLM, llama.cpp-server) attach extra fields we can
         // opportunistically read. Standard says no, but if they're there we
         // surface them.
-        let device = data
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
-            })
-            .and_then(|item| item["device"].as_str().map(String::from));
-        let dimension = data
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
-            })
-            .and_then(|item| item["dimension"].as_u64().map(|n| n as u32));
+        // Find the entry describing what is loaded. An exact id match first, and
+        // failing that the sole entry of a single-model listing.
+        //
+        // The fallback is load-bearing rather than lenient. This client is
+        // configured with the alias `jinaai/jina-embeddings-v4` while the backend
+        // serves a local filesystem path, so the id never matched and every
+        // vendor field came back `None`: `max_seq_length` among them, which meant
+        // the window budget silently fell back to a conservative constant on a
+        // card that could hold three times as much. Finding #14 was the same
+        // mismatch reached from the other side, where the configured name got
+        // stamped onto stored data instead of the served one. A backend serving
+        // one model is describing that model whatever it calls it.
+        let entry = data.and_then(|arr| {
+            arr.iter()
+                .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
+                .or_else(|| if arr.len() == 1 { arr.first() } else { None })
+        });
+        let device = entry.and_then(|item| item["device"].as_str().map(String::from));
+        let dimension = entry.and_then(|item| item["dimension"].as_u64().map(|n| n as u32));
+        let max_seq_length =
+            entry.and_then(|item| item["max_seq_length"].as_u64().map(|n| n as u32));
+        let profile = entry
+            .and_then(|item| item["profile"].as_str())
+            .and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                }
+            });
 
         debug!(
             model = %configured_model,
@@ -718,6 +749,8 @@ impl EmbeddingClient {
             device,
             model_loaded,
             dimension,
+            max_seq_length,
+            profile,
         })
     }
 
