@@ -1812,14 +1812,34 @@ async fn ingest_file(
             let mut cur: Vec<(usize, usize)> = Vec::new();
             let mut cur_start = 0usize;
             let mut first_index = 0usize;
+            // Chunks too large to share a window with anything, including
+            // themselves. `AstChunking` caps a chunk at 8,000 characters by
+            // splitting at line boundaries, but `split_at_lines` emits one whole
+            // line when its accumulator is empty, so a minified or generated file
+            // with a single very long line produces a chunk of unbounded size.
+            //
+            // Sent whole to `embed_late_chunked`, such a chunk exceeds the
+            // backend's ceiling, is refused, and takes the file's other windows
+            // down with it, because that call returns on the first error. They go
+            // through the plain path instead: one vector each with no surrounding
+            // context, which is worse than late chunking and far better than the
+            // file losing every vector it had.
+            let mut oversized: Vec<usize> = Vec::new();
             for (i, c) in chunks.iter().enumerate() {
+                if c.end_char.saturating_sub(c.start_char) > window_chars {
+                    oversized.push(i);
+                    continue;
+                }
                 if cur.is_empty() {
                     cur_start = c.start_char;
                     first_index = i;
                 }
                 let would_span = c.end_char.saturating_sub(cur_start);
                 if !cur.is_empty() && would_span > window_chars {
-                    let end = chunks[first_index + cur.len() - 1].end_char;
+                    // Derived from the window's own boundaries rather than by
+                    // indexing `first_index + cur.len()`: a skipped oversized
+                    // chunk makes those two disagree.
+                    let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
                     push_embed_window(
                         &mut windows,
                         &source,
@@ -1840,7 +1860,218 @@ async fn ingest_file(
                 ));
             }
             if !cur.is_empty() {
-                let end = chunks[first_index + cur.len() - 1].end_char;
+                let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
+                push_embed_window(
+                    &mut windows,
+                    &source,
+                    cur_start,
+                    end,
+                    cur,
+                    first_index,
+                    rel_path,
+                );
+            }
+            if windows.len() > 1 {
+                debug!(
+                    path = rel_path,
+                    windows = windows.len(),
+                    "file exceeds the context window, pre-chunked before late chunking"
+                );
+            }
+
+            let texts: Vec<String> = windows.iter().map(|w| w.text.clone()).collect();
+            let bounds: Vec<Vec<(usize, usize)>> =
+                windows.iter().map(|w| w.boundaries.clone()).collect();
+
+            // One vector per chunk, keyed by the chunk's file-order index, so a
+            // window that fails costs its own chunks and not the file's.
+            let mut by_index: std::collections::BTreeMap<usize, Vec<f32>> =
+                std::collections::BTreeMap::new();
+            let mut model = String::new();
+            let mut dimension = 0u32;
+            let mut first_error: Option<String> = None;
+
+            let take = |result: hades_core::persephone::embedding::LateChunkEmbedResult,
+                        offset: usize,
+                        by_index: &mut std::collections::BTreeMap<usize, Vec<f32>>,
+                        model: &mut String,
+                        dimension: &mut u32| {
+                *model = result.model.clone();
+                *dimension = result.dimension;
+                for (w, vecs) in result.per_input.iter().enumerate() {
+                    let base = windows[offset + w].first_chunk_index;
+                    for v in vecs {
+                        let i = base + v.chunk_index;
+                        // A chunk index past the end would mint an embedding
+                        // pointing at a chunk key that does not exist, which
+                        // reads as a healthy row.
+                        if i < chunks.len() {
+                            by_index.insert(i, v.embedding.clone());
+                        }
+                    }
+                }
+            };
+
+            if !windows.is_empty() {
+                match emb.embed_late_chunked(&texts, "code", &bounds).await {
+                    Ok(result) => take(result, 0, &mut by_index, &mut model, &mut dimension),
+                    Err(e) => {
+                        // The batched call returns on its first failing window and
+                        // discards the vectors of every window that already
+                        // succeeded, so a 500-window file that trips on window 400
+                        // used to be stored with nothing. Retried one window at a
+                        // time, a bad window costs its own chunks.
+                        warn!(
+                            path = rel_path,
+                            error = %e,
+                            windows = windows.len(),
+                            "batched late-chunk embed failed, retrying window by window"
+                        );
+                        first_error = Some(e.to_string());
+                        for (w, (text, bound)) in texts.iter().zip(bounds.iter()).enumerate() {
+                            match emb
+                                .embed_late_chunked(
+                                    std::slice::from_ref(text),
+                                    "code",
+                                    std::slice::from_ref(bound),
+                                )
+                                .await
+                            {
+                                Ok(result) => {
+                                    take(result, w, &mut by_index, &mut model, &mut dimension)
+                                }
+                                Err(e) => warn!(
+                                    path = rel_path,
+                                    window = w,
+                                    error = %e,
+                                    "window failed on retry, its chunks keep no vector"
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Chunks no window could hold, embedded blind rather than dropped.
+            for &i in &oversized {
+                match emb
+                    .embed(std::slice::from_ref(&chunks[i].text), "code", None)
+                    .await
+                {
+                    Ok(r) => {
+                        if let Some(v) = r.embeddings.into_iter().next() {
+                            if model.is_empty() {
+                                model = r.model.clone();
+                                dimension = r.dimension;
+                            }
+                            by_index.insert(i, v);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = rel_path,
+                            chunk = i,
+                            error = %e,
+                            "oversized chunk failed the plain embed path too"
+                        );
+                        if first_error.is_none() {
+                            first_error = Some(e.to_string());
+                        }
+                    }
+                }
+            }
+
+            if by_index.len() != chunks.len() {
+                warn!(
+                    path = rel_path,
+                    chunks = chunks.len(),
+                    vectors = by_index.len(),
+                    "fewer vectors than chunks, storing what was produced"
+                );
+                if first_error.is_none() {
+                    first_error = Some(format!(
+                        "{} chunks produced {} vectors",
+                        chunks.len(),
+                        by_index.len()
+                    ));
+                }
+            }
+
+            let docs = by_index
+                .into_iter()
+                .map(|(i, vec)| {
+                    let ckey = keys::chunk_key(&fkey, i);
+                    json!({
+                        "_key": keys::embedding_key(&ckey),
+                        "chunk_key": ckey,
+                        "file_key": fkey,
+                        "embedding": vec,
+                        "model": model,
+                        "model_hash": keys::model_hash(&model),
+                        "dimension": dimension,
+                    })
+                })
+                .collect::<Vec<Value>>();
+            (docs, first_error)
+        }
+        Some(emb) if !chunks.is_empty() => {
+            // Window budget comes from the backend's reported ceiling, computed
+            // once per run in `embed_window_chars`. A constant here was wrong on
+            // both cards: see that function for the measurement.
+
+            let mut windows: Vec<EmbedWindow> = Vec::new();
+            let mut cur: Vec<(usize, usize)> = Vec::new();
+            let mut cur_start = 0usize;
+            let mut first_index = 0usize;
+            // Chunks too large to share a window with anything, including
+            // themselves. `AstChunking` caps a chunk at 8,000 characters by
+            // splitting at line boundaries, but `split_at_lines` emits one whole
+            // line when its accumulator is empty, so a minified or generated file
+            // with a single very long line produces a chunk of unbounded size.
+            //
+            // Sent whole to `embed_late_chunked`, such a chunk exceeds the
+            // backend's ceiling, is refused, and takes the file's other windows
+            // down with it, because that call returns on the first error. They go
+            // through the plain path instead: one vector each with no surrounding
+            // context, which is worse than late chunking and far better than the
+            // file losing every vector it had.
+            let mut oversized: Vec<usize> = Vec::new();
+            for (i, c) in chunks.iter().enumerate() {
+                if c.end_char.saturating_sub(c.start_char) > window_chars {
+                    oversized.push(i);
+                    continue;
+                }
+                if cur.is_empty() {
+                    cur_start = c.start_char;
+                    first_index = i;
+                }
+                let would_span = c.end_char.saturating_sub(cur_start);
+                if !cur.is_empty() && would_span > window_chars {
+                    // Derived from the window's own boundaries rather than by
+                    // indexing `first_index + cur.len()`: a skipped oversized
+                    // chunk makes those two disagree.
+                    let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
+                    push_embed_window(
+                        &mut windows,
+                        &source,
+                        cur_start,
+                        end,
+                        std::mem::take(&mut cur),
+                        first_index,
+                        rel_path,
+                    );
+                    cur_start = c.start_char;
+                    first_index = i;
+                }
+                // Boundaries are relative to the window, not the file, and are
+                // byte offsets at this point. `push_embed_window` converts.
+                cur.push((
+                    c.start_char.saturating_sub(cur_start),
+                    c.end_char.saturating_sub(cur_start),
+                ));
+            }
+            if !cur.is_empty() {
+                let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
                 push_embed_window(
                     &mut windows,
                     &source,

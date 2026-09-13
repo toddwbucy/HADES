@@ -183,6 +183,29 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- A single chunk larger than the embed window no longer costs its file every
+  vector. `AstChunking` caps a chunk at 8,000 characters by splitting at line
+  boundaries, but `split_at_lines` emits one whole line when its accumulator is
+  empty, so a minified or generated file with one very long line produces a chunk
+  of unbounded size. Sent whole to `embed_late_chunked` it exceeds the backend's
+  ceiling, is refused, and takes the file's other windows with it because that
+  call returns on its first error. Such chunks now take the plain embed path, one
+  vector each without surrounding context, and a batched late-chunk failure is
+  retried window by window so a bad window costs its own chunks rather than the
+  file. Closes the data-loss half of the OOM-retry gap.
+- Uniform late-chunking windows no longer report `char_end = 0`. The walk was
+  bounded by the count of non-padding tokens, which includes trailing special
+  tokens, and those carry `(0, 0)` offsets, so a final window ending on one
+  reported an inverted character range that a caller intersecting against symbol
+  spans matches nothing from. Bounded now by the last token covering a real
+  character. Affects the `chunk_size_tokens` mode only; HADES always sends
+  explicit boundaries.
+- The PE-API no longer requires a context ceiling its own reference
+  implementation cannot meet. Implementation requirement 1 mandated a "32k
+  context" capability profile while the reference backend serves 11,900 tokens on
+  a 16 GiB card, so a conforming client trusting the advertised figure would send
+  inputs that are refused. `max_seq_length` is now specified as the ceiling the
+  backend will accept, distinct from the model's architectural maximum.
 - The routing table claimed `html`, `htm`, `csv`, `docx`, `pptx` and `xlsx` as
   documents on the assumption that docling's unknown-format fallback would take
   them. `docling_backend.py:122` refuses anything outside `{pdf, txt, text, md}`,

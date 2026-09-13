@@ -541,6 +541,20 @@ class JinaV4Embedder:
                 max((te for ts, te in offsets[:n_tokens] if te > ts), default=prefix_chars)
                 - prefix_chars
             )
+            # Exclusive end of the document's real tokens.
+            #
+            # `n_tokens` counts every non-padding token, trailing special tokens
+            # included, and those carry (0, 0) offsets. A uniform window whose last
+            # token is one of them reports `char_end = max(0, 0 - prefix_chars)`,
+            # which is 0: an inverted range that a caller intersecting against
+            # symbol spans silently matches nothing from. Bounding the walk by the
+            # last token that covers a real character keeps the specials out of the
+            # spans without excluding them from the pooling, which still runs over
+            # the full hidden states.
+            doc_token_end = max(
+                (i + 1 for i, (ts, te) in enumerate(offsets[:n_tokens]) if te > ts),
+                default=first_doc_token,
+            )
 
             spans: list[tuple[int, int]] = []
             if boundaries is not None:
@@ -598,10 +612,10 @@ class JinaV4Embedder:
             else:
                 step = chunk_size_tokens - overlap_tokens
                 start = first_doc_token
-                while start < n_tokens:
-                    end = min(start + chunk_size_tokens, n_tokens)
+                while start < doc_token_end:
+                    end = min(start + chunk_size_tokens, doc_token_end)
                     spans.append((start, end))
-                    if end >= n_tokens:
+                    if end >= doc_token_end:
                         break
                     start += step
 

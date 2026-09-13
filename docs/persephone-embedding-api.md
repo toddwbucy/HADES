@@ -15,7 +15,7 @@
 
 The Persephone Embedding API is HADES's contract for embedding service backends. It follows OpenAI's `/v1/embeddings` request shape and extends it. By default a request returns one vector per input, which is what an OpenAI client expects. A request carrying a `late_chunk` object instead returns *N* pooled vectors per input, one per chunk, each conditioned on the whole surrounding document.
 
-HADES is **engine-agnostic** at this contract level — any backend that implements PE-API is a valid backend (the FastAPI service in this repo, a future Rust-native loader, a `hades-weaver-bridge` translator, an external service). HADES is **model-bound** at the data layer: implementations must serve a model with Jina V4's capability profile (2048-dim, 32k context, multimodal, task-conditional via LoRA, late-chunking-capable). Wrong model class → silently incompatible vector geometry.
+HADES is **engine-agnostic** at this contract level — any backend that implements PE-API is a valid backend (the FastAPI service in this repo, a future Rust-native loader, a `hades-weaver-bridge` translator, an external service). HADES is **model-bound** at the data layer: implementations must serve a model with Jina V4's capability profile (2048-dim, 32k architectural context, multimodal, task-conditional via LoRA, late-chunking-capable). Architectural context is a property of the weights; what a given backend will accept is `max_seq_length` and is usually lower. Wrong model class → silently incompatible vector geometry.
 
 ### Why diverge from OpenAI
 
@@ -261,7 +261,7 @@ Concrete shape lands once HADES's forensic / multi-cohort query work begins (see
 
 A conforming PE-API v1.1 backend MUST:
 
-1. Implement `GET /v1/models` returning at least one model with the Jina V4 capability profile (2048-dim, 32k context, late-chunking-capable). The model's `supported_tasks` field is REQUIRED and MUST accurately list the tasks the backend can serve — neither over- nor under-claiming.
+1. Implement `GET /v1/models` returning at least one model with the Jina V4 capability profile (2048-dim, late-chunking-capable). The model's `supported_tasks` field is REQUIRED and MUST accurately list the tasks the backend can serve — neither over- nor under-claiming. `max_seq_length`, when present, MUST be the ceiling the backend will actually accept rather than the model's architectural maximum: this specification previously required "32k context", which the reference implementation violates on any card too small to hold it, and a client that trusts an advertised ceiling it cannot use will send inputs that are refused. The example above shows 32,768 because that is one deployment's profile, not because the number is required.
 2. Implement `POST /v1/embeddings` returning one vector per input when `late_chunk` is absent, and one vector per chunk when it is present.
 2a. Reject a request carrying `late_chunk` if the backend does not implement late chunking, rather than ignoring the field and returning plain embeddings. A client cannot tell the two apart from the response.
 2b. Reject a request carrying `late_chunk.boundaries` with more than one element in `input`, with 400.
@@ -269,7 +269,9 @@ A conforming PE-API v1.1 backend MUST:
 3. Honor `task` for adapter selection when the value is listed in the model's `supported_tasks`. Reject `task` values not in `supported_tasks` with `PE_INVALID_TASK`. Silently routing to a different adapter is forbidden — the cost of "wrong adapter" silently degraded retrieval quality is much higher than a hard error.
 4. Reject multimodal requests it cannot serve (i.e., `images` provided to a text-only backend) with `PE_MULTIMODAL_UNSUPPORTED` rather than silently producing text-only embeddings.
 5. Reject `encoding_format` values other than `"float"` with `PE_UNSUPPORTED_ENCODING_FORMAT`. v1.0 supports only `"float"`; the field is reserved for future variants.
-6. Return HTTP 503 with `PE_MODEL_NOT_LOADED` when the model is unloaded; do not block clients on model warm-up.
+6. Either return HTTP 503 with `PE_MODEL_NOT_LOADED` when the model is unloaded, or warm it up and serve the request. A backend MUST NOT do both by blocking past its advertised request timeout and then failing.
+
+   **The reference implementation warms up rather than refusing, and this requirement previously said only the first.** Returning 503 is the better contract for a backend shared by clients that can retry, and it is the wrong one for this deployment as it stands: HADES's ingest treats an embed error as "store the file without vectors", so a 503 after each 900-second idle unload would silently cost the first file of every session its embeddings. Conforming to the refusal half needs retry-after-warm-up in the client first. Tracked rather than quietly reconciled.
 
 A conforming PE-API v1.1 backend SHOULD:
 
@@ -279,7 +281,7 @@ A conforming backend MAY:
 
 - Surface `device`, `dimension`, and `max_seq_length` in `/v1/models` response (these fields are optional; `supported_tasks` is required per item 1 above).
 - Pre-allocate or batch internally on top of the per-request `late_chunk.chunk_size_tokens` and `late_chunk.overlap_tokens` overrides.
-- Idle-unload the model after configurable timeout, returning `PE_MODEL_NOT_LOADED` until reload.
+- Idle-unload the model after a configurable timeout. A backend that refuses while unloaded returns `PE_MODEL_NOT_LOADED` until reload; one that warms up on demand says so in its documentation, because the two are indistinguishable to a client until the first cold request.
 
 ## Compatibility with OpenAI ecosystem
 
