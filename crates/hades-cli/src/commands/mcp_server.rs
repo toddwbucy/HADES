@@ -813,12 +813,32 @@ impl ServerHandler for HadesMcpServer {
                 rmcp::model::Implementation::new("hades", env!("CARGO_PKG_VERSION"))
                     .with_title("HADES knowledge graph"),
             )
+            // What a client reads before it looks at a single tool, so it
+            // carries the three things that otherwise cost a round trip each:
+            // which profile to search, that traversal needs an explicit graph
+            // name, and that ingest is a job rather than a call.
             .with_instructions(
-                "HADES knowledge-graph tools. Results are the HADES JSON envelope: \
-             {success, data, error, error_code}. Start with `orient` to discover \
-             collections. Pass `db` to target a specific database (e.g. the \
-             knowledge graph vs the task board); writes are governed by \
-             database ACLs and the agent access tier.",
+                "HADES knowledge-graph tools. Every result is the HADES JSON \
+             envelope: {success, data, error, error_code}. Start with `orient` to \
+             discover collections, and pass `db` to target a database.\n\n\
+             Searching: `db_query` takes a collection *profile*, not a collection. \
+             Use `codebase` for code and omit it for documents, since each is \
+             embedded with a different model adapter and the two do not share a \
+             vector space.\n\n\
+             Traversal: `graph_traverse` and `graph_neighbors` need an explicit \
+             `graph` name. A code graph built by ingest is `codebase_graph`. \
+             Omitting it targets a graph named `default` that will not exist.\n\n\
+             Building a graph: `ingest_start` takes one directory and routes every \
+             file by extension, code to the analyzers and documents to extraction, \
+             into the same graph. It returns a job id immediately because ingests \
+             run for minutes, so poll `ingest_status` rather than waiting. Files \
+             nothing claims are listed under `unrouted` rather than skipped.\n\n\
+             Limits: this endpoint runs at the agent access tier, so raw AQL, \
+             purge, insert and graph drop are unavailable. `create_database` and \
+             `ingest_start` need provisioning, which is off unless the operator \
+             enabled it, and then bounded to specific name prefixes and specific \
+             directories. A refusal names what would have been permitted, so read \
+             the error rather than retrying.",
             )
     }
 }

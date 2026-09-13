@@ -19,6 +19,15 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- The MCP server's `instructions`, which a client reads on `initialize` before it
+  looks at any tool, now carry the three things that otherwise cost a round trip
+  each: that `db_query` takes a collection *profile* and code and documents are
+  embedded with different adapters, that traversal needs an explicit `graph` name
+  because omitting it targets a `default` that will not exist, and that ingest is
+  a job to poll rather than a call to wait on. The previous text predated all of
+  this and said writes were "governed by database ACLs", which is incomplete now
+  that a Provisioning tier exists and misleading on an instance running with
+  ArangoDB authentication disabled.
 - **An MCP client can build its own graph.** Three tools, `create_database`,
   `ingest_start` and `ingest_status`, behind a new `Provisioning` access tier that
   a transport can grant on its own. A local Unix peer has it by being admin; the
