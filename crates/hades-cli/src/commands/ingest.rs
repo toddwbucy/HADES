@@ -88,16 +88,19 @@ async fn ensure_document_collections(db: &ArangoPool, profile: &CollectionProfil
 ///
 /// Document keys come out root-relative for free, because the root is the path
 /// given, which is what stops eleven `README.md` files from sharing one key.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_unified(
     config: &HadesConfig,
     root: PathBuf,
     force: bool,
     metadata_json: Option<&str>,
     concurrency: Option<usize>,
+    unparsed_ext: &[String],
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
-    let found = codebase_ingest::discover_by_route(&root)?;
+    let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
+    let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
 
     info!(
         root = %root.display(),

@@ -65,6 +65,24 @@ ITEM_CITE = re.compile(r"conforms: (\S+)")
 
 # A build script is cargo's unit, not the crate's, and conforms to nothing.
 NO_HEADER_OWED = {"build.rs"}
+
+# Suffixes excused the *header* obligation while still being read for citations.
+#
+# TOML has no inner doc comment, so `//! conforms:` cannot appear in one and a
+# manifest can never satisfy an obligation measured with HEADER_CITE. Excusing
+# only files named `Cargo.toml` was not enough: `askama.toml` and two
+# `*.example.toml` under crates/ moved `sources_without_a_header` from 48 to 51,
+# and 48 is a number the census verifies. The obligation follows the language,
+# not the filename.
+NO_HEADER_OWED_SUFFIXES = {".toml"}
+
+# Suffixes the conformance pass opens. `.toml` is here because three assertions
+# tagged `manifest` are cited only from a Cargo.toml, with `# conforms:` rather
+# than `//! conforms:`. ITEM_CITE is not anchored to a comment syntax, so it
+# reads both; the only reason those three were missing from the cited set is
+# that this walk never opened the file. That was the whole of the 478-against-481
+# discrepancy the census recorded.
+CONFORMANCE_SUFFIXES = (".rs", ".toml")
 PRUNE_DIRS = {".git", "archive", "target", "node_modules"}
 
 
@@ -146,11 +164,15 @@ def read_documents(repo: Path) -> Extraction:
 
 
 def read_conformance(repo: Path, declared: set[str]) -> Extraction:
-    """`//! conforms:` headers across workspace crates, as `cites` edges.
+    """Conformance citations across workspace crates, as `cites` edges.
 
     The obligation follows the unit: every `.rs` a member owns, tests
     included, `build.rs` excepted. Resolution is against *every* declared
     identifier, not assertions alone.
+
+    Manifests are walked for citations and excused the header obligation. They
+    cite with `#` rather than `//!`, which ITEM_CITE already reads, and three
+    assertions in this corpus are cited from nowhere else.
     """
     out = Extraction()
     crates = repo / "crates"
@@ -162,10 +184,12 @@ def read_conformance(repo: Path, declared: set[str]) -> Extraction:
     files_owing = 0
     headerless: list[str] = []
 
-    for path in _walk(crates, ".rs"):
+    paths = [p for suffix in CONFORMANCE_SUFFIXES for p in _walk(crates, suffix)]
+    for path in sorted(paths):
         rel = str(path.relative_to(repo))
         text = path.read_text(encoding="utf-8", errors="replace")
-        out.nodes.append(Node(ident=rel, kind="source", path=rel, lang="rust"))
+        lang = "rust" if path.suffix == ".rs" else path.suffix.lstrip(".")
+        out.nodes.append(Node(ident=rel, kind="source", path=rel, lang=lang))
 
         headers = HEADER_CITE.findall(text)
         headers_seen += len(headers)
@@ -181,7 +205,7 @@ def read_conformance(repo: Path, declared: set[str]) -> Extraction:
             (out.edges if target in declared else out.dangling).append(edge)
 
         # The obligation is separate, and it follows the unit.
-        if path.name not in NO_HEADER_OWED:
+        if path.name not in NO_HEADER_OWED and path.suffix not in NO_HEADER_OWED_SUFFIXES:
             files_owing += 1
             if not headers:
                 headerless.append(rel)

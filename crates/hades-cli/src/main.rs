@@ -123,6 +123,17 @@ enum Commands {
         #[arg(long)]
         concurrency: Option<NonZeroUsize>,
 
+        /// Comma-separated extensions to embed without a parser, e.g.
+        /// `toml,wgsl`. Chunked by size and embedded as features, with no symbol
+        /// or edge extraction.
+        ///
+        /// Use it for files that carry meaning but have no analyzer. Manifests
+        /// are the case that prompted this on the unified command: three
+        /// conformance citations in this workspace live only in a `Cargo.toml`,
+        /// so a graph without them is missing edges the census counts.
+        #[arg(long = "unparsed-ext", value_delimiter = ',')]
+        unparsed_ext: Vec<String>,
+
         /// Derive document keys from each input's path relative to this
         /// directory, instead of from its file stem.
         ///
@@ -302,6 +313,7 @@ fn main() -> anyhow::Result<()> {
             reset,
             concurrency,
             root,
+            unparsed_ext,
         } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -319,6 +331,7 @@ fn main() -> anyhow::Result<()> {
                     force,
                     metadata.as_deref(),
                     concurrency.map(NonZeroUsize::get),
+                    &unparsed_ext,
                 ));
                 return match result {
                     Ok(()) => Ok(()),

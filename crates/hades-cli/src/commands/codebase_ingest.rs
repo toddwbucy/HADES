@@ -1306,15 +1306,29 @@ pub(crate) fn shebang_of(path: &Path) -> Option<(bool, Option<Language>)> {
 /// Extensionless files with a shebang are classified as code, matching
 /// `discover_files_detailed`, which includes them so they are visible to ingest
 /// and drift instead of disappearing (#183).
-pub(crate) fn discover_by_route(root: &Path) -> Result<RouteDiscovery> {
+///
+/// `unparsed_set` are extensions the operator asked to embed without a parser.
+/// They count as code here because that is the phase which ingests them, and a
+/// report that called them unrouted while the code phase was storing them would
+/// be wrong in the direction operators trust.
+pub(crate) fn discover_by_route(
+    root: &Path,
+    unparsed_set: &std::collections::HashSet<String>,
+) -> Result<RouteDiscovery> {
     let mut found = RouteDiscovery::default();
+
+    let unparsed = |p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| unparsed_set.contains(&e.to_lowercase()))
+    };
 
     if root.is_file() {
         match ingest_routing::route_for(root) {
             Route::Code(_) => found.code.push(root.to_path_buf()),
             Route::Document => found.documents.push(root.to_path_buf()),
             Route::Unrouted => {
-                if shebang_of(root).is_some() {
+                if unparsed(root) || shebang_of(root).is_some() {
                     found.code.push(root.to_path_buf());
                 } else {
                     found.unrouted.push(UnhandledFile {
@@ -1350,7 +1364,7 @@ pub(crate) fn discover_by_route(root: &Path) -> Result<RouteDiscovery> {
             Route::Code(_) => found.code.push(path.to_path_buf()),
             Route::Document => found.documents.push(path.to_path_buf()),
             Route::Unrouted => {
-                if path.extension().is_none() && shebang_of(path).is_some() {
+                if unparsed(path) || (path.extension().is_none() && shebang_of(path).is_some()) {
                     found.code.push(path.to_path_buf());
                 } else {
                     found.unrouted.push(UnhandledFile {
@@ -4357,7 +4371,7 @@ mod tests {
         std::fs::write(root.join("Makefile"), "all:\n").expect("write");
         std::fs::write(root.join("config.toml"), "[a]\n").expect("write");
 
-        let found = discover_by_route(root).expect("discovery");
+        let found = discover_by_route(root, &std::collections::HashSet::new()).expect("discovery");
 
         let mut code: Vec<String> = found
             .code
@@ -4390,6 +4404,29 @@ mod tests {
                 ("config.toml".to_string(), "no handler for extension"),
             ]
         );
+    }
+
+    /// An extension the operator asked to embed without a parser is code, since
+    /// the code phase is what ingests it. Reporting it as unrouted while that
+    /// phase stored it would be wrong in the direction operators trust.
+    #[test]
+    fn an_unparsed_extension_counts_as_code_not_unrouted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\n").expect("write");
+        std::fs::write(root.join("notes.sql"), "SELECT 1;\n").expect("write");
+
+        let allow = normalize_unparsed_ext(&["toml".to_string()]);
+        let found = discover_by_route(root, &allow).expect("discovery");
+
+        assert_eq!(
+            found.code.len(),
+            1,
+            "the manifest is claimed by the code phase"
+        );
+        assert!(found.code[0].ends_with("Cargo.toml"));
+        assert_eq!(found.unrouted.len(), 1, "the .sql is still declined");
+        assert!(found.unrouted[0].path.ends_with("notes.sql"));
     }
 
     // ── Ingest root resolution ──────────────────────────────────────────
