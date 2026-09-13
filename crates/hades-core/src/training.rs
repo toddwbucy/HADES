@@ -75,8 +75,12 @@ pub enum TrainingError {
     Connection(#[from] tonic::transport::Error),
 
     /// gRPC status error from the service.
+    ///
+    /// Boxed because `tonic::Status` is 176 bytes and this variant would
+    /// otherwise set the size of every `Result` in the module, which is what
+    /// `clippy::result_large_err` objects to.
     #[error("service error: {0}")]
-    Status(#[from] tonic::Status),
+    Status(#[source] Box<tonic::Status>),
 
     /// Invalid response from the service.
     #[error("invalid response: {0}")]
@@ -85,6 +89,12 @@ pub enum TrainingError {
     /// Path contains invalid UTF-8.
     #[error("path contains invalid UTF-8: {0}")]
     InvalidPath(PathBuf),
+}
+
+impl From<tonic::Status> for TrainingError {
+    fn from(status: tonic::Status) -> Self {
+        Self::Status(Box::new(status))
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -617,8 +617,10 @@ impl MappedGraph {
         }
         let bytes = view.data();
         let result: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
         Ok(result)
     }
@@ -640,8 +642,10 @@ impl MappedGraph {
         }
         let bytes = view.data();
         let result: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         Ok(result)
     }

@@ -13,11 +13,10 @@
 // hand-written. Allowed at the crate root rather than per item for the same
 // reason.
 //
-// This was already allowed at the two hand-written call sites that surface
-// these errors (`hades-core::training`, `hades-frontend::server`). It began
-// failing CI when the stable toolchain moved from 1.97 to 1.98, which is also
-// why a local clippy run on 1.97 passes while CI does not. `ci.yml` tracks
-// `stable`, so the two drift apart whenever a release lands.
+// It began failing when the toolchain reached 1.98, which widened where the
+// lint fires. The hand-written error types that wrap `tonic::Status` were
+// fixed properly instead, by boxing the variant. Generated code has no such
+// option, so it is allowed here.
 #![allow(clippy::result_large_err)]
 
 /// Common types shared across Persephone services.

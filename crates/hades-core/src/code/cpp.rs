@@ -149,7 +149,7 @@ fn default_parse_args(mode: Mode) -> Vec<String> {
                     .map(str::to_string)
                     .collect();
             };
-            return [
+            [
                 "-x",
                 "cuda",
                 "--cuda-host-only",
@@ -159,7 +159,7 @@ fn default_parse_args(mode: Mode) -> Vec<String> {
             ]
             .into_iter()
             .map(str::to_string)
-            .collect();
+            .collect()
         }
         Mode::C => ["-x", "c", "-std=c17"]
             .into_iter()

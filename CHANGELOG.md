@@ -107,12 +107,21 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
-- CI now passes. `clippy::result_large_err` fires on every tonic-generated
-  client and server method, because `tonic::Status` is 176 bytes and each
-  returns `Result<_, tonic::Status>`. Allowed at the `hades-proto` crate root,
-  since the signatures are generated and the lint's suggested fix is not
-  available. It started failing when the stable toolchain moved to 1.98, which
-  is also why a local run on 1.97 passes while CI does not.
+- CI now passes. It had never passed on this repository, including on `main`.
+  `rust-toolchain.toml` pinned `channel = "stable"`, which is a moving target
+  that resolves per machine, so CI ran 1.98.1 while a workstation ran whatever
+  its last `rustup update` fetched. The channel is now pinned to an exact
+  version, so the local gate and CI are the same gate.
+- `TrainingError::Status` and `ExtractionError::Status` box their
+  `tonic::Status`, which is 176 bytes and set the size of every `Result` in
+  those modules. **Breaking**: both variants now hold `Box<tonic::Status>`,
+  and a manual `From<tonic::Status>` keeps `?` working. This removes 27
+  `clippy::result_large_err` errors at the source rather than allowing them.
+  The lint is allowed only in `hades-proto`, where the signatures are
+  generated and boxing is not available.
+- `decode_f32_embeddings` and the tensor readers use `as_chunks::<4>()`
+  instead of `chunks_exact(4)`, which drops three `try_into().unwrap()` calls
+  that existed only to convert a slice to an array.
 
 - `codebase drift` reported one tree's file nodes as `stale` for another,
   on a delete path. File keys are relative to the ingest root, so they

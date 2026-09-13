@@ -59,12 +59,22 @@ pub enum ExtractionError {
     Connection(#[from] tonic::transport::Error),
 
     /// gRPC status error from the service.
+    ///
+    /// Boxed because `tonic::Status` is 176 bytes and this variant would
+    /// otherwise set the size of every `Result` in the module, which is what
+    /// `clippy::result_large_err` objects to.
     #[error("service error: {0}")]
-    Status(#[from] tonic::Status),
+    Status(#[source] Box<tonic::Status>),
 
     /// Invalid response from the service.
     #[error("invalid response: {0}")]
     InvalidResponse(String),
+}
+
+impl From<tonic::Status> for ExtractionError {
+    fn from(status: tonic::Status) -> Self {
+        Self::Status(Box::new(status))
+    }
 }
 
 /// Client for the Persephone extraction service.
