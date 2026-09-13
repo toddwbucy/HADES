@@ -19,6 +19,18 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- **One ingest command.** `hades ingest <dir>` walks a tree once, routes every
+  file by extension through `hades_core::ingest_routing`, runs the code phase and
+  the document phase against the same root, and emits a single envelope. Code
+  keeps its analyzers, symbols, edges and late-chunked embeddings; documents keep
+  extraction and the document profile; both land in one graph from one command.
+  Files nothing claims are listed by path and reason under `unrouted` rather than
+  silently skipped, which is what `codebase ingest` reporting markdown as "no
+  handler for extension" and `hades ingest` handing a `.py` to docling used to
+  cost. Document keys come out root-relative for free, since the root is the
+  directory given. Naming files explicitly keeps the document-only behaviour,
+  which is what a single paper wants, and `codebase ingest` remains for
+  tree-level graph operations.
 - Per-GPU embedder **load profiles**. The embedder is one templated systemd unit
   instantiated per profile, each naming the card it loads on and fixing that
   card's measured sequence ceiling, batch size and VRAM floor. Every profile

@@ -30,6 +30,7 @@ use hades_core::persephone::embedding::EmbeddingClient;
 use hades_core::persephone::extraction::ExtractionClient;
 use hades_core::pipeline::{Pipeline, PipelineConfig};
 
+use super::codebase_ingest::{self, PhaseOutcome};
 use super::output::{self, OutputFormat};
 
 /// Code-file extensions for auto-detecting the `code` embedding task.
@@ -50,12 +51,155 @@ pub struct IngestFailure {
     pub failed: usize,
 }
 
-/// Run the ingest command.
+/// Ingest a tree: one command, one root, one graph, extension decides.
+///
+/// The tree used to require two commands and the operator had to know which
+/// files belonged to which. That is how mixed trees lost half of themselves:
+/// `codebase ingest` reported markdown as "no handler for extension" and
+/// `hades ingest` handed a `.py` file to docling. Here the routing table in
+/// `hades_core::ingest_routing` decides per file, both phases run against the
+/// same root, and one envelope reports what happened to everything including
+/// the files nothing claimed.
+///
+/// Document keys come out root-relative for free, because the root is the path
+/// given, which is what stops eleven `README.md` files from sharing one key.
+pub async fn run_unified(
+    config: &HadesConfig,
+    root: PathBuf,
+    force: bool,
+    metadata_json: Option<&str>,
+    concurrency: Option<usize>,
+) -> Result<()> {
+    let cmd_start = Instant::now();
+    let root = codebase_ingest::resolve_ingest_root(&root)?;
+    let found = codebase_ingest::discover_by_route(&root)?;
+
+    info!(
+        root = %root.display(),
+        code = found.code.len(),
+        documents = found.documents.len(),
+        unrouted = found.unrouted.len(),
+        "routed tree by extension"
+    );
+
+    // Code first. The two phases write disjoint collections, so the order is
+    // only about which failure an operator sees first, and losing the code
+    // graph's edges is the more serious of the two.
+    let code = if found.code.is_empty() {
+        None
+    } else {
+        Some(
+            codebase_ingest::run_phase(config, root.clone(), None, false, &[], None, force, false)
+                .await?,
+        )
+    };
+
+    let documents = if found.documents.is_empty() {
+        None
+    } else {
+        Some(
+            run_phase(
+                config,
+                found.documents.clone(),
+                false,
+                metadata_json,
+                &[],
+                None,
+                force,
+                None,
+                None,
+                false,
+                false,
+                concurrency,
+                Some(root.clone()),
+            )
+            .await?,
+        )
+    };
+
+    let code_failure = code.as_ref().and_then(|o| o.failure.as_ref());
+    let doc_failure = documents.as_ref().and_then(|o| o.failure.as_ref());
+    let success = code_failure.is_none() && doc_failure.is_none();
+
+    let result_data = json!({
+        "root": root.display().to_string(),
+        "routed": {
+            "code": found.code.len(),
+            "documents": found.documents.len(),
+            "unrouted": found.unrouted.len(),
+        },
+        "code": code.as_ref().map(|o| o.data.clone()),
+        "documents": documents.as_ref().map(|o| o.data.clone()),
+        // Listed, not counted only: a file nothing claims is the hole this
+        // command exists to close, so it has to be nameable from stdout.
+        "unrouted": found.unrouted,
+        "duration_ms": cmd_start.elapsed().as_millis(),
+    });
+
+    output::print_output_with_success("ingest", result_data, &OutputFormat::Json, success);
+
+    // Both failures are reported in the envelope above; the process exit needs
+    // one, and the code phase's is the one that means the graph lost a layer.
+    if code_failure.is_some() {
+        return Err(code
+            .and_then(|o| o.failure)
+            .unwrap_or_else(|| anyhow::anyhow!("code phase failed")));
+    }
+    if doc_failure.is_some() {
+        return Err(documents
+            .and_then(|o| o.failure)
+            .unwrap_or_else(|| anyhow::anyhow!("document phase failed")));
+    }
+    Ok(())
+}
+
+/// Run the document ingest command, printing its own envelope.
+#[allow(clippy::too_many_arguments)]
+pub async fn run(
+    config: &HadesConfig,
+    inputs: Vec<PathBuf>,
+    batch: bool,
+    metadata_json: Option<&str>,
+    claims: &[String],
+    collection: Option<&str>,
+    force: bool,
+    task: Option<&str>,
+    id: Option<&str>,
+    resume: bool,
+    reset: bool,
+    concurrency: Option<usize>,
+    root: Option<PathBuf>,
+) -> Result<()> {
+    let outcome = run_phase(
+        config,
+        inputs,
+        batch,
+        metadata_json,
+        claims,
+        collection,
+        force,
+        task,
+        id,
+        resume,
+        reset,
+        concurrency,
+        root,
+    )
+    .await?;
+    let success = outcome.failure.is_none();
+    output::print_output_with_success("ingest", outcome.data, &OutputFormat::Json, success);
+    match outcome.failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// The document phase itself.
 ///
 /// This is the entry point called from `main.rs` when the user runs
 /// `hades ingest ...`.
 #[allow(clippy::too_many_arguments)]
-pub async fn run(
+pub async fn run_phase(
     config: &HadesConfig,
     inputs: Vec<PathBuf>,
     batch: bool,
@@ -69,7 +213,7 @@ pub async fn run(
     reset: bool,
     concurrency: Option<usize>,
     root: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<PhaseOutcome> {
     let cmd_start = Instant::now();
 
     // -- Validate inputs -------------------------------------------------------
@@ -263,21 +407,17 @@ pub async fn run(
 
     // The envelope's success reflects item outcomes, not merely "the batch
     // ran" — an all-items-failed run must not print success: true (#166).
-    output::print_output_with_success(
-        "ingest",
-        result_data,
-        &OutputFormat::Json,
-        summary.failed == 0,
-    );
-
-    if summary.failed > 0 {
-        return Err(IngestFailure {
+    let failure = (summary.failed > 0).then(|| {
+        anyhow::Error::from(IngestFailure {
             total: summary.total,
             failed: summary.failed,
-        }
-        .into());
-    }
-    Ok(())
+        })
+    });
+
+    Ok(PhaseOutcome {
+        data: result_data,
+        failure,
+    })
 }
 
 // ── Local file ingest ────────────────────────────────────────────────────

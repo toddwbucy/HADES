@@ -280,9 +280,40 @@ fn main() -> anyhow::Result<()> {
         } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
+            let input_paths: Vec<PathBuf> = inputs.into_iter().map(PathBuf::from).collect();
+
+            // One directory means one tree, and a tree is ingested whole: the
+            // routing table sends each file to the code or the document pipeline
+            // by extension, both write the same graph, and one envelope reports
+            // what happened to everything. Naming files explicitly keeps the
+            // document-only behaviour, which is what a single paper wants.
+            if input_paths.len() == 1 && input_paths[0].is_dir() {
+                let result = rt.block_on(commands::ingest::run_unified(
+                    &config,
+                    input_paths.into_iter().next().expect("checked len"),
+                    force,
+                    metadata.as_deref(),
+                    concurrency.map(NonZeroUsize::get),
+                ));
+                return match result {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        if e.downcast_ref::<commands::ingest::IngestFailure>()
+                            .is_some()
+                            || e.downcast_ref::<commands::codebase_ingest::CodebaseIngestFailure>()
+                                .is_some()
+                        {
+                            tracing::error!(error = %e, "ingest failed");
+                            process::exit(1);
+                        }
+                        Err(e)
+                    }
+                };
+            }
+
             let result = rt.block_on(commands::ingest::run(
                 &config,
-                inputs.into_iter().map(PathBuf::from).collect(),
+                input_paths,
                 batch,
                 metadata.as_deref(),
                 &claims,

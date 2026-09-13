@@ -40,6 +40,7 @@ use hades_core::db::crud;
 use hades_core::db::keys;
 use hades_core::db::query::ExecutionTarget;
 use hades_core::db::{ArangoErrorKind, ArangoPool};
+use hades_core::ingest_routing::{self, Route};
 use hades_core::persephone::embedding::EmbeddingClient;
 
 use super::output::{self, OutputFormat};
@@ -113,8 +114,20 @@ struct ImportContext {
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
 }
 
-/// Run the codebase ingest command.
-// TODO: support --batch to enable parallel/batched ingestion
+/// One half of an ingest, as data rather than as printed output.
+///
+/// The unified `hades ingest` runs the code phase and the document phase against
+/// one root and emits a single envelope, so neither phase may print its own. The
+/// failure travels beside the summary instead of replacing it: a run that
+/// ingested 180 files and lost its enrichment has to report both.
+pub struct PhaseOutcome {
+    /// The phase's summary, as it would have appeared in its own envelope.
+    pub data: Value,
+    /// Set when the phase finished but its outcome is a failure.
+    pub failure: Option<anyhow::Error>,
+}
+
+/// Run the codebase ingest command, printing its own envelope.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     config: &HadesConfig,
@@ -126,6 +139,37 @@ pub async fn run(
     force: bool,
     allow_analysis_downgrade: bool,
 ) -> Result<()> {
+    let outcome = run_phase(
+        config,
+        path,
+        language,
+        batch,
+        unparsed_ext,
+        compile_commands,
+        force,
+        allow_analysis_downgrade,
+    )
+    .await?;
+    output::print_output("codebase.ingest", outcome.data, &OutputFormat::Json);
+    match outcome.failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// The code phase itself.
+// TODO: support --batch to enable parallel/batched ingestion
+#[allow(clippy::too_many_arguments)]
+pub async fn run_phase(
+    config: &HadesConfig,
+    path: PathBuf,
+    language: Option<&str>,
+    batch: bool,
+    unparsed_ext: &[String],
+    compile_commands: Option<&Path>,
+    force: bool,
+    allow_analysis_downgrade: bool,
+) -> Result<PhaseOutcome> {
     let cmd_start = Instant::now();
 
     // Resolve the ingest root before anything derives from it.
@@ -155,12 +199,10 @@ pub async fn run(
     // Discover source files.
     let files = discover_files(&path, lang_override, &unparsed_set)?;
     if files.is_empty() {
-        output::print_output(
-            "codebase.ingest",
-            json!({ "total": 0, "message": "no supported source files found" }),
-            &OutputFormat::Json,
-        );
-        return Ok(());
+        return Ok(PhaseOutcome {
+            data: json!({ "total": 0, "message": "no supported source files found" }),
+            failure: None,
+        });
     }
 
     info!(file_count = files.len(), "discovered source files");
@@ -735,18 +777,21 @@ pub async fn run(
         "duration_ms": duration_ms,
     });
 
-    output::print_output("codebase.ingest", result_data, &OutputFormat::Json);
+    // The failure travels with the summary rather than replacing it, so the
+    // caller can emit both. Enrichment loss outranks per-file failures because
+    // it means the graph is missing a whole layer of edges.
+    let failure = if let Some(message) = enrichment_failure {
+        Some(anyhow::anyhow!("{message}"))
+    } else if failed > 0 {
+        Some(CodebaseIngestFailure { total, failed }.into())
+    } else {
+        None
+    };
 
-    // Deferred so the summary above is always written, even when enrichment
-    // loss makes this run a failure.
-    if let Some(message) = enrichment_failure {
-        anyhow::bail!("{message}");
-    }
-
-    if failed > 0 {
-        return Err(CodebaseIngestFailure { total, failed }.into());
-    }
-    Ok(())
+    Ok(PhaseOutcome {
+        data: result_data,
+        failure,
+    })
 }
 /// Escape hatch for the late-chunking path, read once per process.
 static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
@@ -1182,6 +1227,90 @@ pub(crate) fn shebang_of(path: &Path) -> Option<(bool, Option<Language>)> {
         return None;
     }
     Some((true, Language::from_shebang(trimmed)))
+}
+
+/// Every file under `root`, classified by which pipeline claims it.
+///
+/// One walk, one routing decision per file, so a unified ingest can report what
+/// happened to everything rather than leaving a caller to infer it from two
+/// separate commands' counts. Honors the same ignore rules as code discovery:
+/// `.gitignore`, `.ignore`, `.hadesignore` and [`SKIP_DIRS`].
+///
+/// Extensionless files with a shebang are classified as code, matching
+/// `discover_files_detailed`, which includes them so they are visible to ingest
+/// and drift instead of disappearing (#183).
+pub(crate) fn discover_by_route(root: &Path) -> Result<RouteDiscovery> {
+    let mut found = RouteDiscovery::default();
+
+    if root.is_file() {
+        match ingest_routing::route_for(root) {
+            Route::Code(_) => found.code.push(root.to_path_buf()),
+            Route::Document => found.documents.push(root.to_path_buf()),
+            Route::Unrouted => {
+                if shebang_of(root).is_some() {
+                    found.code.push(root.to_path_buf());
+                } else {
+                    found.unrouted.push(UnhandledFile {
+                        path: root.to_string_lossy().to_string(),
+                        reason: "no handler for extension",
+                    });
+                }
+            }
+        }
+        return Ok(found);
+    }
+
+    let walker = WalkBuilder::new(root)
+        .follow_links(false)
+        .add_custom_ignore_filename(".hadesignore")
+        .filter_entry(|entry| {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && let Some(name) = entry.file_name().to_str()
+            {
+                return !SKIP_DIRS.contains(&name);
+            }
+            true
+        })
+        .build();
+
+    for entry in walker {
+        let entry = entry.context("error walking directory")?;
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        match ingest_routing::route_for(path) {
+            Route::Code(_) => found.code.push(path.to_path_buf()),
+            Route::Document => found.documents.push(path.to_path_buf()),
+            Route::Unrouted => {
+                if path.extension().is_none() && shebang_of(path).is_some() {
+                    found.code.push(path.to_path_buf());
+                } else {
+                    found.unrouted.push(UnhandledFile {
+                        path: path.to_string_lossy().to_string(),
+                        reason: if path.extension().is_some() {
+                            "no handler for extension"
+                        } else {
+                            "no extension and no shebang"
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    found.code.sort();
+    found.documents.sort();
+    found.unrouted.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(found)
+}
+
+/// What one walk found, split by route.
+#[derive(Default)]
+pub(crate) struct RouteDiscovery {
+    pub(crate) code: Vec<PathBuf>,
+    pub(crate) documents: Vec<PathBuf>,
+    pub(crate) unrouted: Vec<UnhandledFile>,
 }
 
 pub(crate) fn discover_files(
@@ -4146,6 +4275,57 @@ mod tests {
         assert!(
             to.starts_with("codebase_files/"),
             "expected file edge fallback, got: {to}"
+        );
+    }
+
+    // ── Route discovery ─────────────────────────────────────────────────
+
+    /// One walk has to place every file, and say so for the ones it cannot.
+    #[test]
+    fn discovery_routes_code_documents_and_names_the_rest() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        std::fs::create_dir_all(root.join("docs")).expect("mkdir");
+        std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").expect("write");
+        std::fs::write(root.join("src/app.py"), "x = 1\n").expect("write");
+        std::fs::write(root.join("docs/spec.md"), "# spec\n").expect("write");
+        std::fs::write(root.join("README.md"), "# readme\n").expect("write");
+        std::fs::write(root.join("Makefile"), "all:\n").expect("write");
+        std::fs::write(root.join("config.toml"), "[a]\n").expect("write");
+
+        let found = discover_by_route(root).expect("discovery");
+
+        let mut code: Vec<String> = found
+            .code
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        code.sort();
+        assert_eq!(code, vec!["app.py", "lib.rs"]);
+
+        let mut docs: Vec<String> = found
+            .documents
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        docs.sort();
+        assert_eq!(docs, vec!["README.md", "spec.md"]);
+
+        // Neither pipeline claims these, and both are reported with a reason
+        // rather than dropped, which is the hole this discovery closes.
+        let mut unrouted: Vec<(String, &str)> = found
+            .unrouted
+            .iter()
+            .map(|u| (u.path.rsplit('/').next().unwrap().to_string(), u.reason))
+            .collect();
+        unrouted.sort();
+        assert_eq!(
+            unrouted,
+            vec![
+                ("Makefile".to_string(), "no extension and no shebang"),
+                ("config.toml".to_string(), "no handler for extension"),
+            ]
         );
     }
 
