@@ -67,6 +67,50 @@ claude mcp add --transport http hades http://<lan-ip>:10443/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
+## Provisioning: letting a client build its own graph
+
+Off by default. With it on, an MCP client can create a database and ingest a
+tree into it, which is how another session stands up its own graph without
+shell access to the host.
+
+```
+hades daemon \
+  --mcp-bind 192.168.0.10:10443 \
+  --mcp-token-file ~/.config/hades/mcp-token \
+  --mcp-db-prefix bident_ \
+  --mcp-ingest-root /opt/HADES \
+  --mcp-ingest-root /opt/weavertools
+```
+
+Three tools appear: `create_database`, `ingest_start`, `ingest_status`. They are
+advertised on every endpoint and authorized on none by default, so a client
+without provisioning gets `ACCESS_DENIED` naming what would have been permitted
+rather than concluding the capability does not exist.
+
+**Both flags are load-bearing, and both fail closed.**
+
+`--mcp-db-prefix` bounds what may be created. Without it, no database may be,
+even with the other flag set. It also widens the read allowlist for matching
+names, because a database the endpoint just created is not on `--mcp-dbs` and
+would otherwise be refused the moment the client tried to use it.
+
+`--mcp-ingest-root` bounds what may be read. Ingest hands the daemon a path on
+its *own* filesystem, so without this a bearer token could have it read
+`~/.ssh`, `/etc`, or the token file itself, embed the contents, and query them
+back out through `db_query`. That is exfiltration wearing a retrieval interface.
+Paths are canonicalized before the check, so `..` and symlinks cannot escape a
+listed root, and a path that does not exist is refused rather than guessed at.
+
+**What this does not change.** The tier ceiling stays at Agent, so raw AQL,
+`db.purge`, `db.insert` and `db.graph.drop` remain unavailable to the endpoint.
+Provisioning grants two commands, not a promotion.
+
+**What it assumes.** That ArangoDB is enforcing its own access control. If the
+instance runs with `authentication = false`, the daemon can reach every database
+on it and `--mcp-dbs` plus these prefixes are the only scope that exists. Stand
+up the dedicated `hades` user with per-database grants before turning
+provisioning on for anything you would mind a LAN client reaching.
+
 ## The embedder dependency
 
 `db_query` embeds the query before searching, so **semantic search fails

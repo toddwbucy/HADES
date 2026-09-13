@@ -19,6 +19,22 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- **An MCP client can build its own graph.** Three tools, `create_database`,
+  `ingest_start` and `ingest_status`, behind a new `Provisioning` access tier that
+  a transport can grant on its own. A local Unix peer has it by being admin; the
+  network endpoint has it only when the daemon is started with both
+  `--mcp-db-prefix` and `--mcp-ingest-root`, and then only inside those bounds.
+  Empty bounds permit nothing rather than everything, and both refusals name what
+  would have been allowed. The ceiling stays at Agent, so `db.aql`, `db.purge`,
+  `db.insert` and `db.graph.drop` are still unreachable from the network: this
+  grants two commands, not a promotion.
+  `ingest_start` returns a job id instead of blocking, because ingests run for
+  minutes and the transport caps a request at 60 seconds, so a blocking call
+  would report failure for work that was still succeeding. Job rows live in the
+  database being built, so they survive a daemon restart, and a row that never
+  leaves `running` is reported as orphaned rather than as progress. Ingest paths
+  are canonicalized before the bounds check, so `..` and symlinks cannot walk out
+  of a permitted root.
 - **One ingest command.** `hades ingest <dir>` walks a tree once, routes every
   file by extension through `hades_core::ingest_routing`, runs the code phase and
   the document phase against the same root, and emits a single envelope. Code
@@ -145,6 +161,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The document pipeline creates its own collections. Ingesting into a fresh
+  database failed with "collection or view not found: documents" *after*
+  extraction and embedding had run, so the expensive work was done and then
+  discarded at the store step. `codebase ingest` had always created its nine
+  collections and its named graph on the fly; the document path now creates its
+  three.
 - `hades ingest` keyed documents by file stem, so files sharing a name in
   different directories collided and every one after the first was reported as
   skipped inside a run whose envelope said success. It cost 3 of this

@@ -205,6 +205,31 @@ enum Commands {
         /// refused — remote reads are scoped, writes stay ACL-gated.
         #[arg(long, env = "HADES_MCP_DBS", value_delimiter = ',')]
         mcp_dbs: Vec<String>,
+
+        /// Database-name prefixes the MCP endpoint may CREATE, e.g. `bident_`.
+        ///
+        /// Provisioning is off unless this and `--mcp-ingest-root` are both
+        /// given. Granting it lets a bearer token create databases, which is
+        /// deliberately not the default for a plaintext LAN endpoint.
+        #[arg(
+            long = "mcp-db-prefix",
+            env = "HADES_MCP_DB_PREFIXES",
+            value_delimiter = ','
+        )]
+        mcp_db_prefixes: Vec<String>,
+
+        /// Directories the MCP endpoint may INGEST FROM.
+        ///
+        /// Ingest makes the daemon read paths off its own filesystem, so without
+        /// this a client could have it embed anything the daemon's user can read
+        /// and then query it back out. Paths are canonicalized before the check,
+        /// so `..` and symlinks cannot escape a listed root.
+        #[arg(
+            long = "mcp-ingest-root",
+            env = "HADES_MCP_INGEST_ROOTS",
+            value_delimiter = ','
+        )]
+        mcp_ingest_roots: Vec<std::path::PathBuf>,
     },
 }
 
@@ -515,6 +540,8 @@ fn main() -> anyhow::Result<()> {
             mcp_bind,
             mcp_token_file,
             mcp_dbs,
+            mcp_db_prefixes,
+            mcp_ingest_roots,
         } => {
             init_tracing();
             let mcp = match (mcp_bind, mcp_token_file) {
@@ -522,6 +549,8 @@ fn main() -> anyhow::Result<()> {
                     bind,
                     token_file,
                     extra_dbs: mcp_dbs,
+                    provision_db_prefixes: mcp_db_prefixes,
+                    provision_ingest_roots: mcp_ingest_roots,
                 }),
                 (Some(_), None) => anyhow::bail!(
                     "--mcp-bind requires --mcp-token-file (or HADES_MCP_TOKEN_FILE): \

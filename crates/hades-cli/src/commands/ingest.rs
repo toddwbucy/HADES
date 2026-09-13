@@ -51,6 +51,31 @@ pub struct IngestFailure {
     pub failed: usize,
 }
 
+/// Create the document profile's three collections when they are missing.
+///
+/// `codebase ingest` has always created its own nine collections and its named
+/// graph on the fly; the document path did not create its three, so the first
+/// document into a fresh database failed with "collection or view not found:
+/// documents" *after* extraction and embedding had already run. The work was
+/// done and then discarded at the store step, which is the most expensive place
+/// to discover a missing collection.
+async fn ensure_document_collections(db: &ArangoPool, profile: &CollectionProfile) -> Result<()> {
+    let existing = hades_core::db::crud::list_collections(db, false)
+        .await
+        .context("failed to list collections")?;
+    let names: Vec<&str> = existing.iter().map(|c| c.name.as_str()).collect();
+
+    for name in [profile.metadata, profile.chunks, profile.embeddings] {
+        if !names.contains(&name) {
+            info!(collection = name, "creating collection");
+            hades_core::db::crud::create_collection(db, name, Some(2))
+                .await
+                .with_context(|| format!("failed to create collection: {name}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Ingest a tree: one command, one root, one graph, extension decides.
 ///
 /// The tree used to require two commands and the operator had to know which
@@ -252,6 +277,7 @@ pub async fn run_phase(
 
     // -- Connect to services ---------------------------------------------------
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    ensure_document_collections(&db, profile).await?;
 
     let extractor = ExtractionClient::connect_default()
         .await

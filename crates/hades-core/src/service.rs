@@ -13,6 +13,7 @@
 //! attacker-controlled on a network transport, so nothing parsed from them
 //! participates in granting authority.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -42,18 +43,57 @@ pub enum SessionKind {
 /// Constructed by the transport, never from request bytes. A request may
 /// self-restrict below the ceiling via its `session` field; requesting a
 /// tier above the ceiling is an error, not a silent clamp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionPolicy {
     /// Highest tier this connection may operate at.
     pub max_tier: SessionKind,
+    /// Whether this connection may invoke [`AccessTier::Provisioning`]
+    /// commands: creating a database and starting an ingest.
+    ///
+    /// Off by default and settable only by the transport, never by a request.
+    /// A network transport that turns this on is handing a bearer token the
+    /// ability to create databases and to make the daemon read paths off the
+    /// server's filesystem, so it comes with [`ProvisioningLimits`] rather
+    /// than alone.
+    pub allow_provisioning: bool,
+    /// What a provisioned connection may name. Ignored when
+    /// `allow_provisioning` is false.
+    pub provisioning: ProvisioningLimits,
+}
+
+/// Bounds on what a provisioned connection may create and read.
+///
+/// Both lists are empty by default, and empty means "nothing is permitted"
+/// rather than "everything": a transport that grants provisioning without
+/// saying what may be named has granted nothing, which is the safe direction
+/// for a default to fail in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProvisioningLimits {
+    /// Database names a provisioned connection may create must start with one
+    /// of these. Keeps a LAN client from creating or targeting a name that
+    /// collides with a production graph.
+    pub database_prefixes: Vec<String>,
+    /// Directories an ingest may read from. A path is permitted only if it
+    /// canonicalizes to something inside one of these.
+    ///
+    /// Without this an MCP client can have the daemon read and embed anything
+    /// the daemon's user can read, then query it back out through `db.query`,
+    /// which is exfiltration wearing a retrieval interface.
+    pub ingest_roots: Vec<PathBuf>,
 }
 
 impl ConnectionPolicy {
     /// Policy for trusted local transports (Unix socket peers): admin
     /// ceiling, admin default — the daemon's historical local behavior.
+    ///
+    /// Provisioning is allowed because an admin session could already create a
+    /// database and run an ingest by other means on this transport, and the
+    /// limits are empty because they do not gate an admin session.
     pub fn local_admin() -> Self {
         Self {
             max_tier: SessionKind::Admin,
+            allow_provisioning: true,
+            provisioning: ProvisioningLimits::default(),
         }
     }
 
@@ -62,7 +102,58 @@ impl ConnectionPolicy {
     pub fn agent_only() -> Self {
         Self {
             max_tier: SessionKind::Agent,
+            allow_provisioning: false,
+            provisioning: ProvisioningLimits::default(),
         }
+    }
+
+    /// Agent ceiling, plus provisioning inside `limits`.
+    ///
+    /// The ceiling stays at agent on purpose: this grants exactly the
+    /// provisioning commands and nothing else, so raw AQL, purge and graph drop
+    /// remain unavailable to the transport that gets this.
+    pub fn agent_with_provisioning(limits: ProvisioningLimits) -> Self {
+        Self {
+            max_tier: SessionKind::Agent,
+            allow_provisioning: true,
+            provisioning: limits,
+        }
+    }
+
+    /// Whether `name` is a database this connection may create or provision.
+    pub fn permits_database(&self, name: &str) -> bool {
+        if !self.allow_provisioning {
+            return false;
+        }
+        if self.max_tier == SessionKind::Admin && self.provisioning.database_prefixes.is_empty() {
+            return true;
+        }
+        self.provisioning
+            .database_prefixes
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    }
+
+    /// Whether `path` is inside a directory this connection may ingest from.
+    ///
+    /// Canonicalizes first, so `..` and symlinks cannot walk out of a permitted
+    /// root. A path that does not exist is refused: there is nothing to ingest,
+    /// and resolving a missing path would have to guess.
+    pub fn permits_ingest_path(&self, path: &Path) -> bool {
+        if !self.allow_provisioning {
+            return false;
+        }
+        if self.max_tier == SessionKind::Admin && self.provisioning.ingest_roots.is_empty() {
+            return true;
+        }
+        let Ok(candidate) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        self.provisioning.ingest_roots.iter().any(|root| {
+            std::fs::canonicalize(root)
+                .map(|root| candidate.starts_with(root))
+                .unwrap_or(false)
+        })
     }
 }
 
@@ -75,7 +166,7 @@ impl ConnectionPolicy {
 /// `ACCESS_DENIED`, because silently downgrading an explicit claim would
 /// misreport what tier the commands then run at.
 pub fn resolve_session(
-    policy: ConnectionPolicy,
+    policy: &ConnectionPolicy,
     requested: Option<SessionKind>,
     request_id: &Option<String>,
 ) -> Result<SessionKind, DaemonResponse> {
@@ -147,6 +238,28 @@ pub fn parse_request(payload: &[u8]) -> Result<ParsedRequest, DaemonResponse> {
     })
 }
 
+/// Render a prefix list for an error message, saying so when it is empty.
+fn describe_prefixes(prefixes: &[String]) -> String {
+    if prefixes.is_empty() {
+        "none configured, so no database may be created here".to_string()
+    } else {
+        prefixes.join(", ")
+    }
+}
+
+/// Render a root list for an error message, saying so when it is empty.
+fn describe_roots(roots: &[PathBuf]) -> String {
+    if roots.is_empty() {
+        "none configured, so nothing may be ingested here".to_string()
+    } else {
+        roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request handling
 // ---------------------------------------------------------------------------
@@ -169,7 +282,7 @@ pub async fn handle_request(
         Err(resp) => return resp,
     };
 
-    let session = match resolve_session(policy, parsed.requested_session, &parsed.request_id) {
+    let session = match resolve_session(&policy, parsed.requested_session, &parsed.request_id) {
         Ok(session) => session,
         Err(resp) => return resp,
     };
@@ -177,16 +290,56 @@ pub async fn handle_request(
     let request_id = parsed.request_id;
     let cmd = parsed.command;
 
-    // Enforce access tier: agent sessions may only invoke Agent-tier commands.
-    if session == SessionKind::Agent && cmd.access_tier() != AccessTier::Agent {
+    // Enforce access tier. Agent-tier commands are always available; Admin and
+    // Internal need an admin session; Provisioning needs an admin session or a
+    // transport that explicitly granted it. The grant comes from the policy the
+    // transport constructed, so a request still cannot raise its own authority.
+    let permitted = match cmd.access_tier() {
+        AccessTier::Agent => true,
+        AccessTier::Provisioning => session == SessionKind::Admin || policy.allow_provisioning,
+        AccessTier::Admin | AccessTier::Internal => session == SessionKind::Admin,
+    };
+    if !permitted {
         return DaemonResponse::err(
             "ACCESS_DENIED",
             format!(
-                "agent session cannot invoke {:?}-tier command",
+                "{:?} session cannot invoke {:?}-tier command on this endpoint",
+                session,
                 cmd.access_tier(),
             ),
         )
         .with_request_id(request_id);
+    }
+
+    // Provisioning limits. The tier check above says the connection may
+    // provision; these say what it may name. Enforced here rather than in the
+    // handler because it is authorization, and authorization belongs beside the
+    // policy that granted it, not beside the operation that obeys it.
+    match &cmd {
+        DaemonCommand::DbCreateDatabase(p) if !policy.permits_database(&p.name) => {
+            return DaemonResponse::err(
+                "ACCESS_DENIED",
+                format!(
+                    "this endpoint may not create database '{}'. Permitted prefixes: {}",
+                    p.name,
+                    describe_prefixes(&policy.provisioning.database_prefixes),
+                ),
+            )
+            .with_request_id(request_id);
+        }
+        DaemonCommand::IngestStart(p) if !policy.permits_ingest_path(Path::new(&p.path)) => {
+            return DaemonResponse::err(
+                "ACCESS_DENIED",
+                format!(
+                    "this endpoint may not ingest '{}'. It must exist and lie inside \
+                     one of the permitted roots: {}",
+                    p.path,
+                    describe_roots(&policy.provisioning.ingest_roots),
+                ),
+            )
+            .with_request_id(request_id);
+        }
+        _ => {}
     }
 
     // Preserve command payload for NotImplemented subprocess fallback.
@@ -334,14 +487,14 @@ mod tests {
     #[test]
     fn local_admin_policy_defaults_to_admin() {
         // Historical local behavior: absent session on the Unix socket → admin.
-        let tier = resolve_session(ConnectionPolicy::local_admin(), None, &None).unwrap();
+        let tier = resolve_session(&ConnectionPolicy::local_admin(), None, &None).unwrap();
         assert_eq!(tier, SessionKind::Admin);
     }
 
     #[test]
     fn local_admin_policy_honors_self_restriction() {
         let tier = resolve_session(
-            ConnectionPolicy::local_admin(),
+            &ConnectionPolicy::local_admin(),
             Some(SessionKind::Agent),
             &None,
         )
@@ -352,7 +505,7 @@ mod tests {
     #[test]
     fn agent_only_policy_defaults_to_agent() {
         // Absent session on a network transport → agent, never admin.
-        let tier = resolve_session(ConnectionPolicy::agent_only(), None, &None).unwrap();
+        let tier = resolve_session(&ConnectionPolicy::agent_only(), None, &None).unwrap();
         assert_eq!(tier, SessionKind::Agent);
     }
 
@@ -360,7 +513,7 @@ mod tests {
     fn agent_only_policy_rejects_admin_claim() {
         // The A1 fix: request bytes cannot elevate above the transport ceiling.
         let resp = resolve_session(
-            ConnectionPolicy::agent_only(),
+            &ConnectionPolicy::agent_only(),
             Some(SessionKind::Admin),
             &Some("req-9".into()),
         )
@@ -373,7 +526,7 @@ mod tests {
     #[test]
     fn agent_only_policy_accepts_explicit_agent() {
         let tier = resolve_session(
-            ConnectionPolicy::agent_only(),
+            &ConnectionPolicy::agent_only(),
             Some(SessionKind::Agent),
             &None,
         )
@@ -436,5 +589,73 @@ mod tests {
 
         assert!(!resp.success);
         assert_eq!(resp.error_code.as_deref(), Some("ACCESS_DENIED"));
+    }
+
+    // ── Provisioning limits ─────────────────────────────────────────────
+
+    #[test]
+    fn a_plain_network_endpoint_provisions_nothing() {
+        let policy = ConnectionPolicy::agent_only();
+        assert!(!policy.permits_database("bident_v5"));
+        assert!(!policy.permits_ingest_path(Path::new("/opt/HADES")));
+    }
+
+    #[test]
+    fn provisioning_without_limits_permits_nothing_either() {
+        // Empty lists mean nothing is in bounds, not everything. A transport
+        // that grants the tier and forgets the bounds has granted no reach.
+        let policy = ConnectionPolicy::agent_with_provisioning(ProvisioningLimits::default());
+        assert!(!policy.permits_database("bident_v5"));
+        assert!(!policy.permits_ingest_path(Path::new("/opt/HADES")));
+    }
+
+    #[test]
+    fn database_names_are_gated_by_prefix() {
+        let policy = ConnectionPolicy::agent_with_provisioning(ProvisioningLimits {
+            database_prefixes: vec!["bident_".to_string()],
+            ingest_roots: Vec::new(),
+        });
+        assert!(policy.permits_database("bident_v5"));
+        assert!(!policy.permits_database("WeaverTools_v4"));
+        assert!(!policy.permits_database("_system"));
+    }
+
+    #[test]
+    fn ingest_paths_cannot_walk_out_of_a_permitted_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("allowed");
+        let outside = tmp.path().join("secrets");
+        std::fs::create_dir_all(root.join("inner")).expect("mkdir");
+        std::fs::create_dir_all(&outside).expect("mkdir");
+        std::fs::write(outside.join("token"), "s3cret").expect("write");
+
+        let policy = ConnectionPolicy::agent_with_provisioning(ProvisioningLimits {
+            database_prefixes: vec!["bident_".to_string()],
+            ingest_roots: vec![root.clone()],
+        });
+
+        assert!(policy.permits_ingest_path(&root));
+        assert!(policy.permits_ingest_path(&root.join("inner")));
+
+        // The whole point: a traversal that resolves outside the root is refused
+        // rather than read, because ingest turns a readable path into queryable
+        // vectors.
+        assert!(!policy.permits_ingest_path(&outside));
+        assert!(!policy.permits_ingest_path(&root.join("../secrets")));
+        assert!(!policy.permits_ingest_path(&root.join("../secrets/token")));
+
+        // A path that does not exist cannot be shown to be inside the root, so
+        // it is refused rather than guessed at.
+        assert!(!policy.permits_ingest_path(&root.join("nope")));
+    }
+
+    #[test]
+    fn a_local_admin_transport_is_not_narrowed_by_empty_limits() {
+        // The Unix socket is a local operator who could already do all of this
+        // with the CLI, so empty limits there mean unrestricted rather than
+        // nothing. Only the network path fails closed.
+        let policy = ConnectionPolicy::local_admin();
+        assert!(policy.permits_database("anything"));
+        assert!(policy.permits_ingest_path(Path::new("/")));
     }
 }
