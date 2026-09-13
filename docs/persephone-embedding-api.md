@@ -89,7 +89,7 @@ Primary embedding endpoint. Returns one vector per input by default, and *N* poo
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `model` | string | yes | none | Model identifier, must match a model from `GET /v1/models` |
+| `model` | string | yes | none | Model identifier. **Not validated by the reference implementation**, see below |
 | `input` | string \| string[] | yes | none | Text(s) to embed |
 | `encoding_format` | string | no | `"float"` | Reserved for future encoding variants |
 | `task` | string | no | `"retrieval.passage"` | Jina V4 LoRA adapter, see Tasks |
@@ -159,7 +159,11 @@ Primary embedding endpoint. Returns one vector per input by default, and *N* poo
 
 **Chunk metadata fields are required when late chunking was requested.** A backend that does not implement `late_chunk` MUST reject the request rather than ignore the field and return plain embeddings. A client cannot distinguish "one vector because the server pooled to one chunk" from "one vector because the server ignored the request", and defaulting the missing `chunk_index` to 0 collapses every vector of an input onto its first chunk.
 
-**`char_start` is token-aligned and so may precede the requested boundary**, by at most the length of the token containing it. Clients SHOULD compare the returned `char_start` against the boundary they sent and treat a large difference as an error. It is the cheapest available check that the two sides agree about what the offsets mean.
+**The returned range is token-aligned and so is wider than the one requested, at both ends.** `char_start` falls at the start of the first token overlapping the boundary, so it is at or before the requested start. `char_end` falls at the end of the last overlapping token, so it is at or after the requested end.
+
+Consequently **returned ranges from adjacent boundaries can overlap**, even when the boundaries sent did not. Requesting `[[0,25],[27,52],[54,80]]` over an 80-character input returns `[0,27]`, `[27,54]`, `[54,80]`. A client intersecting these with symbol spans, which is the stated reason character ranges are returned at all, will see two chunks claiming the characters between them. Intersect against the boundaries you sent, and treat the returned range as the span the vector was pooled from.
+
+Clients SHOULD compare the returned `char_start` against the boundary they sent. A `char_start` LATER than the requested start cannot come from alignment and means the vector carries a different chunk's range.
 
 **Critical shape difference from OpenAI:** under late chunking, `data` contains one entry per chunk rather than one per input. Each entry's `index` references its position in the request's `input` array, so several entries share an `index` when they came from the same input. Use `chunk_index` for position within the input.
 
@@ -281,6 +285,26 @@ The FastAPI service at `services/embedding/http_server.py` is the v1.1 reference
 - **v2:** consider whether the token budget should move to the server. Clients currently pre-window long documents against a hardcoded character estimate of the token ceiling, because only the server knows its own `MAX_TOKENS` and owns the tokenizer. Exposing the budget, or doing the windowing server-side, removes a constant that has already been wrong once.
 
 The v1.0 roadmap asked whether the chunk-array shape should split onto a separate path so `/v1/embeddings` could stay strictly OpenAI-compatible. v1.1 settles it a different way: the two shapes share the path and the request selects between them, so an OpenAI client keeps working as long as it does not ask for late chunking.
+
+## Known gaps in the reference implementation
+
+Recorded rather than quietly tolerated, because this document names
+`services/embedding/http_server.py` as normative and a backend author will
+read the requirements above as descriptions of it.
+
+**`model` is not validated.** The requirement table says it must match a model
+from `GET /v1/models`. It is not checked. The Rust client sends a configured
+alias (`jinaai/jina-embeddings-v4`) while the backend reports the local path it
+loaded the weights from, so enforcing the match would refuse every request
+HADES makes. Fixing it properly means the client reads the served name at
+connect, which is a change on the other side of the wire.
+
+Note the related hazard that this one masks: `model` is also what a client
+stamps into its stored rows. If one code path records the configured alias and
+another records the served name, a corpus ends up holding two identifiers for
+one model, and anything keyed on that identifier, incremental skip included,
+sees half the corpus. Both paths in the Rust client now take the name from the
+response for that reason.
 
 ## Amendments in 1.1
 

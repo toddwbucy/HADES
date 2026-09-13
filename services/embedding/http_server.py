@@ -51,6 +51,15 @@ class EmbedRequest(BaseModel):
     model: str
     input: Union[str, list[str]]
     encoding_format: str = "float"
+    images: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "PE-API multimodal inputs. Declared so the request can be REFUSED "
+            "rather than silently dropped: this backend is text-only, and "
+            "returning a text embedding for a request that supplied an image "
+            "is the failure the contract exists to prevent."
+        ),
+    )
     # Vendor extensions
     task: Optional[str] = Field(
         default="retrieval.passage",
@@ -258,7 +267,14 @@ async def list_models() -> ModelsResponse:
     return ModelsResponse(data=[ModelInfo(id=state.config.model_name)])
 
 
-@app.post("/v1/embeddings", response_model=EmbedResponse)
+# `response_model_exclude_none` keeps the plain response byte-for-byte
+# OpenAI-shaped. Without it FastAPI serializes the five late-chunk fields as
+# explicit nulls on every request, including ones that never asked for late
+# chunking, which is the opposite of what the opt-in design promises and what
+# the spec says this endpoint returns.
+@app.post(
+    "/v1/embeddings", response_model=EmbedResponse, response_model_exclude_none=True
+)
 async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
     """OpenAI `/v1/embeddings` — embeds one or more inputs as 2048-dim vectors.
 
@@ -273,6 +289,36 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
 
     if not texts:
         raise HTTPException(status_code=400, detail="`input` must be non-empty")
+
+    # The spec makes these MUSTs, and this service is its reference
+    # implementation, so a backend author reading the document gets what it
+    # describes. All three previously returned 200.
+    if req.encoding_format != "float":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PE_UNSUPPORTED_ENCODING_FORMAT: encoding_format "
+                f"{req.encoding_format!r} is not supported, only 'float'"
+            ),
+        )
+
+    if req.images:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "PE_MULTIMODAL_UNSUPPORTED: this backend serves text only. "
+                "Refusing rather than returning text-only embeddings for a "
+                "request that supplied images."
+            ),
+        )
+
+    # `model` is deliberately NOT validated against the served model. The Rust
+    # client sends a configured alias ("jinaai/jina-embeddings-v4") while this
+    # backend reports the local path it loaded from, so a strict check would
+    # refuse every request HADES makes. Making it real needs the client to read
+    # the served name from GET /v1/models at connect, which is a change on the
+    # other side of the wire. The spec records this rather than claiming an
+    # enforcement that does not exist.
 
     task = req.task or "retrieval.passage"
     if task not in SUPPORTED_TASKS:

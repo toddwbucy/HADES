@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -749,6 +750,12 @@ pub async fn run(
     }
     Ok(())
 }
+/// Escape hatch for the late-chunking path, read once per process.
+static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("HADES_DISABLE_LATE_CHUNKING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+});
 
 /// One unit of text handed to the embedder in a single forward pass.
 ///
@@ -1523,9 +1530,8 @@ async fn ingest_file(
     // Escape hatch, and what makes the two strategies comparable: with this
     // set, chunks are embedded independently as before. Useful if late
     // chunking ever misbehaves, and required to A/B the two on one corpus.
-    let late_chunking_disabled = std::env::var("HADES_DISABLE_LATE_CHUNKING")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    // Read once for the process rather than once per ingested file.
+    let late_chunking_disabled = *LATE_CHUNKING_DISABLED;
 
     let (embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
         Some(emb) if !chunks.is_empty() && late_chunking_disabled => {

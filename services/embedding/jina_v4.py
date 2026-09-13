@@ -391,6 +391,22 @@ class JinaV4Embedder:
                 f"overlap_tokens must be in [0, chunk_size_tokens), got {overlap_tokens}"
             )
 
+        if boundaries is not None:
+            # Checked before the forward pass, and reported as what it is. The
+            # only error this path used to raise blamed context-window
+            # truncation for everything, so an out-of-range or inverted range
+            # from a client bug reached the operator as "send smaller windows",
+            # which is the wrong remedy and points at the wrong component.
+            n_chars = len(text)
+            bad = [(a, b) for a, b in boundaries if a < 0 or b < a or b > n_chars]
+            if bad:
+                raise ValueError(
+                    f"{len(bad)} of {len(boundaries)} boundaries do not describe "
+                    f"a range within the {n_chars}-character input. First: "
+                    f"{bad[0]}. Boundaries are character offsets over `input`, "
+                    f"with 0 <= start <= end <= len(input)."
+                )
+
         model = self.model
         task_label = _TASK_TO_ADAPTER.get(task, "retrieval")
 
@@ -445,8 +461,37 @@ class JinaV4Embedder:
                 (i for i, (ts, te) in enumerate(offsets[:n_tokens]) if te > prefix_chars),
                 n_tokens,
             )
+            # Highest document character any real token covers. Special and
+            # padding tokens carry (0, 0) offsets and are excluded.
+            covered_chars = (
+                max((te for ts, te in offsets[:n_tokens] if te > ts), default=prefix_chars)
+                - prefix_chars
+            )
+
             spans: list[tuple[int, int]] = []
-            if boundaries:
+            if boundaries is not None:
+                # Detect truncation directly rather than inferring it from a
+                # boundary that mapped to nothing.
+                #
+                # The "mapped to no tokens" check below only fires when a
+                # boundary matches ZERO tokens, and the match is an overlap
+                # test, so a boundary straddling the truncation point still
+                # matches its surviving head tokens and raises nothing. A single
+                # AST chunk larger than the client's window arrives as exactly
+                # that: one boundary spanning more text than the model can hold,
+                # pooled from the part that fitted, reported as a success. The
+                # comment in codebase_ingest.rs claiming truncation now fails
+                # loudly was true only for the multi-boundary case.
+                if n_tokens >= MAX_TOKENS:
+                    over = [b for b in boundaries if b[1] > covered_chars]
+                    if over:
+                        raise ValueError(
+                            f"input filled the {MAX_TOKENS}-token window and was "
+                            f"truncated at character {covered_chars} of {len(text)}, "
+                            f"so {len(over)} of {len(boundaries)} boundaries extend "
+                            f"past what the model saw. First: {over[0]}. Send smaller "
+                            f"windows."
+                        )
                 # Map each character range to the tokens covering it. A token
                 # counts as inside when it overlaps the range at all, so a
                 # boundary landing mid-token still captures that token.
@@ -505,7 +550,7 @@ class JinaV4Embedder:
             # With caller-supplied boundaries the count is a contract: one
             # vector per boundary. Returning fewer is the silent-omission
             # failure this path exists to end.
-            if boundaries and len(kept) != len(spans):
+            if boundaries is not None and len(kept) != len(spans):
                 raise ValueError(
                     f"{len(spans) - len(kept)} of {len(spans)} boundaries fell "
                     f"entirely on padding and produced no vector"

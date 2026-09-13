@@ -399,6 +399,12 @@ impl EmbeddingClient {
 
         let mut per_input: Vec<Vec<LateChunkVector>> = vec![Vec::new(); texts.len()];
         let mut dimension = 0u32;
+        // Taken from the response, not from the local config, because
+        // `model_hash` keys incremental skip and selective re-embedding. The
+        // configured name is a request hint and the served model is whatever
+        // the backend loaded, so stamping the former puts two hashes on one
+        // model as soon as any other path stamps the latter.
+        let mut model: Option<String> = None;
         let started = std::time::Instant::now();
 
         // One request per input. Each yields its own number of chunks, and
@@ -421,6 +427,9 @@ impl EmbeddingClient {
             let resp = self
                 .request(Method::POST, "/embeddings", Some(&body))
                 .await?;
+            if model.is_none() {
+                model = resp["model"].as_str().map(String::from);
+            }
             let data = resp["data"]
                 .as_array()
                 .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'data' array".into()))?;
@@ -446,6 +455,17 @@ impl EmbeddingClient {
                     .collect::<Result<Vec<f32>, EmbeddingError>>()?;
                 if dimension == 0 {
                     dimension = embedding.len() as u32;
+                } else if embedding.len() as u32 != dimension {
+                    // `embed_single_request` checks this and this path did not.
+                    // A short vector otherwise passes the count, contiguity and
+                    // drift checks and is stored under a dimension it does not
+                    // have, which surfaces later as a vector search fault on a
+                    // row the corpus reports as healthy.
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i}: inconsistent dimensions, {} then {}",
+                        dimension,
+                        embedding.len()
+                    )));
                 }
                 let field = |name: &str| -> Result<usize, EmbeddingError> {
                     item[name].as_u64().map(|v| v as usize).ok_or_else(|| {
@@ -505,13 +525,26 @@ impl EmbeddingClient {
             const MAX_ALIGNMENT_DRIFT: usize = 64;
             for (k, v) in per_input[i].iter().enumerate() {
                 let requested = boundaries[i][k].0;
-                if requested.abs_diff(v.char_start) > MAX_ALIGNMENT_DRIFT {
+                // Alignment only ever moves the start EARLIER: the server takes
+                // the first token overlapping the range, and that token begins
+                // at or before the requested character. A later start cannot
+                // come from alignment, so it is not given any tolerance.
+                if v.char_start > requested {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i} chunk {k}: requested character {requested} and the \
+                         server pooled from {}, which is later. Token alignment cannot \
+                         move a start forward, so this vector carries another chunk's \
+                         range",
+                        v.char_start
+                    )));
+                }
+                if requested - v.char_start > MAX_ALIGNMENT_DRIFT {
                     return Err(EmbeddingError::InvalidResponse(format!(
                         "input {i} chunk {k}: requested character {requested} and the \
                          server pooled from {}, a drift of {} that token alignment \
                          cannot explain",
                         v.char_start,
-                        requested.abs_diff(v.char_start)
+                        requested - v.char_start
                     )));
                 }
             }
@@ -519,7 +552,7 @@ impl EmbeddingClient {
 
         Ok(LateChunkEmbedResult {
             per_input,
-            model: self.config.model.clone(),
+            model: model.unwrap_or_else(|| self.config.model.clone()),
             dimension,
             duration_ms: started.elapsed().as_millis() as u64,
         })
