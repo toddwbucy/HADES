@@ -19,6 +19,18 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Per-GPU embedder **load profiles**. The embedder is one templated systemd unit
+  instantiated per profile, each naming the card it loads on and fixing that
+  card's measured sequence ceiling, batch size and VRAM floor. Every profile
+  binds the same port, so switching cards is a stop and a start with no client
+  configuration change, and two profiles cannot be live at once because the
+  second fails to bind. `GET /v1/models` now reports `profile`, `device` and
+  `physical_device` alongside `max_seq_length`, so a client can see which card
+  answered and what it will accept. `physical_device` exists because
+  `CUDA_VISIBLE_DEVICES` renumbers from zero: a model pinned to the second
+  A6000 reports `device: cuda:0`, and an operator reading that concludes GPU 0.
+  Templates and a `hades-embedder-profile` switch command are in
+  `deploy/systemd/`.
 - A non-blocking `stable drift` CI job, weekly and on pushes to `main`, that
   runs fmt and clippy under current stable and warns rather than fails.
   Pinning the toolchain removed the only mechanism that ever told this
@@ -121,6 +133,29 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The embedder silently truncated any input over its sequence ceiling and
+  reported success. A 45,183-token document sent to a 32,768-token profile
+  returned HTTP 200 with one vector, roughly 12,400 tokens discarded, and
+  nothing in the response or the log said so. `_embed_batch_locked` prefers the
+  model's own `encode_text`, which truncates at its configured max_length, and
+  the fallback arm passed `truncation=True` explicitly, so both paths dropped
+  the tail. The vector count matches the input count exactly in that state,
+  which is why no count reconciles it. **Breaking**: inputs above
+  `max_seq_length` are now refused with `PE_INPUT_TOO_LARGE`, naming the input
+  index, its token count and the ceiling, which is what the PE-API error table
+  specified from the start. Callers pre-chunk or load a profile on a bigger
+  card.
+- The measured ceiling for the 16 GiB card was wrong by 25 percent, and the
+  model's resident footprint by 3 GiB. The 15,000-token figure came from a
+  synthetic probe; real documents through the running service pass at 11,926
+  tokens repeatedly and fail at 12,196, 12,215, 12,417 and 13,382, the last of
+  those also as the first request to a freshly started process. PyTorch reports
+  12.03 GiB allocated immediately after load, not the 9,216 MiB
+  `MODEL_RESIDENT_MIB` claimed, which left roughly 3 GiB for activations and put
+  the edge at 12k. The constant and the profile are corrected from the real
+  measurements. On the 48 GiB card a real 31,871-token document peaks at 27,526
+  MiB against the 23,906 MiB a probe recorded, so its VRAM floor is raised to 28
+  GiB.
 - `codebase ingest` keyed one tree two ways depending on how its root was
   typed. The base was canonicalized while discovered paths were not, so
   `rel_path_for`'s `strip_prefix` missed and fell back to the whole path as

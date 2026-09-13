@@ -50,16 +50,33 @@ Discover the model the backend has loaded. OpenAI-compatible response shape.
         "retrieval.query",
         "text-matching",
         "code"
-      ]
+      ],
+
+      "device": "cuda:0",
+      "physical_device": "cuda:1",
+      "profile": "gpu1"
     }
   ]
 }
 ```
 
-`dimension`, `max_seq_length`, and `supported_tasks` are **PE-API extensions** to OpenAI's model object.
+`dimension`, `max_seq_length`, `supported_tasks`, `device`, `physical_device` and
+`profile` are **PE-API extensions** to OpenAI's model object.
 
 - **`supported_tasks` is REQUIRED.** Conforming backends MUST include it, accurately reflecting the tasks they can serve (see Implementation requirements). Clients use this field to validate `task` values before sending requests, avoiding unnecessary round-trips that would only fail with `PE_INVALID_TASK`.
 - **`dimension` and `max_seq_length` are OPTIONAL.** Backends MAY omit them; clients that need either value can determine it via an embedding round-trip (`/v1/embeddings` with a probe input).
+- **`max_seq_length` is what the running backend will accept, not what the model
+  architecture supports.** The same weights serve a lower ceiling on a smaller
+  card: the reference implementation measures 11,900 tokens on a 16 GiB RTX 2000
+  Ada and 32,768 on a 48 GiB A6000, so a client that wants to know what fits MUST
+  ask the backend rather than read the model card. An input above this value is
+  refused with `PE_INPUT_TOO_LARGE` and never silently truncated.
+- **`device`, `physical_device` and `profile` are OPTIONAL** and describe where the
+  model is loaded. `device` is the in-process device string, which
+  `CUDA_VISIBLE_DEVICES` renumbers from zero, so it cannot identify the card on a
+  multi-GPU host. `physical_device` is the same card in the driver's numbering, and
+  `profile` names the backend's load profile. Clients SHOULD log these, because a
+  ceiling that changes between requests means the backend moved cards.
 
 ### `POST /v1/embeddings`
 
@@ -215,7 +232,7 @@ PE-API-specific error codes:
 | `PE_UNSUPPORTED_ENCODING_FORMAT` | 400 | `encoding_format` value other than `"float"` (only `"float"` is supported in v1.0) |
 | `PE_MULTIMODAL_UNSUPPORTED` | 400 | `images` provided but backend serves text-only model |
 | `PE_INPUT_IMAGES_LENGTH_MISMATCH` | 400 | `len(images) != input_count`, where `input_count = 1` if `input` is a string, else `len(input)` |
-| `PE_INPUT_TOO_LARGE` | 400 | An input exceeds backend's max-context fallback handling |
+| `PE_INPUT_TOO_LARGE` | 400 | An input exceeds `max_seq_length`. Backends MUST refuse rather than truncate, and SHOULD name the input's index, its token count and the ceiling, so a client can pre-chunk to a known target instead of probing |
 | `PE_MODEL_NOT_LOADED` | 503 | Model is unloaded (e.g., idle-timeout); retry after warm-up |
 | `PE_BACKEND_OOM` | 503 | GPU OOM on this batch; retry with smaller batch or wait |
 

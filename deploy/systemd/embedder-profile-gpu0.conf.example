@@ -1,0 +1,37 @@
+# Load profile: GPU 0, RTX A6000, 48 GiB. The full-context card, sibling of gpu1.
+#
+# Sequence ceiling 32,768 tokens, which is the length jina-embeddings-v4 is
+# documented for and the most the model supports. Note config.json says
+# max_position_embeddings = 128000: that is the Qwen2.5-VL backbone's
+# positional capacity, not Jina's supported length, and setting a profile from
+# it would be reading the wrong number.
+#
+# Measured twice, and the second measurement is the one this profile trusts.
+# A synthetic 32,768-token probe on 2026-09-12 peaked at 23,906 MiB. A real
+# 31,871-token document through the service on 2026-09-13 peaked at 27,526 MiB
+# of 49,140, which is 56 percent of the card and 3.6 GiB above the synthetic
+# figure. Tokenizer and processor overhead on a real document is the difference,
+# so the floor below is set from the real number, not the probe.
+#
+# BATCH_SIZE is 1 because two full-length windows come to roughly 55 GiB at the
+# measured rate and do not fit.
+#
+# The blunt VRAM floor is set rather than left to the computed contention
+# estimate. This card is shared with WeaverTools test runs, and the floor is
+# what makes the service refuse a card someone else is already using instead of
+# loading onto it and dying inside a forward pass. 28,672 MiB is the measured
+# real peak rounded up to 28 GiB.
+
+CUDA_VISIBLE_DEVICES=0
+HADES_EMBEDDER_DEVICE=cuda:0
+HADES_EMBEDDER_PROFILE=gpu0
+HADES_EMBEDDER_MAX_TOKENS=32768
+HADES_EMBEDDER_MIN_FREE_VRAM_MIB=28672
+HADES_EMBEDDER_BATCH_SIZE=1
+
+HADES_EMBEDDER_HOST=127.0.0.1
+HADES_EMBEDDER_PORT=8087
+HADES_EMBEDDER_MODEL=@MODEL_PATH@
+HADES_EMBEDDER_FP16=true
+HADES_EMBEDDER_IDLE_TIMEOUT=900
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

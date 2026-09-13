@@ -81,7 +81,12 @@ MAX_TOKENS = int(os.environ.get("HADES_EMBEDDER_MAX_TOKENS", "15000"))
 # MAX_TOKENS being set from measurement rather than hope.
 #
 # When you want a hard guarantee instead, set the flat floor below.
-MODEL_RESIDENT_MIB = 9216
+# Measured on olympus 2026-09-13: PyTorch reports 12.03 GiB allocated on GPU 2
+# immediately after load, before any forward pass, and nvidia-smi shows 12.19
+# GiB for the process. The previous 9,216 understated it by roughly 3 GiB, which
+# made the contention preflight too permissive on a 16 GiB card: it would admit
+# a card with 11 GiB free that cannot hold the model at all.
+MODEL_RESIDENT_MIB = 12288
 CONTENTION_HEADROOM_MIB = 2048
 
 # A flat floor, in MiB, that overrides the computed estimate when set.
@@ -105,6 +110,37 @@ _TASK_TO_ADAPTER = {
 
 # Supported task labels exposed via Info RPC
 SUPPORTED_TASKS = ["retrieval.passage", "retrieval.query", "text-matching", "code"]
+
+
+class InputTooLargeError(ValueError):
+    """An input does not fit the load profile's sequence ceiling.
+
+    Raised instead of letting the input be truncated. A 45,183-token document
+    sent to a profile with a 32,768-token ceiling used to return one vector and
+    HTTP 200: `encode_text` truncates at its own max_length, silently, so 27
+    percent of that document was discarded and the response said success. A
+    corpus ingested that way is wrong in a way no count reconciles, because the
+    vector count matches the input count exactly.
+
+    Subclasses ValueError so the HTTP layer's existing arm maps it to 400, and
+    carries the PE_INPUT_TOO_LARGE code in its message per the PE-API error
+    table, which has specified this case from the start.
+
+    The caller's remedy is to pre-chunk, or to run a profile whose card holds
+    more: the ceiling is a property of the card the model is loaded on, and it
+    is reported on /v1/models so a client never has to guess it.
+    """
+
+    def __init__(self, index: int, n_tokens: int, max_tokens: int) -> None:
+        self.index = index
+        self.n_tokens = n_tokens
+        self.max_tokens = max_tokens
+        super().__init__(
+            f"PE_INPUT_TOO_LARGE: input {index} is {n_tokens} tokens, which "
+            f"exceeds this profile's {max_tokens}-token ceiling. Refusing "
+            f"rather than truncating and reporting success. Pre-chunk the "
+            f"input, or load a profile on a card that holds more."
+        )
 
 
 class JinaV4Embedder:
@@ -329,6 +365,13 @@ class JinaV4Embedder:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
 
+        # Checked for every input before any forward pass runs, so one oversized
+        # input fails the request rather than after burning GPU time on the
+        # batches ahead of it. The count comes from the same tokenizer that
+        # would do the truncating, so it is the authoritative number and not an
+        # estimate from character length.
+        self._assert_inputs_fit(texts)
+
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
@@ -338,6 +381,29 @@ class JinaV4Embedder:
         if all_embeddings:
             return np.vstack(all_embeddings).astype(np.float32, copy=False)
         return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+
+    def _assert_inputs_fit(self, texts: list[str]) -> None:
+        """Refuse inputs longer than this profile's ceiling.
+
+        `_embed_batch_locked` prefers the model's own `encode_text`, which
+        truncates at its configured max_length and says nothing. The dead
+        fallback path below it passes `truncation=True` explicitly, so both
+        arms silently discarded the tail of an oversized input.
+
+        Holds `_infer_lock` the way every other tokenizer call here does: the
+        Rust-backed fast tokenizer is not thread-safe and concurrent calls raise
+        "Already borrowed", which is findings #8. Released before the forward
+        pass takes the same lock, so this does not deadlock a non-reentrant
+        lock.
+        """
+        with self._infer_lock:
+            tokenizer = self.tokenizer
+            for index, text in enumerate(texts):
+                n_tokens = len(
+                    tokenizer(text, add_special_tokens=False)["input_ids"]
+                )
+                if n_tokens > MAX_TOKENS:
+                    raise InputTooLargeError(index, n_tokens, MAX_TOKENS)
 
     def embed_late_chunked(
         self,

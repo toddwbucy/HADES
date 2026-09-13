@@ -20,6 +20,10 @@ class EmbeddingConfig:
     host: str = "127.0.0.1"
     port: int = 8000
     device: str = "cuda:2"
+    # Load-profile name, e.g. "gpu1". Names which measured profile this process
+    # was started under, so a client can see which card and which ceiling it is
+    # talking to rather than inferring it from max_seq_length.
+    profile: str = ""
     model_name: str = "jinaai/jina-embeddings-v4"
     use_fp16: bool = True
     batch_size: int = 128
@@ -56,6 +60,7 @@ class EmbeddingConfig:
             host=os.environ.get("HADES_EMBEDDER_HOST", cls.host),
             port=port,
             device=os.environ.get("HADES_EMBEDDER_DEVICE", cls.device),
+            profile=os.environ.get("HADES_EMBEDDER_PROFILE", cls.profile),
             model_name=os.environ.get(
                 "HADES_EMBEDDER_MODEL", cls.model_name
             ),
