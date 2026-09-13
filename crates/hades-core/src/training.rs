@@ -75,8 +75,12 @@ pub enum TrainingError {
     Connection(#[from] tonic::transport::Error),
 
     /// gRPC status error from the service.
+    ///
+    /// Boxed because `tonic::Status` is 176 bytes and this variant would
+    /// otherwise set the size of every `Result` in the module, which is what
+    /// `clippy::result_large_err` objects to.
     #[error("service error: {0}")]
-    Status(#[from] tonic::Status),
+    Status(#[source] Box<tonic::Status>),
 
     /// Invalid response from the service.
     #[error("invalid response: {0}")]
@@ -85,6 +89,12 @@ pub enum TrainingError {
     /// Path contains invalid UTF-8.
     #[error("path contains invalid UTF-8: {0}")]
     InvalidPath(PathBuf),
+}
+
+impl From<tonic::Status> for TrainingError {
+    fn from(status: tonic::Status) -> Self {
+        Self::Status(Box::new(status))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +168,6 @@ pub struct CheckpointResult {
 }
 
 /// Convert a path to a UTF-8 string, returning an error for non-UTF-8 paths.
-#[allow(clippy::result_large_err)] // TrainingError is large due to tonic::Status
 fn path_to_string(path: &Path) -> Result<String, TrainingError> {
     path.to_str()
         .map(|s| s.to_string())
@@ -510,5 +519,36 @@ impl std::fmt::Debug for TrainingClient {
         f.debug_struct("TrainingClient")
             .field("endpoint", &self.config.endpoint)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod error_conversion_tests {
+    use super::*;
+
+    /// `?` at every gRPC call site depends on this conversion.
+    ///
+    /// It used to come from thiserror's `#[from]`. Boxing the variant to keep
+    /// `clippy::result_large_err` quiet removed the derive, and the hand-written
+    /// replacement was the only runtime-visible change in that commit and the
+    /// one part nothing exercised. A refactor that drops the manual impl breaks
+    /// every call site, and the suite would have stayed green.
+    #[test]
+    fn status_converts_and_keeps_its_message() {
+        let err: TrainingError = tonic::Status::not_found("no such checkpoint").into();
+        assert!(matches!(err, TrainingError::Status(_)));
+        assert!(
+            err.to_string().contains("no such checkpoint"),
+            "boxing must not swallow the status message, got: {err}"
+        );
+    }
+
+    /// The boxed status stays reachable as a source, which `#[from]` gave for
+    /// free and `#[source]` has to be asked for.
+    #[test]
+    fn status_is_reachable_as_a_source() {
+        let err: TrainingError = tonic::Status::internal("backend fell over").into();
+        let source = std::error::Error::source(&err).expect("status must remain the source");
+        assert!(source.to_string().contains("backend fell over"));
     }
 }

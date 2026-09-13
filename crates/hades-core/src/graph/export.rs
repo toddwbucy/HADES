@@ -106,8 +106,10 @@ pub fn decode_f32_embeddings(bytes: &[u8]) -> Result<Vec<f32>, ExportError> {
         return Err(ExportError::InvalidBytes { len: bytes.len() });
     }
     let result: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     Ok(result)
 }

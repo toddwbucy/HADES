@@ -6617,7 +6617,9 @@ mod tests {
             assert!(
                 matches!(
                     result,
-                    Err(DispatchError::Handler(HandlerError::InvalidParameter { .. }))
+                    Err(DispatchError::Handler(
+                        HandlerError::InvalidParameter { .. }
+                    ))
                 ),
                 "mutating AQL was not rejected: {aql}"
             );

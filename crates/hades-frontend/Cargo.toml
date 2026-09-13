@@ -2,6 +2,7 @@
 name = "hades-frontend"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Local WebGL graph-visualization frontend for HADES graphs (loosely coupled — consumes the `hades` CLI JSON contract)"

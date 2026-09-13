@@ -74,6 +74,9 @@ pub enum TensorError {
     #[error("invalid split config: val_ratio ({val}) + test_ratio ({test}) = {sum} > 1.0")]
     InvalidSplitConfig { val: f64, test: f64, sum: f64 },
 
+    #[error("tensor '{name}' has {len} bytes, which is not a whole number of 4-byte values")]
+    RaggedTensor { name: String, len: usize },
+
     #[error("serialization validation failed: {message}")]
     ValidationFailed { message: String },
 
@@ -616,9 +619,29 @@ impl MappedGraph {
             });
         }
         let bytes = view.data();
+        // `as_chunks().0` discards a ragged tail with no diagnostic, so the
+        // discard site says out loud what it assumes.
+        //
+        // Not the primary defence, and the comment first written here claimed
+        // it was. safetensors validates on deserialize that a tensor's byte
+        // range equals shape times dtype width (`e - s != size` ->
+        // `TensorInvalidInfo`), so a U32 view reaching this point already has a
+        // length divisible by four and this branch is unreachable today. It is
+        // kept because the assumption belongs next to the code that depends on
+        // it: if the dtype check above ever widens, an unguarded `as_chunks`
+        // returns a short Vec with Ok and breaks the caller's
+        // `len == count * width` invariant far from the cause.
+        if !bytes.len().is_multiple_of(4) {
+            return Err(TensorError::RaggedTensor {
+                name: name.to_string(),
+                len: bytes.len(),
+            });
+        }
         let result: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
         Ok(result)
     }
@@ -639,9 +662,29 @@ impl MappedGraph {
             });
         }
         let bytes = view.data();
+        // `as_chunks().0` discards a ragged tail with no diagnostic, so the
+        // discard site says out loud what it assumes.
+        //
+        // Not the primary defence, and the comment first written here claimed
+        // it was. safetensors validates on deserialize that a tensor's byte
+        // range equals shape times dtype width (`e - s != size` ->
+        // `TensorInvalidInfo`), so a U32 view reaching this point already has a
+        // length divisible by four and this branch is unreachable today. It is
+        // kept because the assumption belongs next to the code that depends on
+        // it: if the dtype check above ever widens, an unguarded `as_chunks`
+        // returns a short Vec with Ok and breaks the caller's
+        // `len == count * width` invariant far from the cause.
+        if !bytes.len().is_multiple_of(4) {
+            return Err(TensorError::RaggedTensor {
+                name: "node_features".into(),
+                len: bytes.len(),
+            });
+        }
         let result: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         Ok(result)
     }

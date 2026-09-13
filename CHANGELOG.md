@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- A non-blocking `stable drift` CI job, weekly and on pushes to `main`, that
+  runs fmt and clippy under current stable and warns rather than fails.
+  Pinning the toolchain removed the only mechanism that ever told this
+  repository a new release wanted changes, which is how CI came to be red
+  from the first push and stayed there. This keeps the eventual bump one
+  release wide.
 - `hades-viewer` (`crates/hades-frontend`) — a local WebGL graph viewer for
   any HADES graph, plus a shared-reference channel between a human and an
   agent. Renders a named graph as a force-directed view with styling driven
@@ -107,6 +113,39 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- CI now passes. It had never passed on this repository, including on `main`.
+  `rust-toolchain.toml` pinned `channel = "stable"`, which is a moving target
+  that resolves per machine, so CI ran 1.98.1 while a workstation ran whatever
+  its last `rustup update` fetched. The channel is now pinned to an exact
+  version, so the local gate and CI are the same gate.
+- `TrainingError::Status` and `ExtractionError::Status` box their
+  `tonic::Status`, which is 176 bytes and set the size of every `Result` in
+  those modules. **Breaking**: both variants now hold `Box<tonic::Status>`,
+  and a manual `From<tonic::Status>` keeps `?` working. This removes 27
+  `clippy::result_large_err` errors at the source rather than allowing them.
+  The lint is allowed on the four generated modules in `hades-proto`, where
+  the signatures come from `tonic-build` and boxing is not available, and on
+  one call site in `hades-frontend` whose error is an axum `Response` by
+  design. A third allow in `hades-core::training` was made dead by the boxing
+  and is removed, along with its comment, which said `TrainingError` is large
+  because of `tonic::Status` after that had stopped being true.
+- `decode_f32_embeddings` and the tensor readers use `as_chunks::<4>()`
+  instead of `chunks_exact(4)`, which drops three `try_into().unwrap()` calls
+  that existed only to convert a slice to an array. The two tensor readers
+  state the divisibility they assume at the point `as_chunks` discards the
+  remainder. safetensors already rejects a mismatched byte range on
+  deserialize, so the branch is unreachable today and is a guard on the
+  assumption rather than on the file.
+- CI actions are pinned to commit SHAs with a `permissions: contents: read`
+  block. A tag can be moved and a branch moves by design, so `@v4` or
+  `@master` let upstream change what runs here with no change landing in this
+  repository, and the drift job hands its token to a third-party action.
+- `ci.yml` reads the pinned toolchain from `rust-toolchain.toml` and asserts
+  the running `rustc` matches it. It previously asked the action for `@stable`,
+  so the pin held only by rustup's per-command override, and anything setting
+  `RUSTUP_TOOLCHAIN` would have restored the drift silently.
+- The workspace declares `rust-version`, so a build that bypasses rustup gets
+  cargo's version diagnostic rather than a missing-method error.
 - `codebase drift` reported one tree's file nodes as `stale` for another,
   on a delete path. File keys are relative to the ingest root, so they
   carry no evidence of which tree produced them, and the graph side of

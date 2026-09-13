@@ -1,4 +1,14 @@
 [toolchain]
-channel = "stable"
+# Pinned to an exact version, not "stable".
+#
+# "stable" is a moving target that resolves per machine: CI installs it fresh
+# on every run, while a workstation gets whatever its last `rustup update`
+# fetched. That drift is not cosmetic. It put a green local gate and a red CI
+# on the same commit, because rustfmt and clippy both changed between 1.97 and
+# 1.98, and the local run was authoritative for nobody.
+#
+# Bump this deliberately, and run `cargo fmt --all` and clippy in the same
+# commit so the formatting change lands with the version that wants it.
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
