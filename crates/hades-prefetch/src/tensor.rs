@@ -619,15 +619,21 @@ impl MappedGraph {
             });
         }
         let bytes = view.data();
-        // `as_chunks` drops a ragged tail silently, and this reader takes a
-        // caller-supplied mmap. A truncated or hand-edited file would otherwise
-        // return a short Vec with Ok, and the caller's own invariant
-        // (`features.len() == num_nodes * feature_dim`) would break far from
-        // the cause. `graph::export::decode_f32_embeddings` already refuses
-        // this input; these two did not.
+        // `as_chunks().0` discards a ragged tail with no diagnostic, so the
+        // discard site says out loud what it assumes.
+        //
+        // Not the primary defence, and the comment first written here claimed
+        // it was. safetensors validates on deserialize that a tensor's byte
+        // range equals shape times dtype width (`e - s != size` ->
+        // `TensorInvalidInfo`), so a U32 view reaching this point already has a
+        // length divisible by four and this branch is unreachable today. It is
+        // kept because the assumption belongs next to the code that depends on
+        // it: if the dtype check above ever widens, an unguarded `as_chunks`
+        // returns a short Vec with Ok and breaks the caller's
+        // `len == count * width` invariant far from the cause.
         if !bytes.len().is_multiple_of(4) {
             return Err(TensorError::RaggedTensor {
-                name: "edge_src".into(),
+                name: name.to_string(),
                 len: bytes.len(),
             });
         }
@@ -656,12 +662,18 @@ impl MappedGraph {
             });
         }
         let bytes = view.data();
-        // `as_chunks` drops a ragged tail silently, and this reader takes a
-        // caller-supplied mmap. A truncated or hand-edited file would otherwise
-        // return a short Vec with Ok, and the caller's own invariant
-        // (`features.len() == num_nodes * feature_dim`) would break far from
-        // the cause. `graph::export::decode_f32_embeddings` already refuses
-        // this input; these two did not.
+        // `as_chunks().0` discards a ragged tail with no diagnostic, so the
+        // discard site says out loud what it assumes.
+        //
+        // Not the primary defence, and the comment first written here claimed
+        // it was. safetensors validates on deserialize that a tensor's byte
+        // range equals shape times dtype width (`e - s != size` ->
+        // `TensorInvalidInfo`), so a U32 view reaching this point already has a
+        // length divisible by four and this branch is unreachable today. It is
+        // kept because the assumption belongs next to the code that depends on
+        // it: if the dtype check above ever widens, an unguarded `as_chunks`
+        // returns a short Vec with Ok and breaks the caller's
+        // `len == count * width` invariant far from the cause.
         if !bytes.len().is_multiple_of(4) {
             return Err(TensorError::RaggedTensor {
                 name: "node_features".into(),

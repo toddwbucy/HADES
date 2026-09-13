@@ -132,8 +132,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - `decode_f32_embeddings` and the tensor readers use `as_chunks::<4>()`
   instead of `chunks_exact(4)`, which drops three `try_into().unwrap()` calls
   that existed only to convert a slice to an array. The two tensor readers
-  gained the `len % 4` guard the export path already had: `as_chunks` drops a
-  ragged tail silently, and these read a caller-supplied mmap.
+  state the divisibility they assume at the point `as_chunks` discards the
+  remainder. safetensors already rejects a mismatched byte range on
+  deserialize, so the branch is unreachable today and is a guard on the
+  assumption rather than on the file.
 - CI actions are pinned to commit SHAs with a `permissions: contents: read`
   block. A tag can be moved and a branch moves by design, so `@v4` or
   `@master` let upstream change what runs here with no change landing in this
