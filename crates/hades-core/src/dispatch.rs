@@ -4632,9 +4632,14 @@ mod handlers {
         // variable before dispatching, which is the only surface it belongs to.
         let (profile_name, profile) = resolve_query_profile(collection, None)?;
 
-        // 2. Embed the query text. `retrieval.query` is deliberate: the
-        //    embedder is asymmetric, and embedding a query as a passage
-        //    measurably degrades retrieval.
+        // 2. Embed the query text with the adapter this profile's corpus was
+        //    embedded with. The adapters do not share a vector space, so a
+        //    mismatch is not a small loss: searching a `code` corpus with
+        //    `retrieval.query` cut top-versus-median separation from 0.2132 to
+        //    0.1405 on this repository's own graph and put an unrelated
+        //    assertion at rank one. For documents the task stays
+        //    `retrieval.query`, because that adapter is asymmetric and
+        //    embedding a query as a passage measurably degrades retrieval.
         let client = EmbeddingClient::connect_at(&config.embedding.service.socket)
             .await
             .map_err(|e| {
@@ -4643,7 +4648,7 @@ mod handlers {
                 ))
             })?;
         let embed_result = client
-            .embed(&[text.to_string()], "retrieval.query", None)
+            .embed(&[text.to_string()], profile.query_task, None)
             .await
             .map_err(|e| HandlerError::ServiceError(format!("failed to embed query text: {e}")))?;
         let query_vec = embed_result.embeddings.first().ok_or_else(|| {

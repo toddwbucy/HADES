@@ -122,6 +122,18 @@ enum Commands {
         /// Maximum concurrent items (overrides config, must be >= 1).
         #[arg(long)]
         concurrency: Option<NonZeroUsize>,
+
+        /// Derive document keys from each input's path relative to this
+        /// directory, instead of from its file stem.
+        ///
+        /// Use this for any tree: stems are not unique across directories, so
+        /// eleven files named `README.md` all key as `README`, the first wins,
+        /// and the rest are reported as skipped. With `--root` they key as
+        /// `docs_a_README`, `docs_b_README` and so on, which is how
+        /// `codebase ingest` has always keyed files. Inputs outside the root
+        /// fall back to the stem with a warning.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Create a compliance edge linking a document to a smell node.
@@ -264,6 +276,7 @@ fn main() -> anyhow::Result<()> {
             force,
             reset,
             concurrency,
+            root,
         } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -280,6 +293,7 @@ fn main() -> anyhow::Result<()> {
                 resume,
                 reset,
                 concurrency.map(NonZeroUsize::get),
+                root,
             ));
             match result {
                 Ok(()) => Ok(()),

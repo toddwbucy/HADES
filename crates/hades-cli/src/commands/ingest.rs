@@ -68,6 +68,7 @@ pub async fn run(
     resume: bool,
     reset: bool,
     concurrency: Option<usize>,
+    root: Option<PathBuf>,
 ) -> Result<()> {
     let cmd_start = Instant::now();
 
@@ -186,6 +187,7 @@ pub async fn run(
             let db = db.clone();
             let custom_id = custom_id.clone();
             let extra_metadata = extra_metadata.clone();
+            let root = root.clone();
 
             async move {
                 ingest_file(
@@ -197,6 +199,7 @@ pub async fn run(
                     force,
                     extra_metadata.as_deref(),
                     custom_id.as_deref(),
+                    root.as_deref(),
                 )
                 .await
             }
@@ -289,19 +292,12 @@ async fn ingest_file(
     force: bool,
     extra_metadata: Option<&Value>,
     custom_id: Option<&str>,
+    root: Option<&Path>,
 ) -> Result<Value> {
-    // Identity FIRST, from the path as the caller wrote it: doc_key comes from
-    // the caller's file stem, so a symlinked input keeps the name the caller
-    // used rather than silently adopting the target's stem.
-    let doc_key = custom_id
-        .map(keys::normalize_document_key)
-        .unwrap_or_else(|| {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            keys::normalize_document_key(stem)
-        });
+    // Identity FIRST, from the path as the caller wrote it: the key comes from
+    // the caller's own path, so a symlinked input keeps the name the caller used
+    // rather than silently adopting the target's.
+    let doc_key = derive_doc_key(path, custom_id, root);
 
     // THEN canonicalize for everything that crosses a process boundary. The
     // extraction service runs as its own user in its own working directory, so
@@ -313,13 +309,38 @@ async fn ingest_file(
         .with_context(|| format!("input path not found or unreadable: {}", path.display()))?;
     let path = path.as_path();
 
-    // Check if already exists (unless --force).
-    if !force && document_exists(db, profile.metadata, &doc_key).await? {
-        info!(
-            doc_key,
-            "already ingested, skipping (use --force to re-process)"
-        );
-        return Ok(json!({"skipped": true}));
+    // Who already holds this key, and is it this same file?
+    //
+    // The skip below is right for re-ingesting one document and wrong for two
+    // different documents that happen to share a key, and the key alone cannot
+    // tell them apart. Comparing the stored `source_path` can. Without this, the
+    // second file is reported as skipped inside a successful run, which is how
+    // 3 of this repository's 17 markdown files vanished on their first ingest.
+    //
+    // Checked even under `--force`, because there the collision is worse: force
+    // overwrites, so a different document would be replaced rather than skipped.
+    let canonical_input = path.display().to_string();
+    if let Some(stored) = existing_source_path(db, profile.metadata, &doc_key).await? {
+        match stored {
+            Some(ref stored_path) if stored_path != &canonical_input => {
+                bail!(
+                    "document key '{doc_key}' is already held by a different file.\n  \
+                     stored: {stored_path}\n  incoming: {canonical_input}\n\
+                     Keys derive from the file stem, so two files with the same name \
+                     in different directories collide. Pass --root <dir> to key by \
+                     path relative to that directory, or --id to name this one \
+                     explicitly."
+                );
+            }
+            _ if !force => {
+                info!(
+                    doc_key,
+                    "already ingested, skipping (use --force to re-process)"
+                );
+                return Ok(json!({"skipped": true}));
+            }
+            _ => {}
+        }
     }
 
     // Process through pipeline.
@@ -382,12 +403,68 @@ fn merge_extra_metadata(doc: &mut Value, extra: Option<&Value>) {
 }
 
 /// Check if a document key already exists in a collection.
-async fn document_exists(db: &ArangoPool, collection: &str, doc_key: &str) -> Result<bool> {
+/// The `source_path` of the document already stored under `doc_key`, if any.
+///
+/// Returns `Ok(None)` when nothing holds the key. `Ok(Some(None))` means a
+/// document is there but predates `source_path` being recorded, which cannot be
+/// compared and so is treated as the same document.
+async fn existing_source_path(
+    db: &ArangoPool,
+    collection: &str,
+    doc_key: &str,
+) -> Result<Option<Option<String>>> {
     match hades_core::db::crud::get_document(db, collection, doc_key).await {
-        Ok(_) => Ok(true),
-        Err(e) if e.is_not_found() => Ok(false),
+        Ok(doc) => Ok(Some(
+            doc.get("source_path")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        )),
+        Err(e) if e.is_not_found() => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// The document key for an input, and where it came from.
+///
+/// Two derivations, because the command serves two shapes of input. A single
+/// paper is identified by its own name, and a tree of files is identified by
+/// position within the tree.
+///
+/// **The stem alone is not unique in a tree**, which cost 3 of 17 documents on
+/// this repository's own first ingest and would have cost 10 of 101 on
+/// WeaverTools: 11 files named `README.md` all key as `README`, the first one
+/// wins, and the rest hit the already-ingested branch and are reported as
+/// skipped inside a run whose envelope says success. `--root` keys by the path
+/// relative to that directory instead, the way `codebase ingest` has always
+/// keyed files, so every file in a tree gets its own identity.
+fn derive_doc_key(path: &Path, custom_id: Option<&str>, root: Option<&Path>) -> String {
+    if let Some(id) = custom_id {
+        return keys::normalize_document_key(id);
+    }
+    if let Some(root) = root {
+        // Canonicalize both sides or the prefix will not strip: the root comes
+        // from the command line and the input may be relative to somewhere else.
+        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if let Ok(rel) = canonical_path.strip_prefix(&canonical_root) {
+            // Drop the extension, keep the directories: docs/a/spec.md becomes
+            // docs_a_spec. Two files differing only by extension in one
+            // directory would still collide, which is a narrower case than the
+            // one this fixes and is visible as a collision rather than silent.
+            let rel = rel.with_extension("");
+            return keys::normalize_document_key(&rel.to_string_lossy());
+        }
+        warn!(
+            path = %path.display(),
+            root = %root.display(),
+            "input is not under --root, keying by file stem instead"
+        );
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    keys::normalize_document_key(stem)
 }
 
 /// Determine the embedding task based on explicit --task flag or file extensions.
@@ -410,4 +487,67 @@ fn is_code_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|ext| CODE_EXTENSIONS.contains(&ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defect this exists for: eleven `README.md` files, one key.
+    #[test]
+    fn root_relative_keys_separate_same_named_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        for dir in ["docs", "deploy/systemd", "seeds"] {
+            std::fs::create_dir_all(root.join(dir)).expect("mkdir");
+            std::fs::write(root.join(dir).join("README.md"), "# readme\n").expect("write");
+        }
+
+        let keys: Vec<String> = ["docs", "deploy/systemd", "seeds"]
+            .iter()
+            .map(|dir| derive_doc_key(&root.join(dir).join("README.md"), None, Some(root)))
+            .collect();
+
+        assert_eq!(
+            keys,
+            vec![
+                "docs_README".to_string(),
+                "deploy_systemd_README".to_string(),
+                "seeds_README".to_string(),
+            ]
+        );
+
+        // Without a root they all collapse, which is the behaviour that dropped
+        // 3 of 17 documents. Pinned so the difference stays visible.
+        let stems: Vec<String> = ["docs", "deploy/systemd", "seeds"]
+            .iter()
+            .map(|dir| derive_doc_key(&root.join(dir).join("README.md"), None, None))
+            .collect();
+        assert_eq!(stems, vec!["README".to_string(); 3]);
+    }
+
+    #[test]
+    fn custom_id_wins_over_both_derivations() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("paper.md"), "x").expect("write");
+        assert_eq!(
+            derive_doc_key(
+                &tmp.path().join("paper.md"),
+                Some("2501.12345v2"),
+                Some(tmp.path())
+            ),
+            "2501_12345"
+        );
+    }
+
+    #[test]
+    fn input_outside_the_root_falls_back_to_the_stem() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let other = tempfile::tempdir().expect("tempdir");
+        std::fs::write(other.path().join("elsewhere.md"), "x").expect("write");
+        assert_eq!(
+            derive_doc_key(&other.path().join("elsewhere.md"), None, Some(tmp.path())),
+            "elsewhere"
+        );
+    }
 }

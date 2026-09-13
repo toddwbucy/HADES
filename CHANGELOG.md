@@ -133,6 +133,26 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- `hades ingest` keyed documents by file stem, so files sharing a name in
+  different directories collided and every one after the first was reported as
+  skipped inside a run whose envelope said success. It cost 3 of this
+  repository's 17 markdown files on their first ingest, and would have cost 10
+  of WeaverTools' 101, where 11 files are named `README.md`. Two changes: a new
+  `--root <dir>` derives keys from each input's path relative to that directory,
+  the way `codebase ingest` has always keyed files, and a key already held by a
+  *different* `source_path` is now an error naming both paths rather than a
+  skip. The collision check runs under `--force` too, where the old behaviour
+  was worse than skipping: it overwrote a different document.
+- `db.query` embedded every query with `retrieval.query`, including searches of
+  a `code` corpus, and the Jina task adapters do not share a vector space.
+  Measured on this repository's own code graph, 1,453 vectors: separation
+  between the top hit and the median was 0.1405 with `retrieval.query` against
+  0.2132 with `code` on both sides, and the mismatched search returned an
+  unrelated hex-digit assertion at rank one where the matched one returned the
+  chunking strategy. The task is now a property of the collection profile,
+  `code` for `codebase` and `retrieval.query` for documents, so it cannot drift
+  from what the corpus was embedded with. This answers roadmap question R28 for
+  the code half: no query/passage split there.
 - The embedder silently truncated any input over its sequence ceiling and
   reported success. A 45,183-token document sent to a 32,768-token profile
   returned HTTP 200 with one vector, roughly 12,400 tokens discarded, and
