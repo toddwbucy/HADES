@@ -121,6 +121,26 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- `codebase ingest` keyed one tree two ways depending on how its root was
+  typed. The base was canonicalized while discovered paths were not, so
+  `rel_path_for`'s `strip_prefix` missed and fell back to the whole path as
+  given: `crates/hades-proto` ingested relatively keyed three files
+  `crates_hades-proto_build_rs` and absolutely keyed the same three `build_rs`,
+  producing six file nodes with six sets of chunks, symbols and embeddings, both
+  halves stamped with the same `ingest_root` so `codebase drift` could not tell
+  them apart. The same cause broke rust-analyzer enrichment from the other end:
+  the crate-root walk popped a relative path to empty, and a session spawned
+  with an empty working directory failed with ENOENT, losing every call and
+  implements edge in the run. The ingest root is now resolved and canonicalized
+  once, before anything derives from it.
+- The extraction client reads `HADES_EXTRACTOR_SOCKET`, which
+  `services/extraction/config.py` has always honoured while the Rust side
+  hardcoded `/run/hades/extractor.sock`. That directory is created by
+  `tmpfiles.d` as root, so a user-level deployment had no reachable extractor
+  and `hades ingest` could not process a document at all. `http://`, `https://`,
+  `unix:///path` and bare absolute paths are accepted, matching the embedding
+  client; a malformed value is an error naming the value rather than a silent
+  fall back to the default.
 - CI now passes. It had never passed on this repository, including on `main`.
   `rust-toolchain.toml` pinned `channel = "stable"`, which is a moving target
   that resolves per machine, so CI ran 1.98.1 while a workstation ran whatever

@@ -128,10 +128,8 @@ pub async fn run(
 ) -> Result<()> {
     let cmd_start = Instant::now();
 
-    // Validate path exists.
-    if !path.exists() {
-        bail!("path not found: {}", path.display());
-    }
+    // Resolve the ingest root before anything derives from it.
+    let path = resolve_ingest_root(&path)?;
 
     let unparsed_set = normalize_unparsed_ext(unparsed_ext);
     let lang_override = parse_language_arg(language)?;
@@ -1068,6 +1066,35 @@ async fn stamp_ingest_root(db: &ArangoPool, base: &Path, keys: &[String]) -> Res
 /// path relative to this base — so anything comparing graph keys against the
 /// working tree (e.g. `codebase drift`) MUST derive keys through this same
 /// function, or every key mismatches and the comparison is meaningless.
+/// Resolve the ingest root: it must exist, and it is canonicalized.
+///
+/// Canonical because everything downstream mixes two derivations of the same
+/// tree. [`ingest_base_path`] canonicalizes the base, while `discover_files`
+/// returned paths exactly as the operator typed them, so a relative argument
+/// left the two in different spaces. [`rel_path_for`] then stripped an absolute
+/// base off a relative path, failed, and fell back to the whole path as given.
+///
+/// Measured on `crates/hades-proto`, three files: an absolute argument keyed
+/// them `build_rs`, `src_lib_rs`, `tests_proto_types_rs`, and a relative
+/// argument keyed the same three files
+/// `crates_hades-proto_build_rs` and so on. Six file nodes for three files,
+/// each with its own chunks, symbols and embeddings, and both sets stamped with
+/// the same `ingest_root`, so `codebase drift` could not tell them apart.
+///
+/// The rust-analyzer phase broke from the other end of the same cause. Its
+/// `rust_abs_paths` were relative, so the crate-root walk in
+/// `find_workspace_root` popped to an empty path (`Cargo.toml` existing in the
+/// process cwd), and spawning a session with an empty working directory failed
+/// with ENOENT. Every call and implements edge in the run was lost, which #164's
+/// guard then correctly refused to accept silently.
+pub(crate) fn resolve_ingest_root(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("path not found: {}", path.display());
+    }
+    path.canonicalize()
+        .with_context(|| format!("failed to resolve ingest path: {}", path.display()))
+}
+
 pub(crate) fn ingest_base_path(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
@@ -4120,6 +4147,60 @@ mod tests {
             to.starts_with("codebase_files/"),
             "expected file edge fallback, got: {to}"
         );
+    }
+
+    // ── Ingest root resolution ──────────────────────────────────────────
+
+    /// One tree named two ways must produce one set of keys.
+    ///
+    /// Before the root was canonicalized it produced two. The base was
+    /// canonical and the discovered paths were not, so `rel_path_for`'s
+    /// `strip_prefix` missed and fell back to the whole path as typed: three
+    /// files in `crates/hades-proto` keyed as `build_rs` from an absolute
+    /// argument and `crates_hades-proto_build_rs` from a relative one, six
+    /// nodes for three files, both halves stamped with the same ingest root.
+    ///
+    /// A `..` detour rather than a relative path, deliberately: a relative path
+    /// resolves against the process cwd, and mutating that races every other
+    /// test in the binary.
+    #[test]
+    fn one_tree_named_two_ways_keys_identically() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("src")).expect("mkdir");
+        std::fs::write(tree.join("src/lib.rs"), "pub fn a() {}\n").expect("write lib.rs");
+        std::fs::write(tree.join("build.rs"), "fn main() {}\n").expect("write build.rs");
+
+        let unparsed = std::collections::HashSet::new();
+        let keys_for = |root: &Path| -> Vec<String> {
+            let root = resolve_ingest_root(root).expect("root resolves");
+            let base = ingest_base_path(&root);
+            let mut keys: Vec<String> = discover_files(&root, None, &unparsed)
+                .expect("discovery succeeds")
+                .iter()
+                .map(|f| file_key_for(&base, f))
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        let canonical = keys_for(&tree);
+        let detoured = keys_for(&tree.join("..").join("tree"));
+
+        assert_eq!(canonical, detoured, "the same tree keyed two ways");
+        assert_eq!(
+            canonical,
+            vec!["build_rs".to_string(), "src_lib_rs".to_string()],
+            "keys must be relative to the ingest root, not to how it was typed"
+        );
+    }
+
+    #[test]
+    fn resolve_ingest_root_reports_a_missing_path_by_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("not-here");
+        let err = resolve_ingest_root(&missing).expect_err("must not resolve");
+        assert!(err.to_string().contains("not-here"), "{err}");
     }
 
     // ── Embed window construction ───────────────────────────────────────
