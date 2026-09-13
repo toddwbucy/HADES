@@ -145,17 +145,21 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   index, its token count and the ceiling, which is what the PE-API error table
   specified from the start. Callers pre-chunk or load a profile on a bigger
   card.
-- The measured ceiling for the 16 GiB card was wrong by 25 percent, and the
-  model's resident footprint by 3 GiB. The 15,000-token figure came from a
-  synthetic probe; real documents through the running service pass at 11,926
-  tokens repeatedly and fail at 12,196, 12,215, 12,417 and 13,382, the last of
-  those also as the first request to a freshly started process. PyTorch reports
-  12.03 GiB allocated immediately after load, not the 9,216 MiB
-  `MODEL_RESIDENT_MIB` claimed, which left roughly 3 GiB for activations and put
-  the edge at 12k. The constant and the profile are corrected from the real
-  measurements. On the 48 GiB card a real 31,871-token document peaks at 27,526
-  MiB against the 23,906 MiB a probe recorded, so its VRAM floor is raised to 28
-  GiB.
+- The measured ceiling for the 16 GiB card was wrong by 25 percent. The
+  15,000-token figure came from a synthetic probe; real documents through the
+  running service pass at 11,926 tokens repeatedly and fail at 12,196, 12,215,
+  12,417 and 13,382, the last of those also as the first request to a freshly
+  started process. The profile is corrected to 11,900. On the 48 GiB card a real
+  31,871-token document peaks at 27,526 MiB against the 23,906 MiB a probe
+  recorded, so its VRAM floor is raised to 28 GiB.
+- `MODEL_RESIDENT_MIB` is measured rather than estimated: 7,993 MiB, read from
+  `torch.cuda.memory_allocated` after a bare load, of which 7,162 MiB is 3.755B
+  fp16 parameters and 686 MiB is 1,518 fp32 LoRA tensors peft keeps unquantized.
+  Set to 8,192. The previous 9,216 was an estimate, and an intermediate value of
+  12,288 taken from an OOM traceback was wrong in the other direction: that
+  reading came from *during* a failing forward pass, so it counted roughly 4 GiB
+  of partial activations along with the model, and it would have made the
+  contention preflight demand 14,336 MiB free on a card that has about 15,500.
 - `codebase ingest` keyed one tree two ways depending on how its root was
   typed. The base was canonicalized while discovered paths were not, so
   `rel_path_for`'s `strip_prefix` missed and fell back to the whole path as

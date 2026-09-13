@@ -81,12 +81,20 @@ MAX_TOKENS = int(os.environ.get("HADES_EMBEDDER_MAX_TOKENS", "15000"))
 # MAX_TOKENS being set from measurement rather than hope.
 #
 # When you want a hard guarantee instead, set the flat floor below.
-# Measured on olympus 2026-09-13: PyTorch reports 12.03 GiB allocated on GPU 2
-# immediately after load, before any forward pass, and nvidia-smi shows 12.19
-# GiB for the process. The previous 9,216 understated it by roughly 3 GiB, which
-# made the contention preflight too permissive on a 16 GiB card: it would admit
-# a card with 11 GiB free that cannot hold the model at all.
-MODEL_RESIDENT_MIB = 12288
+# Measured directly on olympus 2026-09-13 by loading the model and reading
+# torch.cuda.memory_allocated: **7,993 MiB**, of which 7,162 MiB is 3.755B fp16
+# parameters and 686 MiB is 1,518 fp32 LoRA tensors that peft keeps unquantized.
+#
+# An earlier pass set this to 12,288 from the "12.03 GiB allocated" line in an
+# OOM traceback. That reading was taken *during* the failing forward pass, so it
+# counted the model plus roughly 4 GiB of partial activations, and using it here
+# made the preflight demand 14,336 MiB free on a 16 GiB card that has about
+# 15,500: any other process touching the card would have made HADES refuse it.
+#
+# The bisected sequence ceilings are unaffected, since those were measured by
+# running documents rather than derived from this number. What this constant
+# gates is the contention check, and 8,192 is the measured model rounded up.
+MODEL_RESIDENT_MIB = 8192
 CONTENTION_HEADROOM_MIB = 2048
 
 # A flat floor, in MiB, that overrides the computed estimate when set.
