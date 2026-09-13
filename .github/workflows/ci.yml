@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so toolchain churn surfaces one release at a time rather than
+    # arriving three releases deep in a single bump.
+    - cron: "0 6 * * 1"
 
 # Cancel in-flight runs of the same workflow on the same ref when a new
 # commit lands. Avoids burning CI minutes on stale PR pushes.
@@ -25,10 +29,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # rust-toolchain.toml is the single source of truth for the compiler.
+      # Pinning it while the action still asks for `@stable` left the pin
+      # holding only by rustup's file-over-default precedence: the action would
+      # install and default to a newer stable, rustup would quietly override it
+      # per-command, and anything setting RUSTUP_TOOLCHAIN would restore the
+      # drift with nothing to say so. Read the pin and install exactly it.
+      - name: Read the pinned toolchain
+        id: toolchain
+        run: |
+          channel=$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "pinned to $channel"
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           components: rustfmt, clippy
+
+      # The gate should be able to prove which compiler judged the code.
+      # Without this, a silent toolchain substitution looks exactly like a
+      # passing run.
+      - name: Assert the running compiler matches the pin
+        run: |
+          rustc --version
+          cargo fmt --version
+          cargo clippy --version
+          running=$(rustc --version | cut -d' ' -f2)
+          expected="${{ steps.toolchain.outputs.channel }}"
+          if [ "$running" != "$expected" ]; then
+            echo "::error::rustc is $running but rust-toolchain.toml pins $expected"
+            exit 1
+          fi
 
       # hades-proto pulls in prost-build via tonic-build, which shells out
       # to `protoc` at build time. Workstations typically have protobuf-compiler
@@ -77,3 +110,40 @@ jobs:
           cargo test -p hades-proto --test proto_types --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
+
+  # The pin fixes the drift and removes the only mechanism that ever told this
+  # repository a new toolchain wanted changes, which is how CI came to be red
+  # from the first push and stayed that way. This job keeps that signal without
+  # making stable a gate: it is allowed to fail, and its job is to keep the
+  # bump one release wide instead of three.
+  stable-drift:
+    name: stable drift (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install current stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: What current stable would say
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          rustc --version
+          echo "--- fmt ---"
+          cargo fmt --all -- --check || echo "::warning::current stable reformats this tree"
+          echo "--- clippy ---"
+          cargo clippy --workspace --all-targets -- -D warnings \
+            || echo "::warning::current stable has lints this tree does not satisfy"

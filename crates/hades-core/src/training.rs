@@ -168,7 +168,6 @@ pub struct CheckpointResult {
 }
 
 /// Convert a path to a UTF-8 string, returning an error for non-UTF-8 paths.
-#[allow(clippy::result_large_err)] // TrainingError is large due to tonic::Status
 fn path_to_string(path: &Path) -> Result<String, TrainingError> {
     path.to_str()
         .map(|s| s.to_string())
@@ -520,5 +519,36 @@ impl std::fmt::Debug for TrainingClient {
         f.debug_struct("TrainingClient")
             .field("endpoint", &self.config.endpoint)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod error_conversion_tests {
+    use super::*;
+
+    /// `?` at every gRPC call site depends on this conversion.
+    ///
+    /// It used to come from thiserror's `#[from]`. Boxing the variant to keep
+    /// `clippy::result_large_err` quiet removed the derive, and the hand-written
+    /// replacement was the only runtime-visible change in that commit and the
+    /// one part nothing exercised. A refactor that drops the manual impl breaks
+    /// every call site, and the suite would have stayed green.
+    #[test]
+    fn status_converts_and_keeps_its_message() {
+        let err: TrainingError = tonic::Status::not_found("no such checkpoint").into();
+        assert!(matches!(err, TrainingError::Status(_)));
+        assert!(
+            err.to_string().contains("no such checkpoint"),
+            "boxing must not swallow the status message, got: {err}"
+        );
+    }
+
+    /// The boxed status stays reachable as a source, which `#[from]` gave for
+    /// free and `#[source]` has to be asked for.
+    #[test]
+    fn status_is_reachable_as_a_source() {
+        let err: TrainingError = tonic::Status::internal("backend fell over").into();
+        let source = std::error::Error::source(&err).expect("status must remain the source");
+        assert!(source.to_string().contains("backend fell over"));
     }
 }

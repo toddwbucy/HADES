@@ -11,6 +11,17 @@ resolver = "2"
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
+# The compiler this workspace is built and gated with, matching
+# rust-toolchain.toml. Declared so a build that bypasses rustup (a distro
+# package, a vendored or offline build, an image that sets RUSTUP_TOOLCHAIN)
+# gets cargo's "package requires rustc X or newer" instead of a raw error
+# about a missing method.
+#
+# This is the version we verify against, not a measured floor. The true
+# minimum is lower: `slice::as_chunks` and `is_multiple_of` are the newest
+# things used and both predate it. Nobody has built this on an older
+# compiler, so a lower number here would be a claim rather than a fact.
+rust-version = "1.98.1"
 authors = ["Todd Bucy"]
 license = "Apache-2.0"
 repository = "https://github.com/toddwbucy/HADES"

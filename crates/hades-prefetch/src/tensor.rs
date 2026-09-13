@@ -74,6 +74,9 @@ pub enum TensorError {
     #[error("invalid split config: val_ratio ({val}) + test_ratio ({test}) = {sum} > 1.0")]
     InvalidSplitConfig { val: f64, test: f64, sum: f64 },
 
+    #[error("tensor '{name}' has {len} bytes, which is not a whole number of 4-byte values")]
+    RaggedTensor { name: String, len: usize },
+
     #[error("serialization validation failed: {message}")]
     ValidationFailed { message: String },
 
@@ -616,6 +619,18 @@ impl MappedGraph {
             });
         }
         let bytes = view.data();
+        // `as_chunks` drops a ragged tail silently, and this reader takes a
+        // caller-supplied mmap. A truncated or hand-edited file would otherwise
+        // return a short Vec with Ok, and the caller's own invariant
+        // (`features.len() == num_nodes * feature_dim`) would break far from
+        // the cause. `graph::export::decode_f32_embeddings` already refuses
+        // this input; these two did not.
+        if !bytes.len().is_multiple_of(4) {
+            return Err(TensorError::RaggedTensor {
+                name: "edge_src".into(),
+                len: bytes.len(),
+            });
+        }
         let result: Vec<u32> = bytes
             .as_chunks::<4>()
             .0
@@ -641,6 +656,18 @@ impl MappedGraph {
             });
         }
         let bytes = view.data();
+        // `as_chunks` drops a ragged tail silently, and this reader takes a
+        // caller-supplied mmap. A truncated or hand-edited file would otherwise
+        // return a short Vec with Ok, and the caller's own invariant
+        // (`features.len() == num_nodes * feature_dim`) would break far from
+        // the cause. `graph::export::decode_f32_embeddings` already refuses
+        // this input; these two did not.
+        if !bytes.len().is_multiple_of(4) {
+            return Err(TensorError::RaggedTensor {
+                name: "node_features".into(),
+                len: bytes.len(),
+            });
+        }
         let result: Vec<f32> = bytes
             .as_chunks::<4>()
             .0

@@ -16,26 +16,34 @@
 // It began failing when the toolchain reached 1.98, which widened where the
 // lint fires. The hand-written error types that wrap `tonic::Status` were
 // fixed properly instead, by boxing the variant. Generated code has no such
-// option, so it is allowed here.
-#![allow(clippy::result_large_err)]
+// option, so it is allowed on each generated module below.
+//
+// Deliberately NOT a crate-level `#![allow]`. The argument for it is that the
+// code is generated, and lib.rs is not, so a crate-wide suppression would hand
+// the exemption to the first hand-written helper anyone adds here, under a
+// justification that does not apply to it.
 
 /// Common types shared across Persephone services.
 pub mod common {
+    #![allow(clippy::result_large_err)]
     tonic::include_proto!("persephone.common");
 }
 
 /// Embedding service — vector embedding generation.
 pub mod embedding {
+    #![allow(clippy::result_large_err)]
     tonic::include_proto!("persephone.embedding");
 }
 
 /// Extraction service — document content extraction.
 pub mod extraction {
+    #![allow(clippy::result_large_err)]
     tonic::include_proto!("persephone.extraction");
 }
 
 /// Training service — RGCN link prediction on knowledge graphs (HADES-owned;
 /// decoupled from the `persephone.*` provider brand — issue #106).
 pub mod training {
+    #![allow(clippy::result_large_err)]
     tonic::include_proto!("hades.training");
 }
