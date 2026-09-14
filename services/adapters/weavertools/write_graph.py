@@ -59,6 +59,11 @@ REPORT = "wt_ingest_report"
 # would leave two nodes for one file and a join that proves nothing.
 CODE_FILES = "codebase_files"
 
+# The same argument, for the markdown. A `declared-in` edge ends at the
+# `documents` row the ingest created, so `wt_documents` holds only the 13 records
+# the corpus declares as `kind: document` and not one minted node per file.
+DOC_FILES = "documents"
+
 
 def _endpoint() -> str:
     """Where ArangoDB is, from the same environment the CLI reads.
@@ -141,6 +146,29 @@ def existing_file_keys(db: str) -> set[str]:
     return keys
 
 
+def document_keys_by_rel(db: str) -> dict[str, str]:
+    """Relative path -> the `_key` `hades ingest` gave that document.
+
+    A `declared-in` edge points at the markdown that declares the record, and
+    that markdown is already in the graph as a `documents` row with its text, its
+    chunks and a vector. Looked up by `source_rel` rather than re-deriving the
+    key, because the derivation is the CLI's (`derive_doc_key` drops the
+    extension, normalizes separators and strips a trailing version suffix) and a
+    second implementation of it here would agree until it did not. A path absent
+    from this map is reported, not guessed at.
+    """
+    resp = arango(db, "cursor", {
+        "query": "FOR d IN documents FILTER d.source_rel != null "
+                 "RETURN [d.source_rel, d._key]",
+        "batchSize": 5000,
+    })
+    pairs = list(resp.get("result") or [])
+    while resp.get("hasMore"):
+        resp = arango(db, f"cursor/{resp['id']}", method="PUT")
+        pairs.extend(resp.get("result") or [])
+    return {rel: key for rel, key in pairs}
+
+
 def key_for(ident: str) -> str:
     """An ArangoDB key for an extractor ident, keeping the ident readable.
 
@@ -194,7 +222,12 @@ def main() -> int:
     # `.toml` unrouted, so a plain `hades ingest` creates no node for one and the
     # edge would point at nothing. `hades ingest --unparsed-ext toml` creates it.
     file_keys = set() if args.dry_run else existing_file_keys(args.db)
+    doc_keys = {} if args.dry_run else document_keys_by_rel(args.db)
     missing_sources: list[str] = []
+    missing_documents: list[str] = []
+    # One pass over the node list instead of one per edge endpoint. The lookups
+    # below ran `any()` over 491 nodes twice for each of 1,637 edges.
+    kind_of = {n.ident: n.kind for n in docs.nodes}
     for name, edges in (("documents", docs.edges), ("code", code.edges)):
         for e in edges:
             if e.relation == "cites":
@@ -203,22 +236,31 @@ def main() -> int:
                     missing_sources.append(e.src)
                 src_id = f"{CODE_FILES}/{key}"
             else:
-                src_id = f"{NODE_COLLECTIONS.get('assertion')}/{key_for(e.src)}"
-                for kind, coll in NODE_COLLECTIONS.items():
-                    if any(n.ident == e.src and n.kind == kind for n in docs.nodes):
-                        src_id = f"{coll}/{key_for(e.src)}"
-                        break
-            dst_id = None
-            for kind, coll in NODE_COLLECTIONS.items():
-                if any(n.ident == e.dst and n.kind == kind for n in docs.nodes):
-                    dst_id = f"{coll}/{key_for(e.dst)}"
-                    break
-            if dst_id is None:
-                dst_id = f"{NODE_COLLECTIONS['assertion']}/{key_for(e.dst)}"
+                src_coll = NODE_COLLECTIONS.get(kind_of.get(e.src), NODE_COLLECTIONS["assertion"])
+                src_id = f"{src_coll}/{key_for(e.src)}"
+            if e.relation == "declared-in":
+                # The target is a path, and the node it names is the ingested
+                # markdown rather than anything this adapter writes.
+                doc_key = doc_keys.get(e.dst)
+                if doc_key is None:
+                    if doc_keys:
+                        missing_documents.append(e.dst)
+                    doc_key = key_for(e.dst)
+                dst_id = f"{DOC_FILES}/{doc_key}"
+            else:
+                dst_coll = NODE_COLLECTIONS.get(kind_of.get(e.dst), NODE_COLLECTIONS["assertion"])
+                dst_id = f"{dst_coll}/{key_for(e.dst)}"
+            # `via` is in the key because it is part of the edge's identity: see
+            # the note on `Edge.via`. Three seams between one pair of crates
+            # collapsed into one row without it.
+            identity = f"{e.src}--{e.relation}--{e.dst}"
+            if e.via:
+                identity = f"{identity}--via-{e.via}"
             by_collection[edge_collections[e.relation]].append({
-                "_key": key_for(f"{e.src}--{e.relation}--{e.dst}")[:254],
+                "_key": key_for(identity)[:254],
                 "_from": src_id, "_to": dst_id,
                 "relation": e.relation, "basis": e.basis,
+                "via": e.via, "tag": e.tag,
             })
 
     print(f"{'collection':36} {'documents':>10}")
@@ -249,6 +291,7 @@ def main() -> int:
         "dangling_documents": [vars(e) for e in docs.dangling],
         "dangling_code": [vars(e) for e in code.dangling],
         "cites_sources_with_no_file_node": missing_sources,
+        "declared_in_targets_with_no_document_row": sorted(set(missing_documents)),
         "warning": "counts in *_notes describe claims the extraction could not "
                    "resolve. A coverage query that ignores them will read "
                    "unenforced claims as enforced.",
@@ -263,8 +306,17 @@ def main() -> int:
         )
         for src in sorted(set(missing_sources))[:10]:
             print(f"    {src}", file=sys.stderr)
+    if missing_documents:
+        print(
+            f"\n{len(set(missing_documents))} declared-in edge(s) name a markdown file "
+            f"with no `documents` row, so they dangle. Run the ingest over the tree "
+            f"first:",
+            file=sys.stderr,
+        )
+        for rel in sorted(set(missing_documents))[:10]:
+            print(f"    {rel}", file=sys.stderr)
     print(f"\nwrote {sum(len(v) for v in by_collection.values()):,} documents plus one report")
-    return 1 if missing_sources or report.get("error") else 0
+    return 1 if missing_sources or missing_documents or report.get("error") else 0
 
 
 if __name__ == "__main__":

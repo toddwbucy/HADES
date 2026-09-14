@@ -1,0 +1,283 @@
+# The WeaverTools conformance graph, as data.
+#
+# **Why this file exists.** The graph in WeaverTools_v4 was built by
+# `hades ingest` plus `write_graph.py`, and both create their collections and
+# their gharial edge definitions directly. That worked and left two gaps that
+# only show up later:
+#
+#   1. `hades_schema` held nothing but an empty `meta` document, so
+#      `relation_order` was `[]` and `num_relations` was 0. `graph::loader`
+#      scans exactly the collections named in `relation_order`, so structural
+#      training over this database would have loaded **zero edges** from a graph
+#      holding 13,000 of them, and reported success.
+#   2. The edge definitions existed only in the live database. Nothing in the
+#      repository said what the graph's shape was, so it could not be rebuilt,
+#      reviewed, or diffed.
+#
+# Apply it with `hades --db <name> schema apply` (add `--force` for a database
+# that already holds the corpus: collections and graphs that exist are skipped,
+# and no document outside `hades_schema` is touched).
+#
+# `relation_order` is append-only. A position is a relation's stable id in the
+# trained model, so a new relation goes on the end and nothing is reordered.
+
+feature_dim: 2048
+# Inductive, because this graph grows: a re-ingest adds files and assertions, and
+# a transductive RGCN would need retraining from scratch to place them.
+model_type: hetero_sage
+
+collections:
+  # The universal code layer, created by `hades ingest`.
+  - name: codebase_files
+    type: document
+  - name: codebase_symbols
+    type: document
+  - name: codebase_chunks
+    type: document
+  - name: codebase_embeddings
+    type: document
+  - name: codebase_defines_edges
+    type: edge
+  - name: codebase_calls_edges
+    type: edge
+  - name: codebase_imports_edges
+    type: edge
+  - name: codebase_implements_edges
+    type: edge
+  # The document layer, also `hades ingest`. `documents` is a vertex collection
+  # in this graph and not only a search target: it is where every `declared-in`
+  # edge ends.
+  - name: documents
+    type: document
+  - name: chunks
+    type: document
+  - name: embeddings
+    type: document
+  # The corpus's own records, written by `write_graph.py`.
+  - name: wt_assertions
+    type: document
+  - name: wt_documents
+    type: document
+  - name: wt_vocabulary
+    type: document
+  - name: wt_crates
+    type: document
+  - name: wt_terms
+    type: document
+  - name: wt_axioms
+    type: document
+  - name: wt_artifacts
+    type: document
+  - name: wt_systems
+    type: document
+  - name: wt_ingest_report
+    type: document
+  - name: wt_cites_edges
+    type: edge
+  - name: wt_declared_in_edges
+    type: edge
+  - name: wt_asserts_edges
+    type: edge
+  - name: wt_defines_edges
+    type: edge
+  - name: wt_draws_edges
+    type: edge
+  - name: wt_elects_edges
+    type: edge
+  - name: wt_floor_link_edges
+    type: edge
+  - name: wt_grounds_edges
+    type: edge
+  - name: wt_holds_edges
+    type: edge
+  - name: wt_parent_edges
+    type: edge
+  - name: wt_party_edges
+    type: edge
+  - name: wt_reads_edges
+    type: edge
+  - name: wt_seam_edges
+    type: edge
+  - name: wt_writes_edges
+    type: edge
+
+edge_definitions:
+  # ── the code layer ────────────────────────────────────────────────────────
+  - name: codebase_defines_edges
+    from_collections: [codebase_files]
+    to_collections: [codebase_symbols]
+    description: "A file defines a symbol."
+  - name: codebase_calls_edges
+    from_collections: [codebase_symbols]
+    to_collections: [codebase_symbols]
+    description: "A symbol calls a symbol."
+  - name: codebase_imports_edges
+    from_collections: [codebase_files]
+    to_collections: [codebase_files, codebase_symbols]
+    description: "A file imports a file or a symbol."
+  - name: codebase_implements_edges
+    from_collections: [codebase_symbols]
+    to_collections: [codebase_symbols]
+    description: "A symbol implements a trait or interface."
+
+  # ── the bridge ────────────────────────────────────────────────────────────
+  # The join the whole adapter exists for: a `//! conforms:` header in a source
+  # file, read as an edge to the assertion it claims to satisfy.
+  - name: wt_cites_edges
+    from_collections: [codebase_files]
+    to_collections: [wt_assertions]
+    description: "Source code cites the assertion it conforms to."
+
+  # ── the corpus's declarations ──────────────────────────────────────────────
+  # `declared-in` ends at the ingested markdown, which carries the prose and its
+  # vector. It pointed at a node minted per file until 2026-09-13, which left
+  # two kinds of thing in `wt_documents` and a vertex with no embedding on the
+  # end of every one of these 491 edges.
+  - name: wt_declared_in_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections: [documents]
+    description: "A declared record, and the markdown file declaring it."
+  - name: wt_asserts_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A document asserts an assertion."
+  - name: wt_defines_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A document defines a term."
+  - name: wt_draws_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A record draws on another."
+  - name: wt_elects_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "An election, in the corpus's sense."
+  - name: wt_floor_link_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A floor and what it links to."
+  - name: wt_grounds_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "What grounds a claim."
+  - name: wt_holds_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A party holds an obligation."
+  - name: wt_parent_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A crate's parent crate."
+  - name: wt_party_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A party to a contract."
+  - name: wt_reads_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A reader of a record."
+  - name: wt_seam_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A seam between two crates, papered by the contract in `via`."
+  - name: wt_writes_edges
+    from_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    to_collections:
+      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
+       wt_systems, wt_terms, wt_vocabulary]
+    description: "A writer of a record."
+
+named_graphs:
+  - name: codebase_graph
+    edges:
+      - codebase_defines_edges
+      - codebase_calls_edges
+      - codebase_imports_edges
+      - codebase_implements_edges
+      - wt_cites_edges
+      - wt_declared_in_edges
+      - wt_asserts_edges
+      - wt_defines_edges
+      - wt_draws_edges
+      - wt_elects_edges
+      - wt_floor_link_edges
+      - wt_grounds_edges
+      - wt_holds_edges
+      - wt_parent_edges
+      - wt_party_edges
+      - wt_reads_edges
+      - wt_seam_edges
+      - wt_writes_edges
+    description: "Code, prose, and the conformance chain joining them."
+
+# Every relation in the graph trains. The code layer comes first because it is
+# the largest and the most stable, then the bridge, then the corpus's own
+# declarations. Append only.
+relation_order:
+  - codebase_defines_edges
+  - codebase_calls_edges
+  - codebase_imports_edges
+  - codebase_implements_edges
+  - wt_cites_edges
+  - wt_declared_in_edges
+  - wt_asserts_edges
+  - wt_defines_edges
+  - wt_draws_edges
+  - wt_elects_edges
+  - wt_floor_link_edges
+  - wt_grounds_edges
+  - wt_holds_edges
+  - wt_parent_edges
+  - wt_party_edges
+  - wt_reads_edges
+  - wt_seam_edges
+  - wt_writes_edges

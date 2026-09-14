@@ -427,7 +427,11 @@ struct GraphNeighborsArgs {
     direction: Option<String>,
     #[schemars(description = "Maximum neighbors to return")]
     limit: Option<u32>,
-    #[schemars(description = "Named graph to traverse; omit for the default graph")]
+    #[schemars(
+        description = "Named graph to traverse. Omit it only when the database has \
+                      exactly one graph; with several, the error names them. \
+                      graph_list reports every graph and its edge definitions."
+    )]
     graph: Option<String>,
 }
 
@@ -445,7 +449,11 @@ struct GraphTraverseArgs {
     max_depth: Option<u32>,
     #[schemars(description = "Maximum vertices to return")]
     limit: Option<u32>,
-    #[schemars(description = "Named graph to traverse; omit for the default graph")]
+    #[schemars(
+        description = "Named graph to traverse. Omit it only when the database has \
+                      exactly one graph; with several, the error names them. \
+                      graph_list reports every graph and its edge definitions."
+    )]
     graph: Option<String>,
 }
 
@@ -873,8 +881,8 @@ impl ServerHandler for HadesMcpServer {
             )
             // What a client reads before it looks at a single tool, so it
             // carries the three things that otherwise cost a round trip each:
-            // which profile to search, that traversal needs an explicit graph
-            // name, and that ingest is a job rather than a call.
+            // which profile to search, how the traversal graph is resolved,
+            // and that ingest is a job rather than a call.
             .with_instructions(
                 "HADES knowledge-graph tools. Every result is the HADES JSON \
              envelope: {success, data, error, error_code}. Start with `orient` to \
@@ -883,9 +891,12 @@ impl ServerHandler for HadesMcpServer {
              Use `codebase` for code and omit it for documents, since each is \
              embedded with a different model adapter and the two do not share a \
              vector space.\n\n\
-             Traversal: `graph_traverse` and `graph_neighbors` need an explicit \
-             `graph` name. A code graph built by ingest is `codebase_graph`. \
-             Omitting it targets a graph named `default` that will not exist.\n\n\
+             Traversal: `graph_traverse` and `graph_neighbors` resolve the graph \
+             when the database has exactly one, and otherwise the error names the \
+             graphs to choose from. A code graph built by ingest is \
+             `codebase_graph`. `graph_list` reports each graph with its edge \
+             definitions, which is also how to learn the real edge-collection \
+             names before guessing at them.\n\n\
              Building a graph: `ingest_start` takes one directory and routes every \
              file by extension, code to the analyzers and documents to extraction, \
              into the same graph. It returns a job id immediately because ingests \

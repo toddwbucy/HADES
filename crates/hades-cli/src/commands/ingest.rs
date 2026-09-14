@@ -309,9 +309,14 @@ pub async fn run_phase(
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
     ensure_document_collections(&db, profile).await?;
 
-    let extractor = ExtractionClient::connect_default()
+    let extractor = ExtractionClient::connect_at(&config.extraction.service.socket)
         .await
-        .context("failed to connect to extraction service")?;
+        .with_context(|| {
+            format!(
+                "failed to connect to extraction service at {}",
+                config.extraction.service.socket
+            )
+        })?;
 
     let embedder = EmbeddingClient::connect_at(&config.embedding.service.socket)
         .await

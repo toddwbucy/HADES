@@ -47,6 +47,14 @@ class Edge:
     dst: str
     relation: str
     basis: str
+    # What papers the edge, and its tag. Both are part of the *identity* of a
+    # declared edge, not decoration on it: `weaver-spu --seam--> weaver-harness`
+    # is declared three times in one PRD, once per contract that papers a
+    # separate socket seam, and a key built from source, relation and target
+    # alone collapsed all three into one row. Three real seams became one and
+    # the count came up two short of the corpus, which is how it was found.
+    via: str | None = None
+    tag: str | None = None
 
 
 @dataclass

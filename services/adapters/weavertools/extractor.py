@@ -41,6 +41,9 @@ TAG = re.compile(r"^tag: ([\w-]+)$", re.M)
 EDGE_REL = re.compile(r"^edge: ([\w-]+)$", re.M)
 EDGE_FROM = re.compile(r"^from: (.*)$", re.M)
 EDGE_TO = re.compile(r"^to: (.*)$", re.M)
+# The contract that papers a seam. Read because it distinguishes edges that are
+# otherwise identical -- see the note on `Edge.via`.
+EDGE_VIA = re.compile(r"^via: (.*)$", re.M)
 # Identifiers are kebab-case, always.
 IDENT_OK = re.compile(r"^[a-z0-9-]+$")
 
@@ -86,6 +89,25 @@ CONFORMANCE_SUFFIXES = (".rs", ".toml")
 PRUNE_DIRS = {".git", "archive", "target", "node_modules"}
 
 
+# A record is the run of `key: value` lines it opens with, and nothing after.
+#
+# Splitting a block on `(?=^edge: )` leaves each piece running to the *next*
+# edge record, so 86 of this corpus's edge stanzas carry a following `node:`
+# record inside them. An unbounded search for `tag:` or `via:` therefore read
+# the next node's tag onto the edge -- a field that looks right, belongs to
+# something else, and no count would catch. Bounded here instead.
+RECORD_LINE = re.compile(r"^[a-z][a-z-]*: ")
+
+
+def _record_head(stanza: str) -> str:
+    lines = []
+    for line in stanza.splitlines():
+        if not RECORD_LINE.match(line):
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _walk(root: Path, suffix: str):
     for path in sorted(root.rglob(f"*{suffix}")):
         if PRUNE_DIRS & set(path.parts):
@@ -114,7 +136,16 @@ def read_documents(repo: Path) -> Extraction:
         for path in _walk(root, ".md"):
             rel = str(path.relative_to(repo))
             text = path.read_text(encoding="utf-8", errors="replace")
-            out.nodes.append(Node(ident=rel, kind="document", path=rel, title=path.stem))
+            # **No node is minted for the file itself.** `hades ingest` already
+            # put this markdown in the graph as a `documents` row, with its text,
+            # its chunks and a vector, and `declared-in` points at that row. One
+            # node per file was minted here until 2026-09-13, which left
+            # `wt_documents` holding 68 file nodes beside the corpus's 13
+            # declared `kind: document` records -- two different things in one
+            # collection, matching neither count, and the file half carrying no
+            # embedding for a traversal to land on. It is the same argument the
+            # module docstring already makes for source files: a node that
+            # duplicates one the ingest created is a join that proves nothing.
 
             for block in GRAPH.findall(text):
                 # Split on the record's own keyword. See module docstring.
@@ -147,17 +178,22 @@ def read_documents(repo: Path) -> Extraction:
 
                 # Edge records within the same block.
                 for stanza in re.split(r"(?=^edge: )", block, flags=re.M):
-                    rel_m = EDGE_REL.search(stanza)
-                    src_m = EDGE_FROM.search(stanza)
-                    dst_m = EDGE_TO.search(stanza)
+                    record = _record_head(stanza)
+                    rel_m = EDGE_REL.search(record)
+                    src_m = EDGE_FROM.search(record)
+                    dst_m = EDGE_TO.search(record)
                     if not (rel_m and src_m and dst_m):
                         continue
+                    via_m = EDGE_VIA.search(record)
+                    tag_m = TAG.search(record)
                     out.edges.append(
                         Edge(
                             src=src_m.group(1).strip(),
                             dst=dst_m.group(1).strip(),
                             relation=rel_m.group(1),
                             basis=DECLARED,
+                            via=via_m.group(1).strip() if via_m else None,
+                            tag=tag_m.group(1) if tag_m else None,
                         )
                     )
     return out

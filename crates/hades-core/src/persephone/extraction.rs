@@ -174,9 +174,24 @@ impl ExtractionClient {
     /// Connect to the extraction service with default configuration.
     ///
     /// Honours `HADES_EXTRACTOR_SOCKET`; see
-    /// [`ExtractionClientConfig::from_env`].
+    /// [`ExtractionClientConfig::from_env`]. Prefer [`Self::connect_at`] where a
+    /// [`crate::config::HadesConfig`] is in hand, so the YAML key is honoured
+    /// too.
     pub async fn connect_default() -> Result<Self, ExtractionError> {
         Self::connect(ExtractionClientConfig::from_env()?).await
+    }
+
+    /// Connect to the extraction service named by an endpoint string.
+    ///
+    /// Takes the same spellings as the environment variable, and is what a
+    /// caller holding `config.extraction.service.socket` should use: env
+    /// overrides are already folded into that value by `apply_env_overrides`.
+    pub async fn connect_at(endpoint: &str) -> Result<Self, ExtractionError> {
+        let config = ExtractionClientConfig {
+            endpoint: parse_endpoint(endpoint)?,
+            ..Default::default()
+        };
+        Self::connect(config).await
     }
 
     /// Connect to an extraction service at the given Unix socket path.

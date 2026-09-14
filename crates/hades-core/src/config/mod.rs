@@ -128,6 +128,45 @@ mod tests {
     }
 
     #[test]
+    fn extraction_socket_defaults_yaml_then_env() {
+        let _guard = env_guard();
+
+        // Default: the system install's path.
+        let config = HadesConfig::default();
+        assert_eq!(
+            config.extraction.service.socket,
+            "/run/hades/extractor.sock"
+        );
+
+        // A YAML written before the key existed still parses, and keeps the
+        // default. This is the case that matters: every hades.yaml on disk
+        // predates the key.
+        let config: HadesConfig = serde_yaml::from_str("database:\n  host: x\n").unwrap();
+        assert_eq!(
+            config.extraction.service.socket,
+            "/run/hades/extractor.sock"
+        );
+
+        // YAML names it.
+        let mut config: HadesConfig =
+            serde_yaml::from_str("extraction:\n  service:\n    socket: /tmp/from-yaml.sock\n")
+                .unwrap();
+        assert_eq!(config.extraction.service.socket, "/tmp/from-yaml.sock");
+
+        // Env wins over YAML, and an empty value is ignored rather than
+        // overwriting a good path with one that cannot connect.
+        unsafe { std::env::set_var("HADES_EXTRACTOR_SOCKET", "/tmp/from-env.sock") };
+        config.apply_env_overrides().unwrap();
+        assert_eq!(config.extraction.service.socket, "/tmp/from-env.sock");
+
+        unsafe { std::env::set_var("HADES_EXTRACTOR_SOCKET", "   ") };
+        config.apply_env_overrides().unwrap();
+        assert_eq!(config.extraction.service.socket, "/tmp/from-env.sock");
+
+        unsafe { std::env::remove_var("HADES_EXTRACTOR_SOCKET") };
+    }
+
+    #[test]
     fn test_load_from_yaml() {
         let yaml = r#"
 database:

@@ -19,6 +19,34 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- **`extraction.service.socket` in `hades.yaml`.** The extraction endpoint could
+  only be named by `HADES_EXTRACTOR_SOCKET` or the compiled-in
+  `/run/hades/extractor.sock`, which a user-level deployment cannot write. The
+  variable was set in the daemon's unit file, so the daemon reached the extractor
+  and a CLI run from a plain shell did not: `hades ingest` over a mixed tree
+  finished its code half and returned `document_phase_error: failed to connect to
+  extraction service`, with nowhere to send 83 documents. The embedder's endpoint
+  has always been configurable; this is the same setting for the other service.
+  Env still wins over YAML, an empty value is ignored rather than overwriting a
+  working path, and `ExtractionClient::connect_at` takes the resolved value.
+
+
+- **`services/adapters/weavertools/schema.yaml`**, the WeaverTools graph as data.
+  `hades_schema` in that database held nothing but an empty `meta` document, so
+  `relation_order` was `[]` and `num_relations` was `0`. `graph::loader` scans
+  exactly the collections `relation_order` names, so structural training over a
+  graph holding 13,000 edges would have loaded **zero** of them and reported
+  success. The file registers all 18 edge definitions, the named graph, and the
+  relation order, so the graph is reproducible from the repository and trainable.
+  Applying it to the live database moved `num_relations` from 0 to 18.
+- `via` and `tag` on the WeaverTools `Edge` record, and `via` in the edge key.
+  `weaver-spu --seam--> weaver-harness` is declared three times in one PRD, once
+  per contract papering a separate socket seam, and a key built from source,
+  relation and target alone collapsed all three into one row. Three real seams
+  became one, and the stored total came up two short of the corpus's 665 `edge:`
+  declarations, which is how it was found. All 665 are now distinct.
+
+
 - **Discovery on the MCP surface**, from a session that surveyed a fresh graph and
   reported it as the weakest part. `db_collections` enumerates collections with
   counts and types, and `graph_list` names the graphs with their edge definitions.
@@ -224,6 +252,30 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- **`db.graph.traverse`, `db.graph.neighbors` and `db.graph.shortest_path` no
+  longer invent a graph named `default`.** ArangoDB has no default graph, so
+  omitting `graph` sent every traversal at a graph no database here has;
+  ArangoDB answered "graph not found", and a session reading that failure
+  reasonably concluded the vertex had no neighbours and reported a corpus of
+  1,635 edges as having none. The graph is resolved instead: one named graph
+  needs no argument, several make the error name them, and none says the database
+  is unseeded. A wrong default is worse than a required argument because it fails
+  as an absence rather than as an error. The MCP tool descriptions said "omit for
+  the default graph" and now say what actually happens, pointing at `graph_list`.
+- The WeaverTools `declared-in` edge ends at the ingested `documents` row rather
+  than at a node minted per markdown file. `wt_documents` held 68 file nodes
+  beside the corpus's 13 declared `kind: document` records — two different things
+  in one collection, matching neither count — and the file half carried no
+  embedding, so every one of those 491 edges ended on a vertex with no features
+  for a GNN to read. It is the argument the adapter already made for source
+  files: a node duplicating one the ingest created is a join that proves nothing.
+- An edge record's `via` and `tag` are read from that record's own lines. The
+  block splitter leaves each edge stanza running to the *next* edge record, so 86
+  of this corpus's stanzas carry a following `node:` record inside them, and an
+  unbounded search read the next node's tag onto the edge — a field that looks
+  right, belongs to something else, and no count would catch.
+
 
 - Errors report their cause instead of restating the request.
   `HandlerError::Query` has always carried its `ArangoError` as `#[source]`, and

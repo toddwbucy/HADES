@@ -2813,10 +2813,60 @@ mod handlers {
         }
     }
 
-    /// Default graph name used when the caller doesn't specify one.
-    /// Generic placeholder; per-database graph names should be passed explicitly
-    /// via the `graph` parameter on traversal commands.
-    const DEFAULT_GRAPH: &str = "default";
+    /// Resolve which named graph a traversal runs against.
+    ///
+    /// ArangoDB has no default graph, so the previous `unwrap_or("default")`
+    /// aimed every graph-less traversal at a graph named `default` that no
+    /// database here has. ArangoDB answered "graph not found", the caller saw a
+    /// failed traversal, and one session read that as proof the graph held no
+    /// edges and reported a corpus of 1,635 edges as having none. A wrong
+    /// default is worse than a required argument, because it fails as an absence
+    /// rather than as an error.
+    ///
+    /// So it is resolved instead of guessed: one graph needs no argument, and
+    /// more than one makes the error name the choices, which is the answer the
+    /// caller needed anyway.
+    async fn resolve_graph(pool: &ArangoPool, graph: Option<&str>) -> Result<String, HandlerError> {
+        if let Some(name) = graph {
+            return Ok(name.to_string());
+        }
+        let listed = db_graph_list(pool).await?;
+        let names: Vec<String> = listed
+            .get("graphs")
+            .and_then(|g| g.as_array())
+            .map(|graphs| {
+                graphs
+                    .iter()
+                    .filter_map(|g| g.get("name").and_then(|n| n.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        match names.as_slice() {
+            [] => Err(HandlerError::InvalidParameter {
+                name: "graph".into(),
+                reason: "this database has no named graph, so there is nothing to \
+                         traverse. Seed one with db.schema_init, or check the \
+                         database name."
+                    .into(),
+            }),
+            [only] => {
+                tracing::debug!(graph = %only, "graph omitted, resolved the only one");
+                Ok(only.clone())
+            }
+            many => Err(HandlerError::InvalidParameter {
+                name: "graph".into(),
+                reason: format!(
+                    "this database has {} named graphs ({}), so the traversal has to \
+                     name one. Pass it as `graph`; db.graph.list reports each graph's \
+                     edge definitions.",
+                    many.len(),
+                    many.join(", ")
+                ),
+            }),
+        }
+    }
 
     /// Maximum traversal depth to prevent runaway queries.
     const MAX_TRAVERSAL_DEPTH: u32 = 20;
@@ -2850,7 +2900,7 @@ mod handlers {
             });
         }
 
-        let graph_name = graph.unwrap_or(DEFAULT_GRAPH);
+        let graph_name = resolve_graph(pool, graph).await?;
 
         // Direction is interpolated as a keyword — AQL doesn't support it as
         // a bind variable.  Safe because validate_direction returns only one
@@ -2902,7 +2952,7 @@ mod handlers {
         parse_node_id(source)?;
         parse_node_id(target)?;
         let dir_kw = validate_direction(direction)?;
-        let graph_name = graph.unwrap_or(DEFAULT_GRAPH);
+        let graph_name = resolve_graph(pool, graph).await?;
 
         let aql = format!(
             "FOR v, e IN {dir_kw} SHORTEST_PATH @from_v TO @to_v GRAPH @graph \

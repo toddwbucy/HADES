@@ -21,6 +21,10 @@ use tracing::warn;
 pub struct HadesConfig {
     pub database: DatabaseConfig,
     pub embedding: EmbeddingConfig,
+    /// Document extraction service (docling). `#[serde(default)]` because every
+    /// hades.yaml written before this key existed omits it.
+    #[serde(default)]
+    pub extraction: ExtractionConfig,
     pub gpu: GpuConfig,
     pub vector_index: VectorIndexConfig,
     pub search: SearchConfig,
@@ -89,6 +93,16 @@ impl HadesConfig {
         // Embedding service
         if let Ok(v) = env::var("HADES_EMBEDDER_SOCKET") {
             self.embedding.service.socket = v;
+        }
+
+        // Extraction service. Folded into the config here so a caller reads one
+        // value rather than choosing between a config key and an env var.
+        if let Ok(v) = env::var("HADES_EXTRACTOR_SOCKET") {
+            if v.trim().is_empty() {
+                warn!("HADES_EXTRACTOR_SOCKET is set but empty, ignoring");
+            } else {
+                self.extraction.service.socket = v;
+            }
         }
 
         Ok(())
@@ -263,6 +277,41 @@ impl Default for EmbeddingServiceConfig {
             fallback_to_local: true,
             timeout_ms: 30000,
             idle_timeout: 0,
+        }
+    }
+}
+
+/// Where the extraction service listens.
+///
+/// It had no config key until 2026-09-13, only the `HADES_EXTRACTOR_SOCKET`
+/// environment variable and a compiled-in `/run/hades/extractor.sock` that a
+/// user-level deployment cannot write. The variable was set in the daemon's unit
+/// file, so the daemon reached the extractor and a CLI run from a plain shell did
+/// not: `hades ingest` over a mixed tree completed its code half and returned
+/// `document_phase_error: failed to connect to extraction service`, having
+/// silently had nowhere to send 83 documents. The embedder's endpoint has always
+/// been configurable; this is the same setting for the other service.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ExtractionConfig {
+    pub service: ExtractionServiceConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExtractionServiceConfig {
+    /// Unix socket path, `unix:///path`, or `http://host:port`. Absolute paths
+    /// only: a relative socket means a different file from every directory.
+    pub socket: String,
+}
+
+impl Default for ExtractionServiceConfig {
+    fn default() -> Self {
+        Self {
+            // Matches the system install, where tmpfiles.d creates /run/hades
+            // and the unit binds inside it. A user-level deployment overrides it
+            // here or with HADES_EXTRACTOR_SOCKET.
+            socket: "/run/hades/extractor.sock".into(),
         }
     }
 }

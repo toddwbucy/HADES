@@ -35,6 +35,14 @@ database:
 # -----------------------------------------------------------------------------
 # Embedding Service Configuration
 # -----------------------------------------------------------------------------
+# Document extraction (docling). The compiled-in default is
+# /run/hades/extractor.sock, which matches the system install where tmpfiles.d
+# creates /run/hades. A user-level deployment cannot write there, so name the
+# socket the service actually binds. HADES_EXTRACTOR_SOCKET overrides this.
+extraction:
+  service:
+    socket: /run/hades/extractor.sock
+
 embedding:
   service:
     # OpenAI-compatible embedding endpoint (`POST {endpoint}/embeddings`,
