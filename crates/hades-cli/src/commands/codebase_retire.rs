@@ -408,7 +408,7 @@ async fn remove_other_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_db::with_temp_db;
+    use hades_core::test_support::{Fixtures, with_temp_db};
 
     use hades_core::db::crud;
 
@@ -450,7 +450,7 @@ mod tests {
     /// deletes its symbol endpoint.
     #[tokio::test]
     async fn retire_sweeps_subtree_and_finds_symbol_anchored_authored_edges() {
-        with_temp_db(|pool| async move {
+        with_temp_db("retire", Fixtures::Codebase, |pool| async move {
             retire_sweeps_subtree_and_finds_symbol_anchored_authored_edges_in(pool).await
         })
         .await

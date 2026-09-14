@@ -45,7 +45,7 @@ cargo test -p hades-core --lib config::      # filter by path within a crate
   skip: `arango_transport`, `arango_crud`, `arango_index` and `arango_query`
   still name `bident_burn` and a seeded `persephone_tasks`, neither of which
   exists, so they fail until the Persephone pass moves them onto
-  `tests/common::with_temp_db` the way `arango_cache` already is.
+  `hades_core::test_support::with_temp_db` the way `arango_cache` already is.
 - Service-dependent targets with no skip guard — `embedding_client`,
   `extraction_client`, `training_client` — and analyzer-dependent ones
   (`clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`) fail on a bare
@@ -260,20 +260,27 @@ unbuilt work.
    than a missing file. `effective_database()` errors without `--db` or
    `HADES_DATABASE` by design, so do not reintroduce a hardcoded target.
 3. **A write test gets a database created for the test**, never a corpus
-   somebody is querying. The pattern is `with_temp_db`
-   (`crates/hades-cli/src/commands/test_db.rs`, mirrored for integration
-   targets in `crates/hades-core/tests/common/mod.rs`): a per-process name,
-   delete before create, dropped even when the test panics.
+   somebody is querying. The pattern is `hades_core::test_support::with_temp_db`
+   behind the `test-support` feature, enabled through a dev-dependency: a
+   per-process name, delete before create, fixture collections from
+   `CODEBASE.all_collections()`, dropped even when the test panics. One
+   definition rather than a copy per crate, because two harnesses to keep in
+   step is the defect this file's other rules are about.
    `scripts/bident_burn_smoke.sh` is the script-level version and is weaker
    by design: it creates `bident_burn_smoke` once and truncates on later runs,
    since there is deliberately no `drop-database` command (#118).
 4. **A database seeded with `db schema init --seed empty` has an empty
    `relation_order`**, and that seed is what the MCP `db_schema_init` writes.
-   `graph::loader` scans exactly the collections `relation_order` names, so
-   `graph-embed update` proceeds over zero edges and reports success while
-   `graph-embed train` fails with "graph has no edges" only after loading
-   none; a database with no `hades_schema` at all fails earlier. Apply a
-   schema file when creating a database: `config/schemas/codebase.yaml` for
+   `graph::loader` scans exactly the collections `relation_order` names, and
+   nodes are discovered only through edge scans, so it returns a graph with no
+   edges *and* no nodes. `graph-embed train` then fails at the tensor step with
+   "graph has no edges", after the loader has already returned that empty
+   graph. `graph-embed update` fails earlier on a fresh machine, at its
+   checkpoint preflight ("no trained model found"), and reports success over
+   the empty graph only where a checkpoint from some earlier run already sits
+   in the shared default `--checkpoint-dir` of `/tmp/hades-train`. Neither
+   failure names the schema, which is why this is a rule. Apply a schema file
+   when creating a database: `config/schemas/codebase.yaml` for
    the universal code layer, or a domain file carrying it plus its own
    relations (`services/adapters/weavertools/schema.yaml` is the worked
    example). There is no MCP operation for that yet, so a remotely

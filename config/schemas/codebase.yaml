@@ -4,11 +4,16 @@
 # edge definitions directly and writes no schema, so `hades_schema` holds at most
 # the empty `meta` that `db schema init --seed empty` writes, which is also what
 # the MCP `db_schema_init` writes. `relation_order` is then `[]` and
-# `graph::loader` scans exactly the collections it names, so `graph-embed update`
-# proceeds over **zero edges** and reports success, and `graph-embed train` fails
-# with "graph has no edges" only after loading none of them. That was found in a
-# WeaverTools graph holding 13,000 edges, and it applies to every database that
-# was seeded empty and then filled by ingest.
+# `graph::loader` scans exactly the collections it names, so it returns a graph
+# with **zero edges and zero nodes** (nodes are discovered only through edge
+# scans). `graph-embed train` fails at the tensor step with "graph has no edges",
+# after the loader has already handed it that empty graph. `graph-embed update`
+# fails earlier on a fresh machine, at its checkpoint preflight, and reports
+# success over the empty graph where a checkpoint from an earlier run already
+# sits in the shared default `--checkpoint-dir` of `/tmp/hades-train`. Neither
+# failure names the schema. That was found in a WeaverTools graph holding 13,000
+# edges, and it applies to every database seeded empty and then filled by
+# ingest.
 #
 # Apply it to any code-only or code-and-document graph:
 #

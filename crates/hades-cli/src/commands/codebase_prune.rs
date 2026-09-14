@@ -331,8 +331,8 @@ async fn run_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_db::with_temp_db;
     use hades_core::db::crud;
+    use hades_core::test_support::{Fixtures, with_temp_db};
 
     async fn count(pool: &ArangoPool, col: &str) -> u64 {
         let aql = "RETURN LENGTH(FOR d IN @@col RETURN 1)";
@@ -371,7 +371,7 @@ mod tests {
     /// calling the individual sweeps in a hardcoded order.
     #[tokio::test]
     async fn sweep_cascades_chunk_removal_into_embeddings() {
-        with_temp_db(|pool| async move {
+        with_temp_db("prune", Fixtures::Codebase, |pool| async move {
             crud::insert_documents(&pool, CODEBASE.files, &[json!({ "_key": "live" })], true)
                 .await
                 .expect("insert file");
@@ -444,7 +444,7 @@ mod tests {
     /// every record that simply never carried a chunk reference.
     #[tokio::test]
     async fn null_chunk_key_is_not_an_orphan() {
-        with_temp_db(|pool| async move {
+        with_temp_db("prune", Fixtures::Codebase, |pool| async move {
             crud::insert_documents(&pool, CODEBASE.files, &[json!({ "_key": "live" })], true)
                 .await
                 .expect("insert file");

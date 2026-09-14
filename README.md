@@ -101,8 +101,12 @@ HADES_BIN=target/release/hades ./scripts/bident_burn_smoke.sh
 
 Requires live ArangoDB and the embedder service. It creates `bident_burn_smoke`
 on its first run and truncates it on later ones (there is deliberately no
-`drop-database` command, #118), and touches no other database. `scripts/cli_audit.sh` is the command-level companion ("does every command run") but is hardwired to `bident_burn`, which no longer exists, so it fails until the Persephone pass reworks it; the smoke test
-answers "is the graph right".
+`drop-database` command, #118), and touches no other database.
+
+`scripts/cli_audit.sh` is the command-level companion, asking "does every command
+run" where the smoke test asks "is the graph right". It is hardwired to
+`bident_burn`, which no longer exists, so it fails until the Persephone pass
+reworks it.
 
 ## Install
 

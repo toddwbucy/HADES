@@ -1,20 +1,19 @@
 //! Integration tests for the cache layer.
 //!
-//! Each test runs in a throwaway database that `common::with_temp_db` creates
-//! and drops, so nothing here touches a corpus and a failed assertion leaks
-//! nothing. See that module for the environment it reads: `ARANGO_SOCKET`,
-//! `ARANGO_PASSWORD`, `HADES_TEST_USER`, and `ARANGO_TESTS=1` to make a skip a
-//! failure.
-
-mod common;
+//! Each test runs in a throwaway database that
+//! `hades_core::test_support::with_temp_db` creates and drops, so nothing here
+//! touches a corpus and a failed assertion leaks nothing. See that module for
+//! the environment it reads, including that `HADES_TEST_USER` needs `rw` on
+//! `_system`.
 
 use hades_core::db::cache::CachedPool;
 use hades_core::db::crud;
 use hades_core::db::query::ExecutionTarget;
+use hades_core::test_support::{Fixtures, with_temp_db};
 
 #[tokio::test]
 async fn test_cached_get_document() {
-    common::with_temp_db("cache", |pool| async move {
+    with_temp_db("cache", Fixtures::Empty, |pool| async move {
         let col = format!("test_cache_get_{}", std::process::id());
         crud::create_collection(&pool, &col, Some(2)).await.unwrap();
 
@@ -48,7 +47,7 @@ async fn test_cached_get_document() {
 
 #[tokio::test]
 async fn test_cached_delete_invalidates() {
-    common::with_temp_db("cache", |pool| async move {
+    with_temp_db("cache", Fixtures::Empty, |pool| async move {
         let col = format!("test_cache_del_{}", std::process::id());
         crud::create_collection(&pool, &col, Some(2)).await.unwrap();
 
@@ -78,7 +77,7 @@ async fn test_cached_delete_invalidates() {
 
 #[tokio::test]
 async fn test_cached_query() {
-    common::with_temp_db("cache", |pool| async move {
+    with_temp_db("cache", Fixtures::Empty, |pool| async move {
         let cached = CachedPool::with_defaults(pool);
 
         // First query: miss
@@ -103,7 +102,7 @@ async fn test_cached_query() {
 
 #[tokio::test]
 async fn test_cached_query_writer_bypasses_cache() {
-    common::with_temp_db("cache", |pool| async move {
+    with_temp_db("cache", Fixtures::Empty, |pool| async move {
         let cached = CachedPool::with_defaults(pool);
 
         // Writer queries should not be cached
@@ -126,7 +125,7 @@ async fn test_cached_query_writer_bypasses_cache() {
 
 #[tokio::test]
 async fn test_invalidate_all() {
-    common::with_temp_db("cache", |pool| async move {
+    with_temp_db("cache", Fixtures::Empty, |pool| async move {
         let cached = CachedPool::with_defaults(pool);
 
         // Populate query cache

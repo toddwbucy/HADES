@@ -7,10 +7,12 @@
 #
 #   1. `hades_schema` held nothing but an empty `meta` document, so
 #      `relation_order` was `[]` and `num_relations` was 0. `graph::loader`
-#      scans exactly the collections named in `relation_order`, so `graph-embed
-#      update` would have proceeded over **zero edges** from a graph holding
-#      13,000 of them and reported success, and `graph-embed train` would have
-#      failed with "graph has no edges" only after loading none of them.
+#      scans exactly the collections named in `relation_order`, so it would have
+#      returned **zero edges and zero nodes** from a graph holding 13,000 edges.
+#      `graph-embed train` fails at the tensor step with "graph has no edges"
+#      after being handed that empty graph, and `graph-embed update` reports
+#      success over it wherever a checkpoint from an earlier run already sits in
+#      the shared default `--checkpoint-dir`.
 #   2. The edge definitions existed only in the live database. Nothing in the
 #      repository said what the graph's shape was, so it could not be rebuilt,
 #      reviewed, or diffed.
