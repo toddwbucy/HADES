@@ -201,6 +201,16 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   reached 99.95% (2109/2110 chunks embedded). Single outlier is a
   stale chunk record from a deleted file pre-fix; AC for #98 satisfied.
 
+### Removed
+
+- `archive/`, which held one file: `python-hades-requirements.txt`, the dependency
+  list for the Python CLI that was retired when the tree went fully native. A
+  directory named for what it no longer contains is worse than no directory, and
+  the file stays in git history for anyone who needs it.
+- `RESEARCH_GOALS.md`, and the two references README.md made to it, one in prose
+  and one in the documentation table. Deleting the file without them would have
+  left a public repository with two broken links.
+
 ### Fixed
 
 - Errors report their cause instead of restating the request.

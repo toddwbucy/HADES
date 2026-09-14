@@ -12,8 +12,6 @@ The context-engineering methodology and schema this rests on — how a foundatio
 
 HADES is one *species* of a more general method — a **bastion**: a project's canon stood up as a context graph and wired into the code and release pipeline as a governance layer, on any graph-capable backend. The backend-agnostic founding document is **[Bastion/foundation/the-bastion.md](Bastion/foundation/the-bastion.md)** (the architecture), serving the philosophical foundation in **[Bastion/foundation/bastion-of-context.md](Bastion/foundation/bastion-of-context.md)** (the *why*). `graph-methodology.md` is the ArangoDB reference implementation of that method.
 
-For the research questions HADES was built to investigate, see [RESEARCH_GOALS.md](RESEARCH_GOALS.md).
-
 ## Architecture
 
 ```
@@ -359,7 +357,6 @@ The project is open to collaboration from academic and industry researchers work
 | [Bastion/foundation/the-bastion.md](Bastion/foundation/the-bastion.md) | Foundation Layer 2 — the backend-agnostic architecture: invariants, the two operating modes, the construction layer (wall / scaffolding / delta ledger), code-against-documentation conformance, the backend contract, the de-ratification rite |
 | [Bastion/foundation/bastion-playbook.md](Bastion/foundation/bastion-playbook.md) | The operational playbook — how to stand up or retrofit a bastion in a Claude Code session, phase by phase, greenfield and brownfield |
 | [Bastion/graph-methodology.md](Bastion/graph-methodology.md) | Foundation Layer 3 — the ArangoDB/HADES reference implementation of the bastion method |
-| [RESEARCH_GOALS.md](RESEARCH_GOALS.md) | Research questions, context-management framing, measurement points |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and convention for adding entries |
 | [docs/specs/workstation-specific-tests.md](docs/specs/workstation-specific-tests.md) | Convention for integration tests that depend on workstation-specific resources |
 | [docs/daemon-protocol.md](docs/daemon-protocol.md) | Wire protocol, session model, access tiers, command reference |
