@@ -183,6 +183,34 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Late-chunked vectors are mapped back to their chunk by recorded index rather
+  than by `first_chunk_index + position`. Skipping a chunk too large for any
+  window broke the assumption that a window's boundaries are consecutive in file
+  order, so every vector after such a gap was stored under a later chunk's key,
+  with the counts still matching and nothing to show it. Each window now carries
+  the file-order index of every boundary.
+- `ingest.start` refuses a second job over the same tree and caps concurrent jobs
+  at two. Nothing was bounded before: a provisioned token could call it in a loop
+  and get one full ingest process per call, each running analyzers and a language
+  server over the same tree and writing the same keys. A row whose process is gone
+  does not count toward the cap, so a daemon restart does not block later jobs.
+- Ingest jobs keep their diagnostics. The child's stderr went to `/dev/null`, so a
+  failed job reported only "exit status 1" with the reason gone. It is captured,
+  its path recorded on the job row, and its tail stored in `detail` on failure.
+- `HADES_EXTRACTOR_SOCKET` requires an absolute path after `unix://` as well as
+  bare. A relative socket path resolves from the process working directory, so the
+  daemon and the CLI would reach different sockets from one configuration value.
+- `--unparsed-ext` is refused with named file inputs instead of ignored. It selects
+  extensions during a tree walk and there is no walk for named files, so
+  `hades ingest Cargo.toml --unparsed-ext toml` looked like it had asked for the
+  parser-free path and had not.
+- `hades-embedder-profile` reports a failed switch. `curl` without `--fail` treated
+  any response including 4xx and 5xx as readiness, and the status helper returned
+  zero when nothing was active, so a switch that never came up looked successful
+  and the next command ran against no embedder.
+- `write_graph.py` refuses to send `ARANGO_PASSWORD` to a non-loopback host, since
+  the endpoint is plain HTTP and the credential would cross the network in the
+  clear.
 - A single chunk larger than the embed window no longer costs its file every
   vector. `AstChunking` caps a chunk at 8,000 characters by splitting at line
   boundaries, but `split_at_lines` emits one whole line when its accumulator is

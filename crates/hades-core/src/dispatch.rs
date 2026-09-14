@@ -1400,6 +1400,14 @@ mod handlers {
 
     // ── Provisioning handlers ───────────────────────────────────────
 
+    /// How many ingest jobs may run at once.
+    ///
+    /// Two rather than one, so a small tree is not blocked behind a large one, and
+    /// not more because every job contends for the same GPU through the embedder's
+    /// inference lock and for the same rust-analyzer working directory. Parallel
+    /// ingests do not finish sooner, they only multiply the failure modes.
+    pub(super) const MAX_CONCURRENT_INGESTS: usize = 2;
+
     /// Collection holding ingest job rows, created on demand.
     ///
     /// Lives in the database being ingested rather than in a central one, so a
@@ -1481,6 +1489,62 @@ mod handlers {
         let exe = std::env::current_exe()
             .map_err(|e| HandlerError::ServiceError(format!("cannot locate own binary: {e}")))?;
 
+        // Refuse a second job for the same tree, and cap the total.
+        //
+        // Nothing here was bounded: a provisioned token could call `ingest.start`
+        // in a loop and get one full ingest process per call, each running
+        // analyzers and a language server over the same tree, writing the same
+        // keys. A row whose process is gone does not count, because a daemon
+        // restart leaves rows saying `running` forever and those would otherwise
+        // block every later job.
+        crud::create_collection(pool, INGEST_JOBS, Some(2))
+            .await
+            .ok();
+        let running = query::query(
+            pool,
+            &format!(
+                "FOR j IN {INGEST_JOBS} FILTER j.status == 'running' \
+                 RETURN {{path: j.path, pid: j.pid}}"
+            ),
+            None,
+            None,
+            false,
+            ExecutionTarget::Writer,
+        )
+        .await
+        .map(|r| r.results)
+        .unwrap_or_default();
+        let live: Vec<&Value> = running
+            .iter()
+            .filter(|row| match row.get("pid").and_then(|p| p.as_u64()) {
+                // Linux-specific and deliberate: this daemon already assumes
+                // /proc elsewhere, and a liveness check beats a timeout guess.
+                Some(pid) => std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                None => false,
+            })
+            .collect();
+        if let Some(dup) = live.iter().find(|row| {
+            row.get("path").and_then(|p| p.as_str()) == Some(&resolved.display().to_string())
+        }) {
+            return Err(HandlerError::InvalidParameter {
+                name: "path".into(),
+                reason: format!(
+                    "an ingest of '{}' is already running (pid {}). Poll ingest.status \
+                     rather than starting a second one over the same tree.",
+                    resolved.display(),
+                    dup.get("pid").and_then(|p| p.as_u64()).unwrap_or(0)
+                ),
+            });
+        }
+        if live.len() >= MAX_CONCURRENT_INGESTS {
+            return Err(HandlerError::ServiceError(format!(
+                "{} ingest jobs are already running, which is the limit. Each one \
+                 drives analyzers, a language server and the embedder, so they do \
+                 not get faster in parallel. Wait for one to finish.",
+                live.len()
+            )));
+        }
+
         // Job id from the clock and the path, so two concurrent jobs on one tree
         // cannot collide and the id says nothing an operator has to decode.
         let started = chrono::Utc::now();
@@ -1497,6 +1561,12 @@ mod handlers {
             .await
             .ok();
         let log_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.json"));
+        // Kept rather than discarded. The child writes its envelope to stdout and
+        // everything diagnostic to stderr, so sending stderr to /dev/null left a
+        // failed job reporting only "exit status 1" with the reason gone: an
+        // analyzer preflight refusal, a missing database, a panic. The tail of
+        // this file goes into the job row when the child fails.
+        let err_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.log"));
         let row = json!({
             "_key": &job_id,
             "status": "running",
@@ -1505,6 +1575,7 @@ mod handlers {
             "force": force,
             "started_at": started.to_rfc3339(),
             "log_path": log_path.display().to_string(),
+            "stderr_path": err_path.display().to_string(),
         });
         crud::insert_document(pool, INGEST_JOBS, &row)
             .await
@@ -1514,13 +1585,20 @@ mod handlers {
             HandlerError::ServiceError(format!("cannot open job log {}: {e}", log_path.display()))
         })?;
 
+        let errlog = std::fs::File::create(&err_path).map_err(|e| {
+            HandlerError::ServiceError(format!(
+                "cannot open job stderr log {}: {e}",
+                err_path.display()
+            ))
+        })?;
+
         let mut cmd = tokio::process::Command::new(exe);
         cmd.arg("--db")
             .arg(&database)
             .arg("ingest")
             .arg(&resolved)
             .stdout(Stdio::from(log))
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(errlog))
             .stdin(Stdio::null());
         if force {
             cmd.arg("--force");
@@ -1533,18 +1611,40 @@ mod handlers {
         // Watch the child and write the outcome back. If the daemon dies first
         // the row stays `running`, which `ingest_status` reports as orphaned
         // rather than as progress.
+        if let Some(pid) = pid {
+            let _ = crud::update_document(pool, INGEST_JOBS, &job_id, &json!({ "pid": pid })).await;
+        }
+
         let pool_for_task = pool.clone();
         let job_for_task = job_id.clone();
         let log_for_task = log_path.clone();
+        let err_for_task = err_path.clone();
         tokio::spawn(async move {
             let mut child = child;
             let outcome = child.wait().await;
             let envelope = std::fs::read_to_string(&log_for_task)
                 .ok()
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+            // The tail of stderr, so a failure says why rather than only that it
+            // happened. Bounded because an ingest can emit a great deal.
+            let stderr_tail = |limit: usize| -> Option<String> {
+                let text = std::fs::read_to_string(&err_for_task).ok()?;
+                let tail: Vec<&str> = text.lines().rev().take(limit).collect();
+                if tail.is_empty() {
+                    None
+                } else {
+                    Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
+                }
+            };
             let (status, detail) = match outcome {
                 Ok(code) if code.success() => ("completed", None),
-                Ok(code) => ("failed", Some(format!("exit status {code}"))),
+                Ok(code) => (
+                    "failed",
+                    Some(match stderr_tail(40) {
+                        Some(tail) => format!("exit status {code}\n{tail}"),
+                        None => format!("exit status {code}"),
+                    }),
+                ),
                 Err(e) => ("failed", Some(format!("could not wait on child: {e}"))),
             };
             let update = json!({

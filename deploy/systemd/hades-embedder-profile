@@ -78,10 +78,21 @@ case "${1:-show}" in
     systemctl --user reset-failed "${UNIT_PREFIX}${target}" 2>/dev/null || true
     echo "starting ${UNIT_PREFIX}${target}"
     systemctl --user start "${UNIT_PREFIX}${target}"
+    # --fail so a 4xx or 5xx is not mistaken for readiness, and a real verdict at
+    # the end: without it the loop ended on any response and show_active returned
+    # 0 even when nothing had come up, so a failed switch looked like a successful
+    # one and the next command ran against no embedder.
+    ready=false
     for _ in $(seq 1 30); do
-      if curl -s -m 3 "$ENDPOINT" >/dev/null 2>&1; then break; fi
+      if curl -sf -m 3 "$ENDPOINT" >/dev/null 2>&1; then ready=true; break; fi
       sleep 1
     done
+    if [ "$ready" != true ]; then
+      echo "profile ${target} did not become ready within 30s" >&2
+      systemctl --user is-active "${UNIT_PREFIX}${target}" >&2 || true
+      journalctl --user -u "${UNIT_PREFIX}${target}" -n 5 --no-pager >&2 || true
+      exit 1
+    fi
     show_active
     ;;
 esac

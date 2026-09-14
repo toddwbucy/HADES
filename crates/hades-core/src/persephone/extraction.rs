@@ -83,6 +83,16 @@ fn parse_endpoint(raw: &str) -> Result<ExtractionEndpoint, ExtractionError> {
     if raw.starts_with("http://") || raw.starts_with("https://") {
         Ok(ExtractionEndpoint::Tcp(raw.to_string()))
     } else if let Some(path) = raw.strip_prefix("unix://") {
+        // Absolute after the scheme too. `unix://run/extractor.sock` resolves
+        // from the process working directory, so the daemon and the CLI would
+        // reach different sockets from the same configuration, and a relative
+        // socket path means something different from every directory it is run
+        // in. The bare-path branch below already requires this.
+        if !path.starts_with('/') {
+            return Err(ExtractionError::InvalidResponse(format!(
+                "{ENDPOINT_ENV} must name an absolute path after unix://; got '{raw}'"
+            )));
+        }
         Ok(ExtractionEndpoint::Unix(PathBuf::from(path)))
     } else if raw.starts_with('/') {
         Ok(ExtractionEndpoint::Unix(PathBuf::from(raw)))
@@ -451,6 +461,14 @@ mod tests {
             ExtractionEndpoint::Unix(ref p)
                 if p == Path::new("/home/todd/.local/share/hades/run/extractor.sock")
         ));
+    }
+
+    #[test]
+    fn parse_endpoint_rejects_a_relative_path_after_the_unix_scheme() {
+        // `unix://` plus a relative path resolves from the working directory, so
+        // the daemon and the CLI would reach different sockets from one value.
+        let err = parse_endpoint("unix://run/extractor.sock").expect_err("must reject");
+        assert!(err.to_string().contains("absolute"), "{err}");
     }
 
     #[test]

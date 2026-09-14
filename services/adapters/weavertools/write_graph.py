@@ -75,10 +75,27 @@ def _endpoint() -> str:
     return f"http://{host}:{port}"
 
 
+LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
 def _auth_header() -> dict[str, str]:
+    """Basic auth, and only where it cannot be read off the wire.
+
+    The endpoint is plain HTTP, so credentials sent to anything but loopback
+    cross the network in the clear. Refused rather than sent: a script that
+    quietly leaks a database password is worse than one that stops. Point it at a
+    loopback endpoint and tunnel if the instance is remote.
+    """
     password = os.environ.get("ARANGO_PASSWORD")
     if not password:
         return {}
+    host = os.environ.get("ARANGO_HOST", "127.0.0.1")
+    if host not in LOOPBACK:
+        raise SystemExit(
+            f"refusing to send ARANGO_PASSWORD to {host} over plain HTTP. "
+            f"Use a loopback endpoint (an SSH tunnel, for instance) or unset the "
+            f"password if the instance has authentication disabled."
+        )
     user = os.environ.get("ARANGO_USERNAME", "root")
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
     return {"Authorization": f"Basic {token}"}

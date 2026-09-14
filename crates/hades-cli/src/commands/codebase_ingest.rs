@@ -878,9 +878,16 @@ struct EmbedWindow {
     text: String,
     /// Chunk boundaries as character ranges relative to `text`, not the file.
     boundaries: Vec<(usize, usize)>,
-    /// Index of this window's first chunk within the file, used to map
-    /// per-window chunk positions back to file-order indices.
-    first_chunk_index: usize,
+    /// File-order index of each boundary, positionally parallel to
+    /// `boundaries`.
+    ///
+    /// Not a first index plus an offset. The packing loop skips a chunk too large
+    /// for any window, so a window's boundaries are not necessarily consecutive
+    /// in file order, and `first_chunk_index + position` then named the wrong
+    /// chunk for every boundary after the gap: each vector would have been stored
+    /// under a later chunk's key, with the count still matching and nothing to
+    /// show it. Carrying the indices makes the mapping explicit.
+    chunk_indices: Vec<usize>,
 }
 
 /// Finalize one embed window: slice its text and convert its boundaries.
@@ -899,7 +906,7 @@ fn push_embed_window(
     start: usize,
     end: usize,
     byte_boundaries: Vec<(usize, usize)>,
-    first_chunk_index: usize,
+    chunk_indices: Vec<usize>,
     rel_path: &str,
 ) {
     let end = end.min(source.len());
@@ -910,10 +917,15 @@ fn push_embed_window(
         );
         return;
     };
+    debug_assert_eq!(
+        byte_boundaries.len(),
+        chunk_indices.len(),
+        "every boundary needs the file-order index of the chunk it came from"
+    );
     windows.push(EmbedWindow {
         boundaries: byte_offsets_to_chars(text, &byte_boundaries),
         text: text.to_string(),
-        first_chunk_index,
+        chunk_indices,
     });
 }
 
@@ -1810,8 +1822,8 @@ async fn ingest_file(
 
             let mut windows: Vec<EmbedWindow> = Vec::new();
             let mut cur: Vec<(usize, usize)> = Vec::new();
+            let mut cur_indices: Vec<usize> = Vec::new();
             let mut cur_start = 0usize;
-            let mut first_index = 0usize;
             // Chunks too large to share a window with anything, including
             // themselves. `AstChunking` caps a chunk at 8,000 characters by
             // splitting at line boundaries, but `split_at_lines` emits one whole
@@ -1832,7 +1844,6 @@ async fn ingest_file(
                 }
                 if cur.is_empty() {
                     cur_start = c.start_char;
-                    first_index = i;
                 }
                 let would_span = c.end_char.saturating_sub(cur_start);
                 if !cur.is_empty() && would_span > window_chars {
@@ -1846,11 +1857,10 @@ async fn ingest_file(
                         cur_start,
                         end,
                         std::mem::take(&mut cur),
-                        first_index,
+                        std::mem::take(&mut cur_indices),
                         rel_path,
                     );
                     cur_start = c.start_char;
-                    first_index = i;
                 }
                 // Boundaries are relative to the window, not the file, and are
                 // byte offsets at this point. `push_embed_window` converts.
@@ -1858,6 +1868,7 @@ async fn ingest_file(
                     c.start_char.saturating_sub(cur_start),
                     c.end_char.saturating_sub(cur_start),
                 ));
+                cur_indices.push(i);
             }
             if !cur.is_empty() {
                 let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
@@ -1867,7 +1878,7 @@ async fn ingest_file(
                     cur_start,
                     end,
                     cur,
-                    first_index,
+                    cur_indices,
                     rel_path,
                 );
             }
@@ -1899,14 +1910,22 @@ async fn ingest_file(
                 *model = result.model.clone();
                 *dimension = result.dimension;
                 for (w, vecs) in result.per_input.iter().enumerate() {
-                    let base = windows[offset + w].first_chunk_index;
+                    let indices = &windows[offset + w].chunk_indices;
                     for v in vecs {
-                        let i = base + v.chunk_index;
-                        // A chunk index past the end would mint an embedding
-                        // pointing at a chunk key that does not exist, which
-                        // reads as a healthy row.
-                        if i < chunks.len() {
-                            by_index.insert(i, v.embedding.clone());
+                        // Looked up rather than computed. A position the window
+                        // never sent would otherwise mint an embedding under some
+                        // other chunk's key, which reads as a healthy row.
+                        match indices.get(v.chunk_index) {
+                            Some(&i) => {
+                                by_index.insert(i, v.embedding.clone());
+                            }
+                            None => warn!(
+                                path = rel_path,
+                                window = offset + w,
+                                position = v.chunk_index,
+                                boundaries = indices.len(),
+                                "embedder returned a chunk position the window did not send"
+                            ),
                         }
                     }
                 }
@@ -4628,17 +4647,55 @@ mod tests {
             2,
             source.len(),
             vec![(0, 1)],
-            0,
+            vec![0],
             "t.rs",
         );
         assert!(windows.is_empty(), "unaligned window must be dropped");
+    }
+
+    /// A window's boundaries are not necessarily consecutive in file order, so
+    /// the mapping back has to be a lookup rather than a first index plus the
+    /// position within the window.
+    ///
+    /// The packing loop skips a chunk too large for any window. Before the
+    /// indices were carried, `first_chunk_index + position` named the wrong chunk
+    /// for every boundary after such a gap: each vector was stored under a later
+    /// chunk's key, the counts still matched, and nothing showed it.
+    #[test]
+    fn a_window_records_the_file_order_index_of_every_boundary() {
+        let source = "alpha bravo charlie delta".to_string();
+        let mut windows = Vec::new();
+        // Chunks 3 and 5 survived; 4 was oversized and skipped between them.
+        push_embed_window(
+            &mut windows,
+            &source,
+            0,
+            source.len(),
+            vec![(0, 5), (6, 11)],
+            vec![3, 5],
+            "t.rs",
+        );
+        let w = windows.first().expect("window kept");
+        assert_eq!(w.chunk_indices, vec![3, 5]);
+        assert_eq!(
+            w.chunk_indices.len(),
+            w.boundaries.len(),
+            "one index per boundary, positionally parallel"
+        );
+        // What the flatten does: position 1 is chunk 5, not chunk 4.
+        assert_eq!(w.chunk_indices.get(1).copied(), Some(5));
+        assert_eq!(
+            w.chunk_indices.get(2),
+            None,
+            "a position never sent maps nowhere"
+        );
     }
 
     #[test]
     fn window_with_reversed_offsets_is_skipped() {
         let source = "abcdef".to_string();
         let mut windows = Vec::new();
-        push_embed_window(&mut windows, &source, 4, 2, vec![(0, 1)], 0, "t.rs");
+        push_embed_window(&mut windows, &source, 4, 2, vec![(0, 1)], vec![0], "t.rs");
         assert!(windows.is_empty());
     }
 
@@ -4652,12 +4709,12 @@ mod tests {
             4,
             12,
             vec![(0, 4), (4, 8)],
-            3,
+            vec![3, 4],
             "t.rs",
         );
         assert_eq!(windows.len(), 1);
         assert_eq!(windows[0].text, "bbbbcccc");
         assert_eq!(windows[0].boundaries, vec![(0, 4), (4, 8)]);
-        assert_eq!(windows[0].first_chunk_index, 3);
+        assert_eq!(windows[0].chunk_indices, vec![3, 4]);
     }
 }

@@ -383,6 +383,19 @@ fn main() -> anyhow::Result<()> {
                 };
             }
 
+            // `--unparsed-ext` selects extensions during a tree walk, and there
+            // is no walk here. Forwarding it would have no effect and dropping it
+            // silently is how `hades ingest Cargo.toml --unparsed-ext toml` looked
+            // like it had asked for the parser-free path.
+            if !unparsed_ext.is_empty() {
+                anyhow::bail!(
+                    "--unparsed-ext applies to a directory ingest, which walks a tree \
+                     and routes by extension. Named files are ingested as documents. \
+                     Pass the directory instead, or use `codebase ingest --unparsed-ext` \
+                     for the code path."
+                );
+            }
+
             let result = rt.block_on(commands::ingest::run(
                 &config,
                 input_paths,
