@@ -201,6 +201,16 @@ pub struct DbListParams {
     #[serde(default)]
     pub limit: Option<u32>,
     pub paper: Option<String>,
+    /// Fields to return per document. Omit for everything except the bulk text
+    /// fields named in [`BULK_FIELDS`].
+    ///
+    /// Without this, listing documents returned whole bodies: three rows of one
+    /// real corpus came to 53,555 characters because each carries the document's
+    /// entire `full_text`, and eighty-three came to 2.8 million, which exceeded
+    /// the caller's context and made the only enumeration-shaped call unusable
+    /// for enumeration.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 /// Params for `db.insert`.
@@ -986,14 +996,25 @@ impl DaemonCommand {
             Self::DbGraphCreate(_) => AccessTier::Admin,
             Self::DbGraphDrop(_) => AccessTier::Admin,
             Self::DbGraphMaterialize(_) => AccessTier::Admin,
-            Self::DbSchemaInit(_) => AccessTier::Admin,
+            // Seeding belongs with creating. `create_database` tells the caller
+            // to seed with this next, and at Admin tier the instruction named a
+            // step the caller could not take, so a provisioned client could make
+            // a database and not finish it. Writes one metadata document into an
+            // empty collection; it is not schema mutation on a live graph.
+            Self::DbSchemaInit(_) => AccessTier::Provisioning,
 
             // ── Internal: system diagnostics ──────────────────────
             Self::Status(_) => AccessTier::Internal,
             Self::DbHealth(_) => AccessTier::Internal,
             Self::DbStats {} => AccessTier::Internal,
-            Self::DbCollections {} => AccessTier::Internal,
-            Self::DbGraphList {} => AccessTier::Internal,
+            // Enumeration, not diagnostics. Classified Internal when the tier
+            // list was written, which put the only two commands that answer
+            // "what is in this database" out of reach of the sessions that most
+            // need them: one survey found `codebase_symbols` by guessing the
+            // name, and could not establish whether any graph existed at all.
+            // Both return names and counts, never document bodies.
+            Self::DbCollections {} => AccessTier::Agent,
+            Self::DbGraphList {} => AccessTier::Agent,
             Self::DbSchemaList {} => AccessTier::Internal,
             Self::DbSchemaShow(_) => AccessTier::Internal,
             Self::DbSchemaVersion {} => AccessTier::Internal,
@@ -1086,6 +1107,7 @@ pub async fn dispatch(
                 params.collection.as_deref(),
                 limit,
                 params.paper.as_deref(),
+                params.fields.as_deref(),
             )
             .await
             .map_err(DispatchError::Handler)
@@ -1727,6 +1749,13 @@ mod handlers {
             })
     }
 
+    /// Fields excluded from `db.list` unless asked for by name.
+    ///
+    /// Each one holds an entire document's worth of text or a 2048-float vector,
+    /// so returning them by default made the payload proportional to the corpus
+    /// rather than to the number of rows.
+    pub(super) const BULK_FIELDS: &[&str] = &["full_text", "embedding", "text", "body"];
+
     /// Count documents in a collection.
     pub async fn db_count(pool: &ArangoPool, collection: &str) -> Result<Value, HandlerError> {
         let count = count_collection(pool, collection)
@@ -1842,6 +1871,7 @@ mod handlers {
         collection: Option<&str>,
         limit: u32,
         paper: Option<&str>,
+        fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
         let profile = match collection {
             Some(name) => {
@@ -1865,21 +1895,25 @@ mod handlers {
                 "FOR d IN @@col \
                  FILTER d.paper_id == @paper_id || d.document_id == @paper_id || d.external_id == @paper_id \
                  LIMIT @limit \
-                 RETURN d",
+                 RETURN @keep == null ? UNSET(d, @drop) : KEEP(d, @keep)",
                 json!({
                     "@col": profile.metadata,
                     "paper_id": paper_id,
                     "limit": limit,
+                    "keep": fields,
+                    "drop": BULK_FIELDS,
                 }),
             )
         } else {
             (
                 "FOR d IN @@col \
                  LIMIT @limit \
-                 RETURN d",
+                 RETURN @keep == null ? UNSET(d, @drop) : KEEP(d, @keep)",
                 json!({
                     "@col": profile.metadata,
                     "limit": limit,
+                    "keep": fields,
+                    "drop": BULK_FIELDS,
                 }),
             )
         };
@@ -7203,6 +7237,7 @@ mod tests {
                 collection: Some("nonexistent_profile".into()),
                 limit: Some(10),
                 paper: None,
+                fields: None,
             }),
         ));
 

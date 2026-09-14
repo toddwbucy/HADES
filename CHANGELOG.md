@@ -19,6 +19,26 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- **Discovery on the MCP surface**, from a session that surveyed a fresh graph and
+  reported it as the weakest part. `db_collections` enumerates collections with
+  counts and types, and `graph_list` names the graphs with their edge definitions.
+  Neither existed, `orient` reports collection *profiles* and so never named
+  `codebase_symbols` or any edge collection, and the one call documented to
+  enumerate (`db_list` with no collection) returned documents from the default
+  profile instead. Both commands existed in the dispatch layer at `Internal` tier,
+  which put the only two answers to "what is in this database" out of reach of the
+  sessions that need them most; enumeration returns names and counts, never
+  bodies, so both are now `Agent` tier.
+- `db_list` takes a `fields` projection, and omits bulk text and vector fields by
+  default. Three rows of one real corpus came to 53,555 characters because each
+  carries the whole document's `full_text`, and eighty-three came to 2.8 million,
+  which exceeded the caller's context and made the call unusable for the listing
+  it was reached for. The same three rows are now 1,550 characters, and
+  `fields: ["_key", "status"]` is 286.
+- `db_schema_init` is exposed and moved to the `Provisioning` tier.
+  `create_database` told the caller to seed with it next, and at `Admin` tier that
+  instruction named a step no MCP client could take, so a provisioned client could
+  create a database and not finish it.
 - `services/adapters/weavertools/write_graph.py`, the half of the conformance chain
   that reaches a database. The extractor in that package computes assertions,
   terms, axioms and the `cites` edges joining code to the documents claiming it,
@@ -183,6 +203,27 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Errors report their cause instead of restating the request.
+  `HandlerError::Query` has always carried its `ArangoError` as `#[source]`, and
+  rendered only its own context, so the response was built from a `Display` that
+  dropped the reason at the last step: `graph_neighbors` answered "graph traverse
+  from 'codebase_files/x'" while the cause it held said `graph 'default' not
+  found`. One survey spent six probes establishing a negative that one error could
+  have given. A query that failed because something was absent now also reports
+  `NOT_FOUND` rather than `QUERY_FAILED`, because "no such collection" ends a
+  question while a query failure invites a retry.
+- A single source file named directly is refused rather than stored as a document.
+  It took the document path regardless of extension, so `hades ingest src/lib.rs`
+  landed a code file in `documents` with no symbols, edges or AST chunks. Routing
+  it to the code phase needs a root, since a code file's key derives from the
+  ingest root and a lone file bases at its parent, so it would write a second node
+  under a re-based key instead of updating the first.
+- Documents are re-ingested when their content changes. Code file nodes have
+  carried `content_hash` from the start, which is what makes that half
+  incremental; document rows carried no hash, so the skip keyed on the document
+  merely existing and an edited spec was skipped forever, with `--force` over the
+  whole corpus the only way to pick it up. Documents now record `content_hash` and
+  `ingested_at`, and one `hades ingest <tree>` is a true resync for both halves.
 - Late-chunked vectors are mapped back to their chunk by recorded index rather
   than by `first_chunk_index + position`. Skipping a chunk too large for any
   window broke the assumption that a window's boundaries are consecutive in file

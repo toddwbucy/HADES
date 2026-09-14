@@ -104,6 +104,9 @@ pub async fn run_list(
             collection: collection.map(String::from),
             limit: Some(limit),
             paper: paper.map(String::from),
+            // The CLI has always printed whole documents and its output is not
+            // charged against a context window, so it keeps them.
+            fields: None,
         }),
     )
     .await?;

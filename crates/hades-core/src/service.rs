@@ -370,7 +370,7 @@ pub async fn handle_request(
             resp.with_request_id(request_id)
         }
         Ok(Err(DispatchError::Handler(e))) => {
-            DaemonResponse::err(handler_error_code(&e), e.to_string()).with_request_id(request_id)
+            DaemonResponse::err(handler_error_code(&e), error_chain(&e)).with_request_id(request_id)
         }
         Err(_) => DaemonResponse::err("INTERNAL", "request timed out").with_request_id(request_id),
     }
@@ -384,9 +384,39 @@ pub fn handler_error_code(e: &HandlerError) -> &'static str {
         | HandlerError::InvalidParameter { .. } => "INVALID_PARAMS",
         HandlerError::NodeNotFound(_) | HandlerError::DocumentNotFound { .. } => "NOT_FOUND",
         HandlerError::NoEmbedding { .. } | HandlerError::InvalidEmbedding { .. } => "QUERY_FAILED",
+        // A query that failed because something was not there is a different
+        // answer from a query that broke, and a caller surveying a graph needs
+        // to tell them apart: "no such collection" ends the question, while
+        // QUERY_FAILED invites a retry. Reported by one session as turning a
+        // single question into six probes to establish a negative.
+        HandlerError::Query { source, .. } if source.is_not_found() => "NOT_FOUND",
         HandlerError::Query { .. } => "QUERY_FAILED",
         HandlerError::ServiceError(_) => "SERVICE_ERROR",
     }
+}
+
+/// An error and everything under it, as one line.
+///
+/// `HandlerError::Query` carries its `ArangoError` as `#[source]` and renders
+/// only its own context, so building a response from `to_string()` dropped the
+/// reason at the last step: `graph_neighbors` reported "graph traverse from
+/// 'codebase_files/x'", which restates the request, while the cause it already
+/// held said `graph 'default' not found`. Walking the chain costs nothing and
+/// turns a restatement into an answer.
+pub fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = e.to_string();
+    let mut cause = e.source();
+    while let Some(next) = cause {
+        let text = next.to_string();
+        // thiserror's `#[error(transparent)]` repeats the source verbatim, and a
+        // message ending in its own cause reads worse for the repetition.
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        cause = next.source();
+    }
+    message
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +636,23 @@ mod tests {
     }
 
     // ── Provisioning limits ─────────────────────────────────────────────
+
+    #[test]
+    fn an_error_reports_its_cause_not_a_restatement() {
+        let e = HandlerError::Query {
+            context: "graph traverse from 'codebase_files/x'".into(),
+            source: crate::db::ArangoError::Request("graph 'default' not found".into()),
+        };
+        let rendered = error_chain(&e);
+        assert!(
+            rendered.contains("graph 'default' not found"),
+            "the cause must survive: {rendered}"
+        );
+        assert!(
+            rendered.contains("graph traverse from"),
+            "the context must survive too: {rendered}"
+        );
+    }
 
     #[test]
     fn a_plain_network_endpoint_provisions_nothing() {

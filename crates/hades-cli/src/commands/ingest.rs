@@ -324,7 +324,13 @@ pub async fn run_phase(
         embed_task,
         embed_batch_size: Some(config.embedding.batch.size),
         extract_options: Default::default(),
-        overwrite: force,
+        // Always overwrite, because reaching the store means the skip above already
+        // decided this file needs (re)ingesting: it is new, its content hash moved,
+        // or `--force` was given. Tying this to `force` meant a changed document
+        // was re-extracted and re-embedded and then failed on insert, and it also
+        // skipped `delete_doc_chunks`, which is what removes the chunks a shorter
+        // new version no longer has.
+        overwrite: true,
     };
 
     let pipeline = Arc::new(Pipeline::new(
@@ -525,9 +531,17 @@ async fn ingest_file(
             .ok()
             .and_then(|r| path.strip_prefix(&r).ok().map(|p| p.display().to_string()))
     });
-    if let Some((stored_rel, stored_path)) =
-        existing_source_identity(db, profile.metadata, &doc_key).await?
-    {
+    // The file's own hash, so a re-ingest can tell "unchanged" from "already
+    // seen". Code file nodes have carried `content_hash` from the start, which is
+    // what makes the code half incremental; documents carried nothing, so the skip
+    // below keyed on the document merely existing and an edited spec was skipped
+    // forever. `--force` was the only way to pick it up, and it redoes the corpus.
+    let content_hash = std::fs::read_to_string(path)
+        .ok()
+        .map(|text| hades_core::code::compute_content_hash(&text));
+
+    if let Some(stored) = existing_source_identity(db, profile.metadata, &doc_key).await? {
+        let (stored_rel, stored_path) = (stored.source_rel, stored.source_path);
         // A collision needs two identities of the same kind to compare. When the
         // stored document predates `source_rel` and this run has one, the
         // absolute paths are not evidence of anything, so it is treated as the
@@ -555,12 +569,23 @@ async fn ingest_file(
                  different directories. Pass --id to name one of them explicitly."
             );
         }
-        if !force {
+        // Unchanged means skip; changed means re-ingest. A document stored before
+        // hashing existed has no hash to compare, so it is re-ingested once to
+        // record one rather than skipped forever on the old rule.
+        let unchanged = match (&stored.content_hash, &content_hash) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if unchanged && !force {
+            info!(doc_key, "unchanged since last ingest, skipping");
+            return Ok(json!({"skipped": true, "reason": "content hash unchanged"}));
+        }
+        if !unchanged {
             info!(
                 doc_key,
-                "already ingested, skipping (use --force to re-process)"
+                had_hash = stored.content_hash.is_some(),
+                "content changed since last ingest, re-ingesting"
             );
-            return Ok(json!({"skipped": true}));
         }
     }
 
@@ -583,6 +608,11 @@ async fn ingest_file(
         // The identity the collision check compares, stable across a move of the
         // tree. Absent when the caller named files rather than a root.
         "source_rel": incoming_rel,
+        // What makes the next run incremental. Same field name and same hash the
+        // code half uses, so both halves of one ingest answer "has this changed"
+        // the same way.
+        "content_hash": content_hash,
+        "ingested_at": chrono::Utc::now().to_rfc3339(),
         "status": "PROCESSED",
     });
 
@@ -632,15 +662,29 @@ fn merge_extra_metadata(doc: &mut Value, extra: Option<&Value>) {
 /// Returns `Ok(None)` when nothing holds the key. `Ok(Some(None))` means a
 /// document is there but predates `source_path` being recorded, which cannot be
 /// compared and so is treated as the same document.
+/// What a stored document records about its origin and its content.
+struct StoredDocument {
+    source_rel: Option<String>,
+    source_path: Option<String>,
+    /// SHA-256 of the file as last ingested. `None` for a document stored before
+    /// documents were hashed, which is treated as "changed" so one re-ingest
+    /// records a hash rather than skipping it forever.
+    content_hash: Option<String>,
+}
+
 async fn existing_source_identity(
     db: &ArangoPool,
     collection: &str,
     doc_key: &str,
-) -> Result<Option<(Option<String>, Option<String>)>> {
+) -> Result<Option<StoredDocument>> {
     match hades_core::db::crud::get_document(db, collection, doc_key).await {
         Ok(doc) => {
             let field = |name: &str| doc.get(name).and_then(|v| v.as_str()).map(str::to_string);
-            Ok(Some((field("source_rel"), field("source_path"))))
+            Ok(Some(StoredDocument {
+                source_rel: field("source_rel"),
+                source_path: field("source_path"),
+                content_hash: field("content_hash"),
+            }))
         }
         Err(e) if e.is_not_found() => Ok(None),
         Err(e) => Err(e.into()),

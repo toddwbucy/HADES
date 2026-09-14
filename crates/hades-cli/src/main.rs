@@ -383,6 +383,29 @@ fn main() -> anyhow::Result<()> {
                 };
             }
 
+            // A single code file named directly would take the document path and be
+            // stored as prose: extraction reads it, the extractor calls it
+            // SOURCE_TYPE_CODE, and it lands in `documents` with no symbols, no
+            // edges and no AST chunks. Routing it to the code phase instead is not
+            // a one-line change, because a code file's key derives from the ingest
+            // root and a lone file bases at its parent, so it would write a second
+            // node under a re-based key rather than updating the existing one.
+            // Refused until per-file re-ingest carries a root.
+            if input_paths.len() == 1
+                && matches!(
+                    hades_core::ingest_routing::route_for(&input_paths[0]),
+                    hades_core::ingest_routing::Route::Code(_)
+                )
+            {
+                anyhow::bail!(
+                    "{} is source code, and a single file named directly would be \
+                     stored as a document with no symbols or edges. Pass the tree \
+                     instead: the ingest is incremental, so only files whose content \
+                     hash changed are re-processed.",
+                    input_paths[0].display()
+                );
+            }
+
             // `--unparsed-ext` selects extensions during a tree walk, and there
             // is no walk here. Forwarding it would have no effect and dropping it
             // silently is how `hades ingest Cargo.toml --unparsed-ext toml` looked

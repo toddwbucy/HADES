@@ -41,8 +41,9 @@ use hades_core::config::HadesConfig;
 use hades_core::db::ArangoPool;
 use hades_core::dispatch::{
     DaemonCommand, DbCountParams, DbCreateDatabaseParams, DbGetParams, DbGraphNeighborsParams,
-    DbGraphTraverseParams, DbListParams, IngestStartParams, IngestStatusParams, OrientParams,
-    SmellReportParams, TaskCreateParams, TaskListParams, TaskShowParams, TaskUpdateParams,
+    DbGraphTraverseParams, DbListParams, DbSchemaInitParams, IngestStartParams, IngestStatusParams,
+    OrientParams, SmellReportParams, TaskCreateParams, TaskListParams, TaskShowParams,
+    TaskUpdateParams,
 };
 use hades_core::service::{self, ConnectionPolicy};
 
@@ -295,6 +296,22 @@ macro_rules! db_field_doc {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DbOnlyArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SchemaInitArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    #[schemars(
+        description = "Seed ontology name. Only \"empty\" is accepted today: it creates hades_schema with metadata and no edge definitions."
+    )]
+    seed: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CreateDatabaseArgs {
     #[schemars(
         description = "Name of the database to create. Must begin with a prefix this endpoint is allowed to provision."
@@ -378,12 +395,18 @@ struct DbGetArgs {
 struct DbListArgs {
     #[schemars(description = db_field_doc!())]
     db: Option<String>,
-    #[schemars(description = "Collection to list; omit to list collections instead of documents")]
+    #[schemars(
+        description = "Collection *profile* to list documents from (`default`, `codebase`). Omit for `default`. This does NOT enumerate collections: use db_collections for that."
+    )]
     collection: Option<String>,
     #[schemars(description = "Maximum documents to return")]
     limit: Option<u32>,
     #[schemars(description = "Filter by source paper/document identifier")]
     paper: Option<String>,
+    #[schemars(
+        description = "Fields to return per document, e.g. [\"_key\", \"status\"]. Omit and every field comes back except the bulk text and vector ones (full_text, embedding, text, body), which otherwise make the payload proportional to the corpus rather than to the row count."
+    )]
+    fields: Option<Vec<String>>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -554,6 +577,40 @@ impl HadesMcpServer {
 #[tool_router]
 impl HadesMcpServer {
     #[tool(
+        description = "Enumerate the collections in a database with their document counts and types. Start here when surveying an unfamiliar graph: orient reports collection *profiles*, which do not name the symbol or edge collections a code graph also holds."
+    )]
+    async fn db_collections(
+        &self,
+        Parameters(a): Parameters<DbOnlyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(a.db, DaemonCommand::DbCollections {}).await
+    }
+
+    #[tool(
+        description = "List the named graphs in a database with their edge definitions. A traversal needs a graph name, and without this there was no way to learn one, or to learn whether any graph was defined at all."
+    )]
+    async fn graph_list(
+        &self,
+        Parameters(a): Parameters<DbOnlyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(a.db, DaemonCommand::DbGraphList {}).await
+    }
+
+    #[tool(
+        description = "Seed a database's hades_schema collection, which runtime operations read. The step create_database points at: a fresh database has no schema, and graph loading fails without one. Requires provisioning."
+    )]
+    async fn db_schema_init(
+        &self,
+        Parameters(a): Parameters<SchemaInitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::DbSchemaInit(DbSchemaInitParams { seed: a.seed }),
+        )
+        .await
+    }
+
+    #[tool(
         description = "Create a new database. Only available when this endpoint was started with provisioning enabled, and only for names matching a permitted prefix. Seed it with db_schema_init before ingesting."
     )]
     async fn create_database(
@@ -656,7 +713,7 @@ impl HadesMcpServer {
     }
 
     #[tool(
-        description = "List documents in a collection (bounded), or list all collections when no collection is given."
+        description = "List documents from a collection profile, bounded, with an optional field projection. Omitting `collection` lists the `default` profile's documents; it does not enumerate collections, which is what db_collections is for."
     )]
     async fn db_list(
         &self,
@@ -668,6 +725,7 @@ impl HadesMcpServer {
                 collection: a.collection,
                 limit: a.limit,
                 paper: a.paper,
+                fields: a.fields,
             }),
         )
         .await
@@ -1057,7 +1115,7 @@ mod tests {
     // --- tool surface ------------------------------------------------------
 
     #[test]
-    fn tool_surface_is_the_curated_fifteen() {
+    fn tool_surface_is_the_curated_eighteen() {
         let router = HadesMcpServer::tool_router();
         let mut names: Vec<String> = router
             .list_all()
@@ -1075,10 +1133,13 @@ mod tests {
                 // learns why it cannot provision instead of concluding the
                 // capability does not exist.
                 "create_database",
+                "db_collections",
                 "db_count",
                 "db_get",
                 "db_list",
                 "db_query",
+                "db_schema_init",
+                "graph_list",
                 "graph_neighbors",
                 "graph_traverse",
                 "ingest_start",
