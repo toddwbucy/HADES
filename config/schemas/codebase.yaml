@@ -1,12 +1,14 @@
 # The universal code graph, as data.
 #
 # **The generic case.** `hades ingest` creates its collections and its gharial
-# edge definitions directly, which works and leaves `hades_schema` holding nothing
-# but an empty `meta` document. `relation_order` is then `[]` and
-# `graph::loader` scans exactly the collections it names, so structural training
-# over the graph loads **zero edges** and reports success. Nothing fails. That
-# defect was found in a WeaverTools graph holding 13,000 edges, and it applies to
-# every database built by ingest alone.
+# edge definitions directly and writes no schema, so `hades_schema` holds at most
+# the empty `meta` that `db schema init --seed empty` writes, which is also what
+# the MCP `db_schema_init` writes. `relation_order` is then `[]` and
+# `graph::loader` scans exactly the collections it names, so `graph-embed update`
+# proceeds over **zero edges** and reports success, and `graph-embed train` fails
+# with "graph has no edges" only after loading none of them. That was found in a
+# WeaverTools graph holding 13,000 edges, and it applies to every database that
+# was seeded empty and then filled by ingest.
 #
 # Apply it to any code-only or code-and-document graph:
 #

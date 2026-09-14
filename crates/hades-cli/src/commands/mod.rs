@@ -32,4 +32,6 @@ pub mod smell_mgmt;
 pub mod system;
 pub mod task;
 pub mod task_mgmt;
+#[cfg(test)]
+pub(crate) mod test_db;
 pub mod tools;

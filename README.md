@@ -99,10 +99,9 @@ input canonicalization, the honest batch envelope, `--force` stability:
 HADES_BIN=target/release/hades ./scripts/bident_burn_smoke.sh
 ```
 
-Requires live ArangoDB and the embedder service. It creates and owns
-`bident_burn_smoke` and touches no other database, which is the rule for every
-write test here. `scripts/cli_audit.sh` remains
-the command-level companion ("does every command run"); the smoke test
+Requires live ArangoDB and the embedder service. It creates `bident_burn_smoke`
+on its first run and truncates it on later ones (there is deliberately no
+`drop-database` command, #118), and touches no other database. `scripts/cli_audit.sh` is the command-level companion ("does every command run") but is hardwired to `bident_burn`, which no longer exists, so it fails until the Persephone pass reworks it; the smoke test
 answers "is the graph right".
 
 ## Install

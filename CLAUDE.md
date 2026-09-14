@@ -36,10 +36,16 @@ cargo test -p hades-core --lib config::      # filter by path within a crate
 - Unit tests live in `src/` next to the code (~630 `#[test]`/`#[tokio::test]`
   across the workspace).
 - `crates/*/tests/*.rs` integration targets need external resources. They
-  self-skip when the resource is missing and honor a strict flag that turns a
-  skip into a panic (`ARANGO_TESTS=1` for the `arango_*` and `graph_loader`
-  targets; `HADES_CUDA_FIXTURE` for the libclang probe). The convention is
-  specified in `docs/specs/workstation-specific-tests.md`.
+  self-skip when the *socket* is missing (`ARANGO_SOCKET` names it; the default
+  `/run/arangodb3/arangodb.sock` is the system install's, and a user-level
+  arangod binds elsewhere) and honor a strict flag that turns a skip into a
+  panic (`ARANGO_TESTS=1` for the `arango_*` and `graph_loader` targets;
+  `HADES_CUDA_FIXTURE` for the libclang probe). The convention is specified in
+  `docs/specs/workstation-specific-tests.md`. A missing *database* is not a
+  skip: `arango_transport`, `arango_crud`, `arango_index` and `arango_query`
+  still name `bident_burn` and a seeded `persephone_tasks`, neither of which
+  exists, so they fail until the Persephone pass moves them onto
+  `tests/common::with_temp_db` the way `arango_cache` already is.
 - Service-dependent targets with no skip guard — `embedding_client`,
   `extraction_client`, `training_client` — and analyzer-dependent ones
   (`clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`) fail on a bare
@@ -246,19 +252,32 @@ unbuilt work.
 2. **No database is a default, including for HADES's own state.**
    `bident_burn` held the `persephone_tasks` kanban and was dropped on
    2026-09-14 with the other superseded databases. The `task` commands run
-   against whatever `--db` names and need a database created for them first, so
-   treat Persephone as deferred work rather than a missing file. Do not
-   reintroduce a hardcoded one: `effective_database()` errors without `--db` or
-   `HADES_DATABASE` by design, and the daemon's own fallback for an omitted `db`
-   is a known wart, not a pattern to copy.
+   against whatever `--db` names and need both a database and the
+   `persephone_tasks`, `persephone_logs`, `persephone_handoffs` and
+   `persephone_edges` collections, which nothing in the binary creates: the
+   only creator today is the `hades db create persephone_*` loop in
+   `scripts/bident_burn_smoke.sh`. Treat Persephone as deferred work rather
+   than a missing file. `effective_database()` errors without `--db` or
+   `HADES_DATABASE` by design, so do not reintroduce a hardcoded target.
 3. **A write test gets a database created for the test**, never a corpus
-   somebody is querying. `scripts/bident_burn_smoke.sh` is the pattern: it
-   creates `bident_burn_smoke`, uses it, and owns it.
-4. **A graph built by ingest alone has no `relation_order`**, so structural
-   training over it loads zero edges and reports success. Apply a schema file
-   when creating a database: `config/schemas/codebase.yaml` for the universal
-   code layer, or a domain file carrying it plus its own relations
-   (`services/adapters/weavertools/schema.yaml` is the worked example).
+   somebody is querying. The pattern is `with_temp_db`
+   (`crates/hades-cli/src/commands/test_db.rs`, mirrored for integration
+   targets in `crates/hades-core/tests/common/mod.rs`): a per-process name,
+   delete before create, dropped even when the test panics.
+   `scripts/bident_burn_smoke.sh` is the script-level version and is weaker
+   by design: it creates `bident_burn_smoke` once and truncates on later runs,
+   since there is deliberately no `drop-database` command (#118).
+4. **A database seeded with `db schema init --seed empty` has an empty
+   `relation_order`**, and that seed is what the MCP `db_schema_init` writes.
+   `graph::loader` scans exactly the collections `relation_order` names, so
+   `graph-embed update` proceeds over zero edges and reports success while
+   `graph-embed train` fails with "graph has no edges" only after loading
+   none; a database with no `hades_schema` at all fails earlier. Apply a
+   schema file when creating a database: `config/schemas/codebase.yaml` for
+   the universal code layer, or a domain file carrying it plus its own
+   relations (`services/adapters/weavertools/schema.yaml` is the worked
+   example). There is no MCP operation for that yet, so a remotely
+   provisioned graph needs the file applied from the CLI before training.
 
 ## Conventions
 

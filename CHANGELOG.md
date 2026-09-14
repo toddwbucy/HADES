@@ -21,10 +21,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - **`config/schemas/codebase.yaml`**, the universal code graph as data. `hades
   ingest` creates its collections and gharial edge definitions directly and leaves
-  `hades_schema` holding an empty `meta`, so `relation_order` is `[]`,
-  `graph::loader` scans nothing, and structural training over the graph loads zero
-  edges and reports success. That was found in a domain graph and applies to every
-  database built by ingest alone, so the generic layer now has a file of its own.
+  `hades_schema` holding at most the empty `meta` that `--seed empty` writes, so
+  `relation_order` is `[]`, `graph::loader` scans nothing, `graph-embed update`
+  proceeds over zero edges and reports success, and `graph-embed train` fails
+  with "graph has no edges" only after loading none. That was found in a domain
+  graph and applies to every database seeded empty and filled by ingest, so the
+  generic layer now has a file of its own.
   `services/adapters/weavertools/schema.yaml` stays as the worked example of a
   domain layer on top of it. Applied to a fresh `bident_v4`: 12 collections, 4 edge
   definitions, one named graph, `num_relations` 4 rather than 0.
@@ -269,19 +271,37 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   superseded databases, while both CLAUDE.md files still told a session to run
   project management against it and to target it for write tests. The replacement
   states a rule rather than an inventory, since a guidance file listing live
-  databases goes stale: no database is a default, the `task` commands need one
-  created for them, and a write test creates and owns its own. A fourth rule
-  carries finding 35 forward, that a graph built by ingest alone has an empty
-  `relation_order` and needs a schema file applied at create time.
-- `tests/arango_cache.rs` and the `codebase_retire` test harness take
-  `HADES_TEST_DB` with a dedicated default instead of naming `bident_burn`, and
-  the cache test creates the database so a fresh instance needs no setup step.
-  Both were **already failing before that database was dropped**, for an unrelated
-  reason: the socket default is `/run/arangodb3/arangodb.sock` and a user-level
-  deployment binds elsewhere, so all five cache tests panicked on the socket and
-  never reached the database name. They pass 5 of 5 against a user-level socket.
+  databases goes stale: no database is a default, the `task` commands need a
+  database and the four `persephone_*` collections created for them (only the
+  smoke script does that today), and a write test creates and owns its own. A
+  fourth rule carries finding 35 forward accurately: a database seeded with
+  `--seed empty` has an empty `relation_order`, over which `graph-embed update`
+  reports success and `graph-embed train` fails with "graph has no edges".
+- **Write tests get a throwaway database, dropped even on panic.** The
+  `codebase_prune` harness had the right shape and is now shared:
+  `crates/hades-cli/src/commands/test_db.rs` for the CLI crate, mirrored in
+  `crates/hades-core/tests/common/mod.rs` for integration targets. Per-process
+  name with a counter (two tests in one binary share a pid, and the old
+  delete-before-create was dropping a sibling's database mid-run), the user from
+  `HADES_TEST_USER`, refusal to create is a failure under `ARANGO_TESTS=1` rather
+  than a silent skip. `arango_cache` and the `codebase_retire` test run on it;
+  `codebase_ingest`'s live tests drop their dead `bident_burn` default and require
+  `HADES_TEST_DB`, failing loudly in strict mode rather than skipping green.
+- **The `codebase_retire` regression guard for #158 had never run.** It skipped
+  whenever its target database lacked the codebase collections, which was always,
+  and reported success. On a real database it failed at once: the sweep binds all
+  four codebase edge collections and maps ArangoDB's 1203 (collection not found)
+  to an empty result, so a fixture without them makes the sweep report nothing.
+  The harness creates them. It passes, for the first time.
+- On the two failing test targets: they were **already failing before that
+  database was dropped**, under `ARANGO_TESTS=1`, on the socket default
+  `/run/arangodb3/arangodb.sock`, which a user-level deployment does not have; a
+  bare run returned five green skips. `ARANGO_SOCKET` names the socket.
 - The README claimed the smoke script "never touches `bident_burn`", true and
-  useless once that database was gone. It now names what the script owns.
+  useless once that database was gone, and `cli_audit.sh` is still hardwired to
+  it. The README says so. `arango_transport`, `arango_crud`, `arango_index` and
+  `arango_query` also still name it and need a seeded `persephone_tasks`; they
+  wait for the Persephone pass.
 
 
 - **The WeaverTools extractor no longer decides its own scope.** It walked a

@@ -7,9 +7,10 @@
 #
 #   1. `hades_schema` held nothing but an empty `meta` document, so
 #      `relation_order` was `[]` and `num_relations` was 0. `graph::loader`
-#      scans exactly the collections named in `relation_order`, so structural
-#      training over this database would have loaded **zero edges** from a graph
-#      holding 13,000 of them, and reported success.
+#      scans exactly the collections named in `relation_order`, so `graph-embed
+#      update` would have proceeded over **zero edges** from a graph holding
+#      13,000 of them and reported success, and `graph-embed train` would have
+#      failed with "graph has no edges" only after loading none of them.
 #   2. The edge definitions existed only in the live database. Nothing in the
 #      repository said what the graph's shape was, so it could not be rebuilt,
 #      reviewed, or diffed.

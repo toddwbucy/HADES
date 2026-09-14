@@ -331,80 +331,8 @@ async fn run_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hades_core::db::{ArangoClient, crud};
-
-    /// Create a throwaway database, run `f` against it, then drop it.
-    ///
-    /// These sweeps are **collection-global** — they delete every orphan in the
-    /// database, not just fixture rows. Running them against a shared database
-    /// would make exact-count assertions depend on whatever else happens to be
-    /// there, *and* would delete unrelated records as a side effect. An isolated
-    /// database makes the counts exact and the blast radius nil, and lets
-    /// concurrent runs coexist.
-    async fn with_temp_db<F, Fut>(f: F)
-    where
-        F: FnOnce(ArangoPool) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send,
-    {
-        let socket = std::path::PathBuf::from(
-            std::env::var("ARANGO_SOCKET")
-                .unwrap_or_else(|_| "/run/arangodb3/arangodb.sock".to_string()),
-        );
-        if !socket.exists() {
-            if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
-                panic!(
-                    "ARANGO_TESTS is set but socket not found at {}",
-                    socket.display()
-                );
-            }
-            eprintln!(
-                "skipping: ArangoDB socket not found at {}",
-                socket.display()
-            );
-            return;
-        }
-        let Ok(password) = std::env::var("ARANGO_PASSWORD") else {
-            eprintln!("skipping: ARANGO_PASSWORD not set");
-            return;
-        };
-
-        // Unique per process so parallel runs never collide.
-        let db_name = format!("hades_test157_{}", std::process::id());
-        let sys = ArangoClient::with_socket(socket.clone(), "_system", "root", &password);
-        let _ = sys.delete(&format!("database/{db_name}")).await;
-        if let Err(e) = sys.post("database", &json!({ "name": db_name })).await {
-            eprintln!("skipping: cannot create test database ({e})");
-            return;
-        }
-
-        let client = ArangoClient::with_socket(socket, &db_name, "root", &password);
-        let pool = ArangoPool::new(client.clone(), client);
-        for col in [
-            CODEBASE.files,
-            CODEBASE.chunks,
-            CODEBASE.embeddings,
-            CODEBASE.symbols,
-        ] {
-            crud::create_collection(&pool, col, None)
-                .await
-                .expect("create fixture collection");
-        }
-
-        // Catch a panicking assertion so the database is always dropped, then
-        // resume it. Without this, a failing test leaks its database — teardown
-        // sits after the await and never runs. (Observed while verifying that
-        // the cascade test catches a reordered sweep: the deliberate failure
-        // left `hades_test157_<pid>` behind.)
-        // `JoinHandle` captures a panic instead of unwinding through us, so the
-        // database is dropped either way and the failure is re-raised after.
-        let outcome = tokio::task::spawn(async move { f(pool).await }).await;
-
-        let _ = sys.delete(&format!("database/{db_name}")).await;
-
-        if let Err(join_err) = outcome {
-            std::panic::resume_unwind(join_err.into_panic());
-        }
-    }
+    use crate::commands::test_db::with_temp_db;
+    use hades_core::db::crud;
 
     async fn count(pool: &ArangoPool, col: &str) -> u64 {
         let aql = "RETURN LENGTH(FOR d IN @@col RETURN 1)";
