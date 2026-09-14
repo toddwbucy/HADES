@@ -81,7 +81,29 @@ MAX_TOKENS = int(os.environ.get("HADES_EMBEDDER_MAX_TOKENS", "15000"))
 # MAX_TOKENS being set from measurement rather than hope.
 #
 # When you want a hard guarantee instead, set the flat floor below.
-MODEL_RESIDENT_MIB = 9216
+# Measured directly on olympus 2026-09-13 by loading the model and reading
+# torch.cuda.memory_allocated: **7,993 MiB**, of which 7,162 MiB is 3.755B fp16
+# parameters and 686 MiB is 1,518 fp32 LoRA tensors that peft keeps unquantized.
+#
+# An earlier pass set this to 12,288 from the "12.03 GiB allocated" line in an
+# OOM traceback. That reading was taken *during* the failing forward pass, so it
+# counted the model plus roughly 4 GiB of partial activations, and using it here
+# made the preflight demand 14,336 MiB free on a 16 GiB card that has about
+# 15,500: any other process touching the card would have made HADES refuse it.
+#
+# The bisected sequence ceilings are unaffected, since those were measured by
+# running documents rather than derived from this number. What this constant
+# gates is the contention check, and 8,192 is the measured model rounded up.
+MODEL_RESIDENT_MIB = 8192
+
+# Tokens held back from the ceiling for what the encode adds on top of the text.
+#
+# `encode_text` prepends a task prompt ("Passage: ", "Query: ") and the tokenizer
+# adds special tokens, neither of which a bare count of the input can see. Eight
+# is a margin rather than a measurement: the prompt is one short word plus a
+# colon and space, and the specials are a handful, so this is comfortably above
+# both while costing 0.02 percent of a 32,768-token window.
+PROMPT_RESERVE_TOKENS = 8
 CONTENTION_HEADROOM_MIB = 2048
 
 # A flat floor, in MiB, that overrides the computed estimate when set.
@@ -105,6 +127,37 @@ _TASK_TO_ADAPTER = {
 
 # Supported task labels exposed via Info RPC
 SUPPORTED_TASKS = ["retrieval.passage", "retrieval.query", "text-matching", "code"]
+
+
+class InputTooLargeError(ValueError):
+    """An input does not fit the load profile's sequence ceiling.
+
+    Raised instead of letting the input be truncated. A 45,183-token document
+    sent to a profile with a 32,768-token ceiling used to return one vector and
+    HTTP 200: `encode_text` truncates at its own max_length, silently, so 27
+    percent of that document was discarded and the response said success. A
+    corpus ingested that way is wrong in a way no count reconciles, because the
+    vector count matches the input count exactly.
+
+    Subclasses ValueError so the HTTP layer's existing arm maps it to 400, and
+    carries the PE_INPUT_TOO_LARGE code in its message per the PE-API error
+    table, which has specified this case from the start.
+
+    The caller's remedy is to pre-chunk, or to run a profile whose card holds
+    more: the ceiling is a property of the card the model is loaded on, and it
+    is reported on /v1/models so a client never has to guess it.
+    """
+
+    def __init__(self, index: int, n_tokens: int, max_tokens: int) -> None:
+        self.index = index
+        self.n_tokens = n_tokens
+        self.max_tokens = max_tokens
+        super().__init__(
+            f"PE_INPUT_TOO_LARGE: input {index} is {n_tokens} tokens, which "
+            f"exceeds this profile's {max_tokens}-token ceiling. Refusing "
+            f"rather than truncating and reporting success. Pre-chunk the "
+            f"input, or load a profile on a card that holds more."
+        )
 
 
 class JinaV4Embedder:
@@ -329,6 +382,13 @@ class JinaV4Embedder:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
 
+        # Checked for every input before any forward pass runs, so one oversized
+        # input fails the request rather than after burning GPU time on the
+        # batches ahead of it. The count comes from the same tokenizer that
+        # would do the truncating, so it is the authoritative number and not an
+        # estimate from character length.
+        self._assert_inputs_fit(texts)
+
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
@@ -338,6 +398,35 @@ class JinaV4Embedder:
         if all_embeddings:
             return np.vstack(all_embeddings).astype(np.float32, copy=False)
         return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+
+    def _assert_inputs_fit(self, texts: list[str]) -> None:
+        """Refuse inputs longer than this profile's ceiling.
+
+        `_embed_batch_locked` prefers the model's own `encode_text`, which
+        truncates at its configured max_length and says nothing. The dead
+        fallback path below it passes `truncation=True` explicitly, so both
+        arms silently discarded the tail of an oversized input.
+
+        Holds `_infer_lock` the way every other tokenizer call here does: the
+        Rust-backed fast tokenizer is not thread-safe and concurrent calls raise
+        "Already borrowed", which is findings #8. Released before the forward
+        pass takes the same lock, so this does not deadlock a non-reentrant
+        lock.
+        """
+        budget = MAX_TOKENS - PROMPT_RESERVE_TOKENS
+        with self._infer_lock:
+            tokenizer = self.tokenizer
+            for index, text in enumerate(texts):
+                # Counted WITH special tokens, against a budget reduced by the
+                # task prompt. `_embed_batch_locked` calls `encode_text` with a
+                # `prompt_name`, which prepends a prefix this count cannot see,
+                # and the fallback arm tokenizes with specials. Counting bare text
+                # against the full ceiling let an input of exactly MAX_TOKENS pass
+                # the guard and then be truncated by the overhead, which is the
+                # silent loss the guard exists to stop.
+                n_tokens = len(tokenizer(text, add_special_tokens=True)["input_ids"])
+                if n_tokens > budget:
+                    raise InputTooLargeError(index, n_tokens, budget)
 
     def embed_late_chunked(
         self,
@@ -467,6 +556,20 @@ class JinaV4Embedder:
                 max((te for ts, te in offsets[:n_tokens] if te > ts), default=prefix_chars)
                 - prefix_chars
             )
+            # Exclusive end of the document's real tokens.
+            #
+            # `n_tokens` counts every non-padding token, trailing special tokens
+            # included, and those carry (0, 0) offsets. A uniform window whose last
+            # token is one of them reports `char_end = max(0, 0 - prefix_chars)`,
+            # which is 0: an inverted range that a caller intersecting against
+            # symbol spans silently matches nothing from. Bounding the walk by the
+            # last token that covers a real character keeps the specials out of the
+            # spans without excluding them from the pooling, which still runs over
+            # the full hidden states.
+            doc_token_end = max(
+                (i + 1 for i, (ts, te) in enumerate(offsets[:n_tokens]) if te > ts),
+                default=first_doc_token,
+            )
 
             spans: list[tuple[int, int]] = []
             if boundaries is not None:
@@ -522,12 +625,24 @@ class JinaV4Embedder:
                         f"Send smaller windows."
                     )
             else:
+                # Truncation has to fail here as loudly as it does on the
+                # boundaries path above. Without this, an oversized input is cut
+                # at max_length, the walk below covers only what survived, and the
+                # response is HTTP 200 with fewer chunks than the text warrants:
+                # the caller cannot tell a short document from a truncated one.
+                if n_tokens >= MAX_TOKENS:
+                    raise ValueError(
+                        f"PE_INPUT_TOO_LARGE: input filled the {MAX_TOKENS}-token "
+                        f"window and was truncated at character {covered_chars} of "
+                        f"{len(text)}, so uniform windows would cover only the part "
+                        f"the model saw. Send a smaller input."
+                    )
                 step = chunk_size_tokens - overlap_tokens
                 start = first_doc_token
-                while start < n_tokens:
-                    end = min(start + chunk_size_tokens, n_tokens)
+                while start < doc_token_end:
+                    end = min(start + chunk_size_tokens, doc_token_end)
                     spans.append((start, end))
-                    if end >= n_tokens:
+                    if end >= doc_token_end:
                         break
                     start += step
 

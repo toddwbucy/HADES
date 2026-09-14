@@ -1,0 +1,42 @@
+[Unit]
+Description=HADES Embedding Service (Jina V4, OpenAI-compatible HTTP) on %i
+Documentation=file:///opt/HADES/docs/persephone-embedding-api.md
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# One instance per load profile, named for the card it loads on. The instance
+# name selects a profile under ~/.config/hades/embedder-profiles/, and the
+# profile fixes the card, the sequence ceiling, the batch size and the VRAM
+# floor. Every ceiling in there is a measurement on that card, not a preference.
+#
+#   gpu2  16 GiB RTX 2000 Ada, ceiling 11,900   (12,196 is the first OOM)
+#   gpu1  48 GiB RTX A6000,    ceiling 32,768   (the model's documented max)
+#   gpu0  48 GiB RTX A6000,    ceiling 32,768
+#
+# All profiles bind the SAME port, which is the point: switching cards is a
+# stop and a start, and no client configuration changes. It also means two
+# profiles cannot be live at once, because the second fails to bind rather
+# than quietly loading a second 9 GiB copy of the model onto another card.
+WorkingDirectory=@SERVICES_DIR@
+EnvironmentFile=%h/.config/hades/embedder-profiles/%i.conf
+ExecStart=@SERVICES_DIR@/.venv/bin/python -m embedding.http_server
+
+# Runs from the migrated tree's own venv. It previously ran from the archived
+# HADES-Burn venv out of a detached shell, which is how the service outlived
+# the tree it was supposed to be serving (findings log #12).
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hades-embedder-%i
+
+[Install]
+WantedBy=default.target

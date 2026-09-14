@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Union
@@ -134,9 +135,16 @@ class ModelInfo(BaseModel):
     """Single entry in `/v1/models` response.
 
     The OpenAI-standard fields are `id`, `object`, `created`, `owned_by`.
-    `dimension`, `max_seq_length`, and `supported_tasks` are vendor
-    extensions HADES surfaces so clients can discover model capabilities
-    in one round-trip.
+    `dimension`, `max_seq_length`, `supported_tasks`, `device` and `profile`
+    are vendor extensions HADES surfaces so clients can discover model
+    capabilities in one round-trip.
+
+    `max_seq_length` is the load profile's measured ceiling, not the model's
+    architectural maximum. The same weights serve 11,900 on a 16 GiB card and
+    32,768 on a 48 GiB one, so a client that wants to know what fits has to ask
+    the running service rather than read the model card. `profile` and `device`
+    say which card answered, so a switch between cards is visible in a log
+    rather than inferred from the ceiling changing.
     """
 
     id: str
@@ -147,6 +155,14 @@ class ModelInfo(BaseModel):
     dimension: int = EMBEDDING_DIM
     max_seq_length: int = MAX_TOKENS
     supported_tasks: list[str] = Field(default_factory=lambda: list(SUPPORTED_TASKS))
+    device: str = ""
+    # The card as the driver numbers it, not as this process sees it.
+    # CUDA_VISIBLE_DEVICES renumbers from zero, so a profile pinned to the
+    # second A6000 reports device "cuda:0", and an operator reading that in a
+    # log concludes the job is on GPU 0. Both are reported so neither has to be
+    # inferred.
+    physical_device: str = ""
+    profile: str = ""
 
 
 class ModelsResponse(BaseModel):
@@ -260,11 +276,41 @@ def _state(app: FastAPI) -> AppState:
     return app.state.app_state  # type: ignore[no-any-return]
 
 
+def _physical_device(device: str) -> str:
+    """Map an in-process device string back to the driver's own numbering.
+
+    `CUDA_VISIBLE_DEVICES=1` makes the second card appear as `cuda:0` inside
+    the process, so the in-process name cannot say which card is loaded.
+    Returns an empty string when the mapping is not derivable, rather than
+    guessing.
+    """
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if not visible or not device.startswith("cuda:"):
+        return ""
+    try:
+        ordinal = int(device.split(":", 1)[1])
+    except ValueError:
+        return ""
+    entries = [e.strip() for e in visible.split(",") if e.strip()]
+    if ordinal >= len(entries):
+        return ""
+    return f"cuda:{entries[ordinal]}"
+
+
 @app.get("/v1/models", response_model=ModelsResponse)
 async def list_models() -> ModelsResponse:
     """OpenAI `/v1/models` — single entry for the configured Jina V4 model."""
     state = _state(app)
-    return ModelsResponse(data=[ModelInfo(id=state.config.model_name)])
+    return ModelsResponse(
+        data=[
+            ModelInfo(
+                id=state.config.model_name,
+                device=state.config.device,
+                physical_device=_physical_device(state.config.device),
+                profile=state.config.profile,
+            )
+        ]
+    )
 
 
 # `response_model_exclude_none` keeps the plain response byte-for-byte

@@ -40,6 +40,7 @@ use hades_core::db::crud;
 use hades_core::db::keys;
 use hades_core::db::query::ExecutionTarget;
 use hades_core::db::{ArangoErrorKind, ArangoPool};
+use hades_core::ingest_routing::{self, Route};
 use hades_core::persephone::embedding::EmbeddingClient;
 
 use super::output::{self, OutputFormat};
@@ -113,8 +114,20 @@ struct ImportContext {
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
 }
 
-/// Run the codebase ingest command.
-// TODO: support --batch to enable parallel/batched ingestion
+/// One half of an ingest, as data rather than as printed output.
+///
+/// The unified `hades ingest` runs the code phase and the document phase against
+/// one root and emits a single envelope, so neither phase may print its own. The
+/// failure travels beside the summary instead of replacing it: a run that
+/// ingested 180 files and lost its enrichment has to report both.
+pub struct PhaseOutcome {
+    /// The phase's summary, as it would have appeared in its own envelope.
+    pub data: Value,
+    /// Set when the phase finished but its outcome is a failure.
+    pub failure: Option<anyhow::Error>,
+}
+
+/// Run the codebase ingest command, printing its own envelope.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     config: &HadesConfig,
@@ -126,12 +139,41 @@ pub async fn run(
     force: bool,
     allow_analysis_downgrade: bool,
 ) -> Result<()> {
+    let outcome = run_phase(
+        config,
+        path,
+        language,
+        batch,
+        unparsed_ext,
+        compile_commands,
+        force,
+        allow_analysis_downgrade,
+    )
+    .await?;
+    output::print_output("codebase.ingest", outcome.data, &OutputFormat::Json);
+    match outcome.failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// The code phase itself.
+// TODO: support --batch to enable parallel/batched ingestion
+#[allow(clippy::too_many_arguments)]
+pub async fn run_phase(
+    config: &HadesConfig,
+    path: PathBuf,
+    language: Option<&str>,
+    batch: bool,
+    unparsed_ext: &[String],
+    compile_commands: Option<&Path>,
+    force: bool,
+    allow_analysis_downgrade: bool,
+) -> Result<PhaseOutcome> {
     let cmd_start = Instant::now();
 
-    // Validate path exists.
-    if !path.exists() {
-        bail!("path not found: {}", path.display());
-    }
+    // Resolve the ingest root before anything derives from it.
+    let path = resolve_ingest_root(&path)?;
 
     let unparsed_set = normalize_unparsed_ext(unparsed_ext);
     let lang_override = parse_language_arg(language)?;
@@ -151,18 +193,21 @@ pub async fn run(
         }
     };
 
+    // Ask the backend what it will accept, once per run. The answer is a
+    // property of the load profile the embedder happens to be running, so it
+    // cannot be a constant and must not be read per file.
+    let window_chars = embed_window_chars(embedder.as_ref()).await;
+
     // Ensure codebase collections exist.
     ensure_collections(&db).await?;
 
     // Discover source files.
     let files = discover_files(&path, lang_override, &unparsed_set)?;
     if files.is_empty() {
-        output::print_output(
-            "codebase.ingest",
-            json!({ "total": 0, "message": "no supported source files found" }),
-            &OutputFormat::Json,
-        );
-        return Ok(());
+        return Ok(PhaseOutcome {
+            data: json!({ "total": 0, "message": "no supported source files found" }),
+            failure: None,
+        });
     }
 
     info!(file_count = files.len(), "discovered source files");
@@ -323,6 +368,7 @@ pub async fn run(
                 force,
                 allow_analysis_downgrade,
                 gopls_cmd.is_some(),
+                window_chars,
             )
             .await
         };
@@ -737,18 +783,21 @@ pub async fn run(
         "duration_ms": duration_ms,
     });
 
-    output::print_output("codebase.ingest", result_data, &OutputFormat::Json);
+    // The failure travels with the summary rather than replacing it, so the
+    // caller can emit both. Enrichment loss outranks per-file failures because
+    // it means the graph is missing a whole layer of edges.
+    let failure = if let Some(message) = enrichment_failure {
+        Some(anyhow::anyhow!("{message}"))
+    } else if failed > 0 {
+        Some(CodebaseIngestFailure { total, failed }.into())
+    } else {
+        None
+    };
 
-    // Deferred so the summary above is always written, even when enrichment
-    // loss makes this run a failure.
-    if let Some(message) = enrichment_failure {
-        anyhow::bail!("{message}");
-    }
-
-    if failed > 0 {
-        return Err(CodebaseIngestFailure { total, failed }.into());
-    }
-    Ok(())
+    Ok(PhaseOutcome {
+        data: result_data,
+        failure,
+    })
 }
 /// Escape hatch for the late-chunking path, read once per process.
 static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
@@ -756,6 +805,67 @@ static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 });
+
+/// Character budget for one embed window, derived from the backend's ceiling.
+///
+/// The window is packed by characters because chunk boundaries are character
+/// offsets, while the ceiling is in tokens, so the conversion needs a
+/// chars-per-token figure. It has to be a *floor*, not an average: pack by the
+/// average and the densest files overshoot the ceiling.
+///
+/// 2.0 is measured, not guessed. Across 285 files of real Rust, Python, CUDA and
+/// markdown the lowest ratio observed was 2.18 chars per token, the 5th
+/// percentile 3.68 and the median 4.18. So 2.0 leaves headroom under the densest
+/// file in that corpus, and a typical file still fills roughly half the window.
+///
+/// The constant this replaced was 12,000 characters, justified by a comment
+/// claiming dense Rust runs 1.5 chars per token. Measurement puts it at 4.19, so
+/// that budget packed about 2,870 tokens against a 32,768-token card and split
+/// 134 of those 285 files, producing 672 windows where 313 suffice. Every extra
+/// window is a seam where a chunk's vector loses the surrounding file, which is
+/// the whole point of late chunking.
+const CHARS_PER_TOKEN_FLOOR: f64 = 2.0;
+
+/// Fallback budget when the backend does not report `max_seq_length`.
+///
+/// The previous hardcoded value, kept for a backend that predates the field:
+/// under-packing is a quality loss, and overshooting an unknown ceiling is a
+/// refused window, so the conservative number is the right guess when there is
+/// nothing to read.
+const FALLBACK_WINDOW_CHARS: usize = 12_000;
+
+/// Ask the backend what it will accept and convert it to a character budget.
+async fn embed_window_chars(embedder: Option<&EmbeddingClient>) -> usize {
+    let Some(client) = embedder else {
+        return FALLBACK_WINDOW_CHARS;
+    };
+    match client.info().await {
+        Ok(info) => match info.max_seq_length {
+            Some(ceiling) => {
+                let budget = (f64::from(ceiling) * CHARS_PER_TOKEN_FLOOR) as usize;
+                info!(
+                    ceiling_tokens = ceiling,
+                    window_chars = budget,
+                    profile = info.profile.as_deref().unwrap_or("unreported"),
+                    "embed window sized from the backend's ceiling"
+                );
+                budget
+            }
+            None => {
+                warn!(
+                    fallback = FALLBACK_WINDOW_CHARS,
+                    "backend does not report max_seq_length, using the conservative budget"
+                );
+                FALLBACK_WINDOW_CHARS
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, fallback = FALLBACK_WINDOW_CHARS,
+                  "could not read the backend's ceiling, using the conservative budget");
+            FALLBACK_WINDOW_CHARS
+        }
+    }
+}
 
 /// One unit of text handed to the embedder in a single forward pass.
 ///
@@ -1068,6 +1178,35 @@ async fn stamp_ingest_root(db: &ArangoPool, base: &Path, keys: &[String]) -> Res
 /// path relative to this base — so anything comparing graph keys against the
 /// working tree (e.g. `codebase drift`) MUST derive keys through this same
 /// function, or every key mismatches and the comparison is meaningless.
+/// Resolve the ingest root: it must exist, and it is canonicalized.
+///
+/// Canonical because everything downstream mixes two derivations of the same
+/// tree. [`ingest_base_path`] canonicalizes the base, while `discover_files`
+/// returned paths exactly as the operator typed them, so a relative argument
+/// left the two in different spaces. [`rel_path_for`] then stripped an absolute
+/// base off a relative path, failed, and fell back to the whole path as given.
+///
+/// Measured on `crates/hades-proto`, three files: an absolute argument keyed
+/// them `build_rs`, `src_lib_rs`, `tests_proto_types_rs`, and a relative
+/// argument keyed the same three files
+/// `crates_hades-proto_build_rs` and so on. Six file nodes for three files,
+/// each with its own chunks, symbols and embeddings, and both sets stamped with
+/// the same `ingest_root`, so `codebase drift` could not tell them apart.
+///
+/// The rust-analyzer phase broke from the other end of the same cause. Its
+/// `rust_abs_paths` were relative, so the crate-root walk in
+/// `find_workspace_root` popped to an empty path (`Cargo.toml` existing in the
+/// process cwd), and spawning a session with an empty working directory failed
+/// with ENOENT. Every call and implements edge in the run was lost, which #164's
+/// guard then correctly refused to accept silently.
+pub(crate) fn resolve_ingest_root(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("path not found: {}", path.display());
+    }
+    path.canonicalize()
+        .with_context(|| format!("failed to resolve ingest path: {}", path.display()))
+}
+
 pub(crate) fn ingest_base_path(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
@@ -1155,6 +1294,104 @@ pub(crate) fn shebang_of(path: &Path) -> Option<(bool, Option<Language>)> {
         return None;
     }
     Some((true, Language::from_shebang(trimmed)))
+}
+
+/// Every file under `root`, classified by which pipeline claims it.
+///
+/// One walk, one routing decision per file, so a unified ingest can report what
+/// happened to everything rather than leaving a caller to infer it from two
+/// separate commands' counts. Honors the same ignore rules as code discovery:
+/// `.gitignore`, `.ignore`, `.hadesignore` and [`SKIP_DIRS`].
+///
+/// Extensionless files with a shebang are classified as code, matching
+/// `discover_files_detailed`, which includes them so they are visible to ingest
+/// and drift instead of disappearing (#183).
+///
+/// `unparsed_set` are extensions the operator asked to embed without a parser.
+/// They count as code here because that is the phase which ingests them, and a
+/// report that called them unrouted while the code phase was storing them would
+/// be wrong in the direction operators trust.
+pub(crate) fn discover_by_route(
+    root: &Path,
+    unparsed_set: &std::collections::HashSet<String>,
+) -> Result<RouteDiscovery> {
+    let mut found = RouteDiscovery::default();
+
+    let unparsed = |p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| unparsed_set.contains(&e.to_lowercase()))
+    };
+
+    if root.is_file() {
+        match ingest_routing::route_for(root) {
+            Route::Code(_) => found.code.push(root.to_path_buf()),
+            Route::Document => found.documents.push(root.to_path_buf()),
+            Route::Unrouted => {
+                if unparsed(root) || shebang_of(root).is_some() {
+                    found.code.push(root.to_path_buf());
+                } else {
+                    found.unrouted.push(UnhandledFile {
+                        path: root.to_string_lossy().to_string(),
+                        reason: "no handler for extension",
+                    });
+                }
+            }
+        }
+        return Ok(found);
+    }
+
+    let walker = WalkBuilder::new(root)
+        .follow_links(false)
+        .add_custom_ignore_filename(".hadesignore")
+        .filter_entry(|entry| {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && let Some(name) = entry.file_name().to_str()
+            {
+                return !SKIP_DIRS.contains(&name);
+            }
+            true
+        })
+        .build();
+
+    for entry in walker {
+        let entry = entry.context("error walking directory")?;
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        match ingest_routing::route_for(path) {
+            Route::Code(_) => found.code.push(path.to_path_buf()),
+            Route::Document => found.documents.push(path.to_path_buf()),
+            Route::Unrouted => {
+                if unparsed(path) || (path.extension().is_none() && shebang_of(path).is_some()) {
+                    found.code.push(path.to_path_buf());
+                } else {
+                    found.unrouted.push(UnhandledFile {
+                        path: path.to_string_lossy().to_string(),
+                        reason: if path.extension().is_some() {
+                            "no handler for extension"
+                        } else {
+                            "no extension and no shebang"
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    found.code.sort();
+    found.documents.sort();
+    found.unrouted.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(found)
+}
+
+/// What one walk found, split by route.
+#[derive(Default)]
+pub(crate) struct RouteDiscovery {
+    pub(crate) code: Vec<PathBuf>,
+    pub(crate) documents: Vec<PathBuf>,
+    pub(crate) unrouted: Vec<UnhandledFile>,
 }
 
 pub(crate) fn discover_files(
@@ -1274,6 +1511,7 @@ async fn ingest_file(
     force: bool,
     allow_analysis_downgrade: bool,
     gopls_scheduled: bool,
+    window_chars: usize,
 ) -> Result<FileResult> {
     // Read source.
     let source = std::fs::read_to_string(file_path)
@@ -1566,32 +1804,42 @@ async fn ingest_file(
             }
         }
         Some(emb) if !chunks.is_empty() => {
-            // Character budget per window, sized well below the server's token
-            // ceiling because characters are a poor proxy for tokens.
-            //
-            // 24_000 was the first attempt and it was too large: dense Rust
-            // tokenizes at roughly 1.5 chars per token, so a full window could
-            // exceed a 15_000-token context, get truncated, and leave the tail
-            // boundaries mapping to no tokens. Five chunks were stored with no
-            // embedding and nothing reported a failure.
-            //
-            // 12_000 leaves roughly 2x headroom at that density. The server now
-            // refuses truncated boundaries outright, so a bad value here fails
-            // loudly rather than silently dropping chunks.
-            const WINDOW_CHARS: usize = 12_000;
+            // Window budget comes from the backend's reported ceiling, computed
+            // once per run in `embed_window_chars`. A constant here was wrong on
+            // both cards: see that function for the measurement.
 
             let mut windows: Vec<EmbedWindow> = Vec::new();
             let mut cur: Vec<(usize, usize)> = Vec::new();
             let mut cur_start = 0usize;
             let mut first_index = 0usize;
+            // Chunks too large to share a window with anything, including
+            // themselves. `AstChunking` caps a chunk at 8,000 characters by
+            // splitting at line boundaries, but `split_at_lines` emits one whole
+            // line when its accumulator is empty, so a minified or generated file
+            // with a single very long line produces a chunk of unbounded size.
+            //
+            // Sent whole to `embed_late_chunked`, such a chunk exceeds the
+            // backend's ceiling, is refused, and takes the file's other windows
+            // down with it, because that call returns on the first error. They go
+            // through the plain path instead: one vector each with no surrounding
+            // context, which is worse than late chunking and far better than the
+            // file losing every vector it had.
+            let mut oversized: Vec<usize> = Vec::new();
             for (i, c) in chunks.iter().enumerate() {
+                if c.end_char.saturating_sub(c.start_char) > window_chars {
+                    oversized.push(i);
+                    continue;
+                }
                 if cur.is_empty() {
                     cur_start = c.start_char;
                     first_index = i;
                 }
                 let would_span = c.end_char.saturating_sub(cur_start);
-                if !cur.is_empty() && would_span > WINDOW_CHARS {
-                    let end = chunks[first_index + cur.len() - 1].end_char;
+                if !cur.is_empty() && would_span > window_chars {
+                    // Derived from the window's own boundaries rather than by
+                    // indexing `first_index + cur.len()`: a skipped oversized
+                    // chunk makes those two disagree.
+                    let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
                     push_embed_window(
                         &mut windows,
                         &source,
@@ -1612,7 +1860,7 @@ async fn ingest_file(
                 ));
             }
             if !cur.is_empty() {
-                let end = chunks[first_index + cur.len() - 1].end_char;
+                let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
                 push_embed_window(
                     &mut windows,
                     &source,
@@ -1635,66 +1883,136 @@ async fn ingest_file(
             let bounds: Vec<Vec<(usize, usize)>> =
                 windows.iter().map(|w| w.boundaries.clone()).collect();
 
-            match emb.embed_late_chunked(&texts, "code", &bounds).await {
-                Ok(embed_result) => {
-                    // Flatten windows back to file-order chunk indices.
-                    let flat: Vec<(usize, &hades_core::persephone::embedding::LateChunkVector)> =
-                        embed_result
-                            .per_input
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(w, vecs)| {
-                                let base = windows[w].first_chunk_index;
-                                vecs.iter().map(move |v| (base + v.chunk_index, v))
-                            })
-                            // A chunk index past the end would mint an
-                            // embedding pointing at a chunk key that does not
-                            // exist, which reads as a healthy row.
-                            .filter(|(i, _)| *i < chunks.len())
-                            .collect();
-                    if flat.len() != chunks.len() {
-                        warn!(
-                            path = rel_path,
-                            chunks = chunks.len(),
-                            vectors = flat.len(),
-                            "embedder returned a vector count that does not match the \
-                             chunk count, storing without vectors"
-                        );
-                        (
-                            Vec::new(),
-                            Some(format!(
-                                "{} chunks produced {} vectors",
-                                chunks.len(),
-                                flat.len()
-                            )),
-                        )
-                    } else {
-                        let docs = flat
-                            .iter()
-                            .map(|(i, lcv)| {
-                                let i = *i;
-                                let vec = &lcv.embedding;
-                                let ckey = keys::chunk_key(&fkey, i);
-                                let ekey = keys::embedding_key(&ckey);
-                                json!({
-                                    "_key": ekey,
-                                    "chunk_key": ckey,
-                                    "file_key": fkey,
-                                    "embedding": vec,
-                                    "model": embed_result.model,
-                                    "model_hash": keys::model_hash(&embed_result.model),
-                                    "dimension": embed_result.dimension,
-                                })
-                            })
-                            .collect::<Vec<Value>>();
-                        (docs, None)
+            // One vector per chunk, keyed by the chunk's file-order index, so a
+            // window that fails costs its own chunks and not the file's.
+            let mut by_index: std::collections::BTreeMap<usize, Vec<f32>> =
+                std::collections::BTreeMap::new();
+            let mut model = String::new();
+            let mut dimension = 0u32;
+            let mut first_error: Option<String> = None;
+
+            let take = |result: hades_core::persephone::embedding::LateChunkEmbedResult,
+                        offset: usize,
+                        by_index: &mut std::collections::BTreeMap<usize, Vec<f32>>,
+                        model: &mut String,
+                        dimension: &mut u32| {
+                *model = result.model.clone();
+                *dimension = result.dimension;
+                for (w, vecs) in result.per_input.iter().enumerate() {
+                    let base = windows[offset + w].first_chunk_index;
+                    for v in vecs {
+                        let i = base + v.chunk_index;
+                        // A chunk index past the end would mint an embedding
+                        // pointing at a chunk key that does not exist, which
+                        // reads as a healthy row.
+                        if i < chunks.len() {
+                            by_index.insert(i, v.embedding.clone());
+                        }
                     }
                 }
-                Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
-                    (Vec::new(), Some(e.to_string()))
+            };
+
+            if !windows.is_empty() {
+                match emb.embed_late_chunked(&texts, "code", &bounds).await {
+                    Ok(result) => take(result, 0, &mut by_index, &mut model, &mut dimension),
+                    Err(e) => {
+                        // The batched call returns on its first failing window and
+                        // discards the vectors of every window that already
+                        // succeeded, so a 500-window file that trips on window 400
+                        // used to be stored with nothing. Retried one window at a
+                        // time, a bad window costs its own chunks.
+                        warn!(
+                            path = rel_path,
+                            error = %e,
+                            windows = windows.len(),
+                            "batched late-chunk embed failed, retrying window by window"
+                        );
+                        first_error = Some(e.to_string());
+                        for (w, (text, bound)) in texts.iter().zip(bounds.iter()).enumerate() {
+                            match emb
+                                .embed_late_chunked(
+                                    std::slice::from_ref(text),
+                                    "code",
+                                    std::slice::from_ref(bound),
+                                )
+                                .await
+                            {
+                                Ok(result) => {
+                                    take(result, w, &mut by_index, &mut model, &mut dimension)
+                                }
+                                Err(e) => warn!(
+                                    path = rel_path,
+                                    window = w,
+                                    error = %e,
+                                    "window failed on retry, its chunks keep no vector"
+                                ),
+                            }
+                        }
+                    }
                 }
             }
+
+            // Chunks no window could hold, embedded blind rather than dropped.
+            for &i in &oversized {
+                match emb
+                    .embed(std::slice::from_ref(&chunks[i].text), "code", None)
+                    .await
+                {
+                    Ok(r) => {
+                        if let Some(v) = r.embeddings.into_iter().next() {
+                            if model.is_empty() {
+                                model = r.model.clone();
+                                dimension = r.dimension;
+                            }
+                            by_index.insert(i, v);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = rel_path,
+                            chunk = i,
+                            error = %e,
+                            "oversized chunk failed the plain embed path too"
+                        );
+                        if first_error.is_none() {
+                            first_error = Some(e.to_string());
+                        }
+                    }
+                }
+            }
+
+            if by_index.len() != chunks.len() {
+                warn!(
+                    path = rel_path,
+                    chunks = chunks.len(),
+                    vectors = by_index.len(),
+                    "fewer vectors than chunks, storing what was produced"
+                );
+                if first_error.is_none() {
+                    first_error = Some(format!(
+                        "{} chunks produced {} vectors",
+                        chunks.len(),
+                        by_index.len()
+                    ));
+                }
+            }
+
+            let docs = by_index
+                .into_iter()
+                .map(|(i, vec)| {
+                    let ckey = keys::chunk_key(&fkey, i);
+                    json!({
+                        "_key": keys::embedding_key(&ckey),
+                        "chunk_key": ckey,
+                        "file_key": fkey,
+                        "embedding": vec,
+                        "model": model,
+                        "model_hash": keys::model_hash(&model),
+                        "dimension": dimension,
+                    })
+                })
+                .collect::<Vec<Value>>();
+            (docs, first_error)
         }
         _ => (Vec::new(), None),
     };
@@ -3301,6 +3619,7 @@ mod tests {
             false,
             false,
             false,
+            FALLBACK_WINDOW_CHARS,
         )
         .await
         .expect("first ingest failed");
@@ -3335,6 +3654,7 @@ mod tests {
             true,
             false,
             true,
+            FALLBACK_WINDOW_CHARS,
         )
         .await
         .expect("re-ingest with gopls scheduled failed");
@@ -3367,6 +3687,7 @@ mod tests {
             true,
             false,
             false,
+            FALLBACK_WINDOW_CHARS,
         )
         .await
         .expect("re-ingest without gopls failed");
@@ -3504,6 +3825,7 @@ mod tests {
                 false,
                 false,
                 false,
+                FALLBACK_WINDOW_CHARS,
             )
             .await
             .unwrap_or_else(|e| panic!("first ingest failed for .{ext}: {e}"));
@@ -3533,6 +3855,7 @@ mod tests {
                 true,
                 false,
                 false,
+                FALLBACK_WINDOW_CHARS,
             )
             .await
             .unwrap_or_else(|e| panic!("second ingest failed for .{ext}: {e}"));
@@ -4120,6 +4443,134 @@ mod tests {
             to.starts_with("codebase_files/"),
             "expected file edge fallback, got: {to}"
         );
+    }
+
+    // ── Route discovery ─────────────────────────────────────────────────
+
+    /// One walk has to place every file, and say so for the ones it cannot.
+    #[test]
+    fn discovery_routes_code_documents_and_names_the_rest() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        std::fs::create_dir_all(root.join("docs")).expect("mkdir");
+        std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").expect("write");
+        std::fs::write(root.join("src/app.py"), "x = 1\n").expect("write");
+        std::fs::write(root.join("docs/spec.md"), "# spec\n").expect("write");
+        std::fs::write(root.join("README.md"), "# readme\n").expect("write");
+        std::fs::write(root.join("Makefile"), "all:\n").expect("write");
+        std::fs::write(root.join("config.toml"), "[a]\n").expect("write");
+
+        let found = discover_by_route(root, &std::collections::HashSet::new()).expect("discovery");
+
+        let mut code: Vec<String> = found
+            .code
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        code.sort();
+        assert_eq!(code, vec!["app.py", "lib.rs"]);
+
+        let mut docs: Vec<String> = found
+            .documents
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        docs.sort();
+        assert_eq!(docs, vec!["README.md", "spec.md"]);
+
+        // Neither pipeline claims these, and both are reported with a reason
+        // rather than dropped, which is the hole this discovery closes.
+        let mut unrouted: Vec<(String, &str)> = found
+            .unrouted
+            .iter()
+            .map(|u| (u.path.rsplit('/').next().unwrap().to_string(), u.reason))
+            .collect();
+        unrouted.sort();
+        assert_eq!(
+            unrouted,
+            vec![
+                ("Makefile".to_string(), "no extension and no shebang"),
+                ("config.toml".to_string(), "no handler for extension"),
+            ]
+        );
+    }
+
+    /// An extension the operator asked to embed without a parser is code, since
+    /// the code phase is what ingests it. Reporting it as unrouted while that
+    /// phase stored it would be wrong in the direction operators trust.
+    #[test]
+    fn an_unparsed_extension_counts_as_code_not_unrouted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\n").expect("write");
+        std::fs::write(root.join("notes.sql"), "SELECT 1;\n").expect("write");
+
+        let allow = normalize_unparsed_ext(&["toml".to_string()]);
+        let found = discover_by_route(root, &allow).expect("discovery");
+
+        assert_eq!(
+            found.code.len(),
+            1,
+            "the manifest is claimed by the code phase"
+        );
+        assert!(found.code[0].ends_with("Cargo.toml"));
+        assert_eq!(found.unrouted.len(), 1, "the .sql is still declined");
+        assert!(found.unrouted[0].path.ends_with("notes.sql"));
+    }
+
+    // ── Ingest root resolution ──────────────────────────────────────────
+
+    /// One tree named two ways must produce one set of keys.
+    ///
+    /// Before the root was canonicalized it produced two. The base was
+    /// canonical and the discovered paths were not, so `rel_path_for`'s
+    /// `strip_prefix` missed and fell back to the whole path as typed: three
+    /// files in `crates/hades-proto` keyed as `build_rs` from an absolute
+    /// argument and `crates_hades-proto_build_rs` from a relative one, six
+    /// nodes for three files, both halves stamped with the same ingest root.
+    ///
+    /// A `..` detour rather than a relative path, deliberately: a relative path
+    /// resolves against the process cwd, and mutating that races every other
+    /// test in the binary.
+    #[test]
+    fn one_tree_named_two_ways_keys_identically() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("src")).expect("mkdir");
+        std::fs::write(tree.join("src/lib.rs"), "pub fn a() {}\n").expect("write lib.rs");
+        std::fs::write(tree.join("build.rs"), "fn main() {}\n").expect("write build.rs");
+
+        let unparsed = std::collections::HashSet::new();
+        let keys_for = |root: &Path| -> Vec<String> {
+            let root = resolve_ingest_root(root).expect("root resolves");
+            let base = ingest_base_path(&root);
+            let mut keys: Vec<String> = discover_files(&root, None, &unparsed)
+                .expect("discovery succeeds")
+                .iter()
+                .map(|f| file_key_for(&base, f))
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        let canonical = keys_for(&tree);
+        let detoured = keys_for(&tree.join("..").join("tree"));
+
+        assert_eq!(canonical, detoured, "the same tree keyed two ways");
+        assert_eq!(
+            canonical,
+            vec!["build_rs".to_string(), "src_lib_rs".to_string()],
+            "keys must be relative to the ingest root, not to how it was typed"
+        );
+    }
+
+    #[test]
+    fn resolve_ingest_root_reports_a_missing_path_by_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("not-here");
+        let err = resolve_ingest_root(&missing).expect_err("must not resolve");
+        assert!(err.to_string().contains("not-here"), "{err}");
     }
 
     // ── Embed window construction ───────────────────────────────────────

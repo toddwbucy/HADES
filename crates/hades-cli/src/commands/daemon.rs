@@ -41,6 +41,13 @@ pub struct McpOptions {
     /// Databases served in addition to the configured default. The
     /// endpoint refuses any database not on this list.
     pub extra_dbs: Vec<String>,
+    /// Database name prefixes this endpoint may create. Empty means the
+    /// endpoint may create nothing, which is the default.
+    pub provision_db_prefixes: Vec<String>,
+    /// Directories this endpoint may ingest from. Empty means nothing, which is
+    /// the default. A path must canonicalize to somewhere inside one of these,
+    /// so `..` and symlinks cannot walk out.
+    pub provision_ingest_roots: Vec<std::path::PathBuf>,
 }
 
 /// Default socket path per the daemon protocol spec.
@@ -79,10 +86,53 @@ pub async fn run(
                 .with_context(|| format!("invalid MCP bind address '{}'", opts.bind))?;
             mcp_server::ensure_private_bind(&addr)?;
             let tokens = mcp_server::TokenSet::load(&opts.token_file)?;
+
+            // Provisioning needs BOTH a name prefix and an ingest root. The
+            // earlier `&&` here enabled it when either was given, so
+            // `--mcp-ingest-root` alone granted a LAN token the ingest command
+            // with no bound on which database it could write, which is the
+            // opposite of what the flag help and the deployment document say.
+            //
+            // A blank prefix is rejected rather than ignored: it is a prefix of
+            // every name, so it would widen both the creation gate and the MCP
+            // read allowlist to everything. Checked before the listener opens,
+            // like the bind and token checks around it.
+            for prefix in &opts.provision_db_prefixes {
+                anyhow::ensure!(
+                    !prefix.trim().is_empty(),
+                    "--mcp-db-prefix was given an empty value, which would permit \
+                     every database name. Remove the flag to disable provisioning."
+                );
+            }
+            let policy = if opts.provision_db_prefixes.is_empty()
+                || opts.provision_ingest_roots.is_empty()
+            {
+                if !opts.provision_db_prefixes.is_empty() || !opts.provision_ingest_roots.is_empty()
+                {
+                    tracing::warn!(
+                        "provisioning needs both --mcp-db-prefix and --mcp-ingest-root; \
+                         only one was given, so it stays disabled"
+                    );
+                }
+                ConnectionPolicy::agent_only()
+            } else {
+                let limits = service::ProvisioningLimits {
+                    database_prefixes: opts.provision_db_prefixes.clone(),
+                    ingest_roots: opts.provision_ingest_roots.clone(),
+                };
+                tracing::warn!(
+                    prefixes = ?limits.database_prefixes,
+                    roots = ?limits.ingest_roots,
+                    "MCP provisioning enabled: this endpoint can create databases and \
+                     start ingests that read the named directories"
+                );
+                ConnectionPolicy::agent_with_provisioning(limits)
+            };
             // Build the full app before spawning: router/pool-cache
             // failures stop daemon startup here instead of dying silently
             // in a background task.
-            let app = mcp_server::build_app(&addr, (*config).clone(), tokens, &opts.extra_dbs)?;
+            let app =
+                mcp_server::build_app(&addr, (*config).clone(), tokens, &opts.extra_dbs, policy)?;
             let listener = tokio::net::TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("failed to bind MCP endpoint {addr}"))?;

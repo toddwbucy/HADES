@@ -19,6 +19,68 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- `services/adapters/weavertools/write_graph.py`, the half of the conformance chain
+  that reaches a database. The extractor in that package computes assertions,
+  terms, axioms and the `cites` edges joining code to the documents claiming it,
+  and imports no database driver by design. Nothing consumed it, so `hades ingest`
+  produced code nodes and document nodes with no edge between them: a graph that
+  can find code and can find prose and cannot ask whether one satisfies the other.
+  The writer attaches each `cites` edge to the `codebase_files` node HADES already
+  created rather than to a private copy of the source list, so the result is one
+  graph instead of three collections sharing a database. Node kinds get one
+  collection each and relations one each, which is the notation the 2026-08-08
+  graph used. The extractor's notes land in `wt_ingest_report`, because 48 sources
+  owing a header and a malformed node id left in a terminal become a graph that
+  reads as complete.
+- The MCP server's `instructions`, which a client reads on `initialize` before it
+  looks at any tool, now carry the three things that otherwise cost a round trip
+  each: that `db_query` takes a collection *profile* and code and documents are
+  embedded with different adapters, that traversal needs an explicit `graph` name
+  because omitting it targets a `default` that will not exist, and that ingest is
+  a job to poll rather than a call to wait on. The previous text predated all of
+  this and said writes were "governed by database ACLs", which is incomplete now
+  that a Provisioning tier exists and misleading on an instance running with
+  ArangoDB authentication disabled.
+- **An MCP client can build its own graph.** Three tools, `create_database`,
+  `ingest_start` and `ingest_status`, behind a new `Provisioning` access tier that
+  a transport can grant on its own. A local Unix peer has it by being admin; the
+  network endpoint has it only when the daemon is started with both
+  `--mcp-db-prefix` and `--mcp-ingest-root`, and then only inside those bounds.
+  Empty bounds permit nothing rather than everything, and both refusals name what
+  would have been allowed. The ceiling stays at Agent, so `db.aql`, `db.purge`,
+  `db.insert` and `db.graph.drop` are still unreachable from the network: this
+  grants two commands, not a promotion.
+  `ingest_start` returns a job id instead of blocking, because ingests run for
+  minutes and the transport caps a request at 60 seconds, so a blocking call
+  would report failure for work that was still succeeding. Job rows live in the
+  database being built, so they survive a daemon restart, and a row that never
+  leaves `running` is reported as orphaned rather than as progress. Ingest paths
+  are canonicalized before the bounds check, so `..` and symlinks cannot walk out
+  of a permitted root.
+- **One ingest command.** `hades ingest <dir>` walks a tree once, routes every
+  file by extension through `hades_core::ingest_routing`, runs the code phase and
+  the document phase against the same root, and emits a single envelope. Code
+  keeps its analyzers, symbols, edges and late-chunked embeddings; documents keep
+  extraction and the document profile; both land in one graph from one command.
+  Files nothing claims are listed by path and reason under `unrouted` rather than
+  silently skipped, which is what `codebase ingest` reporting markdown as "no
+  handler for extension" and `hades ingest` handing a `.py` to docling used to
+  cost. Document keys come out root-relative for free, since the root is the
+  directory given. Naming files explicitly keeps the document-only behaviour,
+  which is what a single paper wants, and `codebase ingest` remains for
+  tree-level graph operations.
+- Per-GPU embedder **load profiles**. The embedder is one templated systemd unit
+  instantiated per profile, each naming the card it loads on and fixing that
+  card's measured sequence ceiling, batch size and VRAM floor. Every profile
+  binds the same port, so switching cards is a stop and a start with no client
+  configuration change, and two profiles cannot be live at once because the
+  second fails to bind. `GET /v1/models` now reports `profile`, `device` and
+  `physical_device` alongside `max_seq_length`, so a client can see which card
+  answered and what it will accept. `physical_device` exists because
+  `CUDA_VISIBLE_DEVICES` renumbers from zero: a model pinned to the second
+  A6000 reports `device: cuda:0`, and an operator reading that concludes GPU 0.
+  Templates and a `hades-embedder-profile` switch command are in
+  `deploy/systemd/`.
 - A non-blocking `stable drift` CI job, weekly and on pushes to `main`, that
   runs fmt and clippy under current stable and warns rather than fails.
   Pinning the toolchain removed the only mechanism that ever told this
@@ -121,6 +183,135 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- A single chunk larger than the embed window no longer costs its file every
+  vector. `AstChunking` caps a chunk at 8,000 characters by splitting at line
+  boundaries, but `split_at_lines` emits one whole line when its accumulator is
+  empty, so a minified or generated file with one very long line produces a chunk
+  of unbounded size. Sent whole to `embed_late_chunked` it exceeds the backend's
+  ceiling, is refused, and takes the file's other windows with it because that
+  call returns on its first error. Such chunks now take the plain embed path, one
+  vector each without surrounding context, and a batched late-chunk failure is
+  retried window by window so a bad window costs its own chunks rather than the
+  file. Closes the data-loss half of the OOM-retry gap.
+- Uniform late-chunking windows no longer report `char_end = 0`. The walk was
+  bounded by the count of non-padding tokens, which includes trailing special
+  tokens, and those carry `(0, 0)` offsets, so a final window ending on one
+  reported an inverted character range that a caller intersecting against symbol
+  spans matches nothing from. Bounded now by the last token covering a real
+  character. Affects the `chunk_size_tokens` mode only; HADES always sends
+  explicit boundaries.
+- The PE-API no longer requires a context ceiling its own reference
+  implementation cannot meet. Implementation requirement 1 mandated a "32k
+  context" capability profile while the reference backend serves 11,900 tokens on
+  a 16 GiB card, so a conforming client trusting the advertised figure would send
+  inputs that are refused. `max_seq_length` is now specified as the ceiling the
+  backend will accept, distinct from the model's architectural maximum.
+- The routing table claimed `html`, `htm`, `csv`, `docx`, `pptx` and `xlsx` as
+  documents on the assumption that docling's unknown-format fallback would take
+  them. `docling_backend.py:122` refuses anything outside `{pdf, txt, text, md}`,
+  so 13 `.html` templates in a real corpus were claimed by the walk and then failed
+  extraction, turning a readable `unrouted` entry into a failed document in a
+  summary. The list is now what the service verifiably accepts: markdown and text
+  through the plain-read path, `pdf` through docling, `tex` and `gz` through the
+  LaTeX backend. Adding one back means teaching the extractor first.
+- The embed window is sized from the backend's reported ceiling instead of a
+  constant, so the full context of whichever card the embedder is loaded on gets
+  used. `WINDOW_CHARS = 12_000` was justified by a comment claiming dense Rust
+  tokenizes at roughly 1.5 characters per token; measured across 285 files of real
+  Rust, Python, CUDA and markdown the median is 4.18 and the lowest 2.18. So that
+  budget packed about 2,870 tokens against a 32,768-token card and split **134 of
+  those 285 files**, producing 672 windows where 313 suffice. Every extra window
+  is a seam where a chunk's vector loses the surrounding file, which is what late
+  chunking exists to prevent. The budget is now `max_seq_length` from
+  `/v1/models` times a measured chars-per-token floor of 2.0, which is 65,536
+  characters on the 32,768-token profile and falls back to the old constant when a
+  backend reports no ceiling.
+- `EmbeddingClient::info` reads the entry the backend actually serves. It matched
+  only on the configured model name, and this deployment configures the alias
+  `jinaai/jina-embeddings-v4` while the backend serves a local filesystem path, so
+  the id never matched and every vendor field came back `None` — including the
+  `max_seq_length` the window budget above depends on, which silently fell back to
+  the conservative constant on a card holding three times as much. An exact id
+  match is still preferred, with the sole entry of a single-model listing as the
+  fallback. Finding #14 was this same mismatch reached from the other side.
+- The document pipeline creates its own collections. Ingesting into a fresh
+  database failed with "collection or view not found: documents" *after*
+  extraction and embedding had run, so the expensive work was done and then
+  discarded at the store step. `codebase ingest` had always created its nine
+  collections and its named graph on the fly; the document path now creates its
+  three.
+- `hades ingest` keyed documents by file stem, so files sharing a name in
+  different directories collided and every one after the first was reported as
+  skipped inside a run whose envelope said success. It cost 3 of this
+  repository's 17 markdown files on their first ingest, and would have cost 10
+  of WeaverTools' 101, where 11 files are named `README.md`. Two changes: a new
+  `--root <dir>` derives keys from each input's path relative to that directory,
+  the way `codebase ingest` has always keyed files, and a key already held by a
+  *different* `source_path` is now an error naming both paths rather than a
+  skip. The collision check runs under `--force` too, where the old behaviour
+  was worse than skipping: it overwrote a different document.
+- `db.query` embedded every query with `retrieval.query`, including searches of
+  a `code` corpus, and the Jina task adapters do not share a vector space.
+  Measured on this repository's own code graph, 1,453 vectors: separation
+  between the top hit and the median was 0.1405 with `retrieval.query` against
+  0.2132 with `code` on both sides, and the mismatched search returned an
+  unrelated hex-digit assertion at rank one where the matched one returned the
+  chunking strategy. The task is now a property of the collection profile,
+  `code` for `codebase` and `retrieval.query` for documents, so it cannot drift
+  from what the corpus was embedded with. This answers roadmap question R28 for
+  the code half: no query/passage split there.
+- The embedder silently truncated any input over its sequence ceiling and
+  reported success. A 45,183-token document sent to a 32,768-token profile
+  returned HTTP 200 with one vector, roughly 12,400 tokens discarded, and
+  nothing in the response or the log said so. `_embed_batch_locked` prefers the
+  model's own `encode_text`, which truncates at its configured max_length, and
+  the fallback arm passed `truncation=True` explicitly, so both paths dropped
+  the tail. The vector count matches the input count exactly in that state,
+  which is why no count reconciles it. **Breaking**: inputs above
+  `max_seq_length` are now refused with `PE_INPUT_TOO_LARGE`, naming the input
+  index, its token count and the ceiling, which is what the PE-API error table
+  specified from the start. Callers pre-chunk or load a profile on a bigger
+  card. The refusal covers both endpoints: the boundaries path reports which
+  boundaries fell past what the model saw, and the uniform path refuses rather
+  than returning fewer windows than the text warrants. The count is taken with
+  special tokens against a ceiling reduced by `PROMPT_RESERVE_TOKENS`, since
+  `encode_text` prepends a task prompt that a bare count cannot see and an input
+  of exactly `max_seq_length` would otherwise pass the guard and be truncated.
+- The measured ceiling for the 16 GiB card was wrong by 25 percent. The
+  15,000-token figure came from a synthetic probe; real documents through the
+  running service pass at 11,926 tokens repeatedly and fail at 12,196, 12,215,
+  12,417 and 13,382, the last of those also as the first request to a freshly
+  started process. The profile is corrected to 11,900. On the 48 GiB card a real
+  31,871-token document peaks at 27,526 MiB against the 23,906 MiB a probe
+  recorded, so its VRAM floor is raised to 28 GiB.
+- `MODEL_RESIDENT_MIB` is measured rather than estimated: 7,993 MiB, read from
+  `torch.cuda.memory_allocated` after a bare load, of which 7,162 MiB is 3.755B
+  fp16 parameters and 686 MiB is 1,518 fp32 LoRA tensors peft keeps unquantized.
+  Set to 8,192. The previous 9,216 was an estimate, and an intermediate value of
+  12,288 taken from an OOM traceback was wrong in the other direction: that
+  reading came from *during* a failing forward pass, so it counted roughly 4 GiB
+  of partial activations along with the model, and it would have made the
+  contention preflight demand 14,336 MiB free on a card that has about 15,500.
+- `codebase ingest` keyed one tree two ways depending on how its root was
+  typed. The base was canonicalized while discovered paths were not, so
+  `rel_path_for`'s `strip_prefix` missed and fell back to the whole path as
+  given: `crates/hades-proto` ingested relatively keyed three files
+  `crates_hades-proto_build_rs` and absolutely keyed the same three `build_rs`,
+  producing six file nodes with six sets of chunks, symbols and embeddings, both
+  halves stamped with the same `ingest_root` so `codebase drift` could not tell
+  them apart. The same cause broke rust-analyzer enrichment from the other end:
+  the crate-root walk popped a relative path to empty, and a session spawned
+  with an empty working directory failed with ENOENT, losing every call and
+  implements edge in the run. The ingest root is now resolved and canonicalized
+  once, before anything derives from it.
+- The extraction client reads `HADES_EXTRACTOR_SOCKET`, which
+  `services/extraction/config.py` has always honoured while the Rust side
+  hardcoded `/run/hades/extractor.sock`. That directory is created by
+  `tmpfiles.d` as root, so a user-level deployment had no reachable extractor
+  and `hades ingest` could not process a document at all. `http://`, `https://`,
+  `unix:///path` and bare absolute paths are accepted, matching the embedding
+  client; a malformed value is an error naming the value rather than a silent
+  fall back to the default.
 - CI now passes. It had never passed on this repository, including on `main`.
   `rust-toolchain.toml` pinned `channel = "stable"`, which is a moving target
   that resolves per machine, so CI ran 1.98.1 while a workstation ran whatever

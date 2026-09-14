@@ -7,6 +7,7 @@ pub mod daemon_client;
 pub mod db;
 pub mod dispatch;
 pub mod graph;
+pub mod ingest_routing;
 pub mod persephone;
 pub mod pipeline;
 pub mod schema_apply;
