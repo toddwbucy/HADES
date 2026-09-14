@@ -19,6 +19,17 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- **`config/schemas/codebase.yaml`**, the universal code graph as data. `hades
+  ingest` creates its collections and gharial edge definitions directly and leaves
+  `hades_schema` holding an empty `meta`, so `relation_order` is `[]`,
+  `graph::loader` scans nothing, and structural training over the graph loads zero
+  edges and reports success. That was found in a domain graph and applies to every
+  database built by ingest alone, so the generic layer now has a file of its own.
+  `services/adapters/weavertools/schema.yaml` stays as the worked example of a
+  domain layer on top of it. Applied to a fresh `bident_v4`: 12 collections, 4 edge
+  definitions, one named graph, `num_relations` 4 rather than 0.
+
+
 - **`extraction.service.socket` in `hades.yaml`.** The extraction endpoint could
   only be named by `HADES_EXTRACTOR_SOCKET` or the compiled-in
   `/run/hades/extractor.sock`, which a user-level deployment cannot write. The

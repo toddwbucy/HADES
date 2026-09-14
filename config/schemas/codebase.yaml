@@ -1,0 +1,90 @@
+# The universal code graph, as data.
+#
+# **The generic case.** `hades ingest` creates its collections and its gharial
+# edge definitions directly, which works and leaves `hades_schema` holding nothing
+# but an empty `meta` document. `relation_order` is then `[]` and
+# `graph::loader` scans exactly the collections it names, so structural training
+# over the graph loads **zero edges** and reports success. Nothing fails. That
+# defect was found in a WeaverTools graph holding 13,000 edges, and it applies to
+# every database built by ingest alone.
+#
+# Apply it to any code-only or code-and-document graph:
+#
+#   hades db create-database my_graph
+#   hades --db my_graph schema apply config/schemas/codebase.yaml
+#   hades --db my_graph ingest /path/to/tree
+#
+# Add `--force` for a database that already holds a corpus: collections and graphs
+# that exist are skipped and no document outside `hades_schema` is touched.
+#
+# A domain layer goes in its own file rather than here.
+# `services/adapters/weavertools/schema.yaml` is the worked example: it carries
+# this same code layer plus the conformance collections and their relations.
+#
+# `relation_order` is append-only. A position is a relation's stable id in the
+# trained model, so a new relation goes on the end and nothing is reordered.
+
+feature_dim: 2048
+# Inductive, because a code graph grows: a re-ingest adds files and symbols, and a
+# transductive RGCN would need retraining from scratch to place them.
+model_type: hetero_sage
+
+collections:
+  - name: codebase_files
+    type: document
+  - name: codebase_symbols
+    type: document
+  - name: codebase_chunks
+    type: document
+  - name: codebase_embeddings
+    type: document
+  - name: codebase_defines_edges
+    type: edge
+  - name: codebase_calls_edges
+    type: edge
+  - name: codebase_imports_edges
+    type: edge
+  - name: codebase_implements_edges
+    type: edge
+  # The document profile. Present because one `hades ingest` over a mixed tree
+  # fills both, and a schema naming only half of what the ingest writes is a
+  # schema that goes stale on its first run.
+  - name: documents
+    type: document
+  - name: chunks
+    type: document
+  - name: embeddings
+    type: document
+
+edge_definitions:
+  - name: codebase_defines_edges
+    from_collections: [codebase_files]
+    to_collections: [codebase_symbols]
+    description: "A file defines a symbol."
+  - name: codebase_calls_edges
+    from_collections: [codebase_symbols]
+    to_collections: [codebase_symbols]
+    description: "A symbol calls a symbol."
+  - name: codebase_imports_edges
+    from_collections: [codebase_files]
+    to_collections: [codebase_files, codebase_symbols]
+    description: "A file imports a file or a symbol."
+  - name: codebase_implements_edges
+    from_collections: [codebase_symbols]
+    to_collections: [codebase_symbols]
+    description: "A symbol implements a trait or interface."
+
+named_graphs:
+  - name: codebase_graph
+    edges:
+      - codebase_defines_edges
+      - codebase_calls_edges
+      - codebase_imports_edges
+      - codebase_implements_edges
+    description: "Files, symbols, and the relations between them."
+
+relation_order:
+  - codebase_defines_edges
+  - codebase_calls_edges
+  - codebase_imports_edges
+  - codebase_implements_edges
