@@ -99,8 +99,9 @@ input canonicalization, the honest batch envelope, `--force` stability:
 HADES_BIN=target/release/hades ./scripts/bident_burn_smoke.sh
 ```
 
-Requires live ArangoDB and the embedder service; never touches
-`bident_burn` or any production database. `scripts/cli_audit.sh` remains
+Requires live ArangoDB and the embedder service. It creates and owns
+`bident_burn_smoke` and touches no other database, which is the rule for every
+write test here. `scripts/cli_audit.sh` remains
 the command-level companion ("does every command run"); the smoke test
 answers "is the graph right".
 

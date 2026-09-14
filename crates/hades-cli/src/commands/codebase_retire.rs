@@ -437,8 +437,12 @@ mod tests {
             eprintln!("skipping: ARANGO_PASSWORD not set");
             return None;
         };
-        let client =
-            hades_core::db::ArangoClient::with_socket(socket, "bident_burn", "root", &password);
+        // `HADES_TEST_DB` and not a corpus: this test writes. It named
+        // `bident_burn` until that database was dropped on 2026-09-14, which left
+        // a literal here pointing at nothing.
+        let db =
+            std::env::var("HADES_TEST_DB").unwrap_or_else(|_| "hades_retire_tests".to_string());
+        let client = hades_core::db::ArangoClient::with_socket(socket, &db, "root", &password);
         Some(ArangoPool::new(client.clone(), client))
     }
 

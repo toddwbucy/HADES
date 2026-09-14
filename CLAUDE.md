@@ -243,10 +243,22 @@ unbuilt work.
    ArangoDB ACL grants on that user are the authoritative gate (production
    research databases are granted `ro`). The allowlists that do exist in code
    are unrelated: MCP read scoping and the unparsed-extension list.
-2. **`bident_burn` is HADES's own project-management database** (the
-   `persephone_tasks` kanban). Target it or a dedicated test database for any
-   write test — never a production target.
-3. **Use the CLI for project management**: `hades --db bident_burn task ...`.
+2. **No database is a default, including for HADES's own state.**
+   `bident_burn` held the `persephone_tasks` kanban and was dropped on
+   2026-09-14 with the other superseded databases. The `task` commands run
+   against whatever `--db` names and need a database created for them first, so
+   treat Persephone as deferred work rather than a missing file. Do not
+   reintroduce a hardcoded one: `effective_database()` errors without `--db` or
+   `HADES_DATABASE` by design, and the daemon's own fallback for an omitted `db`
+   is a known wart, not a pattern to copy.
+3. **A write test gets a database created for the test**, never a corpus
+   somebody is querying. `scripts/bident_burn_smoke.sh` is the pattern: it
+   creates `bident_burn_smoke`, uses it, and owns it.
+4. **A graph built by ingest alone has no `relation_order`**, so structural
+   training over it loads zero edges and reports success. Apply a schema file
+   when creating a database: `config/schemas/codebase.yaml` for the universal
+   code layer, or a domain file carrying it plus its own relations
+   (`services/adapters/weavertools/schema.yaml` is the worked example).
 
 ## Conventions
 

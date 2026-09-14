@@ -264,6 +264,26 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- **The critical rules named a database that no longer exists.** `bident_burn`
+  held the `persephone_tasks` kanban and was dropped on 2026-09-14 with the other
+  superseded databases, while both CLAUDE.md files still told a session to run
+  project management against it and to target it for write tests. The replacement
+  states a rule rather than an inventory, since a guidance file listing live
+  databases goes stale: no database is a default, the `task` commands need one
+  created for them, and a write test creates and owns its own. A fourth rule
+  carries finding 35 forward, that a graph built by ingest alone has an empty
+  `relation_order` and needs a schema file applied at create time.
+- `tests/arango_cache.rs` and the `codebase_retire` test harness take
+  `HADES_TEST_DB` with a dedicated default instead of naming `bident_burn`, and
+  the cache test creates the database so a fresh instance needs no setup step.
+  Both were **already failing before that database was dropped**, for an unrelated
+  reason: the socket default is `/run/arangodb3/arangodb.sock` and a user-level
+  deployment binds elsewhere, so all five cache tests panicked on the socket and
+  never reached the database name. They pass 5 of 5 against a user-level socket.
+- The README claimed the smoke script "never touches `bident_burn`", true and
+  useless once that database was gone. It now names what the script owns.
+
+
 - **The WeaverTools extractor no longer decides its own scope.** It walked a
   hardcoded `docs/` root with a hardcoded `process/` exclusion while `hades ingest`
   walked `.hadesignore`: two implementations of one rule, agreeing by coincidence of

@@ -1,14 +1,21 @@
 //! Integration tests for the cache layer.
 //!
 //! Prerequisites: ArangoDB running with socket at /run/arangodb3/arangodb.sock
-//! and ARANGO_PASSWORD set. Tests use bident_burn database.
+//! and ARANGO_PASSWORD set.
+//!
+//! **These tests own their database and create it.** They named `bident_burn`
+//! until 2026-09-14, when that database was dropped along with the other
+//! superseded ones and five tests began failing on a healthy instance for want of
+//! a database nothing was maintaining. A test that creates and drops collections
+//! has no business inside a corpus somebody is querying, so it makes its own:
+//! `HADES_TEST_DB`, defaulting to `hades_cache_tests`.
 
 use std::path::PathBuf;
 
 use hades_core::db::cache::CachedPool;
 use hades_core::db::crud;
 use hades_core::db::query::ExecutionTarget;
-use hades_core::db::{ArangoClient, ArangoPool};
+use hades_core::db::{ArangoClient, ArangoErrorKind, ArangoPool};
 use tracing::warn;
 
 fn arango_socket() -> PathBuf {
@@ -22,10 +29,39 @@ fn arango_password() -> String {
     std::env::var("ARANGO_PASSWORD").expect("ARANGO_PASSWORD must be set for integration tests.")
 }
 
-fn test_pool() -> Option<ArangoPool> {
+fn test_database() -> String {
+    std::env::var("HADES_TEST_DB").unwrap_or_else(|_| "hades_cache_tests".to_string())
+}
+
+/// Create the test database if it is not there, so a fresh instance needs no
+/// setup step. A 409 means another test in this binary won the race, which is a
+/// success for our purposes.
+async fn ensure_database(socket: PathBuf, name: &str) -> bool {
+    let system = ArangoClient::with_socket(socket, "_system", "root", &arango_password());
+    match system
+        .post("database", &serde_json::json!({"name": name}))
+        .await
+    {
+        Ok(_) => true,
+        Err(e) if e.kind() == ArangoErrorKind::Conflict => true,
+        Err(e) => {
+            if strict() {
+                panic!("ARANGO_TESTS is set but creating '{name}' failed: {e}");
+            }
+            warn!("skipping: could not create test database '{name}': {e}");
+            false
+        }
+    }
+}
+
+fn strict() -> bool {
+    std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true")
+}
+
+async fn test_pool() -> Option<ArangoPool> {
     let socket = arango_socket();
     if !socket.exists() {
-        if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
+        if strict() {
             panic!(
                 "ARANGO_TESTS is set but socket not found at {}",
                 socket.display()
@@ -38,13 +74,20 @@ fn test_pool() -> Option<ArangoPool> {
         return None;
     }
 
-    let client = ArangoClient::with_socket(socket, "bident_burn", "root", &arango_password());
+    let db = test_database();
+    if !ensure_database(socket.clone(), &db).await {
+        return None;
+    }
+
+    let client = ArangoClient::with_socket(socket, &db, "root", &arango_password());
     Some(ArangoPool::new(client.clone(), client))
 }
 
 #[tokio::test]
 async fn test_cached_get_document() {
-    let Some(pool) = test_pool() else { return };
+    let Some(pool) = test_pool().await else {
+        return;
+    };
 
     let col = format!("test_cache_get_{}", std::process::id());
     crud::create_collection(&pool, &col, Some(2)).await.unwrap();
@@ -77,7 +120,9 @@ async fn test_cached_get_document() {
 
 #[tokio::test]
 async fn test_cached_delete_invalidates() {
-    let Some(pool) = test_pool() else { return };
+    let Some(pool) = test_pool().await else {
+        return;
+    };
 
     let col = format!("test_cache_del_{}", std::process::id());
     crud::create_collection(&pool, &col, Some(2)).await.unwrap();
@@ -106,7 +151,9 @@ async fn test_cached_delete_invalidates() {
 
 #[tokio::test]
 async fn test_cached_query() {
-    let Some(pool) = test_pool() else { return };
+    let Some(pool) = test_pool().await else {
+        return;
+    };
     let cached = CachedPool::with_defaults(pool);
 
     // First query: miss
@@ -129,7 +176,9 @@ async fn test_cached_query() {
 
 #[tokio::test]
 async fn test_cached_query_writer_bypasses_cache() {
-    let Some(pool) = test_pool() else { return };
+    let Some(pool) = test_pool().await else {
+        return;
+    };
     let cached = CachedPool::with_defaults(pool);
 
     // Writer queries should not be cached
@@ -150,7 +199,9 @@ async fn test_cached_query_writer_bypasses_cache() {
 
 #[tokio::test]
 async fn test_invalidate_all() {
-    let Some(pool) = test_pool() else { return };
+    let Some(pool) = test_pool().await else {
+        return;
+    };
     let cached = CachedPool::with_defaults(pool);
 
     // Populate query cache
