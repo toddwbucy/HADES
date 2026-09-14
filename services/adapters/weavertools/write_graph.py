@@ -27,8 +27,10 @@ a terminal those become a graph that reads as complete. They land in
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -58,19 +60,68 @@ REPORT = "wt_ingest_report"
 CODE_FILES = "codebase_files"
 
 
+def _endpoint() -> str:
+    """Where ArangoDB is, from the same environment the CLI reads.
+
+    TCP rather than the Unix socket the Rust client prefers, because `urllib`
+    cannot speak a Unix socket and this adapter has no other HTTP client. Host
+    and port come from `ARANGO_HOST` and `ARANGO_PORT` so the endpoint is not
+    hardcoded, and credentials from `ARANGO_USERNAME` and `ARANGO_PASSWORD`, so
+    an instance with authentication enabled is reachable and one with it disabled
+    keeps working unchanged.
+    """
+    host = os.environ.get("ARANGO_HOST", "127.0.0.1")
+    port = os.environ.get("ARANGO_PORT", "8529")
+    return f"http://{host}:{port}"
+
+
+def _auth_header() -> dict[str, str]:
+    password = os.environ.get("ARANGO_PASSWORD")
+    if not password:
+        return {}
+    user = os.environ.get("ARANGO_USERNAME", "root")
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
 def arango(db: str, path: str, body=None, method="POST"):
-    url = f"http://127.0.0.1:8529/_db/{db}/_api/{path}"
+    """One request, returning the parsed body whether it succeeded or not.
+
+    The caller checks. An HTTPError body carries ArangoDB's own `errorMessage`,
+    which is more use than the exception, and several calls here are expected to
+    fail (creating a collection that exists).
+    """
+    url = f"{_endpoint()}/_db/{db}/_api/{path}"
     data = None
     if body is not None:
         data = ("\n".join(json.dumps(d) for d in body) if isinstance(body, list)
                 else json.dumps(body)).encode()
-    req = urllib.request.Request(url, data=data, method=method,
-                                headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"} | _auth_header()
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         return json.loads(e.read().decode() or "{}")
+
+
+def existing_file_keys(db: str) -> set[str]:
+    """The `codebase_files` keys already in the graph.
+
+    A `cites` edge points at one of these. An edge whose `_from` names a node
+    that was never ingested is a dangling edge that looks like a join until
+    someone traverses it, which is the failure this module's docstring names, so
+    the set is fetched and checked rather than assumed.
+    """
+    resp = arango(db, "cursor", {
+        "query": "FOR f IN codebase_files RETURN f._key",
+        "batchSize": 5000,
+    })
+    keys = set(resp.get("result") or [])
+    while resp.get("hasMore"):
+        resp = arango(db, f"cursor/{resp['id']}", method="PUT")
+        keys.update(resp.get("result") or [])
+    return keys
 
 
 def key_for(ident: str) -> str:
@@ -120,12 +171,20 @@ def main() -> int:
             "basis": "declared",
         })
 
-    # Edges. A cites edge's source is a file HADES already ingested.
+    # Edges. A cites edge's source is a file HADES already ingested, so the node
+    # has to be there. `.toml` is the case that makes this more than a formality:
+    # the extractor reads manifests for citations while `ingest_routing` leaves
+    # `.toml` unrouted, so a plain `hades ingest` creates no node for one and the
+    # edge would point at nothing. `hades ingest --unparsed-ext toml` creates it.
+    file_keys = set() if args.dry_run else existing_file_keys(args.db)
     missing_sources: list[str] = []
     for name, edges in (("documents", docs.edges), ("code", code.edges)):
         for e in edges:
             if e.relation == "cites":
-                src_id = f"{CODE_FILES}/{file_key(e.src)}"
+                key = file_key(e.src)
+                if file_keys and key not in file_keys:
+                    missing_sources.append(e.src)
+                src_id = f"{CODE_FILES}/{key}"
             else:
                 src_id = f"{NODE_COLLECTIONS.get('assertion')}/{key_for(e.src)}"
                 for kind, coll in NODE_COLLECTIONS.items():
@@ -162,19 +221,33 @@ def main() -> int:
                   file=sys.stderr)
 
     # What the extraction could not vouch for, written where a query can find it.
-    arango(args.db, f"document/{REPORT}", {
+    # overwriteMode=replace, because a fixed `_key` POSTs into a 409 on every run
+    # after the first and this function returns the error body rather than
+    # raising, so the second run would have silently kept the first run's notes.
+    report = arango(args.db, f"document/{REPORT}?overwriteMode=replace", {
         "_key": "latest",
         "repo": args.repo,
         "document_notes": docs.notes,
         "code_notes": code.notes,
         "dangling_documents": [vars(e) for e in docs.dangling],
         "dangling_code": [vars(e) for e in code.dangling],
+        "cites_sources_with_no_file_node": missing_sources,
         "warning": "counts in *_notes describe claims the extraction could not "
                    "resolve. A coverage query that ignores them will read "
                    "unenforced claims as enforced.",
     })
+    if report.get("error"):
+        print(f"  report write failed: {report.get('errorMessage')}", file=sys.stderr)
+    if missing_sources:
+        print(
+            f"\n{len(missing_sources)} cites edge(s) name a file with no graph node, "
+            f"so they dangle. Ingest those files first, e.g. with --unparsed-ext:",
+            file=sys.stderr,
+        )
+        for src in sorted(set(missing_sources))[:10]:
+            print(f"    {src}", file=sys.stderr)
     print(f"\nwrote {sum(len(v) for v in by_collection.values()):,} documents plus one report")
-    return 0
+    return 1 if missing_sources or report.get("error") else 0
 
 
 if __name__ == "__main__":

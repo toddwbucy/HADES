@@ -12,7 +12,7 @@ Type=simple
 # profile fixes the card, the sequence ceiling, the batch size and the VRAM
 # floor. Every ceiling in there is a measurement on that card, not a preference.
 #
-#   gpu2  16 GiB RTX 2000 Ada, ceiling 15,000   (16,000 is the first OOM)
+#   gpu2  16 GiB RTX 2000 Ada, ceiling 11,900   (12,196 is the first OOM)
 #   gpu1  48 GiB RTX A6000,    ceiling 32,768   (the model's documented max)
 #   gpu0  48 GiB RTX A6000,    ceiling 32,768
 #

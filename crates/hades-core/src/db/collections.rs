@@ -32,6 +32,14 @@ pub struct CollectionProfile {
     /// `code` on both sides. Documents keep the asymmetric pairing, where
     /// embedding a query as a passage measurably degrades retrieval.
     pub query_task: &'static str,
+    /// Jina task adapter a *corpus* stored in this profile is embedded with.
+    ///
+    /// The pair of [`Self::query_task`], and here for the same reason: the two
+    /// sides must match or the comparison crosses vector spaces. Guessing the
+    /// ingest side from file extensions reintroduced exactly that, since
+    /// `hades ingest src/main.py` embedded with `code` into the `default`
+    /// profile, whose queries use `retrieval.query`.
+    pub passage_task: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +55,7 @@ static DEFAULT: CollectionProfile = CollectionProfile {
     embeddings: "embeddings",
     foreign_key: "parent_key",
     query_task: "retrieval.query",
+    passage_task: "retrieval.passage",
 };
 
 static ALL_PROFILES: [(&str, &CollectionProfile); 2] =
@@ -65,6 +74,7 @@ static CODEBASE_PROFILE: CollectionProfile = CollectionProfile {
     // `codebase ingest` embeds chunks with the `code` adapter, so a query must
     // use it too. See the field's documentation for the measurement.
     query_task: "code",
+    passage_task: "code",
 };
 
 /// Extended collection set for codebase ingestion.

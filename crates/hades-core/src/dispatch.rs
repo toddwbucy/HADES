@@ -828,6 +828,7 @@ pub enum DaemonCommand {
 
     // ── Provisioning ────────────────────────────────────────────────
     /// Create a database. Provisioning tier.
+    #[serde(rename = "db.create_database")]
     DbCreateDatabase(DbCreateDatabaseParams),
     /// Start an ingest of a tree into the current database. Provisioning tier.
     ///
@@ -835,9 +836,11 @@ pub enum DaemonCommand {
     /// a request at 60 seconds and real ingests run for minutes, so a blocking
     /// call would time out while the work continued, which reports failure for
     /// something that is still succeeding.
+    #[serde(rename = "ingest.start")]
     IngestStart(IngestStartParams),
     /// Progress and outcome of an ingest job. Agent tier: reading a job's own
     /// status is a bounded read.
+    #[serde(rename = "ingest.status")]
     IngestStatus(IngestStatusParams),
 
     // ── Codebase ────────────────────────────────────────────────────
@@ -6504,6 +6507,34 @@ mod handlers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The documented wire names must deserialize, since docs/daemon-protocol.md
+    /// and `ingest.start`'s own `poll` field both tell clients to use them. Every
+    /// other variant in this enum carries an explicit `serde(rename)`; these three
+    /// shipped without one, so their wire names were the Rust identifiers and a
+    /// client following the document got an unknown-command error.
+    #[test]
+    fn provisioning_commands_use_their_documented_wire_names() {
+        for (payload, expect) in [
+            (
+                r#"{"command":"db.create_database","params":{"name":"bident_v9"}}"#,
+                "db.create_database",
+            ),
+            (
+                r#"{"command":"ingest.start","params":{"path":"/opt/x"}}"#,
+                "ingest.start",
+            ),
+            (
+                r#"{"command":"ingest.status","params":{"job_id":"abc"}}"#,
+                "ingest.status",
+            ),
+        ] {
+            let cmd: DaemonCommand = serde_json::from_str(payload)
+                .unwrap_or_else(|e| panic!("{expect} must deserialize: {e}"));
+            let back = serde_json::to_value(&cmd).expect("serializes");
+            assert_eq!(back["command"], expect);
+        }
+    }
 
     #[test]
     fn test_command_roundtrip_orient_with_collection() {

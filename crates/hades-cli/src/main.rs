@@ -325,6 +325,38 @@ fn main() -> anyhow::Result<()> {
             // what happened to everything. Naming files explicitly keeps the
             // document-only behaviour, which is what a single paper wants.
             if input_paths.len() == 1 && input_paths[0].is_dir() {
+                // Flags that cannot mean anything for a whole tree are refused
+                // rather than ignored. They were being destructured and dropped,
+                // so `--id` on a directory silently keyed nothing and `--resume`
+                // silently resumed nothing, under a `success: true` envelope.
+                let mut unsupported: Vec<&str> = Vec::new();
+                if id.is_some() {
+                    unsupported.push("--id");
+                }
+                if batch {
+                    unsupported.push("--batch");
+                }
+                if resume {
+                    unsupported.push("--resume");
+                }
+                if reset {
+                    unsupported.push("--reset");
+                }
+                if !claims.is_empty() {
+                    unsupported.push("--claims");
+                }
+                if root.is_some() {
+                    unsupported.push("--root");
+                }
+                if !unsupported.is_empty() {
+                    anyhow::bail!(
+                        "{} cannot be combined with a directory: a tree ingest keys \
+                         every file relative to the directory given, so --root is \
+                         implied and --id names a single document. Pass explicit file \
+                         paths to use them.",
+                        unsupported.join(", ")
+                    );
+                }
                 let result = rt.block_on(commands::ingest::run_unified(
                     &config,
                     input_paths.into_iter().next().expect("checked len"),
@@ -332,6 +364,8 @@ fn main() -> anyhow::Result<()> {
                     metadata.as_deref(),
                     concurrency.map(NonZeroUsize::get),
                     &unparsed_ext,
+                    collection.as_deref(),
+                    task.as_deref(),
                 ));
                 return match result {
                     Ok(()) => Ok(()),

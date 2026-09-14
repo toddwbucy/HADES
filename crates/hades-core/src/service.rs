@@ -128,9 +128,16 @@ impl ConnectionPolicy {
         if self.max_tier == SessionKind::Admin && self.provisioning.database_prefixes.is_empty() {
             return true;
         }
+        // An empty prefix is a prefix of everything, so one blank entry would
+        // turn this gate and the MCP read allowlist into allow-all. A blank
+        // comes from a bare `--mcp-db-prefix=` or an empty
+        // `HADES_MCP_DB_PREFIXES=` in an environment file, both of which clap's
+        // comma delimiter turns into one empty value. Rejected at startup as
+        // well; ignored here so the two cannot disagree.
         self.provisioning
             .database_prefixes
             .iter()
+            .filter(|prefix| !prefix.is_empty())
             .any(|prefix| name.starts_with(prefix))
     }
 
@@ -296,7 +303,14 @@ pub async fn handle_request(
     // transport constructed, so a request still cannot raise its own authority.
     let permitted = match cmd.access_tier() {
         AccessTier::Agent => true,
-        AccessTier::Provisioning => session == SessionKind::Admin || policy.allow_provisioning,
+        // Provisioning requires the transport to have granted it AND the session
+        // to still be at the level the transport grants. `||` on the policy flag
+        // ignored self-restriction: on the Unix socket, where the ceiling is
+        // admin and provisioning comes with it, a client declaring
+        // `"session":"agent"` resolved to Agent and was then let through on the
+        // transport flag alone. The documented guarantee is that a request may
+        // restrict itself below the ceiling, and it has to hold for this tier.
+        AccessTier::Provisioning => policy.allow_provisioning && session == policy.max_tier,
         AccessTier::Admin | AccessTier::Internal => session == SessionKind::Admin,
     };
     if !permitted {
@@ -647,6 +661,43 @@ mod tests {
         // A path that does not exist cannot be shown to be inside the root, so
         // it is refused rather than guessed at.
         assert!(!policy.permits_ingest_path(&root.join("nope")));
+    }
+
+    /// A blank entry is a prefix of every name, so it cannot be treated as one.
+    #[test]
+    fn an_empty_prefix_does_not_permit_everything() {
+        let policy = ConnectionPolicy::agent_with_provisioning(ProvisioningLimits {
+            database_prefixes: vec![String::new()],
+            ingest_roots: vec![std::path::PathBuf::from("/opt")],
+        });
+        assert!(!policy.permits_database("_system"));
+        assert!(!policy.permits_database("WeaverTools_v4"));
+    }
+
+    /// Self-restriction has to hold for the provisioning tier as well: the Unix
+    /// socket grants it with the admin ceiling, and a client that declares
+    /// `"session":"agent"` has asked not to have it.
+    #[test]
+    fn a_self_restricted_session_loses_provisioning() {
+        let local = ConnectionPolicy::local_admin();
+        assert!(local.allow_provisioning);
+
+        // What handle_request computes, for each resolved session.
+        let permitted = |policy: &ConnectionPolicy, session: SessionKind| {
+            policy.allow_provisioning && session == policy.max_tier
+        };
+        assert!(permitted(&local, SessionKind::Admin));
+        assert!(
+            !permitted(&local, SessionKind::Agent),
+            "declaring an agent session must give up provisioning"
+        );
+
+        // The network endpoint's granted level IS agent, so it keeps it there.
+        let network = ConnectionPolicy::agent_with_provisioning(ProvisioningLimits {
+            database_prefixes: vec!["bident_".to_string()],
+            ingest_roots: vec![std::path::PathBuf::from("/opt")],
+        });
+        assert!(permitted(&network, SessionKind::Agent));
     }
 
     #[test]

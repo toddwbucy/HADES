@@ -271,7 +271,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   `max_seq_length` are now refused with `PE_INPUT_TOO_LARGE`, naming the input
   index, its token count and the ceiling, which is what the PE-API error table
   specified from the start. Callers pre-chunk or load a profile on a bigger
-  card.
+  card. The refusal covers both endpoints: the boundaries path reports which
+  boundaries fell past what the model saw, and the uniform path refuses rather
+  than returning fewer windows than the text warrants. The count is taken with
+  special tokens against a ceiling reduced by `PROMPT_RESERVE_TOKENS`, since
+  `encode_text` prepends a task prompt that a bare count cannot see and an input
+  of exactly `max_seq_length` would otherwise pass the guard and be truncated.
 - The measured ceiling for the 16 GiB card was wrong by 25 percent. The
   15,000-token figure came from a synthetic probe; real documents through the
   running service pass at 11,926 tokens repeatedly and fail at 12,196, 12,215,

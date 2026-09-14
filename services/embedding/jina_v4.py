@@ -95,6 +95,15 @@ MAX_TOKENS = int(os.environ.get("HADES_EMBEDDER_MAX_TOKENS", "15000"))
 # running documents rather than derived from this number. What this constant
 # gates is the contention check, and 8,192 is the measured model rounded up.
 MODEL_RESIDENT_MIB = 8192
+
+# Tokens held back from the ceiling for what the encode adds on top of the text.
+#
+# `encode_text` prepends a task prompt ("Passage: ", "Query: ") and the tokenizer
+# adds special tokens, neither of which a bare count of the input can see. Eight
+# is a margin rather than a measurement: the prompt is one short word plus a
+# colon and space, and the specials are a handful, so this is comfortably above
+# both while costing 0.02 percent of a 32,768-token window.
+PROMPT_RESERVE_TOKENS = 8
 CONTENTION_HEADROOM_MIB = 2048
 
 # A flat floor, in MiB, that overrides the computed estimate when set.
@@ -404,14 +413,20 @@ class JinaV4Embedder:
         pass takes the same lock, so this does not deadlock a non-reentrant
         lock.
         """
+        budget = MAX_TOKENS - PROMPT_RESERVE_TOKENS
         with self._infer_lock:
             tokenizer = self.tokenizer
             for index, text in enumerate(texts):
-                n_tokens = len(
-                    tokenizer(text, add_special_tokens=False)["input_ids"]
-                )
-                if n_tokens > MAX_TOKENS:
-                    raise InputTooLargeError(index, n_tokens, MAX_TOKENS)
+                # Counted WITH special tokens, against a budget reduced by the
+                # task prompt. `_embed_batch_locked` calls `encode_text` with a
+                # `prompt_name`, which prepends a prefix this count cannot see,
+                # and the fallback arm tokenizes with specials. Counting bare text
+                # against the full ceiling let an input of exactly MAX_TOKENS pass
+                # the guard and then be truncated by the overhead, which is the
+                # silent loss the guard exists to stop.
+                n_tokens = len(tokenizer(text, add_special_tokens=True)["input_ids"])
+                if n_tokens > budget:
+                    raise InputTooLargeError(index, n_tokens, budget)
 
     def embed_late_chunked(
         self,
@@ -610,6 +625,18 @@ class JinaV4Embedder:
                         f"Send smaller windows."
                     )
             else:
+                # Truncation has to fail here as loudly as it does on the
+                # boundaries path above. Without this, an oversized input is cut
+                # at max_length, the walk below covers only what survived, and the
+                # response is HTTP 200 with fewer chunks than the text warrants:
+                # the caller cannot tell a short document from a truncated one.
+                if n_tokens >= MAX_TOKENS:
+                    raise ValueError(
+                        f"PE_INPUT_TOO_LARGE: input filled the {MAX_TOKENS}-token "
+                        f"window and was truncated at character {covered_chars} of "
+                        f"{len(text)}, so uniform windows would cover only the part "
+                        f"the model saw. Send a smaller input."
+                    )
                 step = chunk_size_tokens - overlap_tokens
                 start = first_doc_token
                 while start < doc_token_end:

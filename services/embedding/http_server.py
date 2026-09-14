@@ -140,7 +140,7 @@ class ModelInfo(BaseModel):
     capabilities in one round-trip.
 
     `max_seq_length` is the load profile's measured ceiling, not the model's
-    architectural maximum. The same weights serve 15,000 on a 16 GiB card and
+    architectural maximum. The same weights serve 11,900 on a 16 GiB card and
     32,768 on a 48 GiB one, so a client that wants to know what fits has to ask
     the running service rather than read the model card. `profile` and `device`
     say which card answered, so a switch between cards is visible in a log

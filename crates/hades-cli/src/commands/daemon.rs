@@ -87,13 +87,33 @@ pub async fn run(
             mcp_server::ensure_private_bind(&addr)?;
             let tokens = mcp_server::TokenSet::load(&opts.token_file)?;
 
-            // Provisioning is off unless both a name prefix and an ingest root
-            // were named. Granting the tier with nothing in bounds would let a
-            // client reach the commands and be refused by every one of them,
-            // which reads as a broken endpoint rather than a closed one.
+            // Provisioning needs BOTH a name prefix and an ingest root. The
+            // earlier `&&` here enabled it when either was given, so
+            // `--mcp-ingest-root` alone granted a LAN token the ingest command
+            // with no bound on which database it could write, which is the
+            // opposite of what the flag help and the deployment document say.
+            //
+            // A blank prefix is rejected rather than ignored: it is a prefix of
+            // every name, so it would widen both the creation gate and the MCP
+            // read allowlist to everything. Checked before the listener opens,
+            // like the bind and token checks around it.
+            for prefix in &opts.provision_db_prefixes {
+                anyhow::ensure!(
+                    !prefix.trim().is_empty(),
+                    "--mcp-db-prefix was given an empty value, which would permit \
+                     every database name. Remove the flag to disable provisioning."
+                );
+            }
             let policy = if opts.provision_db_prefixes.is_empty()
-                && opts.provision_ingest_roots.is_empty()
+                || opts.provision_ingest_roots.is_empty()
             {
+                if !opts.provision_db_prefixes.is_empty() || !opts.provision_ingest_roots.is_empty()
+                {
+                    tracing::warn!(
+                        "provisioning needs both --mcp-db-prefix and --mcp-ingest-root; \
+                         only one was given, so it stays disabled"
+                    );
+                }
                 ConnectionPolicy::agent_only()
             } else {
                 let limits = service::ProvisioningLimits {

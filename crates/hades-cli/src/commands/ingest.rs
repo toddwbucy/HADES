@@ -96,6 +96,8 @@ pub async fn run_unified(
     metadata_json: Option<&str>,
     concurrency: Option<usize>,
     unparsed_ext: &[String],
+    collection: Option<&str>,
+    task: Option<&str>,
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
@@ -117,37 +119,58 @@ pub async fn run_unified(
         None
     } else {
         Some(
-            codebase_ingest::run_phase(config, root.clone(), None, false, &[], None, force, false)
-                .await?,
-        )
-    };
-
-    let documents = if found.documents.is_empty() {
-        None
-    } else {
-        Some(
-            run_phase(
+            codebase_ingest::run_phase(
                 config,
-                found.documents.clone(),
+                root.clone(),
+                None,
                 false,
-                metadata_json,
-                &[],
+                unparsed_ext,
                 None,
                 force,
-                None,
-                None,
                 false,
-                false,
-                concurrency,
-                Some(root.clone()),
             )
             .await?,
         )
     };
 
+    // A setup failure in the document phase must not take the code phase's
+    // summary with it. `?` here discarded minutes of completed analyzer work,
+    // symbols, edges and embeddings — all of it durably stored — because the
+    // extraction service was down, and printed nothing. Carrying the error into
+    // the envelope is the whole reason `PhaseOutcome` exists.
+    let mut document_setup_error: Option<String> = None;
+    let documents = if found.documents.is_empty() {
+        None
+    } else {
+        match run_phase(
+            config,
+            found.documents.clone(),
+            false,
+            metadata_json,
+            &[],
+            collection,
+            force,
+            task,
+            None,
+            false,
+            false,
+            concurrency,
+            Some(root.clone()),
+        )
+        .await
+        {
+            Ok(outcome) => Some(outcome),
+            Err(e) => {
+                warn!(error = %e, "document phase could not start, reporting the code phase");
+                document_setup_error = Some(e.to_string());
+                None
+            }
+        }
+    };
+
     let code_failure = code.as_ref().and_then(|o| o.failure.as_ref());
     let doc_failure = documents.as_ref().and_then(|o| o.failure.as_ref());
-    let success = code_failure.is_none() && doc_failure.is_none();
+    let success = code_failure.is_none() && doc_failure.is_none() && document_setup_error.is_none();
 
     let result_data = json!({
         "root": root.display().to_string(),
@@ -161,6 +184,7 @@ pub async fn run_unified(
         // Listed, not counted only: a file nothing claims is the hole this
         // command exists to close, so it has to be nameable from stdout.
         "unrouted": found.unrouted,
+        "document_phase_error": document_setup_error,
         "duration_ms": cmd_start.elapsed().as_millis(),
     });
 
@@ -177,6 +201,9 @@ pub async fn run_unified(
         return Err(documents
             .and_then(|o| o.failure)
             .unwrap_or_else(|| anyhow::anyhow!("document phase failed")));
+    }
+    if let Some(message) = document_setup_error {
+        return Err(anyhow::anyhow!(message));
     }
     Ok(())
 }
@@ -291,7 +318,7 @@ pub async fn run_phase(
         .context("failed to connect to embedding service")?;
 
     // -- Build pipeline --------------------------------------------------------
-    let embed_task = determine_embed_task(task, &file_paths);
+    let embed_task = determine_embed_task(task, profile);
     let pipeline_config = PipelineConfig {
         profile,
         embed_task,
@@ -489,26 +516,51 @@ async fn ingest_file(
     // Checked even under `--force`, because there the collision is worse: force
     // overwrites, so a different document would be replaced rather than skipped.
     let canonical_input = path.display().to_string();
-    if let Some(stored) = existing_source_path(db, profile.metadata, &doc_key).await? {
-        match stored {
-            Some(ref stored_path) if stored_path != &canonical_input => {
-                bail!(
-                    "document key '{doc_key}' is already held by a different file.\n  \
-                     stored: {stored_path}\n  incoming: {canonical_input}\n\
-                     Keys derive from the file stem, so two files with the same name \
-                     in different directories collide. Pass --root <dir> to key by \
-                     path relative to that directory, or --id to name this one \
-                     explicitly."
-                );
-            }
-            _ if !force => {
-                info!(
-                    doc_key,
-                    "already ingested, skipping (use --force to re-process)"
-                );
-                return Ok(json!({"skipped": true}));
-            }
-            _ => {}
+    // Identity is the path relative to the root when there is one, because that
+    // is what the key is derived from. Comparing absolute paths made a relocated
+    // or bind-mounted corpus a hard error on every file, with no override, since
+    // this check deliberately runs under `--force` as well.
+    let incoming_rel = root.and_then(|r| {
+        std::fs::canonicalize(r)
+            .ok()
+            .and_then(|r| path.strip_prefix(&r).ok().map(|p| p.display().to_string()))
+    });
+    if let Some((stored_rel, stored_path)) =
+        existing_source_identity(db, profile.metadata, &doc_key).await?
+    {
+        // A collision needs two identities of the same kind to compare. When the
+        // stored document predates `source_rel` and this run has one, the
+        // absolute paths are not evidence of anything, so it is treated as the
+        // same document and re-ingested rather than refused forever.
+        let collision = match (&stored_rel, &incoming_rel) {
+            (Some(stored), Some(incoming)) => stored != incoming,
+            (None, None) => stored_path
+                .as_ref()
+                .is_some_and(|stored| stored != &canonical_input),
+            _ => false,
+        };
+        if collision {
+            let stored_shown = stored_rel
+                .clone()
+                .or_else(|| stored_path.clone())
+                .unwrap_or_else(|| "<unknown>".into());
+            let incoming_shown = incoming_rel
+                .clone()
+                .unwrap_or_else(|| canonical_input.clone());
+            bail!(
+                "document key '{doc_key}' is already held by a different file.\n  \
+                 stored: {stored_shown}\n  incoming: {incoming_shown}\n\
+                 Two files reduce to the same key. With --root that means two paths \
+                 that normalize alike; without it, two files sharing a stem in \
+                 different directories. Pass --id to name one of them explicitly."
+            );
+        }
+        if !force {
+            info!(
+                doc_key,
+                "already ingested, skipping (use --force to re-process)"
+            );
+            return Ok(json!({"skipped": true}));
         }
     }
 
@@ -528,6 +580,9 @@ async fn ingest_file(
     let mut file_meta = json!({
         "source": "local",
         "source_path": path.display().to_string(),
+        // The identity the collision check compares, stable across a move of the
+        // tree. Absent when the caller named files rather than a root.
+        "source_rel": incoming_rel,
         "status": "PROCESSED",
     });
 
@@ -577,17 +632,16 @@ fn merge_extra_metadata(doc: &mut Value, extra: Option<&Value>) {
 /// Returns `Ok(None)` when nothing holds the key. `Ok(Some(None))` means a
 /// document is there but predates `source_path` being recorded, which cannot be
 /// compared and so is treated as the same document.
-async fn existing_source_path(
+async fn existing_source_identity(
     db: &ArangoPool,
     collection: &str,
     doc_key: &str,
-) -> Result<Option<Option<String>>> {
+) -> Result<Option<(Option<String>, Option<String>)>> {
     match hades_core::db::crud::get_document(db, collection, doc_key).await {
-        Ok(doc) => Ok(Some(
-            doc.get("source_path")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        )),
+        Ok(doc) => {
+            let field = |name: &str| doc.get(name).and_then(|v| v.as_str()).map(str::to_string);
+            Ok(Some((field("source_rel"), field("source_path"))))
+        }
         Err(e) if e.is_not_found() => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -636,19 +690,20 @@ fn derive_doc_key(path: &Path, custom_id: Option<&str>, root: Option<&Path>) -> 
     keys::normalize_document_key(stem)
 }
 
-/// Determine the embedding task based on explicit --task flag or file extensions.
-fn determine_embed_task(task: Option<&str>, inputs: &[PathBuf]) -> String {
-    if let Some(t) = task {
-        // "code" is a valid Jina V4 task as-is (its own LoRA adapter); pass through unchanged.
-        return t.to_string();
-    }
-
-    // Auto-detect: if all inputs are code files, use code task.
-    if !inputs.is_empty() && inputs.iter().all(|p| is_code_file(p)) {
-        return "code".to_string();
-    }
-
-    "retrieval.passage".to_string()
+/// The embedding task for this ingest: the explicit `--task`, else the profile's.
+///
+/// It used to be guessed from file extensions, which crossed vector spaces: a
+/// `.py` file ingested as a document was embedded with the `code` adapter into
+/// the `default` profile, whose queries use `retrieval.query`. Measured on this
+/// repository's own graph, that mismatch costs about a third of the separation
+/// between the top hit and the median. The profile owns both sides now, so they
+/// cannot drift.
+///
+/// `--task` still overrides, because a caller who names an adapter has said what
+/// they want. Nothing records which adapter a stored corpus used, so overriding
+/// it is the caller's problem to keep track of.
+fn determine_embed_task(task: Option<&str>, profile: &CollectionProfile) -> String {
+    task.unwrap_or(profile.passage_task).to_string()
 }
 
 /// Check if a file path looks like a code file by extension.
