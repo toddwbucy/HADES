@@ -145,6 +145,15 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- `CLAUDE.md` rewritten against the current tree. It described two ingest
+  commands, a hardcoded window budget, an extractor endpoint with no override,
+  and three access tiers. It now records the single `hades ingest` front door
+  and the routing table behind it, content-hash incrementality as the resync
+  mechanism, the window budget read from the backend's `/v1/models`, the per-GPU
+  load profiles with their measured 32,768 and 11,900 token ceilings, the
+  `Provisioning` tier and the two flags that enable it,
+  `HADES_EXTRACTOR_SOCKET`, and the embedding task pair on `CollectionProfile`.
+
 - `codebase ingest` starts one rust-analyzer session per Cargo *workspace*
   rather than per member crate. Grouping keyed on the nearest `Cargo.toml`,
   but rust-analyzer runs `cargo metadata` on startup, which from any member
@@ -210,6 +219,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - `RESEARCH_GOALS.md`, and the two references README.md made to it, one in prose
   and one in the documentation table. Deleting the file without them would have
   left a public repository with two broken links.
+- `AGENTS.md`, which had been moved to `/opt/AGENTS.md` outside the repository.
+  The copy left here was a second agent-guidance file with no owner, and two of
+  those drift apart rather than agree.
 
 ### Fixed
 
