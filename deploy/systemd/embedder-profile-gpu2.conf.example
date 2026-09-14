@@ -1,0 +1,49 @@
+# Load profile: GPU 2, RTX 2000 Ada, 16 GiB. The constrained card.
+#
+# Sequence ceiling 11,900 tokens, bisected on this card 2026-09-13 with REAL
+# documents through the running service, which is a different number from the
+# 15,000 a synthetic probe produced on 2026-09-12:
+#
+#     13,382  OOM   <- also OOMs as the first request to a fresh process
+#     12,417  OOM
+#     12,215  OOM
+#     12,196  OOM   <- wants 3.45 GiB, has 3.02 GiB
+#     11,926  OK    <- three consecutive runs on a warm process, ~5s each
+#
+# So the edge is between 11,926 and 12,196, and the ceiling is set just under
+# the largest real document that passed repeatedly. 15,000 was never reachable
+# for a real document on this card: the earlier bisect measured something the
+# service does not do, and a 13,905-token CUDA file failed under it on the first
+# try.
+#
+# The model is not 9,216 MiB resident as the code constant claims. PyTorch holds
+# 12.03 GiB immediately after load on this card, leaving roughly 3 GiB for
+# activations, which is what puts the edge at 12k rather than 15k.
+#
+# BATCH_SIZE is a count, and the real constraint is total tokens in a pass, so
+# four inputs of 3,000 tokens is the same activation cost as one of 12,000 and
+# sits on the edge. Batch 4 is safe here only because chunks are short. Treat an
+# OOM as the signal to drop it.
+#
+# Anything over the ceiling cannot be embedded whole on this card, and the
+# service now refuses it by name rather than truncating and reporting success.
+# Pre-chunking is separate work and deliberately not handled by this profile.
+#
+# MIN_FREE_VRAM_MIB stays unset: a 24 GiB floor would refuse this card
+# outright, and the computed contention estimate is the right gate here.
+
+CUDA_VISIBLE_DEVICES=2
+HADES_EMBEDDER_DEVICE=cuda:0
+HADES_EMBEDDER_PROFILE=gpu2
+HADES_EMBEDDER_MAX_TOKENS=11900
+
+# Four sequences share the activation headroom the bisect measured with one,
+# so this works because real batches are short. An OOM means dropping it.
+HADES_EMBEDDER_BATCH_SIZE=4
+
+HADES_EMBEDDER_HOST=127.0.0.1
+HADES_EMBEDDER_PORT=8087
+HADES_EMBEDDER_MODEL=@MODEL_PATH@
+HADES_EMBEDDER_FP16=true
+HADES_EMBEDDER_IDLE_TIMEOUT=900
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

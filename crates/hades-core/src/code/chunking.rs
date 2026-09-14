@@ -87,9 +87,9 @@ impl ChunkingStrategy for AstChunking {
 
         // Split oversized chunks at line boundaries.
         let mut final_chunks = Vec::new();
-        for (chunk_text, start_byte, _end_byte) in raw_chunks {
+        for (chunk_text, start_byte, end_byte) in raw_chunks {
             if chunk_text.len() <= self.max_chunk_chars {
-                final_chunks.push((chunk_text, start_byte));
+                final_chunks.push((chunk_text, start_byte, end_byte));
             } else {
                 split_at_lines(
                     &chunk_text,
@@ -101,14 +101,20 @@ impl ChunkingStrategy for AstChunking {
         }
 
         // Build TextChunk values with correct indices.
+        //
+        // `end_char` is carried from the split rather than computed as
+        // `start + text.len()`. The stored text normalizes CRLF to LF, so it is
+        // shorter than the span it came from by one byte per line, and deriving
+        // the end from it put every chunk's end inside the chunk on a CRLF
+        // source.
         let total = final_chunks.len();
         final_chunks
             .into_iter()
             .enumerate()
-            .map(|(i, (text_content, start))| TextChunk {
-                text: text_content.clone(),
+            .map(|(i, (text_content, start, end))| TextChunk {
+                text: text_content,
                 start_char: start,
-                end_char: start + text_content.len(),
+                end_char: end,
                 chunk_index: i,
                 total_chunks: total,
             })
@@ -121,17 +127,30 @@ fn split_at_lines(
     text: &str,
     base_offset: usize,
     max_chars: usize,
-    out: &mut Vec<(String, usize)>,
+    out: &mut Vec<(String, usize, usize)>,
 ) {
     let mut current = String::new();
     let mut current_start = base_offset;
     let mut byte_offset = 0usize;
 
-    for line in text.lines() {
-        let line_with_newline_len = line.len() + 1; // approximate
+    // `split_inclusive` keeps the terminator, so `raw.len()` is exactly how
+    // many bytes this line occupies in `text`. `lines()` strips `\r`, so
+    // advancing by `line.len() + 1` undercounts a CRLF source by one byte per
+    // line and every offset after the first drifts further.
+    //
+    // The original arithmetic carried an `// approximate` comment and that was
+    // tolerable while these offsets were only stored as metadata. Late chunking
+    // slices the source with them and sends the result to the embedder, so an
+    // approximate offset now pools a chunk vector from the wrong code, with no
+    // error and nothing downstream able to tell.
+    for raw in text.split_inclusive('\n') {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        let line = line.strip_suffix('\r').unwrap_or(line);
 
-        if !current.is_empty() && current.len() + line_with_newline_len > max_chars {
-            out.push((current.clone(), current_start));
+        if !current.is_empty() && current.len() + raw.len() > max_chars {
+            // `byte_offset` has not yet advanced past this line, so it is
+            // exactly where the accumulated chunk ends.
+            out.push((current.clone(), current_start, base_offset + byte_offset));
             current.clear();
             current_start = base_offset + byte_offset;
         }
@@ -140,11 +159,11 @@ fn split_at_lines(
             current.push('\n');
         }
         current.push_str(line);
-        byte_offset += line.len() + 1; // +1 for newline
+        byte_offset += raw.len();
     }
 
     if !current.is_empty() {
-        out.push((current, current_start));
+        out.push((current, current_start, base_offset + byte_offset));
     }
 }
 
@@ -286,6 +305,65 @@ mod tests {
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.chunk_index, i);
             assert_eq!(chunk.total_chunks, chunks.len());
+        }
+    }
+
+    /// Chunk offsets must address the source they came from.
+    ///
+    /// Late chunking slices `source[start_char..end_char]` and sends the result
+    /// to the embedder, so an offset that is merely close pools a chunk vector
+    /// from the wrong code and nothing downstream can tell. Before this was
+    /// fixed the arithmetic assumed one byte per line terminator, which is
+    /// right for LF and wrong for CRLF.
+    #[test]
+    fn chunk_offsets_address_the_source_for_crlf() {
+        // Long enough lines that max_chars forces several splits, so the
+        // drift has room to accumulate.
+        let line = "    let value = compute_something(argument_one, argument_two);";
+        let source: String = std::iter::repeat_n(line, 40)
+            .map(|l| format!("{l}\r\n"))
+            .collect();
+
+        let chunker = AstChunking::new(vec![]).with_max_chars(200);
+        let chunks = chunker.chunk(&source);
+        assert!(chunks.len() > 1, "expected the source to be split");
+
+        for c in &chunks {
+            assert!(
+                c.end_char <= source.len(),
+                "chunk {} ends at {} past a {}-byte source",
+                c.chunk_index,
+                c.end_char,
+                source.len()
+            );
+            let slice = source
+                .get(c.start_char..c.end_char)
+                .expect("chunk offsets must describe a valid slice");
+            // The stored text normalizes CRLF to LF, so compare on that basis
+            // rather than byte for byte.
+            assert_eq!(
+                slice.replace("\r\n", "\n").trim_end(),
+                c.text.trim_end(),
+                "chunk {} offsets point at different text than the chunk holds",
+                c.chunk_index
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_offsets_address_the_source_for_lf() {
+        let line = "    let value = compute_something(argument_one, argument_two);";
+        let source: String = std::iter::repeat_n(line, 40)
+            .map(|l| format!("{l}\n"))
+            .collect();
+
+        let chunker = AstChunking::new(vec![]).with_max_chars(200);
+        let chunks = chunker.chunk(&source);
+        assert!(chunks.len() > 1);
+
+        for c in &chunks {
+            let slice = source.get(c.start_char..c.end_char).expect("valid slice");
+            assert_eq!(slice.trim_end(), c.text.trim_end());
         }
     }
 }

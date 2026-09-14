@@ -4,13 +4,19 @@
 //! implements the [`ChunkingStrategy`] trait, producing [`TextChunk`]
 //! values with character offsets for source attribution.
 //!
-//! Late-chunking support (mean-pooling token-level embeddings per chunk)
-//! is in the [`late`] submodule.
+//! Late chunking does NOT live here. It is pooled server-side, next to the
+//! model, because token-level embeddings are `seq_len x 2048` and a long
+//! document runs to roughly 120 MB in float32 before pooling. See
+//! `persephone::embedding::embed_late_chunked` and
+//! `services/embedding/jina_v4.py`.
+//!
+//! A client-side `late` submodule used to sit here, unreferenced. It required
+//! exactly the token-level tensors that cannot cross the wire, so it could
+//! never have been called, and it was removed rather than left for the next
+//! reader to find and reimplement against.
 
-mod late;
 mod strategies;
 
-pub use late::{LateChunkConfig, LateChunkResult, late_chunk_embeddings};
 pub use strategies::{SentenceChunking, SlidingWindowChunking, TokenChunking};
 
 /// A chunk of text with positional metadata.

@@ -21,6 +21,21 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600); // 10 min
 /// Default connection timeout.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Environment variable naming the extraction service endpoint.
+///
+/// `services/extraction/config.py` has honoured this variable since it was
+/// written, while this client hardcoded the socket path, so the two halves of
+/// one contract disagreed. The only reachable endpoint was the root-created
+/// `/run/hades/extractor.sock`, which a user-level deployment cannot write, so
+/// `hades ingest` had no way to reach an extractor running as the operator.
+const ENDPOINT_ENV: &str = "HADES_EXTRACTOR_SOCKET";
+
+/// Compiled-in socket, used when [`ENDPOINT_ENV`] is unset.
+///
+/// Matches the system install, where `tmpfiles.d` creates `/run/hades` and the
+/// service unit binds inside it.
+const DEFAULT_SOCKET: &str = "/run/hades/extractor.sock";
+
 /// Configuration for the extraction client.
 #[derive(Debug, Clone)]
 pub struct ExtractionClientConfig {
@@ -41,10 +56,58 @@ pub enum ExtractionEndpoint {
     Tcp(String),
 }
 
+impl ExtractionClientConfig {
+    /// Build a config from the environment, falling back to [`DEFAULT_SOCKET`].
+    ///
+    /// Accepts the same endpoint spellings as the embedding client:
+    /// `http://`, `https://`, `unix:///path`, or a bare absolute path.
+    ///
+    /// A malformed value is an error rather than a silent fall back to the
+    /// default. Falling back would connect somewhere the operator did not ask
+    /// for and report success, which is the failure shape this tree has paid
+    /// for repeatedly: the message names the value that was rejected.
+    pub fn from_env() -> Result<Self, ExtractionError> {
+        let endpoint = match std::env::var(ENDPOINT_ENV) {
+            Ok(raw) if !raw.trim().is_empty() => parse_endpoint(raw.trim())?,
+            _ => ExtractionEndpoint::Unix(PathBuf::from(DEFAULT_SOCKET)),
+        };
+        Ok(Self {
+            endpoint,
+            ..Default::default()
+        })
+    }
+}
+
+/// Parse an endpoint string into a [`ExtractionEndpoint`].
+fn parse_endpoint(raw: &str) -> Result<ExtractionEndpoint, ExtractionError> {
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        Ok(ExtractionEndpoint::Tcp(raw.to_string()))
+    } else if let Some(path) = raw.strip_prefix("unix://") {
+        // Absolute after the scheme too. `unix://run/extractor.sock` resolves
+        // from the process working directory, so the daemon and the CLI would
+        // reach different sockets from the same configuration, and a relative
+        // socket path means something different from every directory it is run
+        // in. The bare-path branch below already requires this.
+        if !path.starts_with('/') {
+            return Err(ExtractionError::InvalidResponse(format!(
+                "{ENDPOINT_ENV} must name an absolute path after unix://; got '{raw}'"
+            )));
+        }
+        Ok(ExtractionEndpoint::Unix(PathBuf::from(path)))
+    } else if raw.starts_with('/') {
+        Ok(ExtractionEndpoint::Unix(PathBuf::from(raw)))
+    } else {
+        Err(ExtractionError::InvalidResponse(format!(
+            "{ENDPOINT_ENV} must start with http://, https://, unix://, or be an \
+             absolute path; got '{raw}'"
+        )))
+    }
+}
+
 impl Default for ExtractionClientConfig {
     fn default() -> Self {
         Self {
-            endpoint: ExtractionEndpoint::Unix(PathBuf::from("/run/hades/extractor.sock")),
+            endpoint: ExtractionEndpoint::Unix(PathBuf::from(DEFAULT_SOCKET)),
             timeout: DEFAULT_TIMEOUT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
@@ -109,8 +172,11 @@ impl ExtractionClient {
     }
 
     /// Connect to the extraction service with default configuration.
+    ///
+    /// Honours `HADES_EXTRACTOR_SOCKET`; see
+    /// [`ExtractionClientConfig::from_env`].
     pub async fn connect_default() -> Result<Self, ExtractionError> {
-        Self::connect(ExtractionClientConfig::default()).await
+        Self::connect(ExtractionClientConfig::from_env()?).await
     }
 
     /// Connect to an extraction service at the given Unix socket path.
@@ -347,7 +413,7 @@ impl std::fmt::Debug for ExtractionClient {
 }
 
 #[cfg(test)]
-mod error_conversion_tests {
+mod tests {
     use super::*;
 
     /// `?` at every gRPC call site depends on this conversion.
@@ -374,5 +440,60 @@ mod error_conversion_tests {
         let err: ExtractionError = tonic::Status::internal("backend fell over").into();
         let source = std::error::Error::source(&err).expect("status must remain the source");
         assert!(source.to_string().contains("backend fell over"));
+    }
+
+    #[test]
+    fn parse_endpoint_accepts_the_four_spellings() {
+        assert!(matches!(
+            parse_endpoint("http://127.0.0.1:50052").unwrap(),
+            ExtractionEndpoint::Tcp(ref a) if a == "http://127.0.0.1:50052"
+        ));
+        assert!(matches!(
+            parse_endpoint("https://extractor.internal").unwrap(),
+            ExtractionEndpoint::Tcp(_)
+        ));
+        assert!(matches!(
+            parse_endpoint("unix:///run/hades/extractor.sock").unwrap(),
+            ExtractionEndpoint::Unix(ref p) if p == Path::new("/run/hades/extractor.sock")
+        ));
+        assert!(matches!(
+            parse_endpoint("/home/todd/.local/share/hades/run/extractor.sock").unwrap(),
+            ExtractionEndpoint::Unix(ref p)
+                if p == Path::new("/home/todd/.local/share/hades/run/extractor.sock")
+        ));
+    }
+
+    #[test]
+    fn parse_endpoint_rejects_a_relative_path_after_the_unix_scheme() {
+        // `unix://` plus a relative path resolves from the working directory, so
+        // the daemon and the CLI would reach different sockets from one value.
+        let err = parse_endpoint("unix://run/extractor.sock").expect_err("must reject");
+        assert!(err.to_string().contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn parse_endpoint_rejects_a_relative_path_naming_the_value() {
+        // Rejected rather than resolved against the cwd: a relative socket path
+        // means something different from every directory the CLI is run in.
+        let err = parse_endpoint("run/extractor.sock").expect_err("must reject");
+        let message = err.to_string();
+        assert!(message.contains("run/extractor.sock"), "{message}");
+        assert!(message.contains(ENDPOINT_ENV), "{message}");
+    }
+
+    #[test]
+    fn from_env_falls_back_to_the_compiled_in_socket() {
+        // Env vars are process-global, so this test reads rather than writes:
+        // asserting the fallback under a set variable would race any other test
+        // that sets it. The unset case is the one worth pinning, because it is
+        // what the system install depends on.
+        if std::env::var_os(ENDPOINT_ENV).is_some() {
+            return;
+        }
+        let config = ExtractionClientConfig::from_env().expect("unset env must succeed");
+        assert!(matches!(
+            config.endpoint,
+            ExtractionEndpoint::Unix(ref p) if p == Path::new(DEFAULT_SOCKET)
+        ));
     }
 }

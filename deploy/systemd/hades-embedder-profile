@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Switch the HADES embedder between per-GPU load profiles.
+#
+# Every profile binds the same port, so switching cards changes nothing for any
+# client: they re-read the ceiling from /v1/models. Two profiles cannot be live
+# at once, because the second would fail to bind rather than quietly loading a
+# second 9 GiB copy of the model onto another card.
+#
+# Usage:
+#   hades-embedder-profile              show the active profile
+#   hades-embedder-profile list         list available profiles and their ceilings
+#   hades-embedder-profile <name>       switch to that profile
+set -euo pipefail
+
+PROFILE_DIR="${HOME}/.config/hades/embedder-profiles"
+UNIT_PREFIX="hades-embedder@"
+ENDPOINT="http://127.0.0.1:8087/v1/models"
+
+# Kept as a variable rather than inlined: nesting shell quotes inside a python
+# -c inside a function was how the first version silently printed the fallback.
+PARSE_MODELS='
+import json, sys
+d = json.load(sys.stdin)["data"][0]
+card = d.get("physical_device") or d.get("device") or "?"
+print("  reported: profile=%s card=%s max_seq_length=%s dimension=%s"
+      % (d.get("profile") or "?", card, format(d["max_seq_length"], ","), d["dimension"]))
+'
+
+
+active_instance() {
+  systemctl --user list-units --state=active --plain --no-legend "${UNIT_PREFIX}*" 2>/dev/null \
+    | awk '{print $1}' | sed -n "s/^${UNIT_PREFIX}\(.*\)\.service$/\1/p" | head -1
+}
+
+show_active() {
+  local instance
+  instance="$(active_instance || true)"
+  if [ -z "$instance" ]; then
+    echo "no embedder profile is active"
+    return 0
+  fi
+  echo "active profile: $instance"
+  curl -s -m 10 "$ENDPOINT" | python3 -c "$PARSE_MODELS" 2>/dev/null \
+    || echo "  service is starting or not answering yet"
+}
+
+case "${1:-show}" in
+  show)
+    show_active
+    ;;
+  list)
+    for conf in "$PROFILE_DIR"/*.conf; do
+      name="$(basename "$conf" .conf)"
+      card="$(sed -n 's/^CUDA_VISIBLE_DEVICES=//p' "$conf")"
+      ceiling="$(sed -n 's/^HADES_EMBEDDER_MAX_TOKENS=//p' "$conf")"
+      batch="$(sed -n 's/^HADES_EMBEDDER_BATCH_SIZE=//p' "$conf")"
+      printf '%-6s card=%s ceiling=%s batch=%s\n' "$name" "$card" "$ceiling" "$batch"
+    done
+    ;;
+  *)
+    target="$1"
+    conf="${PROFILE_DIR}/${target}.conf"
+    if [ ! -f "$conf" ]; then
+      echo "no such profile: ${target}" >&2
+      echo "available: $(ls "$PROFILE_DIR" | sed 's/\.conf$//' | tr '\n' ' ')" >&2
+      exit 1
+    fi
+    # Stop every instance first. Starting the new one while the old holds the
+    # port would fail at bind, which is a safe failure but a confusing one.
+    for unit in $(systemctl --user list-units --state=active --plain --no-legend "${UNIT_PREFIX}*" 2>/dev/null | awk '{print $1}'); do
+      echo "stopping ${unit}"
+      systemctl --user stop "$unit"
+    done
+    # Switching profiles is inherently restart-heavy, and the unit carries
+    # StartLimitBurst=3 to stop a crash-looping service from thrashing a GPU.
+    # Clearing the counter first keeps a deliberate switch from being refused
+    # for looking like a loop.
+    systemctl --user reset-failed "${UNIT_PREFIX}${target}" 2>/dev/null || true
+    echo "starting ${UNIT_PREFIX}${target}"
+    systemctl --user start "${UNIT_PREFIX}${target}"
+    # --fail so a 4xx or 5xx is not mistaken for readiness, and a real verdict at
+    # the end: without it the loop ended on any response and show_active returned
+    # 0 even when nothing had come up, so a failed switch looked like a successful
+    # one and the next command ran against no embedder.
+    ready=false
+    for _ in $(seq 1 30); do
+      if curl -sf -m 3 "$ENDPOINT" >/dev/null 2>&1; then ready=true; break; fi
+      sleep 1
+    done
+    if [ "$ready" != true ]; then
+      echo "profile ${target} did not become ready within 30s" >&2
+      systemctl --user is-active "${UNIT_PREFIX}${target}" >&2 || true
+      journalctl --user -u "${UNIT_PREFIX}${target}" -n 5 --no-pager >&2 || true
+      exit 1
+    fi
+    show_active
+    ;;
+esac

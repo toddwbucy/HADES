@@ -370,6 +370,33 @@ pub struct DbSchemaInitParams {
     pub seed: String,
 }
 
+/// Params for `db.create_database`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DbCreateDatabaseParams {
+    /// Name of the database to create.
+    pub name: String,
+}
+
+/// Params for `ingest.start`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestStartParams {
+    /// Directory or file to ingest, on the *daemon's* filesystem.
+    pub path: String,
+    /// Re-ingest files whose digest is unchanged.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Params for `ingest.status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestStatusParams {
+    /// Job id returned by `ingest.start`.
+    pub job_id: String,
+}
+
 /// Params for `db.schema.show`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -799,6 +826,23 @@ pub enum DaemonCommand {
     #[serde(rename = "link_code_smell")]
     LinkCodeSmell(LinkCodeSmellParams),
 
+    // ── Provisioning ────────────────────────────────────────────────
+    /// Create a database. Provisioning tier.
+    #[serde(rename = "db.create_database")]
+    DbCreateDatabase(DbCreateDatabaseParams),
+    /// Start an ingest of a tree into the current database. Provisioning tier.
+    ///
+    /// Returns a job id immediately rather than blocking: the MCP transport caps
+    /// a request at 60 seconds and real ingests run for minutes, so a blocking
+    /// call would time out while the work continued, which reports failure for
+    /// something that is still succeeding.
+    #[serde(rename = "ingest.start")]
+    IngestStart(IngestStartParams),
+    /// Progress and outcome of an ingest job. Agent tier: reading a job's own
+    /// status is a bounded read.
+    #[serde(rename = "ingest.status")]
+    IngestStatus(IngestStatusParams),
+
     // ── Codebase ────────────────────────────────────────────────────
     #[serde(rename = "codebase.stats")]
     CodebaseStats(CodebaseStatsParams),
@@ -829,6 +873,19 @@ pub enum AccessTier {
     Admin,
     /// System bookkeeping — health checks, diagnostics.
     Internal,
+    /// Creating a database, and starting an ingest into one.
+    ///
+    /// Separated from [`AccessTier::Admin`] so a transport can grant exactly
+    /// this and nothing else. An agent that builds its own graph needs to create
+    /// a database and ingest a tree; it does not need raw AQL, `db.purge` or
+    /// `db.graph.drop`, and folding these into Admin would have handed all of
+    /// them over together.
+    ///
+    /// Still privileged: it writes, it does DDL, and ingest makes the daemon read
+    /// paths off its own filesystem. A transport granting it supplies
+    /// `ProvisioningLimits` naming which database prefixes and which directories
+    /// are in bounds.
+    Provisioning,
 }
 
 impl DaemonCommand {
@@ -906,6 +963,13 @@ impl DaemonCommand {
 
             // ── Agent: codebase ───────────────────────────────────
             Self::CodebaseStats(_) => AccessTier::Agent,
+
+            // ── Provisioning ──────────────────────────────────────
+            Self::DbCreateDatabase(_) => AccessTier::Provisioning,
+            Self::IngestStart(_) => AccessTier::Provisioning,
+            // Reading the status of a job is a bounded read, so an agent
+            // session can poll one it was given without being provisioned.
+            Self::IngestStatus(_) => AccessTier::Agent,
 
             // ── Admin: raw AQL ────────────────────────────────────
             Self::DbAql(_) => AccessTier::Admin,
@@ -1297,6 +1361,17 @@ pub async fn dispatch(
         .await
         .map_err(DispatchError::Handler),
 
+        // ── Provisioning ─────────────────────────────────────────────
+        DaemonCommand::DbCreateDatabase(p) => handlers::db_create_database(config, &p.name)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::IngestStart(p) => handlers::ingest_start(pool, config, &p.path, p.force)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::IngestStatus(p) => handlers::ingest_status(pool, &p.job_id)
+            .await
+            .map_err(Into::into),
+
         // ── Codebase ─────────────────────────────────────────────────
         DaemonCommand::CodebaseStats(_) => handlers::codebase_stats(pool)
             .await
@@ -1322,6 +1397,310 @@ mod handlers {
     use crate::db::crud::{self, CollectionInfo, count_collection, list_collections};
     use crate::db::index;
     use crate::db::query::{self, ExecutionTarget};
+
+    // ── Provisioning handlers ───────────────────────────────────────
+
+    /// How many ingest jobs may run at once.
+    ///
+    /// Two rather than one, so a small tree is not blocked behind a large one, and
+    /// not more because every job contends for the same GPU through the embedder's
+    /// inference lock and for the same rust-analyzer working directory. Parallel
+    /// ingests do not finish sooner, they only multiply the failure modes.
+    pub(super) const MAX_CONCURRENT_INGESTS: usize = 2;
+
+    /// Collection holding ingest job rows, created on demand.
+    ///
+    /// Lives in the database being ingested rather than in a central one, so a
+    /// job is visible to exactly the readers who can already see the graph it
+    /// builds, and so it survives a daemon restart.
+    pub(super) const INGEST_JOBS: &str = "hades_ingest_jobs";
+
+    /// Create a database.
+    ///
+    /// ArangoDB's `POST /_api/database` only answers in the `_system` context,
+    /// so this builds a second client with the database overridden, exactly as
+    /// the CLI's `db create-database` does. Socket discovery and auth come from
+    /// the same config, so the two paths cannot drift in how they connect.
+    pub async fn db_create_database(
+        config: &crate::config::HadesConfig,
+        name: &str,
+    ) -> Result<Value, HandlerError> {
+        // ArangoDB's own name rules, checked here so a bad name is a clear error
+        // rather than a 400 wrapped in a transport failure.
+        let valid = !name.is_empty()
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && name.starts_with(|c: char| c.is_ascii_alphabetic());
+        if !valid {
+            return Err(HandlerError::InvalidParameter {
+                name: "name".into(),
+                reason: format!(
+                    "'{name}' must start with a letter and contain only letters, \
+                     digits, underscore or hyphen, at most 64 characters"
+                ),
+            });
+        }
+
+        let mut system_config = config.clone();
+        system_config.database.name = Some("_system".to_string());
+        let client = crate::db::ArangoClient::from_config(&system_config, false)
+            .map_err(|e| HandlerError::ServiceError(format!("ArangoDB connect failed: {e}")))?;
+
+        let resp = client
+            .post("database", &json!({ "name": name }))
+            .await
+            .map_err(|e| {
+                HandlerError::ServiceError(format!("failed to create database '{name}': {e}"))
+            })?;
+
+        Ok(json!({ "created": true, "name": name, "response": resp }))
+    }
+
+    /// Start an ingest as a detached job and return its id.
+    ///
+    /// Spawns this same binary rather than reimplementing the pipeline: the
+    /// orchestration is 4,000 lines of analyzer preflight, discovery, routing,
+    /// enrichment and batching, and a second copy of it would drift from the one
+    /// the CLI exercises. `current_exe` rather than a PATH lookup, so the job
+    /// runs the daemon's own build and not whatever `hades` resolves to.
+    pub async fn ingest_start(
+        pool: &ArangoPool,
+        config: &crate::config::HadesConfig,
+        path: &str,
+        force: bool,
+    ) -> Result<Value, HandlerError> {
+        use std::process::Stdio;
+
+        let database = config
+            .effective_database()
+            .map_err(|e| HandlerError::InvalidParameter {
+                name: "database".into(),
+                reason: e.to_string(),
+            })?
+            .to_string();
+
+        let resolved = std::fs::canonicalize(path).map_err(|e| HandlerError::InvalidParameter {
+            name: "path".into(),
+            reason: format!("'{path}' not usable: {e}"),
+        })?;
+
+        let exe = std::env::current_exe()
+            .map_err(|e| HandlerError::ServiceError(format!("cannot locate own binary: {e}")))?;
+
+        // Refuse a second job for the same tree, and cap the total.
+        //
+        // Nothing here was bounded: a provisioned token could call `ingest.start`
+        // in a loop and get one full ingest process per call, each running
+        // analyzers and a language server over the same tree, writing the same
+        // keys. A row whose process is gone does not count, because a daemon
+        // restart leaves rows saying `running` forever and those would otherwise
+        // block every later job.
+        crud::create_collection(pool, INGEST_JOBS, Some(2))
+            .await
+            .ok();
+        let running = query::query(
+            pool,
+            &format!(
+                "FOR j IN {INGEST_JOBS} FILTER j.status == 'running' \
+                 RETURN {{path: j.path, pid: j.pid}}"
+            ),
+            None,
+            None,
+            false,
+            ExecutionTarget::Writer,
+        )
+        .await
+        .map(|r| r.results)
+        .unwrap_or_default();
+        let live: Vec<&Value> = running
+            .iter()
+            .filter(|row| match row.get("pid").and_then(|p| p.as_u64()) {
+                // Linux-specific and deliberate: this daemon already assumes
+                // /proc elsewhere, and a liveness check beats a timeout guess.
+                Some(pid) => std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                None => false,
+            })
+            .collect();
+        if let Some(dup) = live.iter().find(|row| {
+            row.get("path").and_then(|p| p.as_str()) == Some(&resolved.display().to_string())
+        }) {
+            return Err(HandlerError::InvalidParameter {
+                name: "path".into(),
+                reason: format!(
+                    "an ingest of '{}' is already running (pid {}). Poll ingest.status \
+                     rather than starting a second one over the same tree.",
+                    resolved.display(),
+                    dup.get("pid").and_then(|p| p.as_u64()).unwrap_or(0)
+                ),
+            });
+        }
+        if live.len() >= MAX_CONCURRENT_INGESTS {
+            return Err(HandlerError::ServiceError(format!(
+                "{} ingest jobs are already running, which is the limit. Each one \
+                 drives analyzers, a language server and the embedder, so they do \
+                 not get faster in parallel. Wait for one to finish.",
+                live.len()
+            )));
+        }
+
+        // Job id from the clock and the path, so two concurrent jobs on one tree
+        // cannot collide and the id says nothing an operator has to decode.
+        let started = chrono::Utc::now();
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, started.to_rfc3339().as_bytes());
+        sha2::Digest::update(&mut hasher, resolved.as_os_str().as_encoded_bytes());
+        let digest = sha2::Digest::finalize(hasher);
+        let job_id: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+
+        // The job row lands before the child starts, so a crash between the two
+        // leaves a row saying `running` with no output rather than a job nobody
+        // knows about.
+        crud::create_collection(pool, INGEST_JOBS, Some(2))
+            .await
+            .ok();
+        let log_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.json"));
+        // Kept rather than discarded. The child writes its envelope to stdout and
+        // everything diagnostic to stderr, so sending stderr to /dev/null left a
+        // failed job reporting only "exit status 1" with the reason gone: an
+        // analyzer preflight refusal, a missing database, a panic. The tail of
+        // this file goes into the job row when the child fails.
+        let err_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.log"));
+        let row = json!({
+            "_key": &job_id,
+            "status": "running",
+            "database": &database,
+            "path": resolved.display().to_string(),
+            "force": force,
+            "started_at": started.to_rfc3339(),
+            "log_path": log_path.display().to_string(),
+            "stderr_path": err_path.display().to_string(),
+        });
+        crud::insert_document(pool, INGEST_JOBS, &row)
+            .await
+            .map_err(|e| HandlerError::ServiceError(format!("failed to record job: {e}")))?;
+
+        let log = std::fs::File::create(&log_path).map_err(|e| {
+            HandlerError::ServiceError(format!("cannot open job log {}: {e}", log_path.display()))
+        })?;
+
+        let errlog = std::fs::File::create(&err_path).map_err(|e| {
+            HandlerError::ServiceError(format!(
+                "cannot open job stderr log {}: {e}",
+                err_path.display()
+            ))
+        })?;
+
+        let mut cmd = tokio::process::Command::new(exe);
+        cmd.arg("--db")
+            .arg(&database)
+            .arg("ingest")
+            .arg(&resolved)
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(errlog))
+            .stdin(Stdio::null());
+        if force {
+            cmd.arg("--force");
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| HandlerError::ServiceError(format!("failed to start ingest: {e}")))?;
+        let pid = child.id();
+
+        // Watch the child and write the outcome back. If the daemon dies first
+        // the row stays `running`, which `ingest_status` reports as orphaned
+        // rather than as progress.
+        if let Some(pid) = pid {
+            let _ = crud::update_document(pool, INGEST_JOBS, &job_id, &json!({ "pid": pid })).await;
+        }
+
+        let pool_for_task = pool.clone();
+        let job_for_task = job_id.clone();
+        let log_for_task = log_path.clone();
+        let err_for_task = err_path.clone();
+        tokio::spawn(async move {
+            let mut child = child;
+            let outcome = child.wait().await;
+            let envelope = std::fs::read_to_string(&log_for_task)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+            // The tail of stderr, so a failure says why rather than only that it
+            // happened. Bounded because an ingest can emit a great deal.
+            let stderr_tail = |limit: usize| -> Option<String> {
+                let text = std::fs::read_to_string(&err_for_task).ok()?;
+                let tail: Vec<&str> = text.lines().rev().take(limit).collect();
+                if tail.is_empty() {
+                    None
+                } else {
+                    Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
+                }
+            };
+            let (status, detail) = match outcome {
+                Ok(code) if code.success() => ("completed", None),
+                Ok(code) => (
+                    "failed",
+                    Some(match stderr_tail(40) {
+                        Some(tail) => format!("exit status {code}\n{tail}"),
+                        None => format!("exit status {code}"),
+                    }),
+                ),
+                Err(e) => ("failed", Some(format!("could not wait on child: {e}"))),
+            };
+            let update = json!({
+                "status": status,
+                "finished_at": chrono::Utc::now().to_rfc3339(),
+                "detail": detail,
+                "result": envelope,
+            });
+            if let Err(e) =
+                crud::update_document(&pool_for_task, INGEST_JOBS, &job_for_task, &update).await
+            {
+                tracing::error!(job = %job_for_task, error = %e, "failed to record ingest outcome");
+            }
+        });
+
+        Ok(json!({
+            "job_id": job_id,
+            "status": "running",
+            "database": database,
+            "path": resolved.display().to_string(),
+            "pid": pid,
+            "poll": "ingest.status",
+        }))
+    }
+
+    /// Read one ingest job's row.
+    pub async fn ingest_status(pool: &ArangoPool, job_id: &str) -> Result<Value, HandlerError> {
+        let mut doc = crud::get_document(pool, INGEST_JOBS, job_id)
+            .await
+            .map_err(|e| {
+                if e.is_not_found() {
+                    HandlerError::DocumentNotFound {
+                        collection: INGEST_JOBS.to_string(),
+                        key: job_id.to_string(),
+                    }
+                } else {
+                    HandlerError::ServiceError(e.to_string())
+                }
+            })?;
+
+        // A row still saying `running` after the daemon restarted describes a
+        // process that no longer exists. Saying so beats reporting progress that
+        // will never arrive.
+        if doc.get("status").and_then(|v| v.as_str()) == Some("running")
+            && let Some(obj) = doc.as_object_mut()
+        {
+            obj.insert(
+                "note".into(),
+                json!(
+                    "still running, or orphaned by a daemon restart. \
+                     A job whose row never leaves `running` was interrupted."
+                ),
+            );
+        }
+        Ok(doc)
+    }
 
     // ── Database read handlers ──────────────────────────────────────
 
@@ -4632,9 +5011,14 @@ mod handlers {
         // variable before dispatching, which is the only surface it belongs to.
         let (profile_name, profile) = resolve_query_profile(collection, None)?;
 
-        // 2. Embed the query text. `retrieval.query` is deliberate: the
-        //    embedder is asymmetric, and embedding a query as a passage
-        //    measurably degrades retrieval.
+        // 2. Embed the query text with the adapter this profile's corpus was
+        //    embedded with. The adapters do not share a vector space, so a
+        //    mismatch is not a small loss: searching a `code` corpus with
+        //    `retrieval.query` cut top-versus-median separation from 0.2132 to
+        //    0.1405 on this repository's own graph and put an unrelated
+        //    assertion at rank one. For documents the task stays
+        //    `retrieval.query`, because that adapter is asymmetric and
+        //    embedding a query as a passage measurably degrades retrieval.
         let client = EmbeddingClient::connect_at(&config.embedding.service.socket)
             .await
             .map_err(|e| {
@@ -4643,7 +5027,7 @@ mod handlers {
                 ))
             })?;
         let embed_result = client
-            .embed(&[text.to_string()], "retrieval.query", None)
+            .embed(&[text.to_string()], profile.query_task, None)
             .await
             .map_err(|e| HandlerError::ServiceError(format!("failed to embed query text: {e}")))?;
         let query_vec = embed_result.embeddings.first().ok_or_else(|| {
@@ -6223,6 +6607,34 @@ mod handlers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The documented wire names must deserialize, since docs/daemon-protocol.md
+    /// and `ingest.start`'s own `poll` field both tell clients to use them. Every
+    /// other variant in this enum carries an explicit `serde(rename)`; these three
+    /// shipped without one, so their wire names were the Rust identifiers and a
+    /// client following the document got an unknown-command error.
+    #[test]
+    fn provisioning_commands_use_their_documented_wire_names() {
+        for (payload, expect) in [
+            (
+                r#"{"command":"db.create_database","params":{"name":"bident_v9"}}"#,
+                "db.create_database",
+            ),
+            (
+                r#"{"command":"ingest.start","params":{"path":"/opt/x"}}"#,
+                "ingest.start",
+            ),
+            (
+                r#"{"command":"ingest.status","params":{"job_id":"abc"}}"#,
+                "ingest.status",
+            ),
+        ] {
+            let cmd: DaemonCommand = serde_json::from_str(payload)
+                .unwrap_or_else(|e| panic!("{expect} must deserialize: {e}"));
+            let back = serde_json::to_value(&cmd).expect("serializes");
+            assert_eq!(back["command"], expect);
+        }
+    }
 
     #[test]
     fn test_command_roundtrip_orient_with_collection() {

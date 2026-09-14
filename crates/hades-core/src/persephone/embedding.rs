@@ -180,6 +180,19 @@ pub struct ProviderInfo {
     /// don't via `/v1/models`); HADES expects 2048 for Jina V4 regardless.
     #[serde(default)]
     pub dimension: Option<u32>,
+    /// Longest input this backend will accept, in tokens.
+    ///
+    /// A property of the load profile the backend is running, not of the model:
+    /// the same weights serve 11,900 on a 16 GiB card and 32,768 on a 48 GiB
+    /// one. A caller that packs windows has to read this rather than carry a
+    /// constant, because a constant is wrong on one of the two cards and was
+    /// wrong on both: the hardcoded 12,000-character budget it replaced packed
+    /// at roughly 2,870 tokens and split 134 of 285 files in one real corpus.
+    #[serde(default)]
+    pub max_seq_length: Option<u32>,
+    /// The backend's load profile name, when it reports one.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// Client for the embedding service.
@@ -357,6 +370,207 @@ impl EmbeddingClient {
         })
     }
 
+    /// Embed each input in ONE forward pass, pooling per supplied boundary.
+    ///
+    /// This is late chunking. Contrast [`Self::embed`], which sends chunks as
+    /// separate inputs so each is encoded blind to the rest of its document.
+    /// Here the whole text is encoded once and chunk vectors are pooled from
+    /// that single pass, so every vector carries the surrounding context.
+    ///
+    /// `boundaries` are character ranges, one list per input. Pass AST
+    /// definition spans or document sections to keep chunks aligned to
+    /// meaningful units. The server maps them to token spans and returns the
+    /// character ranges back, so symbol intersection still works.
+    ///
+    /// Pooling happens server-side deliberately: token-level embeddings are
+    /// `seq_len x 2048`, roughly 120 MB per long document in float32, which
+    /// should not cross the wire.
+    ///
+    /// Each input must fit the model's context window. Pre-chunking at
+    /// section boundaries is the escape hatch for documents that exceed it.
+    pub async fn embed_late_chunked(
+        &self,
+        texts: &[String],
+        task: &str,
+        boundaries: &[Vec<(usize, usize)>],
+    ) -> Result<LateChunkEmbedResult, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(LateChunkEmbedResult {
+                per_input: Vec::new(),
+                model: self.config.model.clone(),
+                dimension: 0,
+                duration_ms: 0,
+            });
+        }
+        if boundaries.len() != texts.len() {
+            return Err(EmbeddingError::InvalidResponse(format!(
+                "boundaries has {} entries for {} inputs",
+                boundaries.len(),
+                texts.len()
+            )));
+        }
+
+        let mut per_input: Vec<Vec<LateChunkVector>> = vec![Vec::new(); texts.len()];
+        let mut dimension = 0u32;
+        // Taken from the response, not from the local config, because
+        // `model_hash` keys incremental skip and selective re-embedding. The
+        // configured name is a request hint and the served model is whatever
+        // the backend loaded, so stamping the former puts two hashes on one
+        // model as soon as any other path stamps the latter.
+        let mut model: Option<String> = None;
+        let started = std::time::Instant::now();
+
+        // One request per input. Each yields its own number of chunks, and
+        // batching them would only obscure which vectors belong to which text.
+        for (i, text) in texts.iter().enumerate() {
+            let bounds: Vec<[usize; 2]> = boundaries[i].iter().map(|(s, e)| [*s, *e]).collect();
+            if bounds.is_empty() {
+                continue;
+            }
+            let mut body = serde_json::json!({
+                "model": self.config.model,
+                "input": [text],
+                "encoding_format": "float",
+                "late_chunk": { "boundaries": bounds },
+            });
+            if !task.is_empty() {
+                body["task"] = serde_json::json!(task);
+            }
+
+            let resp = self
+                .request(Method::POST, "/embeddings", Some(&body))
+                .await?;
+            if model.is_none() {
+                model = resp["model"].as_str().map(String::from);
+            }
+            let data = resp["data"]
+                .as_array()
+                .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'data' array".into()))?;
+
+            for item in data {
+                // Every field below is required rather than defaulted. A
+                // default here is indistinguishable from a correct answer: an
+                // engine that ignores the non-standard `late_chunk` field
+                // returns plain embeddings with no chunk metadata, and
+                // `unwrap_or(0)` would collapse every vector of the input onto
+                // chunk 0 and write one embedding where the caller expected N.
+                let embedding: Vec<f32> = item["embedding"]
+                    .as_array()
+                    .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'embedding'".into()))?
+                    .iter()
+                    .map(|v| {
+                        v.as_f64().map(|f| f as f32).ok_or_else(|| {
+                            EmbeddingError::InvalidResponse(
+                                "embedding contains a non-numeric element".into(),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<f32>, EmbeddingError>>()?;
+                if dimension == 0 {
+                    dimension = embedding.len() as u32;
+                } else if embedding.len() as u32 != dimension {
+                    // `embed_single_request` checks this and this path did not.
+                    // A short vector otherwise passes the count, contiguity and
+                    // drift checks and is stored under a dimension it does not
+                    // have, which surfaces later as a vector search fault on a
+                    // row the corpus reports as healthy.
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i}: inconsistent dimensions, {} then {}",
+                        dimension,
+                        embedding.len()
+                    )));
+                }
+                let field = |name: &str| -> Result<usize, EmbeddingError> {
+                    item[name].as_u64().map(|v| v as usize).ok_or_else(|| {
+                        EmbeddingError::InvalidResponse(format!(
+                            "late-chunked response item has no '{name}', so the server did \
+                             not honour the 'late_chunk' request field and returned plain \
+                             embeddings instead of pooled chunk vectors"
+                        ))
+                    })
+                };
+                per_input[i].push(LateChunkVector {
+                    embedding,
+                    chunk_index: field("chunk_index")?,
+                    char_start: field("char_start")?,
+                    char_end: field("char_end")?,
+                });
+            }
+            // The server may return chunks out of order under concurrency;
+            // sort so callers can rely on positional alignment.
+            per_input[i].sort_by_key(|c| c.chunk_index);
+
+            // One vector per boundary, or the caller is about to write fewer
+            // embeddings than chunks and report success. This is the shape of
+            // three separate defects already found in this pipeline, so it is
+            // checked rather than assumed.
+            if per_input[i].len() != boundaries[i].len() {
+                return Err(EmbeddingError::InvalidResponse(format!(
+                    "input {i}: sent {} boundaries and received {} vectors",
+                    boundaries[i].len(),
+                    per_input[i].len()
+                )));
+            }
+            for (k, v) in per_input[i].iter().enumerate() {
+                if v.chunk_index != k {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i}: chunk indices are not contiguous from zero, \
+                         expected {k} and found {}",
+                        v.chunk_index
+                    )));
+                }
+            }
+
+            // The returned range is token-aligned, so it lands on the token
+            // boundary at or before the requested character. A large gap means
+            // this vector was labelled with a different chunk's range, which
+            // is what happened when the server reconciled its span list
+            // against its vector list by length after skipping one in the
+            // middle.
+            //
+            // This does NOT catch a caller sending byte offsets for character
+            // offsets. The server has no idea the caller meant bytes: it pools
+            // the range it was given and echoes back where it pooled, so
+            // requested and returned agree exactly while both point at the
+            // wrong text. Verified against the live embedder. Sending
+            // characters is the fix for that, and `byte_offsets_to_chars` on
+            // the ingest side is what does it.
+            const MAX_ALIGNMENT_DRIFT: usize = 64;
+            for (k, v) in per_input[i].iter().enumerate() {
+                let requested = boundaries[i][k].0;
+                // Alignment only ever moves the start EARLIER: the server takes
+                // the first token overlapping the range, and that token begins
+                // at or before the requested character. A later start cannot
+                // come from alignment, so it is not given any tolerance.
+                if v.char_start > requested {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i} chunk {k}: requested character {requested} and the \
+                         server pooled from {}, which is later. Token alignment cannot \
+                         move a start forward, so this vector carries another chunk's \
+                         range",
+                        v.char_start
+                    )));
+                }
+                if requested - v.char_start > MAX_ALIGNMENT_DRIFT {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {i} chunk {k}: requested character {requested} and the \
+                         server pooled from {}, a drift of {} that token alignment \
+                         cannot explain",
+                        v.char_start,
+                        requested - v.char_start
+                    )));
+                }
+            }
+        }
+
+        Ok(LateChunkEmbedResult {
+            per_input,
+            model: model.unwrap_or_else(|| self.config.model.clone()),
+            dimension,
+            duration_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
     /// Send a single `POST /embeddings` request for the given texts.
     ///
     /// Sends `POST {base}/embeddings` in the OpenAI-compatible shape:
@@ -493,18 +707,36 @@ impl EmbeddingClient {
         // Some engines (vLLM, llama.cpp-server) attach extra fields we can
         // opportunistically read. Standard says no, but if they're there we
         // surface them.
-        let device = data
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
-            })
-            .and_then(|item| item["device"].as_str().map(String::from));
-        let dimension = data
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
-            })
-            .and_then(|item| item["dimension"].as_u64().map(|n| n as u32));
+        // Find the entry describing what is loaded. An exact id match first, and
+        // failing that the sole entry of a single-model listing.
+        //
+        // The fallback is load-bearing rather than lenient. This client is
+        // configured with the alias `jinaai/jina-embeddings-v4` while the backend
+        // serves a local filesystem path, so the id never matched and every
+        // vendor field came back `None`: `max_seq_length` among them, which meant
+        // the window budget silently fell back to a conservative constant on a
+        // card that could hold three times as much. Finding #14 was the same
+        // mismatch reached from the other side, where the configured name got
+        // stamped onto stored data instead of the served one. A backend serving
+        // one model is describing that model whatever it calls it.
+        let entry = data.and_then(|arr| {
+            arr.iter()
+                .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
+                .or_else(|| if arr.len() == 1 { arr.first() } else { None })
+        });
+        let device = entry.and_then(|item| item["device"].as_str().map(String::from));
+        let dimension = entry.and_then(|item| item["dimension"].as_u64().map(|n| n as u32));
+        let max_seq_length =
+            entry.and_then(|item| item["max_seq_length"].as_u64().map(|n| n as u32));
+        let profile = entry
+            .and_then(|item| item["profile"].as_str())
+            .and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                }
+            });
 
         debug!(
             model = %configured_model,
@@ -517,6 +749,8 @@ impl EmbeddingClient {
             device,
             model_loaded,
             dimension,
+            max_seq_length,
+            profile,
         })
     }
 
@@ -646,6 +880,31 @@ fn parse_endpoint(endpoint_str: &str) -> Result<EmbeddingEndpoint, EmbeddingErro
             "endpoint must start with http://, https://, unix://, or be an absolute path; got '{endpoint_str}'"
         )))
     }
+}
+
+/// One late-chunked vector and where it came from in the source text.
+#[derive(Debug, Clone)]
+pub struct LateChunkVector {
+    /// The pooled, L2-normalized embedding.
+    pub embedding: Vec<f32>,
+    /// Position of this chunk within its input.
+    pub chunk_index: usize,
+    /// Character range over the original input.
+    ///
+    /// Character ranges rather than token indices, because callers intersect
+    /// chunks with symbol spans and token positions cannot express that.
+    pub char_start: usize,
+    pub char_end: usize,
+}
+
+/// Result of a late-chunked embed: per input, the chunks it produced.
+#[derive(Debug, Clone)]
+pub struct LateChunkEmbedResult {
+    /// One entry per input text, in input order.
+    pub per_input: Vec<Vec<LateChunkVector>>,
+    pub model: String,
+    pub dimension: u32,
+    pub duration_ms: u64,
 }
 
 /// Result of an embedding operation.

@@ -10,7 +10,7 @@ The HADES daemon exposes the CLI's query, CRUD, and management surface over a
 persistent Unix domain socket. Local agents (weaver-tools, Persephone sessions)
 connect once and issue commands without fork-per-call overhead.
 
-**44 commands** across 8 logical groups, gated by a three-tier access model.
+**47 commands** across 9 logical groups, gated by a four-tier access model.
 
 ## Wire Format
 
@@ -116,9 +116,34 @@ request content can elevate a connection above what its transport grants.
 | **Agent**  | Safe, bounded reads and task management. No DDL, no raw AQL. |
 | **Internal** | System diagnostics and schema introspection.            |
 | **Admin**  | Unbounded writes, DDL, raw AQL, schema mutation.         |
+| **Provisioning** | `db.create_database`, `ingest.start`. Creating a graph and filling it. |
 
 An `"agent"` session attempting an Internal or Admin command receives
 error code `ACCESS_DENIED`.
+
+**Provisioning is its own tier so a transport can grant exactly it.** An agent
+that builds its own graph needs to create a database and ingest a tree; it does
+not need `db.aql`, `db.purge` or `db.graph.drop`, and folding these into Admin
+would have handed all of them over together. A local Unix peer has it by virtue
+of being admin. A network transport has it only when the daemon was started with
+both `--mcp-db-prefix` and `--mcp-ingest-root`, and then only within those
+bounds:
+
+- a database name must begin with one of the permitted prefixes
+- an ingest path must exist and canonicalize to somewhere inside one of the
+  permitted roots, so `..` and symlinks cannot walk out
+
+Empty bounds mean nothing is permitted rather than everything, so a transport
+that grants the tier and forgets the bounds has granted no reach. Both refusals
+name what was permitted, because a client that cannot tell "not allowed" from
+"broken" will retry.
+
+`ingest.start` returns a job id rather than blocking: real ingests run for
+minutes and the network transport caps a request at 60 seconds, so a blocking
+call would report failure for work that is still succeeding. `ingest.status` is
+Agent tier, since reading a job row is a bounded read. A row that never leaves
+`running` was orphaned by a daemon restart, and the status says so rather than
+implying progress.
 
 ## Error Codes
 

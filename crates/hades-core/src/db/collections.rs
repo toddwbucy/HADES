@@ -18,6 +18,28 @@ pub struct CollectionProfile {
     /// Field name in chunks/embeddings that references the parent metadata
     /// document key (e.g. `"parent_key"` for documents, `"file_key"` for codebase).
     pub foreign_key: &'static str,
+    /// Jina task adapter a *query* against this profile must be embedded with.
+    ///
+    /// It has to match the adapter the corpus was embedded with, because the
+    /// adapters do not share a vector space. Measured on this repository's own
+    /// code graph, 1,453 vectors, one query, separation between the top hit and
+    /// the median: `code` on both sides 0.2132, `retrieval.query` against a
+    /// `code` corpus 0.1405, `retrieval.passage` 0.1336. The cross-adapter
+    /// search also returned an unrelated hex-digit assertion as its top hit
+    /// where the matched-adapter search returned the chunking strategy.
+    ///
+    /// This is roadmap question R28 for the code half: no query/passage split,
+    /// `code` on both sides. Documents keep the asymmetric pairing, where
+    /// embedding a query as a passage measurably degrades retrieval.
+    pub query_task: &'static str,
+    /// Jina task adapter a *corpus* stored in this profile is embedded with.
+    ///
+    /// The pair of [`Self::query_task`], and here for the same reason: the two
+    /// sides must match or the comparison crosses vector spaces. Guessing the
+    /// ingest side from file extensions reintroduced exactly that, since
+    /// `hades ingest src/main.py` embedded with `code` into the `default`
+    /// profile, whose queries use `retrieval.query`.
+    pub passage_task: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -32,6 +54,8 @@ static DEFAULT: CollectionProfile = CollectionProfile {
     chunks: "chunks",
     embeddings: "embeddings",
     foreign_key: "parent_key",
+    query_task: "retrieval.query",
+    passage_task: "retrieval.passage",
 };
 
 static ALL_PROFILES: [(&str, &CollectionProfile); 2] =
@@ -47,6 +71,10 @@ static CODEBASE_PROFILE: CollectionProfile = CollectionProfile {
     chunks: "codebase_chunks",
     embeddings: "codebase_embeddings",
     foreign_key: "file_key",
+    // `codebase ingest` embeds chunks with the `code` adapter, so a query must
+    // use it too. See the field's documentation for the measurement.
+    query_task: "code",
+    passage_task: "code",
 };
 
 /// Extended collection set for codebase ingestion.

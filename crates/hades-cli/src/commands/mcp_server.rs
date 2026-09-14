@@ -40,9 +40,9 @@ use tokio_util::sync::CancellationToken;
 use hades_core::config::HadesConfig;
 use hades_core::db::ArangoPool;
 use hades_core::dispatch::{
-    DaemonCommand, DbCountParams, DbGetParams, DbGraphNeighborsParams, DbGraphTraverseParams,
-    DbListParams, OrientParams, SmellReportParams, TaskCreateParams, TaskListParams,
-    TaskShowParams, TaskUpdateParams,
+    DaemonCommand, DbCountParams, DbCreateDatabaseParams, DbGetParams, DbGraphNeighborsParams,
+    DbGraphTraverseParams, DbListParams, IngestStartParams, IngestStatusParams, OrientParams,
+    SmellReportParams, TaskCreateParams, TaskListParams, TaskShowParams, TaskUpdateParams,
 };
 use hades_core::service::{self, ConnectionPolicy};
 
@@ -186,11 +186,22 @@ struct PoolCache {
     base_config: HadesConfig,
     default_db: String,
     allowed: std::collections::HashSet<String>,
+    /// Name prefixes a provisioned endpoint may also serve.
+    ///
+    /// A database this endpoint just created is not on `--mcp-dbs`, so without
+    /// this the client could create `bident_v5` and then be told it is not
+    /// served. Empty for a non-provisioned endpoint, which leaves the allowlist
+    /// exactly as it was.
+    provision_prefixes: Vec<String>,
     pools: RwLock<HashMap<String, DbEntry>>,
 }
 
 impl PoolCache {
-    fn new(base_config: HadesConfig, extra_dbs: &[String]) -> Result<Self> {
+    fn new(
+        base_config: HadesConfig,
+        extra_dbs: &[String],
+        provision_prefixes: Vec<String>,
+    ) -> Result<Self> {
         let default_db = base_config
             .database
             .name
@@ -209,6 +220,7 @@ impl PoolCache {
             base_config,
             default_db,
             allowed,
+            provision_prefixes,
             pools: RwLock::new(HashMap::new()),
         })
     }
@@ -220,14 +232,25 @@ impl PoolCache {
                 "invalid database name '{name}': expected [A-Za-z0-9_-], max 64 chars"
             ));
         }
-        if !self.allowed.contains(name) {
+        let provisionable = self
+            .provision_prefixes
+            .iter()
+            .any(|prefix| name.starts_with(prefix));
+        if !self.allowed.contains(name) && !provisionable {
             let mut served: Vec<&str> = self.allowed.iter().map(String::as_str).collect();
             served.sort_unstable();
-            return Err(format!(
+            let mut message = format!(
                 "database '{name}' is not served by this endpoint (served: {}); \
                  add it to --mcp-dbs on the daemon to expose it",
                 served.join(", ")
-            ));
+            );
+            if !self.provision_prefixes.is_empty() {
+                message.push_str(&format!(
+                    ", or name it with one of the provisionable prefixes: {}",
+                    self.provision_prefixes.join(", ")
+                ));
+            }
+            return Err(message);
         }
         if let Some(entry) = self.pools.read().await.get(name) {
             return Ok(entry.clone());
@@ -269,6 +292,34 @@ macro_rules! db_field_doc {
     () => {
         "Database to run against (default: the endpoint's configured database)"
     };
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct CreateDatabaseArgs {
+    #[schemars(
+        description = "Name of the database to create. Must begin with a prefix this endpoint is allowed to provision."
+    )]
+    name: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct IngestStartArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    #[schemars(
+        description = "Directory (or single file) to ingest, as a path on the HADES host. Must lie inside a directory this endpoint is allowed to ingest from. A directory is routed by file extension: code to the analyzers, documents to extraction, both into the same graph."
+    )]
+    path: String,
+    #[schemars(description = "Re-ingest files whose content digest is unchanged. Default false.")]
+    force: Option<bool>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct IngestStatusArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    #[schemars(description = "Job id returned by ingest_start")]
+    job_id: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -454,13 +505,17 @@ struct TaskUpdateArgs {
 pub struct HadesMcpServer {
     pools: Arc<PoolCache>,
     tool_router: ToolRouter<Self>,
+    /// The authority this endpoint grants. Constructed from the daemon's flags
+    /// at startup, never from a request, so a client cannot widen it.
+    policy: ConnectionPolicy,
 }
 
 impl HadesMcpServer {
-    fn new(pools: Arc<PoolCache>) -> Self {
+    fn new(pools: Arc<PoolCache>, policy: ConnectionPolicy) -> Self {
         Self {
             pools,
             tool_router: Self::tool_router(),
+            policy,
         }
     }
 
@@ -480,7 +535,7 @@ impl HadesMcpServer {
         let resp = service::handle_request(
             &pool,
             &config,
-            ConnectionPolicy::agent_only(),
+            self.policy.clone(),
             &payload,
             REQUEST_TIMEOUT,
         )
@@ -498,6 +553,54 @@ impl HadesMcpServer {
 
 #[tool_router]
 impl HadesMcpServer {
+    #[tool(
+        description = "Create a new database. Only available when this endpoint was started with provisioning enabled, and only for names matching a permitted prefix. Seed it with db_schema_init before ingesting."
+    )]
+    async fn create_database(
+        &self,
+        Parameters(a): Parameters<CreateDatabaseArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolved against the endpoint's own database on purpose: the handler
+        // talks to `_system` through a second client, and the database being
+        // created cannot be in the pool cache yet.
+        self.run(
+            None,
+            DaemonCommand::DbCreateDatabase(DbCreateDatabaseParams { name: a.name }),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Start ingesting a tree into a database and return a job id immediately. One command handles both halves: file extension decides whether each file goes to the code analyzers (symbols, edges, AST chunks) or to document extraction, and both land in the same graph. Ingests run for minutes, so poll ingest_status with the returned job_id rather than waiting on this call."
+    )]
+    async fn ingest_start(
+        &self,
+        Parameters(a): Parameters<IngestStartArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::IngestStart(IngestStartParams {
+                path: a.path,
+                force: a.force.unwrap_or(false),
+            }),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Progress and outcome of an ingest job started by ingest_start. While `status` is `running` the job is still working, or was orphaned by a daemon restart. When it is `completed` or `failed`, `result` holds the ingest's own envelope: routed counts, per-phase summaries, and any files nothing claimed."
+    )]
+    async fn ingest_status(
+        &self,
+        Parameters(a): Parameters<IngestStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::IngestStatus(IngestStatusParams { job_id: a.job_id }),
+        )
+        .await
+    }
+
     #[tool(
         description = "Orient yourself in a HADES knowledge graph: collections, counts, and schema hints. Call this first in a new session."
     )]
@@ -710,12 +813,32 @@ impl ServerHandler for HadesMcpServer {
                 rmcp::model::Implementation::new("hades", env!("CARGO_PKG_VERSION"))
                     .with_title("HADES knowledge graph"),
             )
+            // What a client reads before it looks at a single tool, so it
+            // carries the three things that otherwise cost a round trip each:
+            // which profile to search, that traversal needs an explicit graph
+            // name, and that ingest is a job rather than a call.
             .with_instructions(
-                "HADES knowledge-graph tools. Results are the HADES JSON envelope: \
-             {success, data, error, error_code}. Start with `orient` to discover \
-             collections. Pass `db` to target a specific database (e.g. the \
-             knowledge graph vs the task board); writes are governed by \
-             database ACLs and the agent access tier.",
+                "HADES knowledge-graph tools. Every result is the HADES JSON \
+             envelope: {success, data, error, error_code}. Start with `orient` to \
+             discover collections, and pass `db` to target a database.\n\n\
+             Searching: `db_query` takes a collection *profile*, not a collection. \
+             Use `codebase` for code and omit it for documents, since each is \
+             embedded with a different model adapter and the two do not share a \
+             vector space.\n\n\
+             Traversal: `graph_traverse` and `graph_neighbors` need an explicit \
+             `graph` name. A code graph built by ingest is `codebase_graph`. \
+             Omitting it targets a graph named `default` that will not exist.\n\n\
+             Building a graph: `ingest_start` takes one directory and routes every \
+             file by extension, code to the analyzers and documents to extraction, \
+             into the same graph. It returns a job id immediately because ingests \
+             run for minutes, so poll `ingest_status` rather than waiting. Files \
+             nothing claims are listed under `unrouted` rather than skipped.\n\n\
+             Limits: this endpoint runs at the agent access tier, so raw AQL, \
+             purge, insert and graph drop are unavailable. `create_database` and \
+             `ingest_start` need provisioning, which is off unless the operator \
+             enabled it, and then bounded to specific name prefixes and specific \
+             directories. A refusal names what would have been permitted, so read \
+             the error rather than retrying.",
             )
     }
 }
@@ -735,11 +858,16 @@ fn build_router(
     tokens: Arc<TokenSet>,
     allowed_hosts: Vec<String>,
     extra_dbs: &[String],
+    policy: ConnectionPolicy,
 ) -> Result<Router> {
-    let pools = Arc::new(PoolCache::new(config, extra_dbs)?);
+    let pools = Arc::new(PoolCache::new(
+        config,
+        extra_dbs,
+        policy.provisioning.database_prefixes.clone(),
+    )?);
     let mcp_service: StreamableHttpService<HadesMcpServer, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(HadesMcpServer::new(pools.clone())),
+            move || Ok(HadesMcpServer::new(pools.clone(), policy.clone())),
             Default::default(),
             StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts),
         );
@@ -766,6 +894,7 @@ pub fn build_app(
     config: HadesConfig,
     tokens: TokenSet,
     extra_dbs: &[String],
+    policy: ConnectionPolicy,
 ) -> Result<Router> {
     // Host allowlist: localhost forms for on-box clients, plus the bind
     // address itself for LAN clients (a port-less entry matches any port).
@@ -775,7 +904,7 @@ pub fn build_app(
         "::1".to_string(),
         addr.ip().to_string(),
     ];
-    build_router(config, Arc::new(tokens), allowed_hosts, extra_dbs)
+    build_router(config, Arc::new(tokens), allowed_hosts, extra_dbs, policy)
 }
 
 /// Serve a pre-built application until the cancellation token fires.
@@ -817,6 +946,7 @@ mod tests {
             Arc::new(TokenSet::from_tokens(vec!["tok".into()])),
             vec!["127.0.0.1".to_string(), "localhost".to_string()],
             &[],
+            ConnectionPolicy::agent_only(),
         )
         .unwrap()
     }
@@ -894,7 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn db_allowlist_defaults_to_configured_database_only() {
-        let cache = PoolCache::new(test_config(), &[]).unwrap();
+        let cache = PoolCache::new(test_config(), &[], Vec::new()).unwrap();
         // Default database resolves.
         assert!(cache.entry_for(None).await.is_ok());
         assert!(cache.entry_for(Some("bident_burn")).await.is_ok());
@@ -906,7 +1036,8 @@ mod tests {
 
     #[tokio::test]
     async fn db_allowlist_widens_only_via_explicit_list() {
-        let cache = PoolCache::new(test_config(), &["weavertools_v2".to_string()]).unwrap();
+        let cache =
+            PoolCache::new(test_config(), &["weavertools_v2".to_string()], Vec::new()).unwrap();
         assert!(cache.entry_for(Some("weavertools_v2")).await.is_ok());
         assert!(cache.entry_for(Some("bident_burn")).await.is_ok());
         assert!(cache.entry_for(Some("NestedLearning")).await.is_err());
@@ -926,7 +1057,7 @@ mod tests {
     // --- tool surface ------------------------------------------------------
 
     #[test]
-    fn tool_surface_is_the_curated_twelve() {
+    fn tool_surface_is_the_curated_fifteen() {
         let router = HadesMcpServer::tool_router();
         let mut names: Vec<String> = router
             .list_all()
@@ -937,12 +1068,21 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                // The three provisioning tools are advertised on every endpoint
+                // and authorized on none by default: calling one without
+                // provisioning returns ACCESS_DENIED naming the permitted
+                // prefixes and roots. Advertised rather than hidden so a client
+                // learns why it cannot provision instead of concluding the
+                // capability does not exist.
+                "create_database",
                 "db_count",
                 "db_get",
                 "db_list",
                 "db_query",
                 "graph_neighbors",
                 "graph_traverse",
+                "ingest_start",
+                "ingest_status",
                 "orient",
                 "smell_report",
                 "task_create",
@@ -1015,6 +1155,7 @@ mod tests {
             Arc::new(TokenSet::from_tokens(vec!["tok".into()])),
             vec!["192.168.0.10".to_string()],
             &[],
+            ConnectionPolicy::agent_only(),
         )
         .unwrap();
         let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;

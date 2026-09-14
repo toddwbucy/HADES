@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Union
@@ -51,6 +52,15 @@ class EmbedRequest(BaseModel):
     model: str
     input: Union[str, list[str]]
     encoding_format: str = "float"
+    images: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "PE-API multimodal inputs. Declared so the request can be REFUSED "
+            "rather than silently dropped: this backend is text-only, and "
+            "returning a text embedding for a request that supplied an image "
+            "is the failure the contract exists to prevent."
+        ),
+    )
     # Vendor extensions
     task: Optional[str] = Field(
         default="retrieval.passage",
@@ -60,12 +70,53 @@ class EmbedRequest(BaseModel):
         default=None,
         description="Server-side batch size override",
     )
+    late_chunk: Optional["LateChunkSpec"] = Field(
+        default=None,
+        description=(
+            "Enable late chunking. Each input is encoded in ONE pass and then "
+            "pooled per chunk, so every chunk vector is conditioned on the "
+            "surrounding document. Returns N vectors per input rather than 1."
+        ),
+    )
+
+
+class LateChunkSpec(BaseModel):
+    """Late-chunking parameters.
+
+    Pooling happens server-side on purpose. Token-level embeddings are
+    seq_len x 2048, so a 15,000-token document is roughly 120 MB in float32
+    before pooling, which cannot sensibly cross the wire as JSON. Sending the
+    text and receiving pooled chunk vectors keeps the response small and puts
+    the arithmetic next to the model that produced the tokens.
+    """
+
+    chunk_size_tokens: int = Field(default=500, gt=0)
+    overlap_tokens: int = Field(default=200, ge=0)
+    boundaries: Optional[list[tuple[int, int]]] = Field(
+        default=None,
+        description=(
+            "Character ranges over the input to pool at, e.g. AST definition "
+            "spans or document sections. Keeps chunks aligned to meaningful "
+            "units instead of arbitrary token windows. Omit for uniform "
+            "windows of chunk_size_tokens."
+        ),
+    )
 
 
 class EmbedItem(BaseModel):
     object: str = "embedding"
     embedding: list[float]
     index: int
+    # Late chunking only. `index` stays the input's position so OpenAI-shaped
+    # clients keep working; these say which chunk of that input this is and
+    # which token range it covers.
+    chunk_index: Optional[int] = None
+    token_start: Optional[int] = None
+    token_end: Optional[int] = None
+    # Character range over the original input. Callers need this to intersect
+    # a chunk with symbol spans; token indices cannot express that.
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
 
 
 class Usage(BaseModel):
@@ -84,9 +135,16 @@ class ModelInfo(BaseModel):
     """Single entry in `/v1/models` response.
 
     The OpenAI-standard fields are `id`, `object`, `created`, `owned_by`.
-    `dimension`, `max_seq_length`, and `supported_tasks` are vendor
-    extensions HADES surfaces so clients can discover model capabilities
-    in one round-trip.
+    `dimension`, `max_seq_length`, `supported_tasks`, `device` and `profile`
+    are vendor extensions HADES surfaces so clients can discover model
+    capabilities in one round-trip.
+
+    `max_seq_length` is the load profile's measured ceiling, not the model's
+    architectural maximum. The same weights serve 11,900 on a 16 GiB card and
+    32,768 on a 48 GiB one, so a client that wants to know what fits has to ask
+    the running service rather than read the model card. `profile` and `device`
+    say which card answered, so a switch between cards is visible in a log
+    rather than inferred from the ceiling changing.
     """
 
     id: str
@@ -97,6 +155,14 @@ class ModelInfo(BaseModel):
     dimension: int = EMBEDDING_DIM
     max_seq_length: int = MAX_TOKENS
     supported_tasks: list[str] = Field(default_factory=lambda: list(SUPPORTED_TASKS))
+    device: str = ""
+    # The card as the driver numbers it, not as this process sees it.
+    # CUDA_VISIBLE_DEVICES renumbers from zero, so a profile pinned to the
+    # second A6000 reports device "cuda:0", and an operator reading that in a
+    # log concludes the job is on GPU 0. Both are reported so neither has to be
+    # inferred.
+    physical_device: str = ""
+    profile: str = ""
 
 
 class ModelsResponse(BaseModel):
@@ -210,14 +276,51 @@ def _state(app: FastAPI) -> AppState:
     return app.state.app_state  # type: ignore[no-any-return]
 
 
+def _physical_device(device: str) -> str:
+    """Map an in-process device string back to the driver's own numbering.
+
+    `CUDA_VISIBLE_DEVICES=1` makes the second card appear as `cuda:0` inside
+    the process, so the in-process name cannot say which card is loaded.
+    Returns an empty string when the mapping is not derivable, rather than
+    guessing.
+    """
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if not visible or not device.startswith("cuda:"):
+        return ""
+    try:
+        ordinal = int(device.split(":", 1)[1])
+    except ValueError:
+        return ""
+    entries = [e.strip() for e in visible.split(",") if e.strip()]
+    if ordinal >= len(entries):
+        return ""
+    return f"cuda:{entries[ordinal]}"
+
+
 @app.get("/v1/models", response_model=ModelsResponse)
 async def list_models() -> ModelsResponse:
     """OpenAI `/v1/models` — single entry for the configured Jina V4 model."""
     state = _state(app)
-    return ModelsResponse(data=[ModelInfo(id=state.config.model_name)])
+    return ModelsResponse(
+        data=[
+            ModelInfo(
+                id=state.config.model_name,
+                device=state.config.device,
+                physical_device=_physical_device(state.config.device),
+                profile=state.config.profile,
+            )
+        ]
+    )
 
 
-@app.post("/v1/embeddings", response_model=EmbedResponse)
+# `response_model_exclude_none` keeps the plain response byte-for-byte
+# OpenAI-shaped. Without it FastAPI serializes the five late-chunk fields as
+# explicit nulls on every request, including ones that never asked for late
+# chunking, which is the opposite of what the opt-in design promises and what
+# the spec says this endpoint returns.
+@app.post(
+    "/v1/embeddings", response_model=EmbedResponse, response_model_exclude_none=True
+)
 async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
     """OpenAI `/v1/embeddings` — embeds one or more inputs as 2048-dim vectors.
 
@@ -232,6 +335,36 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
 
     if not texts:
         raise HTTPException(status_code=400, detail="`input` must be non-empty")
+
+    # The spec makes these MUSTs, and this service is its reference
+    # implementation, so a backend author reading the document gets what it
+    # describes. All three previously returned 200.
+    if req.encoding_format != "float":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PE_UNSUPPORTED_ENCODING_FORMAT: encoding_format "
+                f"{req.encoding_format!r} is not supported, only 'float'"
+            ),
+        )
+
+    if req.images:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "PE_MULTIMODAL_UNSUPPORTED: this backend serves text only. "
+                "Refusing rather than returning text-only embeddings for a "
+                "request that supplied images."
+            ),
+        )
+
+    # `model` is deliberately NOT validated against the served model. The Rust
+    # client sends a configured alias ("jinaai/jina-embeddings-v4") while this
+    # backend reports the local path it loaded from, so a strict check would
+    # refuse every request HADES makes. Making it real needs the client to read
+    # the served name from GET /v1/models at connect, which is a change on the
+    # other side of the wire. The spec records this rather than claiming an
+    # enforcement that does not exist.
 
     task = req.task or "retrieval.passage"
     if task not in SUPPORTED_TASKS:
@@ -256,12 +389,62 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
         # Inference is sync (PyTorch); run in the default executor pool to
         # avoid blocking the event loop. Don't share a future across requests
         # — each call creates its own.
-        vectors = await loop.run_in_executor(
-            None,
-            lambda: state.embedder.embed_texts(
-                texts, task=task, batch_size=batch_override
-            ),
-        )
+        if req.late_chunk is not None:
+            # Late chunking: one forward pass per input, pooled per chunk, so
+            # each vector carries the surrounding document's context. Inputs
+            # are handled one at a time because each yields its own number of
+            # chunks and its own token spans.
+            lc = req.late_chunk
+
+            # `boundaries` describes one input. Applying the same character
+            # ranges to every element of a multi-input request would pool
+            # input 0's spans out of inputs 1 and 2, silently, whenever the
+            # later documents happen to be long enough to contain them.
+            if lc.boundaries is not None and len(texts) > 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "late_chunk.boundaries applies to a single input, but "
+                        f"{len(texts)} inputs were sent. Send one input per "
+                        "request when supplying boundaries."
+                    ),
+                )
+
+            def _late() -> tuple[list, list]:
+                vecs: list = []
+                meta: list = []
+                for i, text in enumerate(texts):
+                    m, spans = state.embedder.embed_late_chunked(
+                        text,
+                        task=task,
+                        chunk_size_tokens=lc.chunk_size_tokens,
+                        overlap_tokens=lc.overlap_tokens,
+                        boundaries=lc.boundaries,
+                    )
+                    if len(spans) != len(m):
+                        raise RuntimeError(
+                            f"input {i}: {len(m)} vectors for {len(spans)} spans"
+                        )
+                    for c, (s, e, cs, ce) in enumerate(spans):
+                        vecs.append(m[c])
+                        meta.append((i, c, s, e, cs, ce))
+                return vecs, meta
+
+            vectors, late_meta = await loop.run_in_executor(None, _late)
+        else:
+            late_meta = None
+            vectors = await loop.run_in_executor(
+                None,
+                lambda: state.embedder.embed_texts(
+                    texts, task=task, batch_size=batch_override
+                ),
+            )
+    except HTTPException:
+        # Request validation raised inside this block already carries the right
+        # status. Without this the broad handler below rewrapped a deliberate
+        # 400 as a 500, which tells a client to retry something that will never
+        # succeed.
+        raise
     except ValueError as e:
         # `JinaV4Embedder.embed_texts` raises ValueError for invalid
         # batch_size; surface that as a 400 not a 500.
@@ -278,10 +461,27 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
         "Embed: %d texts, task=%s, %dms", len(texts), task, duration_ms
     )
 
-    items = [
-        EmbedItem(embedding=row.tolist(), index=i)
-        for i, row in enumerate(vectors)
-    ]
+    if late_meta is not None:
+        # `index` stays the input's position so OpenAI-shaped clients still
+        # read it correctly; chunk_index and the token span say which slice of
+        # that input this vector covers.
+        items = [
+            EmbedItem(
+                embedding=row.tolist(),
+                index=inp_i,
+                chunk_index=chunk_i,
+                token_start=ts,
+                token_end=te,
+                char_start=cs,
+                char_end=ce,
+            )
+            for row, (inp_i, chunk_i, ts, te, cs, ce) in zip(vectors, late_meta)
+        ]
+    else:
+        items = [
+            EmbedItem(embedding=row.tolist(), index=i)
+            for i, row in enumerate(vectors)
+        ]
     return EmbedResponse(
         data=items,
         model=state.embedder.model_name,

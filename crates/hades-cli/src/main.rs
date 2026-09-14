@@ -122,6 +122,29 @@ enum Commands {
         /// Maximum concurrent items (overrides config, must be >= 1).
         #[arg(long)]
         concurrency: Option<NonZeroUsize>,
+
+        /// Comma-separated extensions to embed without a parser, e.g.
+        /// `toml,wgsl`. Chunked by size and embedded as features, with no symbol
+        /// or edge extraction.
+        ///
+        /// Use it for files that carry meaning but have no analyzer. Manifests
+        /// are the case that prompted this on the unified command: three
+        /// conformance citations in this workspace live only in a `Cargo.toml`,
+        /// so a graph without them is missing edges the census counts.
+        #[arg(long = "unparsed-ext", value_delimiter = ',')]
+        unparsed_ext: Vec<String>,
+
+        /// Derive document keys from each input's path relative to this
+        /// directory, instead of from its file stem.
+        ///
+        /// Use this for any tree: stems are not unique across directories, so
+        /// eleven files named `README.md` all key as `README`, the first wins,
+        /// and the rest are reported as skipped. With `--root` they key as
+        /// `docs_a_README`, `docs_b_README` and so on, which is how
+        /// `codebase ingest` has always keyed files. Inputs outside the root
+        /// fall back to the stem with a warning.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Create a compliance edge linking a document to a smell node.
@@ -193,6 +216,31 @@ enum Commands {
         /// refused — remote reads are scoped, writes stay ACL-gated.
         #[arg(long, env = "HADES_MCP_DBS", value_delimiter = ',')]
         mcp_dbs: Vec<String>,
+
+        /// Database-name prefixes the MCP endpoint may CREATE, e.g. `bident_`.
+        ///
+        /// Provisioning is off unless this and `--mcp-ingest-root` are both
+        /// given. Granting it lets a bearer token create databases, which is
+        /// deliberately not the default for a plaintext LAN endpoint.
+        #[arg(
+            long = "mcp-db-prefix",
+            env = "HADES_MCP_DB_PREFIXES",
+            value_delimiter = ','
+        )]
+        mcp_db_prefixes: Vec<String>,
+
+        /// Directories the MCP endpoint may INGEST FROM.
+        ///
+        /// Ingest makes the daemon read paths off its own filesystem, so without
+        /// this a client could have it embed anything the daemon's user can read
+        /// and then query it back out. Paths are canonicalized before the check,
+        /// so `..` and symlinks cannot escape a listed root.
+        #[arg(
+            long = "mcp-ingest-root",
+            env = "HADES_MCP_INGEST_ROOTS",
+            value_delimiter = ','
+        )]
+        mcp_ingest_roots: Vec<std::path::PathBuf>,
     },
 }
 
@@ -264,12 +312,93 @@ fn main() -> anyhow::Result<()> {
             force,
             reset,
             concurrency,
+            root,
+            unparsed_ext,
         } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
+            let input_paths: Vec<PathBuf> = inputs.into_iter().map(PathBuf::from).collect();
+
+            // One directory means one tree, and a tree is ingested whole: the
+            // routing table sends each file to the code or the document pipeline
+            // by extension, both write the same graph, and one envelope reports
+            // what happened to everything. Naming files explicitly keeps the
+            // document-only behaviour, which is what a single paper wants.
+            if input_paths.len() == 1 && input_paths[0].is_dir() {
+                // Flags that cannot mean anything for a whole tree are refused
+                // rather than ignored. They were being destructured and dropped,
+                // so `--id` on a directory silently keyed nothing and `--resume`
+                // silently resumed nothing, under a `success: true` envelope.
+                let mut unsupported: Vec<&str> = Vec::new();
+                if id.is_some() {
+                    unsupported.push("--id");
+                }
+                if batch {
+                    unsupported.push("--batch");
+                }
+                if resume {
+                    unsupported.push("--resume");
+                }
+                if reset {
+                    unsupported.push("--reset");
+                }
+                if !claims.is_empty() {
+                    unsupported.push("--claims");
+                }
+                if root.is_some() {
+                    unsupported.push("--root");
+                }
+                if !unsupported.is_empty() {
+                    anyhow::bail!(
+                        "{} cannot be combined with a directory: a tree ingest keys \
+                         every file relative to the directory given, so --root is \
+                         implied and --id names a single document. Pass explicit file \
+                         paths to use them.",
+                        unsupported.join(", ")
+                    );
+                }
+                let result = rt.block_on(commands::ingest::run_unified(
+                    &config,
+                    input_paths.into_iter().next().expect("checked len"),
+                    force,
+                    metadata.as_deref(),
+                    concurrency.map(NonZeroUsize::get),
+                    &unparsed_ext,
+                    collection.as_deref(),
+                    task.as_deref(),
+                ));
+                return match result {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        if e.downcast_ref::<commands::ingest::IngestFailure>()
+                            .is_some()
+                            || e.downcast_ref::<commands::codebase_ingest::CodebaseIngestFailure>()
+                                .is_some()
+                        {
+                            tracing::error!(error = %e, "ingest failed");
+                            process::exit(1);
+                        }
+                        Err(e)
+                    }
+                };
+            }
+
+            // `--unparsed-ext` selects extensions during a tree walk, and there
+            // is no walk here. Forwarding it would have no effect and dropping it
+            // silently is how `hades ingest Cargo.toml --unparsed-ext toml` looked
+            // like it had asked for the parser-free path.
+            if !unparsed_ext.is_empty() {
+                anyhow::bail!(
+                    "--unparsed-ext applies to a directory ingest, which walks a tree \
+                     and routes by extension. Named files are ingested as documents. \
+                     Pass the directory instead, or use `codebase ingest --unparsed-ext` \
+                     for the code path."
+                );
+            }
+
             let result = rt.block_on(commands::ingest::run(
                 &config,
-                inputs.into_iter().map(PathBuf::from).collect(),
+                input_paths,
                 batch,
                 metadata.as_deref(),
                 &claims,
@@ -280,6 +409,7 @@ fn main() -> anyhow::Result<()> {
                 resume,
                 reset,
                 concurrency.map(NonZeroUsize::get),
+                root,
             ));
             match result {
                 Ok(()) => Ok(()),
@@ -470,6 +600,8 @@ fn main() -> anyhow::Result<()> {
             mcp_bind,
             mcp_token_file,
             mcp_dbs,
+            mcp_db_prefixes,
+            mcp_ingest_roots,
         } => {
             init_tracing();
             let mcp = match (mcp_bind, mcp_token_file) {
@@ -477,6 +609,8 @@ fn main() -> anyhow::Result<()> {
                     bind,
                     token_file,
                     extra_dbs: mcp_dbs,
+                    provision_db_prefixes: mcp_db_prefixes,
+                    provision_ingest_roots: mcp_ingest_roots,
                 }),
                 (Some(_), None) => anyhow::bail!(
                     "--mcp-bind requires --mcp-token-file (or HADES_MCP_TOKEN_FILE): \

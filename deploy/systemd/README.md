@@ -9,13 +9,47 @@ environment at execution time.
 |---|---|---|
 | `hades-daemon.service` | `~/.config/systemd/user/` | daemon and optional MCP endpoint |
 | `daemon.env.example` | `~/.config/hades/daemon.env` | ArangoDB connection, MCP exposure |
-| `embedder.conf.example` | `~/.config/hades/embedder.conf` | embedder device, model path, token ceiling |
+| `hades-embedder@.service` | `~/.config/systemd/user/` | embedder, one instance per load profile |
+| `embedder-profile-gpu*.conf.example` | `~/.config/hades/embedder-profiles/<name>.conf` | one load profile per GPU: card, ceiling, batch, VRAM floor |
+| `hades-embedder-profile` | anywhere on `PATH` | switch the embedder between profiles |
 | `arangod.conf.example` | your ArangoDB instance directory | storage, endpoints, vector index |
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now hades-daemon
 ```
+
+## Load profiles: the ceiling is a property of the card
+
+The embedder is one templated unit instantiated per load profile, named for the
+card it loads on. The profile fixes the device, the sequence ceiling, the batch
+size and the VRAM floor, and every ceiling in the examples is a measurement on
+that card rather than a preference.
+
+```bash
+hades-embedder-profile list     # profiles and their ceilings
+hades-embedder-profile gpu1     # switch, waits for the service to answer
+hades-embedder-profile          # what is active, as the service reports it
+```
+
+**Every profile binds the same port.** That is the point: switching cards is a
+stop and a start, and no client configuration changes, because clients read the
+ceiling back from `GET /v1/models` (`max_seq_length`, plus `profile` and
+`physical_device`). It also means two profiles cannot be live at once, since the
+second fails to bind rather than quietly loading a second copy of the model onto
+another card.
+
+**Measure the ceiling on your own hardware, with your own documents.** The
+example numbers are from olympus and two of them were wrong before they were
+measured properly. A synthetic probe put the 16 GiB card at 15,000 tokens, and
+real documents through the running service put it between 11,926 (passes
+repeatedly) and 12,196 (out of memory). A synthetic probe put the 48 GiB card's
+32,768-token peak at 23,906 MiB, and a real 31,871-token document peaked at
+27,526 MiB. Real inputs cost more than probes, in both directions that matter:
+the small card admits less and the large card needs a higher floor.
+
+An input above the ceiling is refused with `PE_INPUT_TOO_LARGE`, naming its token
+count, rather than truncated. Pre-chunking oversized inputs is the caller's job.
 
 `loginctl enable-linger $USER` if the daemon should survive logout. Otherwise
 systemd stops user services when your last session closes, and any remote
