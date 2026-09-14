@@ -34,7 +34,19 @@ from .records import DECLARED, Edge, Extraction, Node
 # rather than a silent miss.
 TAGS = {"compile-pin", "compile-fail", "perturbation", "manifest", "review"}
 
-GRAPH = re.compile(r"```graph(.*?)```", re.S)
+# A fence opens and closes on its own line.
+#
+# Unanchored, this matched an inline ```` ```graph ```` inside a sentence and then
+# ran to the next triple backtick anywhere in the file, so a document *discussing*
+# the block grammar opened a phantom fence over its own prose. Two of those stand
+# in this corpus. Both happen to hold no `node:` or `edge:` line at the start of a
+# line, so they contributed nothing and were invisible: a quoted example in
+# prose would have injected declarations nobody wrote.
+#
+# Measured across the corpus before the change and after: 399 fences to 397, the
+# two lost being exactly the phantoms, with 491 node records and 665 edge records
+# either way and an identical kind tally.
+GRAPH = re.compile(r"^```graph[ \t]*$(.*?)^```", re.S | re.M)
 NODE_LINE = re.compile(r"^node: (.*)$", re.M)
 KIND = re.compile(r"^kind: ([\w-]+)$", re.M)
 TAG = re.compile(r"^tag: ([\w-]+)$", re.M)
@@ -115,8 +127,24 @@ def _walk(root: Path, suffix: str):
         yield path
 
 
-def read_documents(repo: Path) -> Extraction:
-    """Every fenced `graph` block under `docs/`.
+def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
+    """Every fenced `graph` block under `docs/` that the ingest took.
+
+    **`scope` is the set of repo-relative paths the graph actually holds**, and it
+    is passed in rather than computed. This module used to decide for itself which
+    files were in play, with a hardcoded `docs/` root and a hardcoded `process/`
+    exclusion, while `hades ingest` decided from `.hadesignore`. The two agreed by
+    coincidence of intent, not by construction.
+
+    The failure that makes it matter: a document under `docs/` declaring a node,
+    later added to `.hadesignore`. The ingest stops writing its `documents` row and
+    this pass keeps reading its declarations, so the `declared-in` edge names a row
+    that does not exist. `write_graph` checks for exactly that and would have caught
+    it, but at build time, after a run, with the bad edges already computed.
+
+    A file out of scope holding a `graph` block is reported by name, because
+    "declarations nobody read" has to be visible rather than inferred from a count
+    that came out low.
 
     **`process/` is deliberately excluded.** It holds
     `WeaverTools-Document-Format.md`, which illustrates the block grammar with
@@ -128,6 +156,7 @@ def read_documents(repo: Path) -> Extraction:
     """
     out = Extraction()
     seen: dict[str, str] = {}
+    out_of_scope: list[str] = []
 
     for base in ("docs",):
         root = repo / base
@@ -136,6 +165,12 @@ def read_documents(repo: Path) -> Extraction:
         for path in _walk(root, ".md"):
             rel = str(path.relative_to(repo))
             text = path.read_text(encoding="utf-8", errors="replace")
+            if scope is not None and rel not in scope:
+                # Only the ones whose absence changes the graph. Every other
+                # skipped file is noise in a report someone has to read.
+                if GRAPH.search(text):
+                    out_of_scope.append(rel)
+                continue
             # **No node is minted for the file itself.** `hades ingest` already
             # put this markdown in the graph as a `documents` row, with its text,
             # its chunks and a vector, and `declared-in` points at that row. One
@@ -196,11 +231,26 @@ def read_documents(repo: Path) -> Extraction:
                             tag=tag_m.group(1) if tag_m else None,
                         )
                     )
+
+    for rel in out_of_scope:
+        out.notes.append(
+            f"out of scope and holds a graph block, declarations not read: {rel}"
+        )
+    out.notes.append(f"declaring_files_out_of_scope={len(out_of_scope)}")
     return out
 
 
-def read_conformance(repo: Path, declared: set[str]) -> Extraction:
+def read_conformance(
+    repo: Path, declared: set[str], scope: set[str] | None = None
+) -> Extraction:
     """Conformance citations across workspace crates, as `cites` edges.
+
+    `scope` is the set of repo-relative paths the graph holds, for the reason
+    given on [`read_documents`]. A `cites` edge runs *from* a `codebase_files`
+    node, so a citation in a file the ingest never took produces an edge with no
+    source. That case was already detected by `write_graph` and is now prevented
+    here, which also means the header obligation is measured over the files the
+    graph contains rather than over the files on disk.
 
     The obligation follows the unit: every `.rs` a member owns, tests
     included, `build.rs` excepted. Resolution is against *every* declared
@@ -219,11 +269,16 @@ def read_conformance(repo: Path, declared: set[str]) -> Extraction:
     headers_seen = 0
     files_owing = 0
     headerless: list[str] = []
+    out_of_scope: list[str] = []
 
     paths = [p for suffix in CONFORMANCE_SUFFIXES for p in _walk(crates, suffix)]
     for path in sorted(paths):
         rel = str(path.relative_to(repo))
         text = path.read_text(encoding="utf-8", errors="replace")
+        if scope is not None and rel not in scope:
+            if ITEM_CITE.search(text):
+                out_of_scope.append(rel)
+            continue
         lang = "rust" if path.suffix == ".rs" else path.suffix.lstrip(".")
         out.nodes.append(Node(ident=rel, kind="source", path=rel, lang=lang))
 
@@ -254,14 +309,27 @@ def read_conformance(repo: Path, declared: set[str]) -> Extraction:
             f"which means the declared set was empty or came from elsewhere"
         )
 
+    for rel in out_of_scope:
+        out.notes.append(f"out of scope and holds a citation, not read: {rel}")
+    out.notes.append(f"citing_files_out_of_scope={len(out_of_scope)}")
     out.notes.append(f"headers_seen={headers_seen}")
     out.notes.append(f"sources_without_a_header={len(headerless)}")
     out.notes.append(f"sources_owing_a_header={files_owing}")
     return out
 
 
-def ingest(repo: Path) -> tuple[Extraction, Extraction]:
-    docs = read_documents(repo)
+def ingest(
+    repo: Path,
+    doc_scope: set[str] | None = None,
+    code_scope: set[str] | None = None,
+) -> tuple[Extraction, Extraction]:
+    """Read the corpus, bounded to what the graph holds.
+
+    Both scopes are repo-relative path sets, supplied by the caller because the
+    caller is the half with database access. `None` means unbounded, which is the
+    old behaviour and is kept only for reading a tree with no graph behind it.
+    """
+    docs = read_documents(repo, doc_scope)
     declared = {n.ident for n in docs.nodes}
-    code = read_conformance(repo, declared)
+    code = read_conformance(repo, declared, code_scope)
     return docs, code

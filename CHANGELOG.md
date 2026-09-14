@@ -253,6 +253,36 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- **The WeaverTools extractor no longer decides its own scope.** It walked a
+  hardcoded `docs/` root with a hardcoded `process/` exclusion while `hades ingest`
+  walked `.hadesignore`: two implementations of one rule, agreeing by coincidence of
+  intent. The failure that makes it matter is a document under `docs/` that declares
+  a node and is later added to `.hadesignore` - the ingest stops writing its
+  `documents` row, the extractor keeps reading its declarations, and the
+  `declared-in` edge names a row that does not exist. `write_graph` checked for
+  exactly that and would have caught it, but at build time, after the run, with the
+  bad edges already computed. `ingest()` now takes the path sets the graph holds,
+  supplied by the caller because the caller is the half with database access, and a
+  file out of scope holding declarations or citations is reported by name rather
+  than reflected in a count that came out low. The extractor stays a pure function
+  over a repository. Verified against `WeaverTools_v5`: every count unchanged
+  (413/491/481/13/665/12), so the change removes a failure class without moving
+  data. Five tests in `services/tests/test_weavertools_scope.py` construct the
+  case, including the invariant that no `declared-in` target lies outside the scope.
+- `write_graph` reads each `cites` edge's source key from `codebase_files` instead
+  of re-deriving it from the path. Re-deriving a key the ingest owns is what the
+  document half was doing before the same class of mismatch was found there.
+- **A graph fence must open and close on its own line.** Unanchored, the pattern
+  matched an inline ```` ```graph ```` inside a sentence and ran to the next triple
+  backtick anywhere in the file, so a document discussing the block grammar opened a
+  phantom fence over its own prose. Two stand in this corpus. Both happen to hold no
+  record at a line start and so contributed nothing, which is why nothing found them
+  until the scope report named the file; a quoted example inside the swallowed
+  region would have injected declarations nobody wrote. Measured across the corpus:
+  399 fences before and 397 after, the two lost being exactly the phantoms, with 491
+  node records and 665 edge records either way.
+
+
 - **`db.graph.traverse`, `db.graph.neighbors` and `db.graph.shortest_path` no
   longer invent a graph named `default`.** ArangoDB has no default graph, so
   omitting `graph` sent every traversal at a graph no database here has;

@@ -127,23 +127,26 @@ def arango(db: str, path: str, body=None, method="POST"):
         return json.loads(e.read().decode() or "{}")
 
 
-def existing_file_keys(db: str) -> set[str]:
-    """The `codebase_files` keys already in the graph.
+def code_keys_by_path(db: str) -> dict[str, str]:
+    """Repo-relative path -> the `codebase_files` key the ingest gave it.
 
-    A `cites` edge points at one of these. An edge whose `_from` names a node
-    that was never ingested is a dangling edge that looks like a join until
-    someone traverses it, which is the failure this module's docstring names, so
-    the set is fetched and checked rather than assumed.
+    Two jobs. It **bounds the conformance pass** to the files the graph holds, so a
+    citation in a file the ingest never took is reported rather than turned into an
+    edge with no source. And it supplies the key instead of re-deriving it, so the
+    `_from` of every `cites` edge is the key the ingest wrote rather than this
+    module's guess at how the ingest writes keys. The document half was re-deriving
+    its key the same way until the path-and-key mismatch it invites was found, and
+    this is the other half of that.
     """
     resp = arango(db, "cursor", {
-        "query": "FOR f IN codebase_files RETURN f._key",
+        "query": "FOR f IN codebase_files RETURN [f.path, f._key]",
         "batchSize": 5000,
     })
-    keys = set(resp.get("result") or [])
+    pairs = list(resp.get("result") or [])
     while resp.get("hasMore"):
         resp = arango(db, f"cursor/{resp['id']}", method="PUT")
-        keys.update(resp.get("result") or [])
-    return keys
+        pairs.extend(resp.get("result") or [])
+    return {path: key for path, key in pairs if path}
 
 
 def document_keys_by_rel(db: str) -> dict[str, str]:
@@ -191,7 +194,22 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    docs, code = ingest(Path(args.repo))
+    # The scopes come from the graph, and the extraction is bounded by them. This
+    # is the single decision about what is in play: `hades ingest` made it from
+    # `.hadesignore`, and this reads the result rather than re-deciding.
+    doc_keys = document_keys_by_rel(args.db)
+    code_keys = code_keys_by_path(args.db)
+    if not doc_keys and not code_keys:
+        print(
+            f"{args.db} holds no codebase_files and no documents rows, so nothing "
+            f"is in scope. Run `hades ingest` over the tree first: a conformance "
+            f"pass against an empty graph writes edges whose endpoints do not "
+            f"exist.",
+            file=sys.stderr,
+        )
+        return 1
+
+    docs, code = ingest(Path(args.repo), set(doc_keys), set(code_keys))
 
     # Collections first, ignoring "duplicate name" so a re-run is safe.
     relations = {e.relation for e in docs.edges} | {e.relation for e in code.edges}
@@ -221,8 +239,6 @@ def main() -> int:
     # the extractor reads manifests for citations while `ingest_routing` leaves
     # `.toml` unrouted, so a plain `hades ingest` creates no node for one and the
     # edge would point at nothing. `hades ingest --unparsed-ext toml` creates it.
-    file_keys = set() if args.dry_run else existing_file_keys(args.db)
-    doc_keys = {} if args.dry_run else document_keys_by_rel(args.db)
     missing_sources: list[str] = []
     missing_documents: list[str] = []
     # One pass over the node list instead of one per edge endpoint. The lookups
@@ -231,9 +247,13 @@ def main() -> int:
     for name, edges in (("documents", docs.edges), ("code", code.edges)):
         for e in edges:
             if e.relation == "cites":
-                key = file_key(e.src)
-                if file_keys and key not in file_keys:
+                # Scoping should make this unreachable. Kept as an assertion
+                # rather than removed: it is the check that would catch the
+                # scope and the graph parting company again.
+                key = code_keys.get(e.src)
+                if key is None:
                     missing_sources.append(e.src)
+                    key = file_key(e.src)
                 src_id = f"{CODE_FILES}/{key}"
             else:
                 src_coll = NODE_COLLECTIONS.get(kind_of.get(e.src), NODE_COLLECTIONS["assertion"])
@@ -243,8 +263,7 @@ def main() -> int:
                 # markdown rather than anything this adapter writes.
                 doc_key = doc_keys.get(e.dst)
                 if doc_key is None:
-                    if doc_keys:
-                        missing_documents.append(e.dst)
+                    missing_documents.append(e.dst)
                     doc_key = key_for(e.dst)
                 dst_id = f"{DOC_FILES}/{doc_key}"
             else:
@@ -262,6 +281,25 @@ def main() -> int:
                 "relation": e.relation, "basis": e.basis,
                 "via": e.via, "tag": e.tag,
             })
+
+    # The scope is a decision the graph made, so what it excluded is printed
+    # rather than left in a report nobody opens. A file holding declarations that
+    # nothing read is the one case where a low count looks like a clean run.
+    excluded = [n for n in docs.notes + code.notes if n.startswith("out of scope")]
+    if excluded:
+        print(
+            f"\n{len(excluded)} file(s) hold declarations or citations and are not "
+            f"in the graph, so they were not read:",
+            file=sys.stderr,
+        )
+        for note in excluded[:10]:
+            print(f"    {note.split(': ', 1)[-1]}", file=sys.stderr)
+        print(
+            "    These are excluded by .hadesignore or were never ingested. That is "
+            "a scope decision, not an error, but it is why a count may be lower "
+            "than the tree suggests.",
+            file=sys.stderr,
+        )
 
     print(f"{'collection':36} {'documents':>10}")
     for name in sorted(by_collection):
