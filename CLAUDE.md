@@ -36,10 +36,16 @@ cargo test -p hades-core --lib config::      # filter by path within a crate
 - Unit tests live in `src/` next to the code (~630 `#[test]`/`#[tokio::test]`
   across the workspace).
 - `crates/*/tests/*.rs` integration targets need external resources. They
-  self-skip when the resource is missing and honor a strict flag that turns a
-  skip into a panic (`ARANGO_TESTS=1` for the `arango_*` and `graph_loader`
-  targets; `HADES_CUDA_FIXTURE` for the libclang probe). The convention is
-  specified in `docs/specs/workstation-specific-tests.md`.
+  self-skip when the *socket* is missing (`ARANGO_SOCKET` names it; the default
+  `/run/arangodb3/arangodb.sock` is the system install's, and a user-level
+  arangod binds elsewhere) and honor a strict flag that turns a skip into a
+  panic (`ARANGO_TESTS=1` for the `arango_*` and `graph_loader` targets;
+  `HADES_CUDA_FIXTURE` for the libclang probe). The convention is specified in
+  `docs/specs/workstation-specific-tests.md`. A missing *database* is not a
+  skip: `arango_transport`, `arango_crud`, `arango_index` and `arango_query`
+  still name `bident_burn` and a seeded `persephone_tasks`, neither of which
+  exists, so they fail until the Persephone pass moves them onto
+  `hades_core::test_support::with_temp_db` the way `arango_cache` already is.
 - Service-dependent targets with no skip guard — `embedding_client`,
   `extraction_client`, `training_client` — and analyzer-dependent ones
   (`clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`) fail on a bare
@@ -243,10 +249,42 @@ unbuilt work.
    ArangoDB ACL grants on that user are the authoritative gate (production
    research databases are granted `ro`). The allowlists that do exist in code
    are unrelated: MCP read scoping and the unparsed-extension list.
-2. **`bident_burn` is HADES's own project-management database** (the
-   `persephone_tasks` kanban). Target it or a dedicated test database for any
-   write test — never a production target.
-3. **Use the CLI for project management**: `hades --db bident_burn task ...`.
+2. **No database is a default, including for HADES's own state.**
+   `bident_burn` held the `persephone_tasks` kanban and was dropped on
+   2026-09-14 with the other superseded databases. The `task` commands run
+   against whatever `--db` names and need both a database and the
+   `persephone_tasks`, `persephone_logs`, `persephone_handoffs` and
+   `persephone_edges` collections, which nothing in the binary creates: the
+   only creator today is the `hades db create persephone_*` loop in
+   `scripts/bident_burn_smoke.sh`. Treat Persephone as deferred work rather
+   than a missing file. `effective_database()` errors without `--db` or
+   `HADES_DATABASE` by design, so do not reintroduce a hardcoded target.
+3. **A write test gets a database created for the test**, never a corpus
+   somebody is querying. The pattern is `hades_core::test_support::with_temp_db`
+   behind the `test-support` feature, enabled through a dev-dependency: a
+   per-process name, delete before create, fixture collections from
+   `CODEBASE.all_collections()`, dropped even when the test panics. One
+   definition rather than a copy per crate, because two harnesses to keep in
+   step is the defect this file's other rules are about.
+   `scripts/bident_burn_smoke.sh` is the script-level version and is weaker
+   by design: it creates `bident_burn_smoke` once and truncates on later runs,
+   since there is deliberately no `drop-database` command (#118).
+4. **A database seeded with `db schema init --seed empty` has an empty
+   `relation_order`**, and that seed is what the MCP `db_schema_init` writes.
+   `graph::loader` scans exactly the collections `relation_order` names, and
+   nodes are discovered only through edge scans, so it returns a graph with no
+   edges *and* no nodes. `graph-embed train` then fails at the tensor step with
+   "graph has no edges", after the loader has already returned that empty
+   graph. `graph-embed update` fails earlier on a fresh machine, at its
+   checkpoint preflight ("no trained model found"), and reports success over
+   the empty graph only where a checkpoint from some earlier run already sits
+   in the shared default `--checkpoint-dir` of `/tmp/hades-train`. Neither
+   failure names the schema, which is why this is a rule. Apply a schema file
+   when creating a database: `config/schemas/codebase.yaml` for
+   the universal code layer, or a domain file carrying it plus its own
+   relations (`services/adapters/weavertools/schema.yaml` is the worked
+   example). There is no MCP operation for that yet, so a remotely
+   provisioned graph needs the file applied from the CLI before training.
 
 ## Conventions
 

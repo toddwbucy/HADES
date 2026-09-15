@@ -3744,12 +3744,27 @@ mod tests {
             eprintln!("skipping: ARANGO_PASSWORD not set");
             return None;
         };
-        // Target database and user are overridable so these tests can be
-        // pointed at a dedicated throwaway graph. The `bident_burn` default has
-        // no codebase collections, so without an override the live tests here
-        // skip rather than run — which is silent, and makes it easy to believe
-        // a regression is covered when nothing executed.
-        let database = std::env::var("HADES_TEST_DB").unwrap_or_else(|_| "bident_burn".to_string());
+        // These tests re-ingest into a code graph, so they need one you name:
+        // `HADES_TEST_DB` has no default. It defaulted to `bident_burn` until
+        // 2026-09-14, a database that had no codebase collections and then no
+        // longer existed at all, so the live tests here skipped on every machine
+        // while strict mode reported green. A skip is now visible, and under
+        // `ARANGO_TESTS=1` it is a failure.
+        let Some(database) = std::env::var("HADES_TEST_DB")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+        else {
+            if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
+                panic!(
+                    "ARANGO_TESTS is set but HADES_TEST_DB is not: these tests re-ingest \
+                     into a code graph and need one named"
+                );
+            }
+            eprintln!(
+                "skipping: HADES_TEST_DB not set (these tests need a code graph to re-ingest into)"
+            );
+            return None;
+        };
         let user = std::env::var("HADES_TEST_USER").unwrap_or_else(|_| "root".to_string());
         let client = hades_core::db::ArangoClient::with_socket(socket, &database, &user, &password);
         Some(ArangoPool::new(client.clone(), client))

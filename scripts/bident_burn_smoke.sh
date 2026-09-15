@@ -2,10 +2,9 @@
 #
 # HADES end-to-end pipeline smoke test (#103).
 #
-# Where scripts/cli_audit.sh asks "does every command run" against a dirty
-# bident_burn, this asks "is the graph RIGHT" against a dedicated fresh
-# database (bident_burn_smoke): full pipelines with assertions on the
-# invariants that past regressions actually violated —
+# Where scripts/cli_audit.sh asks "does every command run", this asks "is the
+# graph RIGHT" against a dedicated database it owns (bident_burn_smoke): full
+# pipelines with assertions on the invariants that past regressions violated -
 #
 #   #165/#171  chunks + embeddings carry their parent/file foreign keys
 #   #166       input canonicalization (same file via ./relative == absolute)
@@ -15,8 +14,12 @@
 #   #158/#157  drift → retire → prune-orphans → validate close the loop
 #
 # Prerequisites: ArangoDB up (hades user), embedder service on :8087.
-# The target database is created if missing and its collections truncated
-# per run — bident_burn itself is never touched.
+#
+# The target database is created if missing and its collections truncated per
+# run. It is never dropped, because there is deliberately no `drop-database`
+# command (#118), so the truncate is what makes a run repeatable -- and it
+# truncated nothing until PR #5, having been written with `--yes` where the
+# flag is `--force`.
 #
 # Usage:
 #   ./scripts/bident_burn_smoke.sh                # deployed binary
@@ -105,7 +108,10 @@ if ! h db collections >/dev/null; then
 fi
 for col in documents chunks embeddings persephone_tasks persephone_logs persephone_handoffs; do
     h db count "$col" >/dev/null || h db create "$col" >/dev/null
-    h db truncate "$col" --yes >/dev/null 2>>"$WORK/stderr.log" || h db truncate "$col" >/dev/null
+        # `--force` and not `--yes`: clap rejects `--yes`, and the bare form
+    # refuses without confirmation, so this line truncated nothing on either
+    # arm from the day it was written. Found by the review of PR #5.
+    h db truncate "$col" --force >/dev/null
 done
 h db count persephone_edges >/dev/null || h db create persephone_edges --edge >/dev/null
 step "collections provisioned" h db collections

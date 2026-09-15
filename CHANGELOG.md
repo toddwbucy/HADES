@@ -21,10 +21,15 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - **`config/schemas/codebase.yaml`**, the universal code graph as data. `hades
   ingest` creates its collections and gharial edge definitions directly and leaves
-  `hades_schema` holding an empty `meta`, so `relation_order` is `[]`,
-  `graph::loader` scans nothing, and structural training over the graph loads zero
-  edges and reports success. That was found in a domain graph and applies to every
-  database built by ingest alone, so the generic layer now has a file of its own.
+  `hades_schema` holding at most the empty `meta` that `--seed empty` writes, so
+  `relation_order` is `[]` and `graph::loader` scans nothing, returning a graph
+  with no edges and no nodes. `graph-embed train` fails at the tensor step with
+  "graph has no edges" after being handed it; `graph-embed update` fails earlier
+  at its checkpoint preflight on a fresh machine, and reports success over the
+  empty graph wherever an earlier run left a checkpoint in the shared default
+  `--checkpoint-dir`. Neither failure names the schema. That was found in a
+  domain graph and applies to every database seeded empty and filled by ingest,
+  so the generic layer now has a file of its own.
   `services/adapters/weavertools/schema.yaml` stays as the worked example of a
   domain layer on top of it. Applied to a fresh `bident_v4`: 12 collections, 4 edge
   definitions, one named graph, `num_relations` 4 rather than 0.
@@ -263,6 +268,70 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- **`scripts/bident_burn_smoke.sh` never truncated anything.** The line ran
+  `db truncate "$col" --yes`, and the flag is `-y/--force`, so clap rejected it
+  and the bare fallback refused without confirmation. Both arms failed silently
+  behind `>/dev/null` from the day it was written, which means every run after
+  the first asserted against the previous run's rows. It passes `--force` now,
+  and the script header no longer compares itself to `bident_burn`.
+- **The throwaway-database harness is one definition, not two.** The first fix on
+  this branch left the same shape in `hades-cli`'s test module and
+  `hades-core/tests/common`, already drifting in signature, naming and fixtures,
+  with "kept in step" as the only mechanism, which is the defect this branch
+  exists to remove. It lives in `hades_core::test_support` behind a
+  `test-support` feature, off by default and enabled through a dev-dependency
+  (including a self dev-dependency so hades-core's own `tests/` can reach it),
+  so nothing reaches a release build. The fixture collections come from
+  `CODEBASE.all_collections()`, the list `ingest` creates from, instead of a
+  hand-written copy that a ninth collection would silently outdate, and the
+  third copy of the literal edge-type code `3` goes with it. A failed drop is
+  now reported rather than discarded, since a leaked database is otherwise
+  invisible, and the fixtures are created *inside* the spawned task so a fixture
+  that fails to create cannot leak the database it was meant to be isolated in
+  (found by CodeRabbit on PR #5; verified by a probe that panics inside the task
+  and leaves nothing behind).
+
+
+- **The critical rules named a database that no longer exists.** `bident_burn`
+  held the `persephone_tasks` kanban and was dropped on 2026-09-14 with the other
+  superseded databases, while both CLAUDE.md files still told a session to run
+  project management against it and to target it for write tests. The replacement
+  states a rule rather than an inventory, since a guidance file listing live
+  databases goes stale: no database is a default, the `task` commands need a
+  database and the four `persephone_*` collections created for them (only the
+  smoke script does that today), and a write test creates and owns its own. A
+  fourth rule carries finding 35 forward with the mechanism stated: a database
+  seeded with `--seed empty` has an empty `relation_order`, over which the loader
+  returns no edges and no nodes, `train` fails at the tensor step, and `update`
+  fails at its checkpoint preflight or, given a checkpoint from an earlier run in
+  the shared default directory, reports success.
+- **Write tests get a throwaway database, dropped even on panic.** The
+  `codebase_prune` harness had the right shape and is now the only one, in
+  `hades_core::test_support` (see the Fixed entry above for why it is there and
+  not copied per crate). Per-process name with a counter (two tests in one binary
+  share a pid, and the old delete-before-create was dropping a sibling's database
+  mid-run), the user from `HADES_TEST_USER`, which needs `rw` on `_system` and now
+  says so; refusal to create is a failure under `ARANGO_TESTS=1` rather than a
+  silent skip. `arango_cache`, `codebase_retire` and `codebase_prune` run on it.
+  `codebase_ingest`'s live tests drop their dead `bident_burn` default and require
+  `HADES_TEST_DB`, failing loudly in strict mode rather than skipping green.
+- **The `codebase_retire` regression guard for #158 had never run.** It skipped
+  whenever its target database lacked the codebase collections, which was always,
+  and reported success. On a real database it failed at once: the sweep binds all
+  four codebase edge collections and maps ArangoDB's 1203 (collection not found)
+  to an empty result, so a fixture without them makes the sweep report nothing.
+  The harness creates them. It passes, for the first time.
+- On the two failing test targets: they were **already failing before that
+  database was dropped**, under `ARANGO_TESTS=1`, on the socket default
+  `/run/arangodb3/arangodb.sock`, which a user-level deployment does not have; a
+  bare run returned five green skips. `ARANGO_SOCKET` names the socket.
+- The README claimed the smoke script "never touches `bident_burn`", true and
+  useless once that database was gone, and `cli_audit.sh` is still hardwired to
+  it. The README says so. `arango_transport`, `arango_crud`, `arango_index` and
+  `arango_query` also still name it and need a seeded `persephone_tasks`; they
+  wait for the Persephone pass.
+
 
 - **The WeaverTools extractor no longer decides its own scope.** It walked a
   hardcoded `docs/` root with a hardcoded `process/` exclusion while `hades ingest`

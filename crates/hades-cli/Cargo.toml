@@ -33,6 +33,8 @@ sha2.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]
+# The throwaway-database harness, which the write tests in `commands/` use.
+hades-core = { path = "../hades-core", features = ["test-support"] }
 tempfile.workspace = true
 tower.workspace = true
 http-body-util.workspace = true

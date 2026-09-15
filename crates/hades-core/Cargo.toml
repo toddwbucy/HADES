@@ -47,5 +47,15 @@ tree-sitter-go.workspace = true
 tree-sitter-python.workspace = true
 tree-sitter-rust.workspace = true
 
+[features]
+# The throwaway-database harness in `test_support`. Off by default, so it never
+# reaches a release build; enabled through a dev-dependency by this crate's own
+# tests and by hades-cli's.
+test-support = []
+
 [dev-dependencies]
 tempfile = "3.27.0"
+# Self dev-dependency so `tests/*.rs` can reach the feature-gated module. The
+# alternative was a second copy of the harness in each consumer, which is what
+# this replaces.
+hades-core = { path = ".", features = ["test-support"] }

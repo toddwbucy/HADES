@@ -859,6 +859,7 @@ dependencies = [
  "chrono",
  "clang",
  "futures",
+ "hades-core",
  "hades-proto",
  "http",
  "http-body-util",

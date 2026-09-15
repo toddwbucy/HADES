@@ -619,7 +619,7 @@ impl HadesMcpServer {
     }
 
     #[tool(
-        description = "Create a new database. Only available when this endpoint was started with provisioning enabled, and only for names matching a permitted prefix. Seed it with db_schema_init before ingesting."
+        description = "Create a new database. Only available when this endpoint was started with provisioning enabled, and only for names matching a permitted prefix. Seed it with db_schema_init before ingesting. That seed is empty: it writes schema metadata with no relations, which is enough to ingest and search but not to train, so a graph meant for graph-embed needs a schema file (config/schemas/codebase.yaml) applied from the CLI first; there is no MCP operation for that yet."
     )]
     async fn create_database(
         &self,

@@ -408,53 +408,13 @@ async fn remove_other_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hades_core::test_support::{Fixtures, with_temp_db};
 
     use hades_core::db::crud;
 
     const FIXTURE_PREFIX: &str = "__hades_test158_";
     /// Edge collection created for the test to stand in for an authored bridge.
     const AUTHORED_EDGES: &str = "hades_test158_authored_edges";
-
-    fn test_pool() -> Option<ArangoPool> {
-        let socket = std::path::PathBuf::from(
-            std::env::var("ARANGO_SOCKET")
-                .unwrap_or_else(|_| "/run/arangodb3/arangodb.sock".to_string()),
-        );
-        if !socket.exists() {
-            if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
-                panic!(
-                    "ARANGO_TESTS is set but socket not found at {}",
-                    socket.display()
-                );
-            }
-            eprintln!(
-                "skipping: ArangoDB socket not found at {}",
-                socket.display()
-            );
-            return None;
-        }
-        let Ok(password) = std::env::var("ARANGO_PASSWORD") else {
-            eprintln!("skipping: ARANGO_PASSWORD not set");
-            return None;
-        };
-        let client =
-            hades_core::db::ArangoClient::with_socket(socket, "bident_burn", "root", &password);
-        Some(ArangoPool::new(client.clone(), client))
-    }
-
-    async fn collections_present(pool: &ArangoPool) -> bool {
-        for col in [CODEBASE.files, CODEBASE.symbols, CODEBASE.chunks] {
-            let aql = "RETURN LENGTH(FOR d IN @@col LIMIT 1 RETURN 1)";
-            let bind = json!({ "@col": col });
-            if query::query_single(pool, aql, Some(&bind), ExecutionTarget::Reader)
-                .await
-                .is_err()
-            {
-                return false;
-            }
-        }
-        true
-    }
 
     async fn count(pool: &ArangoPool, col: &str, field: &str) -> u64 {
         let aql = format!(
@@ -490,11 +450,13 @@ mod tests {
     /// deletes its symbol endpoint.
     #[tokio::test]
     async fn retire_sweeps_subtree_and_finds_symbol_anchored_authored_edges() {
-        let Some(pool) = test_pool() else { return };
-        if !collections_present(&pool).await {
-            eprintln!("skipping: target database has no codebase collections");
-            return;
-        }
+        with_temp_db("retire", Fixtures::Codebase, |pool| async move {
+            retire_sweeps_subtree_and_finds_symbol_anchored_authored_edges_in(pool).await
+        })
+        .await
+    }
+
+    async fn retire_sweeps_subtree_and_finds_symbol_anchored_authored_edges_in(pool: ArangoPool) {
         cleanup(&pool).await;
 
         let pid = std::process::id();
