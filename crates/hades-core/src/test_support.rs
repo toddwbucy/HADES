@@ -81,7 +81,11 @@ pub enum Fixtures {
 pub async fn with_temp_db<F, Fut>(tag: &str, fixtures: Fixtures, f: F)
 where
     F: FnOnce(ArangoPool) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send,
+    // `'static` is what `tokio::task::spawn` requires of the future below. It
+    // compiles without it, since every caller passes an `async move` block that
+    // already satisfies it, but stating it here puts a mismatch at the call
+    // site rather than inside this function.
+    Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let socket = std::path::PathBuf::from(
         std::env::var("ARANGO_SOCKET")
@@ -134,17 +138,26 @@ where
 
     let client = ArangoClient::with_socket(socket, &db_name, &user, &password);
     let pool = ArangoPool::new(client.clone(), client);
-    if fixtures == Fixtures::Codebase {
-        for (name, col_type) in CODEBASE.all_collections() {
-            crud::create_collection(&pool, name, Some(col_type))
-                .await
-                .expect("create fixture collection");
-        }
-    }
 
     // `JoinHandle` captures a panic instead of unwinding through us, so the
     // database is dropped either way and the failure is re-raised after.
-    let outcome = tokio::task::spawn(async move { f(pool).await }).await;
+    //
+    // **The fixtures are created inside the task, not before it.** Creating them
+    // out here put one `expect` outside the only path that drops the database,
+    // so a fixture that failed to create leaked the database it was meant to be
+    // isolated in -- the failure this harness exists to prevent, in the setup of
+    // the harness itself.
+    let outcome = tokio::task::spawn(async move {
+        if fixtures == Fixtures::Codebase {
+            for (name, col_type) in CODEBASE.all_collections() {
+                crud::create_collection(&pool, name, Some(col_type))
+                    .await
+                    .expect("create fixture collection");
+            }
+        }
+        f(pool).await
+    })
+    .await;
 
     if let Err(e) = sys.delete(&format!("database/{db_name}")).await {
         // Reported rather than ignored: a leaked database is invisible

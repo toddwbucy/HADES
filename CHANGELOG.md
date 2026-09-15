@@ -287,7 +287,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   hand-written copy that a ninth collection would silently outdate, and the
   third copy of the literal edge-type code `3` goes with it. A failed drop is
   now reported rather than discarded, since a leaked database is otherwise
-  invisible.
+  invisible, and the fixtures are created *inside* the spawned task so a fixture
+  that fails to create cannot leak the database it was meant to be isolated in
+  (found by CodeRabbit on PR #5; verified by a probe that panics inside the task
+  and leaves nothing behind).
 
 
 - **The critical rules named a database that no longer exists.** `bident_burn`
