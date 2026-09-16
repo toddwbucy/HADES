@@ -269,6 +269,38 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- **Tree ingest skipped files whose content changed, leaving stale chunks that
+  search served as current** (#7). The incremental gate compared `symbol_hash`,
+  which `compute_symbol_hash` builds from sorted symbol *names* and nothing else,
+  so an edit touching only comments left it identical and the file was reported
+  `skipped` with `files_embedded=0`. Its stored chunks kept the old text while
+  the symbol half, which rust-analyzer re-reads every run, moved on: the two
+  halves of one file disagreed, and only one of them is what `db_query` reads. In
+  the reported case a corpus was serving a sentence it had retired, as if current.
+  The gate now compares `content_hash`.
+
+  **Not a split gate, though that was the first plan.** The two hashes are not
+  independent -- a byte-identical file has identical symbols, so `content_hash`
+  unchanged implies `symbol_hash` unchanged, making it strictly stronger. And the
+  decision cannot be divided per artifact, chunks on content and symbols on names,
+  because `symbol_key` hashes the line number: a comment adding eight lines moves
+  every later symbol's key, and chunk documents reference those keys in
+  `overlapping_symbols`, so refreshing one without the other points fresh chunks
+  at keys that no longer exist. Within a file the two move together.
+  `symbol_hash` keeps its genuine cross-file job, deciding whether a file's
+  dependents need their edges re-resolved (#183).
+
+  This also makes an existing promise true rather than aspirational: the
+  single-file refusal in `main.rs` already told callers "the ingest is
+  incremental, so only files whose content hash changed are re-processed".
+
+  Verified end to end in a throwaway database: first ingest embeds, an unchanged
+  re-run skips with zero embeddings, a **comment-only** edit re-embeds and the
+  stored chunk carries the new text with zero chunks holding the retired
+  sentence, and a further unchanged run skips again. The regression test asserts
+  at the gate and was confirmed to fail against the old `symbol_hash` comparison.
+
+
 - **`scripts/bident_burn_smoke.sh` never truncated anything.** The line ran
   `db truncate "$col" --yes`, and the flag is `-y/--force`, so clap rejected it
   and the bare fallback refused without confirmation. Both arms failed silently
