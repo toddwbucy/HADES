@@ -297,8 +297,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   Verified end to end in a throwaway database: first ingest embeds, an unchanged
   re-run skips with zero embeddings, a **comment-only** edit re-embeds and the
   stored chunk carries the new text with zero chunks holding the retired
-  sentence, and a further unchanged run skips again. The regression test asserts
-  at the gate and was confirmed to fail against the old `symbol_hash` comparison.
+  sentence, and a further unchanged run skips again. Two regression tests, one at
+  the gate and one driving `ingest_file` twice and reading the stored chunk text,
+  both confirmed to fail against the pre-fix gate.
 
 
 - **`scripts/bident_burn_smoke.sh` never truncated anything.** The line ran

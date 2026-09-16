@@ -2080,7 +2080,7 @@ async fn ingest_file(
         "language": lang.name(),
         "metrics": analysis.metrics,
         "symbol_hash": analysis.symbol_hash,
-                // Full-source digest. **This is what gates incremental re-ingest**
+        // Full-source digest. **This is what gates incremental re-ingest**
         // (#7) and what `codebase drift` compares. `symbol_hash` above is
         // deliberately name-only (see compute_symbol_hash), so a rewritten
         // body, changed signature, or edited comment leaves it identical; it
@@ -3506,6 +3506,22 @@ mod tests {
 
     /// Remove every trace of a test fixture file from the codebase graph.
     /// Sweep tag for the #159 live test's fixtures, across all PIDs.
+    /// How many of this file's stored chunks contain `needle`.
+    ///
+    /// The question #7 turns on: not how many chunks exist, but whether any of
+    /// them still carries text the source no longer has.
+    async fn count_chunks_containing(pool: &ArangoPool, fkey: &str, needle: &str) -> u64 {
+        let aql = "FOR c IN @@chunks FILTER c.file_key == @fk AND CONTAINS(c.text, @needle) \
+                   COLLECT WITH COUNT INTO n RETURN n";
+        let bind = json!({ "@chunks": CODEBASE.chunks, "fk": fkey, "needle": needle });
+        hades_core::db::query::query_single(pool, aql, Some(&bind), ExecutionTarget::Reader)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
+
     const FIXTURE_PREFIX_159: &str = "__hades_test159_";
 
     /// Sweep tag for the #193 live test's fixtures, across all PIDs.
@@ -3623,6 +3639,100 @@ mod tests {
     /// releases the guard *and* leaves it in force where nothing restores the
     /// purged data.
     ///
+    /// A comment-only edit re-chunks, and the retired text is *gone* (#7).
+    ///
+    /// The end-to-end half of the gate test below. That one asserts the decision;
+    /// this one drives `ingest_file` twice and reads the stored chunks, because
+    /// the harm reported in #7 was not a wrong decision in the abstract -- it was
+    /// `db_query` returning a sentence the source had retired, as if current.
+    ///
+    /// No embedder: chunks are stored either way, and the text is what is under
+    /// test. Runs in its own database, so the counts are exact.
+    #[tokio::test]
+    async fn a_comment_only_edit_removes_the_retired_chunk_text() {
+        with_temp_db("chunktext", Fixtures::Codebase, |pool| async move {
+            const RETIRED: &str = "the lock file is the subject of this resolution";
+            const REPLACEMENT: &str = "the flags gate nothing and the outer run resolved first";
+
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("manifest.rs");
+            let rel_path = format!("__hades_test7_{}/manifest.rs", std::process::id());
+            let fkey = keys::file_key(&rel_path);
+            let config = HadesConfig::default();
+
+            // Padding so the file chunks into more than one piece, with the
+            // sentence under test in a comment above a later symbol -- the exact
+            // shape of the edit that used to be skipped.
+            let body: String = (0..30)
+                .map(|i| {
+                    format!(
+                        "/// Padded documentation for generated function {i}, long enough \
+                         that the chunker emits several chunks for this file.\n\
+                         pub fn generated_{i}(input: u64) -> u64 {{ input + {i} }}\n\n"
+                    )
+                })
+                .collect();
+
+            let ingest = |src: String| {
+                let pool = pool.clone();
+                let path = path.clone();
+                let rel_path = rel_path.clone();
+                let config = config.clone();
+                async move {
+                    fs::write(&path, &src).unwrap();
+                    let mut imports = ImportContext::default();
+                    ingest_file(
+                        &pool,
+                        None,
+                        &config,
+                        &path,
+                        &rel_path,
+                        None,
+                        &mut imports,
+                        None,
+                        false,
+                        false,
+                        false,
+                        FALLBACK_WINDOW_CHARS,
+                    )
+                    .await
+                    .expect("ingest")
+                }
+            };
+
+            let first = ingest(format!("/// {RETIRED}\n{body}")).await;
+            assert!(
+                first.skipped.is_none_or(|s| !s),
+                "the first ingest must not skip"
+            );
+            assert_eq!(
+                count_chunks_containing(&pool, &fkey, RETIRED).await,
+                1,
+                "setup: the retired sentence must be stored before it is retired"
+            );
+
+            // Comment only. Every symbol name is identical, so the old
+            // `symbol_hash` gate skipped this and left the sentence behind.
+            let second = ingest(format!("/// {REPLACEMENT}\n{body}")).await;
+            assert!(
+                second.skipped.is_none_or(|s| !s),
+                "a comment-only edit must be re-processed, not skipped (#7)"
+            );
+            assert_eq!(
+                count_chunks_containing(&pool, &fkey, RETIRED).await,
+                0,
+                "the retired sentence is still in a stored chunk, which is what \
+                 #7 reported: semantic search serves it as current"
+            );
+            assert_eq!(
+                count_chunks_containing(&pool, &fkey, REPLACEMENT).await,
+                1,
+                "the replacement text must be stored"
+            );
+        })
+        .await
+    }
+
     /// The incremental gate reads `content_hash`, not `symbol_hash` (#7).
     ///
     /// The bug this guards: a comment-only edit leaves every symbol *name*
