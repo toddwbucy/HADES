@@ -1574,8 +1574,33 @@ async fn ingest_file(
         "selected code analyzer"
     );
 
-    // Check for incremental skip via symbol_hash.
-    // Only skip if the code is unchanged AND embeddings aren't needed (either
+    // Check for incremental skip via content_hash.
+    //
+    // **Not `symbol_hash`, which is name-only and cannot see a comment edit.**
+    // That was the gate until #7: `5c84d44` in one corpus changed two files in
+    // doc comments alone, touching no symbol-declaring line, so the names hashed
+    // identically, both files were reported `skipped`, and their stored chunks
+    // kept text the corpus had retired -- served by `db_query` as current while
+    // the symbol half, which rust-analyzer re-reads every run, moved on. The two
+    // halves of one file disagreed and only one of them is what search reads.
+    //
+    // The two hashes are not independent, so this is a replacement and not an
+    // addition: a byte-identical file has identical symbols, so `content_hash`
+    // unchanged implies `symbol_hash` unchanged. It is the strictly stronger
+    // predicate, and the weaker one was letting real changes through.
+    //
+    // Nor can the decision be split per artifact -- chunks on content, symbols
+    // on names. `symbol_key` hashes the line number, so a comment that adds
+    // eight lines moves every later symbol's key, and chunk documents reference
+    // those keys in `overlapping_symbols`. Refreshing chunks while leaving
+    // symbols would point fresh chunks at keys that no longer exist. Within one
+    // file the two move together or not at all.
+    //
+    // `symbol_hash` keeps its real job, which is cross-file: whether a file's
+    // *dependents* need their import and call edges re-resolved. See the
+    // `dangling_inbound` warning in the caller, which is about exactly that.
+    //
+    // Only skip if the content is unchanged AND embeddings aren't needed (either
     // already present or no embedder available to backfill). `--force` bypasses
     // this entirely, re-ingesting in place (#145) — the per-file purge below
     // touches only this file's own symbols and outbound edges, so inbound
@@ -1608,13 +1633,12 @@ async fn ingest_file(
             duration_ms: 0,
         });
     }
-    if !force
-        && check_unchanged(db, &fkey, &analysis.symbol_hash, embedder.is_some()).await?
-            == Some(true)
+    let content_hash = hades_core::code::compute_content_hash(&source);
+    if !force && check_unchanged(db, &fkey, &content_hash, embedder.is_some()).await? == Some(true)
     {
         debug!(
             path = rel_path,
-            "unchanged (same symbol_hash, embeddings present), skipping"
+            "unchanged (same content_hash, embeddings present), skipping"
         );
         return Ok(FileResult {
             path: rel_path.to_string(),
@@ -2056,13 +2080,15 @@ async fn ingest_file(
         "language": lang.name(),
         "metrics": analysis.metrics,
         "symbol_hash": analysis.symbol_hash,
-        // Full-source digest, stored alongside the symbol hash so `codebase
-        // drift` can see content staleness. `symbol_hash` is deliberately
-        // name-only (see compute_symbol_hash), so a rewritten body, changed
-        // signature, or edited comment leaves it identical — without this field
-        // nothing in the system can tell that stored chunks have gone stale
-        // (#183). Recorded only; it does not gate incremental re-ingest.
-        "content_hash": hades_core::code::compute_content_hash(&source),
+        // Full-source digest. **This is what gates incremental re-ingest**
+        // (#7) and what `codebase drift` compares. `symbol_hash` above is
+        // deliberately name-only (see compute_symbol_hash), so a rewritten
+        // body, changed signature, or edited comment leaves it identical; it
+        // gated the skip until #7 and let exactly those edits through, leaving
+        // stale chunks that semantic search served as current. `symbol_hash` is
+        // still stored, for the cross-file question of whether dependents need
+        // re-resolution (#183).
+        "content_hash": content_hash,
         "symbol_count": primitive_count,
         "chunk_count": num_chk,
         "embedding_count": num_embeddings_written,
@@ -2709,14 +2735,19 @@ async fn preserve_higher_fidelity(
 async fn check_unchanged(
     db: &ArangoPool,
     file_key: &str,
-    new_hash: &str,
+    new_content_hash: &str,
     embedder_available: bool,
 ) -> Result<Option<bool>> {
     match crud::get_document(db, CODEBASE.files, file_key).await {
         Ok(doc) => {
-            let stored_hash = doc["symbol_hash"].as_str().unwrap_or("");
-            if stored_hash != new_hash {
-                return Ok(Some(false)); // code changed, must re-process
+            // `content_hash` and not `symbol_hash` (#7). A row written before
+            // that field existed has none, so the empty string never matches a
+            // real digest and the file is re-processed once to record one --
+            // the same "no stored hash means changed" rule the document half
+            // uses, rather than a skip that could never be revisited.
+            let stored_hash = doc["content_hash"].as_str().unwrap_or("");
+            if stored_hash != new_content_hash {
+                return Ok(Some(false)); // content changed, must re-process
             }
             // Code unchanged. Skip only if embeddings aren't needed or already complete.
             if embedder_available {
@@ -3454,6 +3485,7 @@ fn is_semantic_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hades_core::test_support::{Fixtures, with_temp_db};
     use std::collections::HashSet;
     use std::fs;
     use tempfile::TempDir;
@@ -3474,6 +3506,22 @@ mod tests {
 
     /// Remove every trace of a test fixture file from the codebase graph.
     /// Sweep tag for the #159 live test's fixtures, across all PIDs.
+    /// How many of this file's stored chunks contain `needle`.
+    ///
+    /// The question #7 turns on: not how many chunks exist, but whether any of
+    /// them still carries text the source no longer has.
+    async fn count_chunks_containing(pool: &ArangoPool, fkey: &str, needle: &str) -> u64 {
+        let aql = "FOR c IN @@chunks FILTER c.file_key == @fk AND CONTAINS(c.text, @needle) \
+                   COLLECT WITH COUNT INTO n RETURN n";
+        let bind = json!({ "@chunks": CODEBASE.chunks, "fk": fkey, "needle": needle });
+        hades_core::db::query::query_single(pool, aql, Some(&bind), ExecutionTarget::Reader)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
+
     const FIXTURE_PREFIX_159: &str = "__hades_test159_";
 
     /// Sweep tag for the #193 live test's fixtures, across all PIDs.
@@ -3591,6 +3639,150 @@ mod tests {
     /// releases the guard *and* leaves it in force where nothing restores the
     /// purged data.
     ///
+    /// A comment-only edit re-chunks, and the retired text is *gone* (#7).
+    ///
+    /// The end-to-end half of the gate test below. That one asserts the decision;
+    /// this one drives `ingest_file` twice and reads the stored chunks, because
+    /// the harm reported in #7 was not a wrong decision in the abstract -- it was
+    /// `db_query` returning a sentence the source had retired, as if current.
+    ///
+    /// No embedder: chunks are stored either way, and the text is what is under
+    /// test. Runs in its own database, so the counts are exact.
+    #[tokio::test]
+    async fn a_comment_only_edit_removes_the_retired_chunk_text() {
+        with_temp_db("chunktext", Fixtures::Codebase, |pool| async move {
+            const RETIRED: &str = "the lock file is the subject of this resolution";
+            const REPLACEMENT: &str = "the flags gate nothing and the outer run resolved first";
+
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("manifest.rs");
+            let rel_path = format!("__hades_test7_{}/manifest.rs", std::process::id());
+            let fkey = keys::file_key(&rel_path);
+            let config = HadesConfig::default();
+
+            // Padding so the file chunks into more than one piece, with the
+            // sentence under test in a comment above a later symbol -- the exact
+            // shape of the edit that used to be skipped.
+            let body: String = (0..30)
+                .map(|i| {
+                    format!(
+                        "/// Padded documentation for generated function {i}, long enough \
+                         that the chunker emits several chunks for this file.\n\
+                         pub fn generated_{i}(input: u64) -> u64 {{ input + {i} }}\n\n"
+                    )
+                })
+                .collect();
+
+            let ingest = |src: String| {
+                let pool = pool.clone();
+                let path = path.clone();
+                let rel_path = rel_path.clone();
+                let config = config.clone();
+                async move {
+                    fs::write(&path, &src).unwrap();
+                    let mut imports = ImportContext::default();
+                    ingest_file(
+                        &pool,
+                        None,
+                        &config,
+                        &path,
+                        &rel_path,
+                        None,
+                        &mut imports,
+                        None,
+                        false,
+                        false,
+                        false,
+                        FALLBACK_WINDOW_CHARS,
+                    )
+                    .await
+                    .expect("ingest")
+                }
+            };
+
+            let first = ingest(format!("/// {RETIRED}\n{body}")).await;
+            assert!(
+                first.skipped.is_none_or(|s| !s),
+                "the first ingest must not skip"
+            );
+            assert_eq!(
+                count_chunks_containing(&pool, &fkey, RETIRED).await,
+                1,
+                "setup: the retired sentence must be stored before it is retired"
+            );
+
+            // Comment only. Every symbol name is identical, so the old
+            // `symbol_hash` gate skipped this and left the sentence behind.
+            let second = ingest(format!("/// {REPLACEMENT}\n{body}")).await;
+            assert!(
+                second.skipped.is_none_or(|s| !s),
+                "a comment-only edit must be re-processed, not skipped (#7)"
+            );
+            assert_eq!(
+                count_chunks_containing(&pool, &fkey, RETIRED).await,
+                0,
+                "the retired sentence is still in a stored chunk, which is what \
+                 #7 reported: semantic search serves it as current"
+            );
+            assert_eq!(
+                count_chunks_containing(&pool, &fkey, REPLACEMENT).await,
+                1,
+                "the replacement text must be stored"
+            );
+        })
+        .await
+    }
+
+    /// The incremental gate reads `content_hash`, not `symbol_hash` (#7).
+    ///
+    /// The bug this guards: a comment-only edit leaves every symbol *name*
+    /// identical, so the name-only `symbol_hash` matched and the file was
+    /// skipped while its stored chunks kept text the source had retired. A
+    /// corpus served that retired text through semantic search as current.
+    ///
+    /// Asserted at the gate rather than through a full ingest, because that is
+    /// where the decision is made and a full ingest needs an embedder.
+    #[tokio::test]
+    async fn the_gate_reads_content_hash_not_symbol_hash() {
+        with_temp_db("gate", Fixtures::Codebase, |pool| async move {
+            let fkey = "issue7__gate__lib_rs";
+            // A file as stored by a previous run.
+            let stored = json!({
+                "_key": fkey,
+                "path": "src/lib.rs",
+                "kind": "file",
+                "symbol_hash": "names-did-not-move",
+                "content_hash": "the-old-bytes",
+                "chunk_count": 2,
+                "embedding_count": 2,
+            });
+            crud::insert_documents(&pool, CODEBASE.files, &[stored], true)
+                .await
+                .expect("store fixture file node");
+
+            // The comment-only edit: same symbol names, different bytes. The
+            // gate must refuse to skip.
+            assert_eq!(
+                check_unchanged(&pool, fkey, "the-new-bytes", true)
+                    .await
+                    .expect("gate query"),
+                Some(false),
+                "a file whose content changed must be re-processed, even though \
+                 its symbol names are identical -- this is #7"
+            );
+
+            // And an untouched file must still skip, or incrementality is gone.
+            assert_eq!(
+                check_unchanged(&pool, fkey, "the-old-bytes", true)
+                    .await
+                    .expect("gate query"),
+                Some(true),
+                "an unchanged file must still skip"
+            );
+        })
+        .await
+    }
+
     /// Requires ArangoDB (skips if the socket is absent, per the integration
     /// test convention). PID-suffixed fixture keys. A failing assertion unwinds
     /// past the trailing cleanup, so the leading `cleanup_fixture_prefix` sweep
