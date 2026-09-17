@@ -291,11 +291,27 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   qualified name within a file, so this is the common shape rather than a corner.
   A rename is likewise not paired: the edge dangles, which is true.
 
+  **The re-point writes the canonical key rather than updating in place.** An
+  edge's `_key` is `edge_key(from, kind, to)`, and the analyzer phases re-resolve
+  cross-file `calls` and `implements` edges for every file in a run, skipped ones
+  included, writing them under the new target's key. Mutating `_to` therefore left
+  two documents for one relation, the phase's and a stale-keyed copy, which
+  traversals and neighbour counts double -- worse than the dangling edge it
+  replaced, because a duplicate is silent where a dangle was reported. Inserting
+  at the canonical key collapses with whatever the phase wrote.
+
+  Every read completes before any write, because the remap can chain: two symbols
+  sharing a qualified name can move so that one's new key is another's old key.
+  Resolving against a collection being written in the same query would drag an
+  edge past its own target. For the same reason a key being dropped is never a key
+  just written.
+
   Verified against the reproduction from #9: a comment growing above a symbol now
-  reports `repointed: 1, dangling: 0` with the edge resolving at the new key,
-  where it previously reported `dangling: 2` and did not resolve. A genuine
-  rename on the same fixture reports `repointed: 0, dangling: 2`, so the guard
-  holds. Six unit tests cover the pairing rule with no database.
+  reports `repointed: 2, dangling: 0` with one call edge and one import edge, both
+  resolving, where it previously reported `dangling: 2` and neither resolved. A
+  genuine rename reports `repointed: 0, dangling: 2`, so the guard holds. Six unit
+  tests cover the pairing rule with no database, and two live tests cover the
+  collapse and the chain.
 
 
 - **Tree ingest skipped files whose content changed, leaving stale chunks that
