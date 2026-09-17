@@ -2758,13 +2758,22 @@ async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u
         (CODEBASE.calls_edges, "calls"),
         (CODEBASE.implements_edges, "implements"),
     ] {
+        // Phase one: read, over every chunk, before anything is written.
+        //
+        // **The chunking must not break the read-before-write property.** Reads
+        // are chunked only to bound the bind parameter; if a write landed
+        // between two of them, a chain split across the boundary (`A -> B` in
+        // one chunk, `B -> C` in the next) would have the second chunk find the
+        // edge the first had just moved to B and drag it on to C, attaching a
+        // dependency to a definition nobody wrote. That is the failure the
+        // count-changed guard exists to prevent, reintroduced by the chunking.
+        let mut rewritten: Vec<Value> = Vec::new();
+        let mut superseded: Vec<String> = Vec::new();
         for window in remap.chunks(CHUNK) {
             let olds: Vec<String> = window
                 .iter()
                 .map(|(old, _)| format!("{}/{}", CODEBASE.symbols, old))
                 .collect();
-
-            // Read.
             let read = "FOR e IN @@edges FILTER e._to IN @olds RETURN e";
             let bind = json!({ "@edges": edges, "olds": olds });
             let found = match hades_core::db::query::query(
@@ -2784,9 +2793,6 @@ async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u
                 }
             };
 
-            // Map, in memory, against the targets as they were before any write.
-            let mut rewritten: Vec<Value> = Vec::new();
-            let mut superseded: Vec<String> = Vec::new();
             for doc in &found {
                 let (Some(old_id), Some(from_id), Some(old_key)) = (
                     doc["_to"].as_str(),
@@ -2817,45 +2823,50 @@ async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u
                 }
                 rewritten.push(next);
             }
-            if rewritten.is_empty() {
-                continue;
-            }
+        }
+        if rewritten.is_empty() {
+            continue;
+        }
 
-            // Write: the canonical document first, so a failure between the two
-            // leaves a duplicate rather than a hole, then drop the stale key.
-            if let Err(e) = crud::insert_documents(db, edges, &rewritten, true).await {
+        // A key being dropped can be a key just written. In a chain the edge
+        // that moved to B takes the key the edge leaving B used to hold, so a
+        // blind removal deletes a document written moments earlier and the
+        // relation disappears. Computed over the whole collection's work, not
+        // per chunk, for the same reason the reads are.
+        let written_keys: std::collections::HashSet<&str> = rewritten
+            .iter()
+            .filter_map(|d| d["_key"].as_str())
+            .collect();
+        superseded.retain(|k| !written_keys.contains(k.as_str()));
+
+        // Phase two: write. The canonical document first, so a failure between
+        // the two leaves a duplicate rather than a hole.
+        let mut wrote_all = true;
+        for batch in rewritten.chunks(CHUNK) {
+            if let Err(e) = crud::insert_documents(db, edges, batch, true).await {
                 warn!(collection = edges, error = %e, "could not write re-pointed edges");
-                continue;
+                wrote_all = false;
+                break;
             }
-            moved += rewritten.len() as u64;
-
-            // A key being dropped can be a key just written. In a chain
-            // (`A -> B`, `B -> C`) the edge that moved to B takes the key the
-            // edge leaving B used to hold, so a blind removal deletes the
-            // document written a moment ago and the relation disappears
-            // entirely. Caught by `a_chained_remap_does_not_drag_an_edge_past_
-            // its_target`, which is the test the chain finding asked for.
-            let written_keys: std::collections::HashSet<&str> = rewritten
-                .iter()
-                .filter_map(|d| d["_key"].as_str())
-                .collect();
-            superseded.retain(|k| !written_keys.contains(k.as_str()));
-
-            if !superseded.is_empty() {
-                let drop = "FOR k IN @keys REMOVE k IN @@edges OPTIONS { ignoreErrors: true }";
-                let bind = json!({ "@edges": edges, "keys": superseded });
-                if let Err(e) = hades_core::db::query::query(
-                    db,
-                    drop,
-                    Some(&bind),
-                    None,
-                    false,
-                    ExecutionTarget::Writer,
-                )
-                .await
-                {
-                    warn!(collection = edges, error = %e, "could not drop superseded edge keys");
-                }
+            moved += batch.len() as u64;
+        }
+        if !wrote_all {
+            continue;
+        }
+        for batch in superseded.chunks(CHUNK) {
+            let drop = "FOR k IN @keys REMOVE k IN @@edges OPTIONS { ignoreErrors: true }";
+            let bind = json!({ "@edges": edges, "keys": batch });
+            if let Err(e) = hades_core::db::query::query(
+                db,
+                drop,
+                Some(&bind),
+                None,
+                false,
+                ExecutionTarget::Writer,
+            )
+            .await
+            {
+                warn!(collection = edges, error = %e, "could not drop superseded edge keys");
             }
         }
     }
@@ -4135,6 +4146,69 @@ mod tests {
                 ],
                 "each edge follows its own symbol; both landing on the last key \
                  would mean an edge was dragged through the chain"
+            );
+        })
+        .await
+    }
+
+    /// A chain split across the read chunk boundary still resolves correctly.
+    ///
+    /// The chunking that keeps a repository-wide remap out of one bind parameter
+    /// must not reintroduce the hazard it sits beside: if a write landed between
+    /// two reads, the chunk holding `B -> C` would find the edge the chunk
+    /// holding `A -> B` had just moved to B, and drag it on to C. Padding puts
+    /// the two halves of one chain in different read chunks.
+    #[tokio::test]
+    async fn a_chain_across_a_chunk_boundary_is_not_dragged() {
+        with_temp_db("chunkchain", Fixtures::Codebase, |pool| async move {
+            const CHUNK: usize = 2_000;
+            let caller = "f_c_rs__calls_it__aaa";
+            let (a, b, c) = ("f_p_rs__dup__a", "f_p_rs__dup__b", "f_p_rs__dup__c");
+
+            let syms: Vec<Value> = [b, c]
+                .iter()
+                .map(|k| {
+                    json!({ "_key": k, "file_key": "f_p_rs",
+                            "qualified_name": "dup", "start_line": 1 })
+                })
+                .collect();
+            crud::insert_documents(&pool, CODEBASE.symbols, &syms, true)
+                .await
+                .expect("symbols");
+
+            let edges: Vec<Value> = [a, b]
+                .iter()
+                .map(|t| {
+                    json!({ "_key": keys::edge_key(caller, "calls", t),
+                            "_from": format!("{}/{}", CODEBASE.symbols, caller),
+                            "_to": format!("{}/{}", CODEBASE.symbols, t) })
+                })
+                .collect();
+            crud::insert_documents(&pool, CODEBASE.calls_edges, &edges, true)
+                .await
+                .expect("edges");
+
+            // `A -> B` first, then enough inert pairs to fill the chunk, so
+            // `B -> C` lands in the next read.
+            let mut remap = vec![(a.to_string(), b.to_string())];
+            remap.extend(
+                (0..CHUNK).map(|i| (format!("f_pad__{i}__old"), format!("f_pad__{i}__new"))),
+            );
+            remap.push((b.to_string(), c.to_string()));
+            assert!(remap.len() > CHUNK, "the chain must span two read chunks");
+
+            repoint_inbound_edges(&pool, &remap).await;
+
+            let mut targets = edge_targets(&pool, CODEBASE.calls_edges).await;
+            targets.sort();
+            assert_eq!(
+                targets,
+                vec![
+                    format!("{}/{}", CODEBASE.symbols, b),
+                    format!("{}/{}", CODEBASE.symbols, c),
+                ],
+                "a chain split across chunks must still send each edge to its own \
+                 symbol; both on the last key means a write landed between reads"
             );
         })
         .await

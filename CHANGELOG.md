@@ -303,8 +303,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   Every read completes before any write, because the remap can chain: two symbols
   sharing a qualified name can move so that one's new key is another's old key.
   Resolving against a collection being written in the same query would drag an
-  edge past its own target. For the same reason a key being dropped is never a key
-  just written.
+  edge past its own target. That holds across the whole remap and not merely
+  within a chunk -- chunking the reads to bound the bind parameter would otherwise
+  reintroduce the hazard at the boundary, with the chunk holding `B -> C` finding
+  the edge the chunk holding `A -> B` had just moved. For the same reason a key
+  being dropped is never a key just written.
 
   Verified against the reproduction from #9: a comment growing above a symbol now
   reports `repointed: 2, dangling: 0` with one call edge and one import edge, both
