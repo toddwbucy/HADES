@@ -112,6 +112,17 @@ struct ImportContext {
     cpp_file_symbols: HashMap<String, Vec<Symbol>>,
     /// Lower-fidelity files used for syntax-only relationship resolution.
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
+    /// Old symbol key -> the key that replaced it, for symbols this run moved
+    /// without renaming (#9).
+    ///
+    /// `symbol_key` hashes the definition line, so a comment inserted above a
+    /// symbol changes its key while its name and its meaning stay put. The file
+    /// is rewritten under the new keys and a *dependent* that did not change is
+    /// skipped, leaving its stored edge pointing at a key nothing holds. The
+    /// pairing is computed where both sides are known -- inside the rewrite,
+    /// with the pre-purge symbols still readable -- because after the purge the
+    /// old keys are gone and a key cannot be reversed into a name.
+    symbol_key_remap: Vec<(String, String)>,
 }
 
 /// One half of an ingest, as data rather than as printed output.
@@ -263,6 +274,7 @@ pub async fn run_phase(
         rust_file_symbols: HashMap::new(),
         cpp_file_symbols: HashMap::new(),
         structural_file_symbols: HashMap::new(),
+        symbol_key_remap: Vec::new(),
     };
     // Collect absolute paths for Rust files — used for rust-analyzer post-loop phase.
     let mut rust_abs_paths: Vec<PathBuf> = Vec::new();
@@ -703,16 +715,31 @@ pub async fn run_phase(
     // records a real dependency, and removing it would erase the only signal
     // that the dependent needs re-ingesting. Runs after the enrichment phases so
     // a symbol rust-analyzer/gopls recreates is not counted as gone.
+    // Re-point what moved before counting what is left (#9). A symbol that kept
+    // its name and changed only its line is the common case, and its dependents
+    // were skipped precisely because nothing about them changed -- so the edge is
+    // still correct about the dependency and wrong only about the key.
+    let repointed = repoint_inbound_edges(&db, &imports.symbol_key_remap).await;
+    if repointed > 0 {
+        info!(
+            edges = repointed,
+            symbols = imports.symbol_key_remap.len(),
+            "re-pointed inbound edges onto symbols that moved without being renamed"
+        );
+    }
+
     let dangling_inbound = count_dangling_inbound(&db, &rewritten_file_keys).await;
     if dangling_inbound > 0 {
         warn!(
             edges = dangling_inbound,
-            "inbound edges now point at symbols this run removed; re-run \
-             `codebase ingest --force <the same ingest root>` to re-resolve \
-             them (--force because the dependents' own symbol_hash is \
-             unchanged, and the original root because keys are relative to it \
-             -- a narrower path re-bases them and writes duplicate nodes), or \
-             run `hades codebase prune-orphans` to drop them"
+            "inbound edges point at symbols this run removed and could not be \
+             re-pointed: the symbol was renamed or dropped, or its qualified name \
+             gained or lost a sibling, which makes position stop identifying it; \
+             re-run `codebase ingest --force <the same ingest root>` to re-resolve \
+             them (--force because the dependents' own content_hash is unchanged, \
+             and the original root because keys are relative to it -- a narrower \
+             path re-bases them and writes duplicate nodes), or run \
+             `hades codebase prune-orphans` to drop them"
         );
     }
 
@@ -757,7 +784,10 @@ pub async fn run_phase(
         // Inbound edges now pointing at symbols this run removed. Surfaced in
         // the JSON contract, not just stderr, so an agent parsing stdout sees
         // that the graph needs attention rather than only "completed: N".
-        "dangling_inbound_edges": dangling_inbound,
+                        "dangling_inbound_edges": dangling_inbound,
+        // Inbound edges re-pointed onto symbols that moved without being
+        // renamed (#9), as opposed to the ones above, which could not be.
+        "repointed_inbound_edges": repointed,
         "import_edges": total_import_edges,
         "python_import_edges": py_import_edges.len(),
         "rust_import_edges": rs_import_edges.len(),
@@ -1661,6 +1691,11 @@ async fn ingest_file(
     // the file actually changed (the unchanged-skip returned above), so an
     // unchanged file — which has no orphans — is never needlessly purged.
     // RA enrichment runs afterward and *augments* the freshly-written syn set.
+    // Read the symbols about to be destroyed, so the rewrite can be paired with
+    // its predecessor (#9). After the purge a key cannot be reversed into a
+    // name, so this is the only moment both sides are knowable.
+    let previous_symbols = existing_symbol_identities(db, &fkey).await;
+
     purge_file_symbols_and_edges(db, &fkey).await;
 
     // Collect Python import symbols for later edge resolution.
@@ -2068,6 +2103,13 @@ async fn ingest_file(
     // counting the input would over-report and break `symbol_count_consistency`
     // (#113). With qualified-name keying collisions should not occur, but this
     // keeps the denorm honest regardless.
+    // Pair the old keys with the new ones, for symbols that moved without being
+    // renamed. Recorded on the shared context and applied after every file has
+    // been written, because a dependent may itself be rewritten later in the run.
+    imports
+        .symbol_key_remap
+        .extend(pair_moved_symbol_keys(&previous_symbols, &symbol_docs));
+
     let primitive_count = symbol_docs
         .iter()
         .filter_map(|d| d["_key"].as_str())
@@ -2576,6 +2618,259 @@ async fn count_dangling_inbound(db: &ArangoPool, file_keys: &[String]) -> u64 {
         }
     }
     dangling
+}
+
+/// The symbols a file holds right now, as `(qualified_name, start_line, key)`.
+///
+/// Read immediately before a purge so the rewrite can be paired with what it
+/// replaced (#9). Ordered by line, because the pairing is positional among
+/// symbols that share a qualified name.
+async fn existing_symbol_identities(db: &ArangoPool, file_key: &str) -> Vec<(String, u64, String)> {
+    let aql = "FOR s IN @@symbols FILTER s.file_key == @key \
+               SORT s.start_line, s._key \
+               RETURN [s.qualified_name, s.start_line, s._key]";
+    let bind = json!({ "@symbols": CODEBASE.symbols, "key": file_key });
+    match hades_core::db::query::query(db, aql, Some(&bind), None, false, ExecutionTarget::Reader)
+        .await
+    {
+        Ok(r) => r
+            .results
+            .iter()
+            .filter_map(|row| {
+                let a = row.as_array()?;
+                Some((
+                    a.first()?.as_str()?.to_string(),
+                    a.get(1)?.as_u64().unwrap_or(0),
+                    a.get(2)?.as_str()?.to_string(),
+                ))
+            })
+            .collect(),
+        Err(e) => {
+            debug!(file_key, error = %e, "could not read prior symbols; no remap for this file");
+            Vec::new()
+        }
+    }
+}
+
+/// Pair each old symbol key with the key that replaced it.
+///
+/// Matched on `(qualified_name, position among symbols sharing that name)`,
+/// which is stable when a file's text moves but its symbol set does not -- the
+/// case #9 is about. Names are not unique within a file (618 colliding groups in
+/// one real corpus), so the position is what disambiguates, exactly as the line
+/// does in the key itself.
+///
+/// **A name whose count changed is deliberately not paired.** If a file gained
+/// or lost one of three `Config::new`s, position no longer identifies the same
+/// symbol, and a wrong pairing would silently re-point a dependency at the wrong
+/// definition. An unpaired symbol leaves its inbound edges dangling, which is
+/// true and visible, and `count_dangling_inbound` still reports it.
+fn pair_moved_symbol_keys(
+    previous: &[(String, u64, String)],
+    written: &[Value],
+) -> Vec<(String, String)> {
+    if previous.is_empty() {
+        return Vec::new();
+    }
+    let mut now: Vec<(String, u64, String)> = written
+        .iter()
+        .filter_map(|d| {
+            Some((
+                d["qualified_name"].as_str()?.to_string(),
+                d["start_line"].as_u64().unwrap_or(0),
+                d["_key"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    now.sort_by(|a, b| (a.1, &a.2).cmp(&(b.1, &b.2)));
+    // Two symbol documents can collide on one `_key`, which the upsert then
+    // collapses -- the same reason `primitive_count` counts the deduplicated
+    // set. Counting the pre-dedup docs here would make the after-count exceed
+    // what the database holds, trip the count-changed guard, and silently drop a
+    // remap that was correct.
+    now.dedup_by(|a, b| a.2 == b.2);
+
+    let mut by_name_before: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, _, key) in previous {
+        by_name_before.entry(name.as_str()).or_default().push(key);
+    }
+    let mut by_name_after: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, _, key) in &now {
+        by_name_after.entry(name.as_str()).or_default().push(key);
+    }
+
+    let mut pairs = Vec::new();
+    for (name, before) in by_name_before {
+        let Some(after) = by_name_after.get(name) else {
+            continue; // the name is gone: a real removal, not a move
+        };
+        if before.len() != after.len() {
+            continue; // the count changed: position no longer identifies
+        }
+        for (old, new) in before.iter().zip(after.iter()) {
+            if old != new {
+                pairs.push(((*old).to_string(), (*new).to_string()));
+            }
+        }
+    }
+    pairs
+}
+
+/// Re-point inbound edges from a symbol's old key onto its replacement.
+///
+/// Returns how many edges were moved.
+///
+/// **Written under the canonical key, not updated in place.** An edge's `_key`
+/// is `edge_key(from, kind, to)`, so changing `_to` with an `UPDATE` leaves the
+/// key describing the old target. That is not merely untidy: the rust-analyzer
+/// and gopls phases re-resolve cross-file `calls` and `implements` edges for
+/// *every* file in the run, skipped ones included, and write them under the
+/// canonical new key. An in-place update therefore left two documents for one
+/// relation -- the phase's correct one and this one, stale-keyed -- which
+/// traversals and neighbour counts both double. Inserting at the canonical key
+/// collapses with whatever the phase wrote, and removing the old document
+/// leaves exactly one edge. Found by review of #11 before it merged.
+///
+/// **Every read completes before any write.** The remap can chain: two symbols
+/// sharing a qualified name can move such that one's new key is another's old
+/// key (`A -> B` and `B -> C` in the same file). Resolving edges against a
+/// collection that is being written in the same query would drag an edge for the
+/// first symbol onto the third position, silently attaching a dependency to a
+/// definition nobody wrote. Reading first fixes each edge's destination from its
+/// pre-move target, which is the only reading that means anything.
+async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u64 {
+    if remap.is_empty() {
+        return 0;
+    }
+    // One write transaction per chunk. A reformat or a licence-header sweep can
+    // move every symbol in a repository, and the whole remap in one bind
+    // parameter is a multi-megabyte body against three collections.
+    const CHUNK: usize = 2_000;
+
+    let by_old: HashMap<&str, &str> = remap
+        .iter()
+        .map(|(old, new)| (old.as_str(), new.as_str()))
+        .collect();
+    let mut moved = 0u64;
+
+    for (edges, kind) in [
+        (CODEBASE.imports_edges, "imports"),
+        (CODEBASE.calls_edges, "calls"),
+        (CODEBASE.implements_edges, "implements"),
+    ] {
+        // Phase one: read, over every chunk, before anything is written.
+        //
+        // **The chunking must not break the read-before-write property.** Reads
+        // are chunked only to bound the bind parameter; if a write landed
+        // between two of them, a chain split across the boundary (`A -> B` in
+        // one chunk, `B -> C` in the next) would have the second chunk find the
+        // edge the first had just moved to B and drag it on to C, attaching a
+        // dependency to a definition nobody wrote. That is the failure the
+        // count-changed guard exists to prevent, reintroduced by the chunking.
+        let mut rewritten: Vec<Value> = Vec::new();
+        let mut superseded: Vec<String> = Vec::new();
+        for window in remap.chunks(CHUNK) {
+            let olds: Vec<String> = window
+                .iter()
+                .map(|(old, _)| format!("{}/{}", CODEBASE.symbols, old))
+                .collect();
+            let read = "FOR e IN @@edges FILTER e._to IN @olds RETURN e";
+            let bind = json!({ "@edges": edges, "olds": olds });
+            let found = match hades_core::db::query::query(
+                db,
+                read,
+                Some(&bind),
+                None,
+                false,
+                ExecutionTarget::Reader,
+            )
+            .await
+            {
+                Ok(r) => r.results,
+                Err(e) => {
+                    warn!(collection = edges, error = %e, "could not read edges to re-point");
+                    continue;
+                }
+            };
+
+            for doc in &found {
+                let (Some(old_id), Some(from_id), Some(old_key)) = (
+                    doc["_to"].as_str(),
+                    doc["_from"].as_str(),
+                    doc["_key"].as_str(),
+                ) else {
+                    continue;
+                };
+                let old_suffix = old_id.rsplit('/').next().unwrap_or(old_id);
+                let Some(new_suffix) = by_old.get(old_suffix) else {
+                    continue;
+                };
+                let from_suffix = from_id.rsplit('/').next().unwrap_or(from_id);
+                let new_key = keys::edge_key(from_suffix, kind, new_suffix);
+
+                let mut next = doc.clone();
+                if let Some(obj) = next.as_object_mut() {
+                    obj.remove("_id");
+                    obj.remove("_rev");
+                    obj.insert("_key".into(), json!(new_key));
+                    obj.insert(
+                        "_to".into(),
+                        json!(format!("{}/{}", CODEBASE.symbols, new_suffix)),
+                    );
+                }
+                if new_key != old_key {
+                    superseded.push(old_key.to_string());
+                }
+                rewritten.push(next);
+            }
+        }
+        if rewritten.is_empty() {
+            continue;
+        }
+
+        // A key being dropped can be a key just written. In a chain the edge
+        // that moved to B takes the key the edge leaving B used to hold, so a
+        // blind removal deletes a document written moments earlier and the
+        // relation disappears. Computed over the whole collection's work, not
+        // per chunk, for the same reason the reads are.
+        let written_keys: std::collections::HashSet<&str> = rewritten
+            .iter()
+            .filter_map(|d| d["_key"].as_str())
+            .collect();
+        superseded.retain(|k| !written_keys.contains(k.as_str()));
+
+        // Phase two: write. The canonical document first, so a failure between
+        // the two leaves a duplicate rather than a hole.
+        let mut wrote_all = true;
+        for batch in rewritten.chunks(CHUNK) {
+            if let Err(e) = crud::insert_documents(db, edges, batch, true).await {
+                warn!(collection = edges, error = %e, "could not write re-pointed edges");
+                wrote_all = false;
+                break;
+            }
+            moved += batch.len() as u64;
+        }
+        if !wrote_all {
+            continue;
+        }
+        for batch in superseded.chunks(CHUNK) {
+            let drop = "FOR k IN @keys REMOVE k IN @@edges OPTIONS { ignoreErrors: true }";
+            let bind = json!({ "@edges": edges, "keys": batch });
+            if let Err(e) = hades_core::db::query::query(
+                db,
+                drop,
+                Some(&bind),
+                None,
+                false,
+                ExecutionTarget::Writer,
+            )
+            .await
+            {
+                warn!(collection = edges, error = %e, "could not drop superseded edge keys");
+            }
+        }
+    }
+    moved
 }
 
 /// Purge a file's existing symbols and the **source-owned (outgoing) edges**
@@ -3731,6 +4026,355 @@ mod tests {
             );
         })
         .await
+    }
+
+    // --- symbol key remapping (#9) ------------------------------------------
+
+    /// Re-pointing collapses onto the canonical key instead of duplicating.
+    ///
+    /// The rust-analyzer and gopls phases re-resolve cross-file `calls` and
+    /// `implements` edges for every file in the run, skipped ones included, and
+    /// write them under `edge_key(from, kind, to)` for the *new* target. An
+    /// in-place `UPDATE` of `_to` left the old document beside that one, keyed
+    /// for a target it no longer names: two documents for one relation, which
+    /// traversals and neighbour counts double. Found by review of #11.
+    #[tokio::test]
+    async fn re_pointing_collapses_onto_the_canonical_edge() {
+        with_temp_db("repoint", Fixtures::Codebase, |pool| async move {
+            let caller = "f_consumer_rs__calls_it__aaa";
+            let (old, new) = ("f_provider_rs__target__old", "f_provider_rs__target__new");
+
+            // Only the new symbol exists: the file was rewritten.
+            let sym = json!({ "_key": new, "file_key": "f_provider_rs",
+                              "qualified_name": "target", "start_line": 20 });
+            crud::insert_documents(&pool, CODEBASE.symbols, &[sym], true)
+                .await
+                .expect("symbol");
+
+            // What the analyzer phase already wrote, at the canonical key.
+            let canonical = keys::edge_key(caller, "calls", new);
+            let rebuilt = json!({ "_key": canonical,
+                "_from": format!("{}/{}", CODEBASE.symbols, caller),
+                "_to": format!("{}/{}", CODEBASE.symbols, new) });
+            // And the stale one the skipped dependent still owns.
+            let stale_key = keys::edge_key(caller, "calls", old);
+            let stale = json!({ "_key": stale_key,
+                "_from": format!("{}/{}", CODEBASE.symbols, caller),
+                "_to": format!("{}/{}", CODEBASE.symbols, old) });
+            crud::insert_documents(&pool, CODEBASE.calls_edges, &[rebuilt, stale], true)
+                .await
+                .expect("edges");
+            assert_eq!(count_all(&pool, CODEBASE.calls_edges).await, 2, "setup");
+
+            repoint_inbound_edges(&pool, &[(old.to_string(), new.to_string())]).await;
+
+            assert_eq!(
+                count_all(&pool, CODEBASE.calls_edges).await,
+                1,
+                "one relation must leave one edge; an in-place update leaves two, \
+                 the analyzer's and a stale-keyed copy"
+            );
+            let keys_left = edge_keys(&pool, CODEBASE.calls_edges).await;
+            assert_eq!(
+                keys_left,
+                vec![canonical],
+                "the surviving edge must carry the canonical key for its target"
+            );
+            assert_eq!(
+                dangling_in(&pool, CODEBASE.calls_edges).await,
+                0,
+                "the surviving edge must resolve"
+            );
+        })
+        .await
+    }
+
+    /// A chained remap sends each edge to its own target, not the last one.
+    ///
+    /// Two symbols sharing a qualified name can move so that one's new key is
+    /// another's old key (`A -> B` and `B -> C`). Resolving against a collection
+    /// being written in the same query would drag the edge for the first symbol
+    /// onto the third position, attaching a dependency to a definition nobody
+    /// wrote -- the very outcome the count-changed guard exists to prevent.
+    /// Reading every edge before writing any is what makes this hold.
+    #[tokio::test]
+    async fn a_chained_remap_does_not_drag_an_edge_past_its_target() {
+        with_temp_db("chain", Fixtures::Codebase, |pool| async move {
+            let caller = "f_c_rs__calls_it__aaa";
+            let (a, b, c) = ("f_p_rs__dup__a", "f_p_rs__dup__b", "f_p_rs__dup__c");
+
+            let syms: Vec<Value> = [b, c]
+                .iter()
+                .map(|k| {
+                    json!({ "_key": k, "file_key": "f_p_rs",
+                                 "qualified_name": "dup", "start_line": 1 })
+                })
+                .collect();
+            crud::insert_documents(&pool, CODEBASE.symbols, &syms, true)
+                .await
+                .expect("symbols");
+
+            let edges: Vec<Value> = [a, b]
+                .iter()
+                .map(|t| {
+                    json!({ "_key": keys::edge_key(caller, "calls", t),
+                            "_from": format!("{}/{}", CODEBASE.symbols, caller),
+                            "_to": format!("{}/{}", CODEBASE.symbols, t) })
+                })
+                .collect();
+            crud::insert_documents(&pool, CODEBASE.calls_edges, &edges, true)
+                .await
+                .expect("edges");
+
+            // A moved to where B was; B moved on to C.
+            repoint_inbound_edges(
+                &pool,
+                &[
+                    (a.to_string(), b.to_string()),
+                    (b.to_string(), c.to_string()),
+                ],
+            )
+            .await;
+
+            let mut targets = edge_targets(&pool, CODEBASE.calls_edges).await;
+            targets.sort();
+            assert_eq!(
+                targets,
+                vec![
+                    format!("{}/{}", CODEBASE.symbols, b),
+                    format!("{}/{}", CODEBASE.symbols, c),
+                ],
+                "each edge follows its own symbol; both landing on the last key \
+                 would mean an edge was dragged through the chain"
+            );
+        })
+        .await
+    }
+
+    /// A chain split across the read chunk boundary still resolves correctly.
+    ///
+    /// The chunking that keeps a repository-wide remap out of one bind parameter
+    /// must not reintroduce the hazard it sits beside: if a write landed between
+    /// two reads, the chunk holding `B -> C` would find the edge the chunk
+    /// holding `A -> B` had just moved to B, and drag it on to C. Padding puts
+    /// the two halves of one chain in different read chunks.
+    #[tokio::test]
+    async fn a_chain_across_a_chunk_boundary_is_not_dragged() {
+        with_temp_db("chunkchain", Fixtures::Codebase, |pool| async move {
+            const CHUNK: usize = 2_000;
+            let caller = "f_c_rs__calls_it__aaa";
+            let (a, b, c) = ("f_p_rs__dup__a", "f_p_rs__dup__b", "f_p_rs__dup__c");
+
+            let syms: Vec<Value> = [b, c]
+                .iter()
+                .map(|k| {
+                    json!({ "_key": k, "file_key": "f_p_rs",
+                            "qualified_name": "dup", "start_line": 1 })
+                })
+                .collect();
+            crud::insert_documents(&pool, CODEBASE.symbols, &syms, true)
+                .await
+                .expect("symbols");
+
+            let edges: Vec<Value> = [a, b]
+                .iter()
+                .map(|t| {
+                    json!({ "_key": keys::edge_key(caller, "calls", t),
+                            "_from": format!("{}/{}", CODEBASE.symbols, caller),
+                            "_to": format!("{}/{}", CODEBASE.symbols, t) })
+                })
+                .collect();
+            crud::insert_documents(&pool, CODEBASE.calls_edges, &edges, true)
+                .await
+                .expect("edges");
+
+            // `A -> B` first, then enough inert pairs to fill the chunk, so
+            // `B -> C` lands in the next read.
+            let mut remap = vec![(a.to_string(), b.to_string())];
+            remap.extend(
+                (0..CHUNK).map(|i| (format!("f_pad__{i}__old"), format!("f_pad__{i}__new"))),
+            );
+            remap.push((b.to_string(), c.to_string()));
+            assert!(remap.len() > CHUNK, "the chain must span two read chunks");
+
+            repoint_inbound_edges(&pool, &remap).await;
+
+            let mut targets = edge_targets(&pool, CODEBASE.calls_edges).await;
+            targets.sort();
+            assert_eq!(
+                targets,
+                vec![
+                    format!("{}/{}", CODEBASE.symbols, b),
+                    format!("{}/{}", CODEBASE.symbols, c),
+                ],
+                "a chain split across chunks must still send each edge to its own \
+                 symbol; both on the last key means a write landed between reads"
+            );
+        })
+        .await
+    }
+
+    async fn count_all(pool: &ArangoPool, col: &str) -> u64 {
+        let aql = "FOR d IN @@col COLLECT WITH COUNT INTO n RETURN n";
+        hades_core::db::query::query_single(
+            pool,
+            aql,
+            Some(&json!({ "@col": col })),
+            ExecutionTarget::Reader,
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+    }
+
+    async fn edge_keys(pool: &ArangoPool, col: &str) -> Vec<String> {
+        rows_of(pool, "FOR e IN @@col SORT e._key RETURN e._key", col).await
+    }
+
+    async fn edge_targets(pool: &ArangoPool, col: &str) -> Vec<String> {
+        rows_of(pool, "FOR e IN @@col RETURN e._to", col).await
+    }
+
+    async fn rows_of(pool: &ArangoPool, aql: &str, col: &str) -> Vec<String> {
+        hades_core::db::query::query(
+            pool,
+            aql,
+            Some(&json!({ "@col": col })),
+            None,
+            false,
+            ExecutionTarget::Reader,
+        )
+        .await
+        .map(|r| {
+            r.results
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    async fn dangling_in(pool: &ArangoPool, col: &str) -> u64 {
+        let aql = "FOR e IN @@col FILTER DOCUMENT(e._to) == null \
+                   COLLECT WITH COUNT INTO n RETURN n";
+        hades_core::db::query::query_single(
+            pool,
+            aql,
+            Some(&json!({ "@col": col })),
+            ExecutionTarget::Reader,
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+    }
+
+    fn sym(name: &str, line: u64, key: &str) -> (String, u64, String) {
+        (name.to_string(), line, key.to_string())
+    }
+
+    fn written(name: &str, line: u64, key: &str) -> Value {
+        json!({ "qualified_name": name, "start_line": line, "_key": key })
+    }
+
+    /// A symbol that moved without being renamed is paired with its replacement.
+    ///
+    /// The #9 case: a comment grows above a symbol, its definition line moves,
+    /// `symbol_key` hashes the line, and a dependent that was skipped still
+    /// names the old key.
+    #[test]
+    fn a_moved_symbol_is_paired_with_its_new_key() {
+        let before = vec![
+            sym("first", 2, "f__first__aaa"),
+            sym("target", 8, "f__target__bbb"),
+        ];
+        let after = vec![
+            written("first", 2, "f__first__aaa"),
+            written("target", 14, "f__target__ccc"),
+        ];
+        let pairs = pair_moved_symbol_keys(&before, &after);
+        assert_eq!(
+            pairs,
+            vec![("f__target__bbb".to_string(), "f__target__ccc".to_string())],
+            "only the symbol whose key changed is paired"
+        );
+    }
+
+    /// A renamed symbol is NOT paired, so its dependents dangle honestly.
+    ///
+    /// Re-pointing here would silently attach a dependency to a definition the
+    /// author did not write, which is worse than the dangling edge it replaces.
+    #[test]
+    fn a_renamed_symbol_is_not_paired() {
+        let before = vec![sym("old_name", 4, "f__old_name__aaa")];
+        let after = vec![written("new_name", 4, "f__new_name__bbb")];
+        assert!(
+            pair_moved_symbol_keys(&before, &after).is_empty(),
+            "a rename must not be re-pointed: the name is gone, not moved"
+        );
+    }
+
+    /// When a name's count changes, position no longer identifies a symbol.
+    ///
+    /// Three `Config::new` become two and the survivors shift up. Pairing by
+    /// position would attach a dependent to a different definition that happens
+    /// to sit where the old one did. 618 groups in one real corpus share a
+    /// qualified name, so this is the common shape, not a corner.
+    #[test]
+    fn a_name_whose_count_changed_is_not_paired() {
+        let before = vec![
+            sym("Config::new", 10, "f__Config__new__a"),
+            sym("Config::new", 20, "f__Config__new__b"),
+            sym("Config::new", 30, "f__Config__new__c"),
+        ];
+        let after = vec![
+            written("Config::new", 10, "f__Config__new__a"),
+            written("Config::new", 25, "f__Config__new__d"),
+        ];
+        assert!(
+            pair_moved_symbol_keys(&before, &after).is_empty(),
+            "an ambiguous set must be left alone, not guessed at"
+        );
+    }
+
+    /// Same count, all moved: each is paired in line order.
+    #[test]
+    fn same_named_symbols_pair_in_line_order() {
+        let before = vec![
+            sym("Wire::id", 10, "f__Wire__id__a"),
+            sym("Wire::id", 20, "f__Wire__id__b"),
+        ];
+        let after = vec![
+            written("Wire::id", 16, "f__Wire__id__x"),
+            written("Wire::id", 26, "f__Wire__id__y"),
+        ];
+        let mut pairs = pair_moved_symbol_keys(&before, &after);
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("f__Wire__id__a".to_string(), "f__Wire__id__x".to_string()),
+                ("f__Wire__id__b".to_string(), "f__Wire__id__y".to_string()),
+            ],
+            "the first of the pair maps to the first, by line"
+        );
+    }
+
+    /// A file whose symbols did not move produces no work.
+    #[test]
+    fn an_unmoved_file_pairs_nothing() {
+        let before = vec![sym("a", 1, "f__a__k"), sym("b", 9, "f__b__k")];
+        let after = vec![written("a", 1, "f__a__k"), written("b", 9, "f__b__k")];
+        assert!(pair_moved_symbol_keys(&before, &after).is_empty());
+    }
+
+    /// A first ingest has nothing to pair against.
+    #[test]
+    fn a_new_file_pairs_nothing() {
+        assert!(pair_moved_symbol_keys(&[], &[written("a", 1, "f__a__k")]).is_empty());
     }
 
     /// The incremental gate reads `content_hash`, not `symbol_hash` (#7).

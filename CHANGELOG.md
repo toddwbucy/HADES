@@ -269,6 +269,54 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- **A partial re-ingest no longer dangles a dependent's edges** (#9). `symbol_key`
+  hashes the definition line, so a comment inserted above a symbol changes its key
+  while its name and meaning stay put. The edited file is rewritten under new
+  keys, a dependent whose own content did not change is skipped, and its stored
+  import or call edge is left naming a key nothing holds. #8 made this fire far
+  more often, since comment edits now re-ingest where they used to skip.
+
+  The ingest pairs each old symbol key with the key that replaced it and
+  re-points the inbound edges. Pairing is by `(qualified_name, position among
+  symbols sharing that name)`, computed inside the rewrite where both sides are
+  still knowable -- after the purge a key cannot be reversed into a name. The
+  envelope gains `repointed_inbound_edges` beside the existing
+  `dangling_inbound_edges`, which now means "renamed or removed" rather than
+  "moved or renamed or removed".
+
+  **A name whose count changed is deliberately left unpaired.** Position stops
+  identifying a symbol when one of three `Config::new` is deleted, and a wrong
+  pairing would silently attach a dependency to a definition nobody wrote --
+  worse than the dangling edge it replaced. 618 groups in one real corpus share a
+  qualified name within a file, so this is the common shape rather than a corner.
+  A rename is likewise not paired: the edge dangles, which is true.
+
+  **The re-point writes the canonical key rather than updating in place.** An
+  edge's `_key` is `edge_key(from, kind, to)`, and the analyzer phases re-resolve
+  cross-file `calls` and `implements` edges for every file in a run, skipped ones
+  included, writing them under the new target's key. Mutating `_to` therefore left
+  two documents for one relation, the phase's and a stale-keyed copy, which
+  traversals and neighbour counts double -- worse than the dangling edge it
+  replaced, because a duplicate is silent where a dangle was reported. Inserting
+  at the canonical key collapses with whatever the phase wrote.
+
+  Every read completes before any write, because the remap can chain: two symbols
+  sharing a qualified name can move so that one's new key is another's old key.
+  Resolving against a collection being written in the same query would drag an
+  edge past its own target. That holds across the whole remap and not merely
+  within a chunk -- chunking the reads to bound the bind parameter would otherwise
+  reintroduce the hazard at the boundary, with the chunk holding `B -> C` finding
+  the edge the chunk holding `A -> B` had just moved. For the same reason a key
+  being dropped is never a key just written.
+
+  Verified against the reproduction from #9: a comment growing above a symbol now
+  reports `repointed: 2, dangling: 0` with one call edge and one import edge, both
+  resolving, where it previously reported `dangling: 2` and neither resolved. A
+  genuine rename reports `repointed: 0, dangling: 2`, so the guard holds. Six unit
+  tests cover the pairing rule with no database, and two live tests cover the
+  collapse and the chain.
+
+
 - **Tree ingest skipped files whose content changed, leaving stale chunks that
   search served as current** (#7). The incremental gate compared `symbol_hash`,
   which `compute_symbol_hash` builds from sorted symbol *names* and nothing else,
