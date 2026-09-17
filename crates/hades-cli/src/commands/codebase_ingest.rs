@@ -112,6 +112,17 @@ struct ImportContext {
     cpp_file_symbols: HashMap<String, Vec<Symbol>>,
     /// Lower-fidelity files used for syntax-only relationship resolution.
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
+    /// Old symbol key -> the key that replaced it, for symbols this run moved
+    /// without renaming (#9).
+    ///
+    /// `symbol_key` hashes the definition line, so a comment inserted above a
+    /// symbol changes its key while its name and its meaning stay put. The file
+    /// is rewritten under the new keys and a *dependent* that did not change is
+    /// skipped, leaving its stored edge pointing at a key nothing holds. The
+    /// pairing is computed where both sides are known -- inside the rewrite,
+    /// with the pre-purge symbols still readable -- because after the purge the
+    /// old keys are gone and a key cannot be reversed into a name.
+    symbol_key_remap: Vec<(String, String)>,
 }
 
 /// One half of an ingest, as data rather than as printed output.
@@ -263,6 +274,7 @@ pub async fn run_phase(
         rust_file_symbols: HashMap::new(),
         cpp_file_symbols: HashMap::new(),
         structural_file_symbols: HashMap::new(),
+        symbol_key_remap: Vec::new(),
     };
     // Collect absolute paths for Rust files — used for rust-analyzer post-loop phase.
     let mut rust_abs_paths: Vec<PathBuf> = Vec::new();
@@ -703,16 +715,30 @@ pub async fn run_phase(
     // records a real dependency, and removing it would erase the only signal
     // that the dependent needs re-ingesting. Runs after the enrichment phases so
     // a symbol rust-analyzer/gopls recreates is not counted as gone.
+    // Re-point what moved before counting what is left (#9). A symbol that kept
+    // its name and changed only its line is the common case, and its dependents
+    // were skipped precisely because nothing about them changed -- so the edge is
+    // still correct about the dependency and wrong only about the key.
+    let repointed = repoint_inbound_edges(&db, &imports.symbol_key_remap).await;
+    if repointed > 0 {
+        info!(
+            edges = repointed,
+            symbols = imports.symbol_key_remap.len(),
+            "re-pointed inbound edges onto symbols that moved without being renamed"
+        );
+    }
+
     let dangling_inbound = count_dangling_inbound(&db, &rewritten_file_keys).await;
     if dangling_inbound > 0 {
         warn!(
             edges = dangling_inbound,
-            "inbound edges now point at symbols this run removed; re-run \
-             `codebase ingest --force <the same ingest root>` to re-resolve \
-             them (--force because the dependents' own symbol_hash is \
-             unchanged, and the original root because keys are relative to it \
-             -- a narrower path re-bases them and writes duplicate nodes), or \
-             run `hades codebase prune-orphans` to drop them"
+            "inbound edges point at symbols this run removed and could not be \
+             re-pointed, so the symbol was renamed or dropped rather than moved; \
+             re-run `codebase ingest --force <the same ingest root>` to re-resolve \
+             them (--force because the dependents' own content_hash is unchanged, \
+             and the original root because keys are relative to it -- a narrower \
+             path re-bases them and writes duplicate nodes), or run \
+             `hades codebase prune-orphans` to drop them"
         );
     }
 
@@ -757,7 +783,10 @@ pub async fn run_phase(
         // Inbound edges now pointing at symbols this run removed. Surfaced in
         // the JSON contract, not just stderr, so an agent parsing stdout sees
         // that the graph needs attention rather than only "completed: N".
-        "dangling_inbound_edges": dangling_inbound,
+                "dangling_inbound_edges": dangling_inbound,
+        // Inbound edges re-pointed onto symbols that moved without being
+        // renamed (#9), as opposed to the ones above, which could not be.
+        "repointed_inbound_edges": repointed,
         "import_edges": total_import_edges,
         "python_import_edges": py_import_edges.len(),
         "rust_import_edges": rs_import_edges.len(),
@@ -1661,6 +1690,11 @@ async fn ingest_file(
     // the file actually changed (the unchanged-skip returned above), so an
     // unchanged file — which has no orphans — is never needlessly purged.
     // RA enrichment runs afterward and *augments* the freshly-written syn set.
+    // Read the symbols about to be destroyed, so the rewrite can be paired with
+    // its predecessor (#9). After the purge a key cannot be reversed into a
+    // name, so this is the only moment both sides are knowable.
+    let previous_symbols = existing_symbol_identities(db, &fkey).await;
+
     purge_file_symbols_and_edges(db, &fkey).await;
 
     // Collect Python import symbols for later edge resolution.
@@ -2068,6 +2102,13 @@ async fn ingest_file(
     // counting the input would over-report and break `symbol_count_consistency`
     // (#113). With qualified-name keying collisions should not occur, but this
     // keeps the denorm honest regardless.
+    // Pair the old keys with the new ones, for symbols that moved without being
+    // renamed. Recorded on the shared context and applied after every file has
+    // been written, because a dependent may itself be rewritten later in the run.
+    imports
+        .symbol_key_remap
+        .extend(pair_moved_symbol_keys(&previous_symbols, &symbol_docs));
+
     let primitive_count = symbol_docs
         .iter()
         .filter_map(|d| d["_key"].as_str())
@@ -2576,6 +2617,146 @@ async fn count_dangling_inbound(db: &ArangoPool, file_keys: &[String]) -> u64 {
         }
     }
     dangling
+}
+
+/// The symbols a file holds right now, as `(qualified_name, start_line, key)`.
+///
+/// Read immediately before a purge so the rewrite can be paired with what it
+/// replaced (#9). Ordered by line, because the pairing is positional among
+/// symbols that share a qualified name.
+async fn existing_symbol_identities(db: &ArangoPool, file_key: &str) -> Vec<(String, u64, String)> {
+    let aql = "FOR s IN @@symbols FILTER s.file_key == @key \
+               SORT s.start_line, s._key \
+               RETURN [s.qualified_name, s.start_line, s._key]";
+    let bind = json!({ "@symbols": CODEBASE.symbols, "key": file_key });
+    match hades_core::db::query::query(db, aql, Some(&bind), None, false, ExecutionTarget::Reader)
+        .await
+    {
+        Ok(r) => r
+            .results
+            .iter()
+            .filter_map(|row| {
+                let a = row.as_array()?;
+                Some((
+                    a.first()?.as_str()?.to_string(),
+                    a.get(1)?.as_u64().unwrap_or(0),
+                    a.get(2)?.as_str()?.to_string(),
+                ))
+            })
+            .collect(),
+        Err(e) => {
+            debug!(file_key, error = %e, "could not read prior symbols; no remap for this file");
+            Vec::new()
+        }
+    }
+}
+
+/// Pair each old symbol key with the key that replaced it.
+///
+/// Matched on `(qualified_name, position among symbols sharing that name)`,
+/// which is stable when a file's text moves but its symbol set does not -- the
+/// case #9 is about. Names are not unique within a file (618 colliding groups in
+/// one real corpus), so the position is what disambiguates, exactly as the line
+/// does in the key itself.
+///
+/// **A name whose count changed is deliberately not paired.** If a file gained
+/// or lost one of three `Config::new`s, position no longer identifies the same
+/// symbol, and a wrong pairing would silently re-point a dependency at the wrong
+/// definition. An unpaired symbol leaves its inbound edges dangling, which is
+/// true and visible, and `count_dangling_inbound` still reports it.
+fn pair_moved_symbol_keys(
+    previous: &[(String, u64, String)],
+    written: &[Value],
+) -> Vec<(String, String)> {
+    if previous.is_empty() {
+        return Vec::new();
+    }
+    let mut now: Vec<(String, u64, String)> = written
+        .iter()
+        .filter_map(|d| {
+            Some((
+                d["qualified_name"].as_str()?.to_string(),
+                d["start_line"].as_u64().unwrap_or(0),
+                d["_key"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    now.sort_by(|a, b| (a.1, &a.2).cmp(&(b.1, &b.2)));
+
+    let mut by_name_before: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, _, key) in previous {
+        by_name_before.entry(name.as_str()).or_default().push(key);
+    }
+    let mut by_name_after: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, _, key) in &now {
+        by_name_after.entry(name.as_str()).or_default().push(key);
+    }
+
+    let mut pairs = Vec::new();
+    for (name, before) in by_name_before {
+        let Some(after) = by_name_after.get(name) else {
+            continue; // the name is gone: a real removal, not a move
+        };
+        if before.len() != after.len() {
+            continue; // the count changed: position no longer identifies
+        }
+        for (old, new) in before.iter().zip(after.iter()) {
+            if old != new {
+                pairs.push(((*old).to_string(), (*new).to_string()));
+            }
+        }
+    }
+    pairs
+}
+
+/// Re-point inbound edges from a symbol's old key onto its replacement.
+///
+/// Returns how many edges were moved. The edge index on `_to` makes each lookup
+/// a point query rather than a scan.
+async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u64 {
+    if remap.is_empty() {
+        return 0;
+    }
+    let pairs: Vec<Value> = remap
+        .iter()
+        .map(|(old, new)| {
+            json!({
+                "old": format!("{}/{}", CODEBASE.symbols, old),
+                "new": format!("{}/{}", CODEBASE.symbols, new),
+            })
+        })
+        .collect();
+    let mut moved = 0u64;
+    for edges in [
+        CODEBASE.imports_edges,
+        CODEBASE.calls_edges,
+        CODEBASE.implements_edges,
+    ] {
+        let aql = "\
+            LET updated = ( \
+                FOR m IN @remap \
+                    FOR e IN @@edges FILTER e._to == m.old \
+                        UPDATE e WITH { _to: m.new } IN @@edges \
+                        RETURN 1) \
+            RETURN LENGTH(updated)";
+        let bind = json!({ "@edges": edges, "remap": pairs });
+        match hades_core::db::query::query(
+            db,
+            aql,
+            Some(&bind),
+            None,
+            false,
+            ExecutionTarget::Writer,
+        )
+        .await
+        {
+            Ok(r) => {
+                moved += r.results.first().and_then(|v| v.as_u64()).unwrap_or(0);
+            }
+            Err(e) => warn!(collection = edges, error = %e, "could not re-point inbound edges"),
+        }
+    }
+    moved
 }
 
 /// Purge a file's existing symbols and the **source-owned (outgoing) edges**
@@ -3731,6 +3912,113 @@ mod tests {
             );
         })
         .await
+    }
+
+    // --- symbol key remapping (#9) ------------------------------------------
+
+    fn sym(name: &str, line: u64, key: &str) -> (String, u64, String) {
+        (name.to_string(), line, key.to_string())
+    }
+
+    fn written(name: &str, line: u64, key: &str) -> Value {
+        json!({ "qualified_name": name, "start_line": line, "_key": key })
+    }
+
+    /// A symbol that moved without being renamed is paired with its replacement.
+    ///
+    /// The #9 case: a comment grows above a symbol, its definition line moves,
+    /// `symbol_key` hashes the line, and a dependent that was skipped still
+    /// names the old key.
+    #[test]
+    fn a_moved_symbol_is_paired_with_its_new_key() {
+        let before = vec![
+            sym("first", 2, "f__first__aaa"),
+            sym("target", 8, "f__target__bbb"),
+        ];
+        let after = vec![
+            written("first", 2, "f__first__aaa"),
+            written("target", 14, "f__target__ccc"),
+        ];
+        let pairs = pair_moved_symbol_keys(&before, &after);
+        assert_eq!(
+            pairs,
+            vec![("f__target__bbb".to_string(), "f__target__ccc".to_string())],
+            "only the symbol whose key changed is paired"
+        );
+    }
+
+    /// A renamed symbol is NOT paired, so its dependents dangle honestly.
+    ///
+    /// Re-pointing here would silently attach a dependency to a definition the
+    /// author did not write, which is worse than the dangling edge it replaces.
+    #[test]
+    fn a_renamed_symbol_is_not_paired() {
+        let before = vec![sym("old_name", 4, "f__old_name__aaa")];
+        let after = vec![written("new_name", 4, "f__new_name__bbb")];
+        assert!(
+            pair_moved_symbol_keys(&before, &after).is_empty(),
+            "a rename must not be re-pointed: the name is gone, not moved"
+        );
+    }
+
+    /// When a name's count changes, position no longer identifies a symbol.
+    ///
+    /// Three `Config::new` become two and the survivors shift up. Pairing by
+    /// position would attach a dependent to a different definition that happens
+    /// to sit where the old one did. 618 groups in one real corpus share a
+    /// qualified name, so this is the common shape, not a corner.
+    #[test]
+    fn a_name_whose_count_changed_is_not_paired() {
+        let before = vec![
+            sym("Config::new", 10, "f__Config__new__a"),
+            sym("Config::new", 20, "f__Config__new__b"),
+            sym("Config::new", 30, "f__Config__new__c"),
+        ];
+        let after = vec![
+            written("Config::new", 10, "f__Config__new__a"),
+            written("Config::new", 25, "f__Config__new__d"),
+        ];
+        assert!(
+            pair_moved_symbol_keys(&before, &after).is_empty(),
+            "an ambiguous set must be left alone, not guessed at"
+        );
+    }
+
+    /// Same count, all moved: each is paired in line order.
+    #[test]
+    fn same_named_symbols_pair_in_line_order() {
+        let before = vec![
+            sym("Wire::id", 10, "f__Wire__id__a"),
+            sym("Wire::id", 20, "f__Wire__id__b"),
+        ];
+        let after = vec![
+            written("Wire::id", 16, "f__Wire__id__x"),
+            written("Wire::id", 26, "f__Wire__id__y"),
+        ];
+        let mut pairs = pair_moved_symbol_keys(&before, &after);
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("f__Wire__id__a".to_string(), "f__Wire__id__x".to_string()),
+                ("f__Wire__id__b".to_string(), "f__Wire__id__y".to_string()),
+            ],
+            "the first of the pair maps to the first, by line"
+        );
+    }
+
+    /// A file whose symbols did not move produces no work.
+    #[test]
+    fn an_unmoved_file_pairs_nothing() {
+        let before = vec![sym("a", 1, "f__a__k"), sym("b", 9, "f__b__k")];
+        let after = vec![written("a", 1, "f__a__k"), written("b", 9, "f__b__k")];
+        assert!(pair_moved_symbol_keys(&before, &after).is_empty());
+    }
+
+    /// A first ingest has nothing to pair against.
+    #[test]
+    fn a_new_file_pairs_nothing() {
+        assert!(pair_moved_symbol_keys(&[], &[written("a", 1, "f__a__k")]).is_empty());
     }
 
     /// The incremental gate reads `content_hash`, not `symbol_hash` (#7).

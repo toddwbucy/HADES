@@ -269,6 +269,35 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- **A partial re-ingest no longer dangles a dependent's edges** (#9). `symbol_key`
+  hashes the definition line, so a comment inserted above a symbol changes its key
+  while its name and meaning stay put. The edited file is rewritten under new
+  keys, a dependent whose own content did not change is skipped, and its stored
+  import or call edge is left naming a key nothing holds. #8 made this fire far
+  more often, since comment edits now re-ingest where they used to skip.
+
+  The ingest pairs each old symbol key with the key that replaced it and
+  re-points the inbound edges. Pairing is by `(qualified_name, position among
+  symbols sharing that name)`, computed inside the rewrite where both sides are
+  still knowable -- after the purge a key cannot be reversed into a name. The
+  envelope gains `repointed_inbound_edges` beside the existing
+  `dangling_inbound_edges`, which now means "renamed or removed" rather than
+  "moved or renamed or removed".
+
+  **A name whose count changed is deliberately left unpaired.** Position stops
+  identifying a symbol when one of three `Config::new` is deleted, and a wrong
+  pairing would silently attach a dependency to a definition nobody wrote --
+  worse than the dangling edge it replaced. 618 groups in one real corpus share a
+  qualified name within a file, so this is the common shape rather than a corner.
+  A rename is likewise not paired: the edge dangles, which is true.
+
+  Verified against the reproduction from #9: a comment growing above a symbol now
+  reports `repointed: 1, dangling: 0` with the edge resolving at the new key,
+  where it previously reported `dangling: 2` and did not resolve. A genuine
+  rename on the same fixture reports `repointed: 0, dangling: 2`, so the guard
+  holds. Six unit tests cover the pairing rule with no database.
+
+
 - **Tree ingest skipped files whose content changed, leaving stale chunks that
   search served as current** (#7). The incremental gate compared `symbol_hash`,
   which `compute_symbol_hash` builds from sorted symbol *names* and nothing else,
