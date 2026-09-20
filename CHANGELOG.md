@@ -285,7 +285,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Bound plain/gzipped LaTeX source bytes and the complete decompressed tar stream
   before parsing archive headers. Count rejected entries toward the member limit,
   reject duplicate normalized source paths, and read the main member directly
-  without materializing archive-controlled paths or permissions (#35).
+  without materializing archive-controlled paths or permissions. Validate raw
+  PAX/GNU header sizes before metadata allocation, including on older Python
+  runtimes; bound metadata bytes and count hidden extended headers (#35).
 
 - The embedder profile selector now persists exactly one enabled instance,
   reconciles failed/runtime-enabled profiles without restarting an already-selected

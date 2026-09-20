@@ -86,3 +86,34 @@ def test_duplicate_normalized_tar_paths_fail_closed(tmp_path):
     result = LaTeXExtractor().extract(path)
     assert "duplicate source paths" in result.error
     assert not result.text
+
+
+@pytest.mark.parametrize("kind", [tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                                 tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK])
+def test_forged_extended_header_rejected_before_payload_read(tmp_path, kind):
+    info = tarfile.TarInfo("metadata")
+    info.type = kind
+    info.size = 1024 ** 3
+    path = tmp_path / "forged.tar.gz"
+    path.write_bytes(gzip.compress(info.tobuf(format=tarfile.GNU_FORMAT)))
+    result = LaTeXExtractor().extract(path)
+    assert "extended header exceeds byte limit" in result.error
+    assert not result.text
+
+
+def test_pax_metadata_has_aggregate_budget(tmp_path):
+    path = tmp_path / "source.tar.gz"
+    with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        for name in ["first.tex", "second.tex"]:
+            info = tarfile.TarInfo(name)
+            info.pax_headers = {"comment": "x" * 40}
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+    extractor = LaTeXExtractor()
+    extractor.MAX_TAR_METADATA_BYTES = 70
+    result = extractor.extract(path)
+    assert "metadata exceeds byte limit" in result.error
+    extractor.MAX_TAR_METADATA_BYTES = 1024
+    assert extractor.extract(path).error is None
+    extractor.MAX_TAR_MEMBERS = 3  # two metadata headers plus two file headers
+    assert "member count exceeds limit" in extractor.extract(path).error

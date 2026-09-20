@@ -23,3 +23,8 @@ Run the CPU-only fixtures with:
 ```bash
 python -m pytest services/tests/test_latex_limits.py
 ```
+
+Raw tar headers are checked before PAX/GNU metadata parsing on every supported
+Python version: at most 1 MiB per extended header and 4 MiB total metadata.
+The 500-header budget includes extended headers, even those hidden by tarfile
+iteration. Oversized declared lengths are rejected before payload allocation.

@@ -31,6 +31,38 @@ class LaTeXExtractor:
     MAX_SOURCE_BYTES = 200 * 1024 * 1024  # decoded only after this byte check
     MAX_TAR_STREAM_BYTES = MAX_TAR_EXPANDED_BYTES + 1024 * 1024  # headers/padding included
 
+    MAX_TAR_HEADER_BYTES = 1024 * 1024
+    MAX_TAR_METADATA_BYTES = 4 * 1024 * 1024
+
+    def _bounded_tar_info(self) -> type[tarfile.TarInfo]:
+        # A fresh class gives each archive its own counters. _proc_member runs before
+        # tarfile processes PAX/GNU payloads, including on older Python releases.
+        extractor = self
+
+        class BoundedTarInfo(tarfile.TarInfo):
+            header_count = 0
+            metadata_bytes = 0
+
+            def _proc_member(member, archive):
+                cls = type(member)
+                cls.header_count += 1
+                if cls.header_count > extractor.MAX_TAR_MEMBERS:
+                    raise ValueError(f"Archive member count exceeds limit of {extractor.MAX_TAR_MEMBERS}")
+                if member.size < 0:
+                    raise ValueError("Archive contains a negative member size")
+                if member.type in (
+                    tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
+                ):
+                    if member.size > extractor.MAX_TAR_HEADER_BYTES:
+                        raise ValueError("Archive extended header exceeds byte limit")
+                    cls.metadata_bytes += member.size
+                    if cls.metadata_bytes > extractor.MAX_TAR_METADATA_BYTES:
+                        raise ValueError("Archive metadata exceeds byte limit")
+                return super()._proc_member(archive)
+
+        return BoundedTarInfo
+
     @staticmethod
     def _read_source(stream: Any, limit: int) -> str:
         raw = stream.read(limit + 1)
@@ -83,13 +115,13 @@ class LaTeXExtractor:
         """Extract from arXiv .tar.gz source package."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            # Bound the complete gzip stream before tarfile can allocate PAX
-            # headers or an unbounded member list. Keep archive bytes on disk.
+            # Bound decompression on disk, then validate each raw header before
+            # tarfile reads archive-controlled metadata lengths.
             archive = tmp_path / "source.tar"
             with gzip.open(path, "rb") as source, archive.open("wb") as destination:
                 self._copy_archive(source, destination, self.MAX_TAR_STREAM_BYTES)
             extracted = tmp_path / "files"
-            with tarfile.open(archive, "r:") as tar:
+            with tarfile.open(archive, "r:", tarinfo=self._bounded_tar_info()) as tar:
                 safe = []
                 file_paths = set()
                 total_bytes = 0
