@@ -27,3 +27,35 @@ A current graph/data loss could require rebuilding from sources or recovering fr
 5. Any production backup schedule/configuration deployment has a separately reviewed plan and authorization. Do not run the legacy script as an audit probe: it creates, receives and destroys snapshots.
 
 No snapshots, packages, services or production database data were changed during discovery.
+
+## Isolated restore rehearsal
+
+The retained [synthetic result](restore-fixture-result.json) records a successful
+ArangoDB 3.12.11 logical dump/restore between two sequential disposable servers.
+Three synthetic nodes (including numeric vectors), two edges, named-graph
+metadata, strict collection schema and a unique persistent index were restored.
+Document/edge values, index definitions, schema and a two-hop traversal matched.
+The restored server rejected a schema-invalid document (400) and a duplicate
+indexed value (409). Both private server groups exited through the runner's
+cleanup. No production endpoint, credentials or corpus were used.
+
+Reproduce from an isolated checkout with existing matching binaries:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 timeout 240 python3 docs/audits/repros/restore_fixture.py \
+  --bin-dir /path/to/existing/arangodb/bin
+```
+
+The probe imports the maintained isolation helpers, uses new private directories
+and Unix sockets, disables configuration discovery, limits each process to one
+CPU with nice 10 and an 8 GiB address-space ceiling, and limits dump/restore to
+one thread. It records binary/probe/helper and dump-file hashes. Artifacts remain
+in a new `/tmp/hades-restore-*` directory. The result's source interval includes
+fixture creation and dump; target interval covers restore only. Neither interval
+is a production RTO estimate.
+
+This small quiescent logical-restore rehearsal does not verify current backup
+coverage, concurrent-write consistency, users/permissions, production scale,
+vector indexes, application model/checkpoint compatibility, or loss of the host.
+P1 #63 remains open. A full recovery plan needs actual backup evidence, an owner,
+RPO/RTO and a separately authorized deployment/verification plan.

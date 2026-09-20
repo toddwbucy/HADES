@@ -48,7 +48,7 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Agent filesystem access through smell reports | #49, PR #50 merged `7571036`; Admin scans / stored-graph reports, private multi-root and collision fixtures | Not deployed |
 | Detached ingest admission and process ownership | #51, PR #56 merged `5b329b8`; MCP race, output bounds, recovery, shutdown and descendant cleanup | Not deployed |
 | Viewer subprocess and response retention | #52, PR #53 merged `da61fd6`; process/router/shutdown contracts and slow-reader pilot | Not deployed |
-| Installer package authentication bypass | #60, PR #61 pending; remote source used `trusted=yes`, README keyring was unselected | No host installer run; remediation and APT verification pending |
+| Installer package authentication bypass | #60, PR #61 merged `db9b988`; actual private APT signature cases and all final CI gates passed | Not deployed; no host installer run |
 | Active database recovery coverage | P1 #63; legacy backup dataset differs from active data; no snapshots on inspected active dataset | Alternate backup evidence and owner recovery objectives pending; no backup deployment |
 
 ## Workstream coverage and explicit gaps
@@ -163,14 +163,15 @@ outstanding.
 - [Training ownership](training-session-ownership.md) covers independent-client
   leases, stale requests and lifecycle serialization. Lease expiry does not
   preempt active synchronous computation.
-- PR #59 is pending final validation after a review fix to reject non-object
-  encoding inputs. A completed private CPU candidate run used 34 paper passages
+- PR #59 merged as `fd6297d` after all final CI gates and the resolved review fix
+  to reject non-object encoding inputs. A completed private CPU candidate run used 34 paper passages
   and five queries; frozen-vector rescoring matched, and quality metrics remain
   withheld. Owner and third-party reviews use separate blinded answer sheets,
   with the approved 0–3 rubric. The user requested publication to the existing
   LAN report hub; unpublished draft text is not included in this repository.
-- P2 #60 tracks the installer signature bypass. PR #61 and its disposable APT
-  fixture are pending CI/review. The active audit host lacks APT, so local
+- P2 #60 is closed through PR #61. Its disposable APT fixture ran successfully
+  in Ubuntu CI for valid, unsigned, tampered and missing-key metadata against
+  both documented source options. The active audit host lacks APT; local
   execution explicitly skipped rather than installing host dependencies.
 
 Repository review and CI results do not establish successful deployment,
@@ -179,4 +180,6 @@ quality. Those acceptance items remain open.
 
 [Active database recovery review](active-database-recovery.md) records the read-only
 source-to-backup mismatch and snapshot inventory. P1 #63 remains open pending
-alternate-backup evidence, recovery objectives and isolated restore verification.
+alternate-backup evidence and recovery objectives. A small synthetic logical
+restore passed with matching documents, edges, graph, schema and indexes; its
+explicit limits are recorded in that review.

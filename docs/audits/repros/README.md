@@ -93,3 +93,10 @@ and ingests two colliding Python paths. Expected: both ingests report success,
 but only one file remains. This historical observation is printed, not encoded
 in the runner exit status. Logs/data remain under its printed temporary path.
 No live endpoint, database, service unit, installed binary or model is modified.
+
+## Synthetic restore rehearsal (#63)
+
+`restore_fixture.py` uses existing matching ArangoDB binaries and two sequential
+private servers. See [scope and reproduction](../active-database-recovery.md) and
+[recorded result](../restore-fixture-result.json). This is an opt-in audit probe,
+not the maintained database CI suite or a production backup procedure.
