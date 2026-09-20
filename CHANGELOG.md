@@ -360,6 +360,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Select distinct document-research adapter/prompts in offline retrieval
+  evaluation and reject oversized prefixed processor inputs before inference;
+  record profile and token-count provenance while preserving code defaults (#12).
+
 - Add strict retrieval judgment coverage for representative datasets: preserve
   unjudged rankings, withhold incomplete scores and aggregates, and distinguish
   unsupported no-positive cases while preserving historical seed results (#12).
