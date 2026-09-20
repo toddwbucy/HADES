@@ -1,0 +1,21 @@
+{
+  "source_revision": "a2236f385dd72ad7f77098ae84166df53f6b4cf2",
+  "server_version": "3.12.11",
+  "entry_point": "Pipeline::process_document",
+  "control_success": true,
+  "schema_rejection_error": 1620,
+  "rejected_overwrite": {
+    "success": false,
+    "metadata_text": "replacement text",
+    "chunk_text": "replacement text",
+    "old_embedding_exists": false
+  },
+  "private_server_exit": 0,
+  "source_sha256": {
+    "crates/hades-core/src/pipeline/orchestrator.rs": "c448f3b8c7055c23677a46a7209cebf3f38eca16438c7967ab242c463de24a22",
+    "crates/hades-core/src/db/crud.rs": "cf59d100fa8b7211d2bf9920285f0c2476ef8b14adbc9e70cd72114538ee8b1d",
+    "docs/audits/repros/document_replacement_baseline.rs": "90ea36feda5b5cd70dff9cc82813692be10e25dcee9d3b7e5121717b61b69c25",
+    "crates/hades-core/tests/common/embedding_mock.rs": "8d52dd512e6098e16e09fbbf70a0db0eb171d62c5fe9018dda00e6dd9c6c22ac"
+  },
+  "limits": "Synthetic document, private mock extraction and embedding, real isolated DB. No live corpus or observed production loss. Selected hashes do not attest all dependencies."
+}

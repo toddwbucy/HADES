@@ -1,0 +1,23 @@
+{
+  "server_version": "3.12.11",
+  "passed": true,
+  "tests": 3,
+  "server_exit": 0,
+  "cases": [
+    "rejected overwrite preserves exact old rows and revisions",
+    "successful overwrite removes legacy stale rows and preserves unrelated rows",
+    "overwrite=false rejects duplicate and creates absent document",
+    "cancellation after acknowledged writes aborts and releases locks",
+    "competing writers expose complete first and second text/vector generations"
+  ],
+  "source_sha256": {
+    "crates/hades-core/src/pipeline/orchestrator.rs": "470056f446de38a7437c787ef135816a0e6aaf43d6db50f8aa15709cca051b2f",
+    "crates/hades-core/src/db/transaction.rs": "bede97765d217208c9e00c1883769577cba573ba7473361fb6f1e5167c1f523c",
+    "crates/hades-core/tests/document_replacement_db.rs": "0aa8d9a860f3c3af35c6e67d756567d66597a64b214f5caedcc29ba0fede1ddd",
+    "crates/hades-core/tests/common/document_gate.rs": "1b32b12a82fe7aa7827a3e819b52d1dbc6bce3c79308bd46843daf74b0881baa",
+    "crates/hades-core/tests/common/document_embedding.rs": "67f65ac2f1c350d515eaa988c78d310772928b2eb258561b5bbe475a53c2f6eb",
+    "crates/hades-core/tests/common/embedding_mock.rs": "8d52dd512e6098e16e09fbbf70a0db0eb171d62c5fe9018dda00e6dd9c6c22ac",
+    "scripts/test_isolated_database.py": "1e0e7742f79dcfb1df505d6f4e18a23f7e824057997716d55894ad323fb51c4a"
+  },
+  "limits": "Synthetic documents and private ML fixtures; no production deployment, quality claim, source-revision ordering guarantee or rollback after ambiguous commit. Selected source hashes are not full runtime attestation."
+}
