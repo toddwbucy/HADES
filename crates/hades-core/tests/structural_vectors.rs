@@ -32,7 +32,15 @@ async fn response(command: &str, vector: Value) -> hades_core::dispatch::DaemonR
 
 #[tokio::test]
 async fn lookup_rejects_invalid_numeric_components() {
-    for vector in [json!([null]), json!(["bad"]), json!([1e100])] {
+    for vector in [
+        json!([null]),
+        json!(["bad"]),
+        json!([true]),
+        json!([1e100]),
+        json!([]),
+        json!("bad"),
+        json!(null),
+    ] {
         let result = response("graph_embed.embed", vector).await;
         assert!(!result.success, "malformed vector accepted: {result:?}");
         assert_eq!(result.error_code.as_deref(), Some("QUERY_FAILED"));
@@ -41,7 +49,15 @@ async fn lookup_rejects_invalid_numeric_components() {
 
 #[tokio::test]
 async fn neighbors_rejects_invalid_numeric_target() {
-    for vector in [json!([null]), json!(["bad"]), json!([1e100])] {
+    for vector in [
+        json!([null]),
+        json!(["bad"]),
+        json!([true]),
+        json!([1e100]),
+        json!([]),
+        json!("bad"),
+        json!(null),
+    ] {
         let result = response("graph_embed.neighbors", vector).await;
         assert!(!result.success, "malformed target accepted: {result:?}");
         assert_eq!(result.error_code.as_deref(), Some("QUERY_FAILED"));

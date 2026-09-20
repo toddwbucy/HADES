@@ -2204,7 +2204,7 @@ mod handlers {
         if values.iter().any(|value| {
             value
                 .as_f64()
-                .is_none_or(|number| !number.is_finite() || !(number as f32).is_finite())
+                .is_none_or(|number| !number.is_finite() || number.abs() > f32::MAX as f64)
         }) {
             return Err(invalid("components must be finite float32 numbers"));
         }

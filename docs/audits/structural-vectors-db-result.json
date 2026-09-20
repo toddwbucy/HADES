@@ -1,0 +1,20 @@
+{
+  "server_version": "3.12.11",
+  "contract": "structural_vectors_db",
+  "passed": true,
+  "exit_code": 0,
+  "private_server_stopped": true,
+  "production_changed": false,
+  "checks": [
+    "malformed candidates excluded",
+    "cross-collection ordering and numeric scores",
+    "malformed targets fail for both APIs",
+    "valid targets accepted"
+  ],
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "038d77bd3a72a8bcd0260b223284af6fbf364c661a0c968ae16c93535a02b88a",
+    "crates/hades-core/tests/structural_vectors_db.rs": "3569397381f872b82358662921cd45802ed1b3cef2a0cab357b1b28048240b89",
+    "scripts/test_isolated_database.py": "22f23f3e0c66c30adbf719a4b94afa0597033f023dc553038b0883f450502698"
+  },
+  "limits": "Synthetic private database only; selected source hashes are not full runtime attestation. No provenance, normalization, freshness or quality claim."
+}
