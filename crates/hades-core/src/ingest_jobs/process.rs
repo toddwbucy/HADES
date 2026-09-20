@@ -5,6 +5,7 @@ use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
 struct Limits {
@@ -77,11 +78,16 @@ impl Process {
         self.group.0
     }
 
-    pub async fn finish(self) -> Result<Output> {
-        self.finish_with(Limits::default()).await
+    pub async fn finish(self, shutdown: CancellationToken) -> Result<Output> {
+        self.finish_until(Limits::default(), shutdown).await
     }
 
-    async fn finish_with(mut self, limits: Limits) -> Result<Output> {
+    #[cfg(test)]
+    async fn finish_with(self, limits: Limits) -> Result<Output> {
+        self.finish_until(limits, CancellationToken::new()).await
+    }
+
+    async fn finish_until(mut self, limits: Limits, shutdown: CancellationToken) -> Result<Output> {
         let stdout = self.child.stdout.take().context("missing ingest stdout")?;
         let stderr = self.child.stderr.take().context("missing ingest stderr")?;
         let pid = self.id();
@@ -109,9 +115,12 @@ impl Process {
                     }
                 }
             };
-            tokio::time::timeout(limits.runtime, work)
-                .await
-                .unwrap_or_else(|_| Err(anyhow!("ingest runtime limit exceeded")))
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => Err(anyhow!("ingest interrupted by service shutdown")),
+                result = tokio::time::timeout(limits.runtime, work) =>
+                    result.unwrap_or_else(|_| Err(anyhow!("ingest runtime limit exceeded"))),
+            }
         };
         let killed = self.group.kill();
         let status = self.child.wait().await.context("failed to reap ingest")?;
@@ -218,6 +227,51 @@ mod tests {
         assert_eq!(output.stderr_tail.len(), 32);
         assert!(output.stderr_tail.ends_with(b"END"));
         assert!(absent(pid));
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_owned_child_before_releasing_reservation() {
+        use std::path::Path;
+        use std::sync::Arc;
+
+        for already_cancelled in [false, true] {
+            let admission = Arc::new(super::super::Admission::new(1));
+            let reservation = admission
+                .reserve(Path::new("/private-fixture/tree"))
+                .unwrap();
+            let shutdown = reservation.shutdown();
+            let process = python("import time; time.sleep(10)");
+            let pid = process.id();
+            if already_cancelled {
+                admission.close();
+            }
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let owner = tokio::spawn(async move {
+                started.send(()).unwrap();
+                let result = process.finish_until(limits(), shutdown).await;
+                assert!(
+                    absent(pid),
+                    "reservation would be released before direct child reap"
+                );
+                drop(reservation);
+                result.err().unwrap().to_string()
+            });
+            // On this single-thread test runtime, the owner polls supervision
+            // until pending before this receiver resumes and requests shutdown.
+            ready.await.unwrap();
+            admission.close();
+            assert!(
+                admission
+                    .reserve(Path::new("/private-fixture/other"))
+                    .is_err()
+            );
+            tokio::time::timeout(Duration::from_secs(3), admission.drain())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(owner.await.unwrap().contains("service shutdown"));
+            assert!(absent(pid));
+        }
     }
 
     #[tokio::test]

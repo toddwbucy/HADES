@@ -42,6 +42,20 @@ stdout overflow, deadline expiry and a leader exiting while a descendant holds
 its pipes. They verify direct-child disappearance and descendant termination.
 They do not yet establish service shutdown, persisted outcomes or worst-case RSS.
 
+## Local shutdown wiring
+
+The daemon registers SIGINT/SIGTERM before opening either listener. Shutdown
+closes ingestion admission under the same lock used to reserve paths and broadcasts
+cancellation to owners. The daemon's outer cleanup path waits for reservations to
+drain on ordinary shutdown and startup/accept errors. Owners observe cancellation
+during PID persistence and process supervision; supervision signals the group and
+reaps its leader before releasing the reservation on this normal cleanup path.
+
+Private tests verify admission stays closed, drain waits for an outstanding
+reservation, and an already-cancelled or newly-cancelled owner reaps its synthetic
+child before returning its reservation. Actual daemon signal/ingestion fixtures
+remain required; these lower-level contracts do not prove the full service path.
+
 ## Remaining requirements before publication or closure
 
 - Replace the legacy database/PID-existence heuristic with explicit owner identity

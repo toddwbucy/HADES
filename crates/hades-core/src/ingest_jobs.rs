@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use tokio_util::sync::CancellationToken;
 
 pub(crate) mod process;
 
@@ -14,6 +15,7 @@ static ADMISSION: LazyLock<Arc<Admission>> =
 struct Admission {
     limit: usize,
     paths: Mutex<HashSet<PathBuf>>,
+    shutdown: CancellationToken,
 }
 
 impl Admission {
@@ -21,6 +23,7 @@ impl Admission {
         Self {
             limit,
             paths: Mutex::new(HashSet::new()),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -29,6 +32,9 @@ impl Admission {
             .paths
             .lock()
             .map_err(|_| "ingest admission unavailable")?;
+        if self.shutdown.is_cancelled() {
+            return Err("ingest service is shutting down".into());
+        }
         // Ancestors and descendants also overlap. Database selection does not
         // make concurrent analyzers over the same source tree independent.
         if paths
@@ -49,6 +55,27 @@ impl Admission {
             path: canonical_path.to_owned(),
         })
     }
+
+    fn close(&self) {
+        // Serialize cancellation with admission. Even on poison, cancellation
+        // reaches existing owners and the registry continues failing closed.
+        let _guard = self.paths.lock();
+        self.shutdown.cancel();
+    }
+
+    async fn drain(&self) -> anyhow::Result<()> {
+        loop {
+            if self
+                .paths
+                .lock()
+                .map_err(|_| anyhow::anyhow!("ingest registry poisoned during shutdown"))?
+                .is_empty()
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
 }
 
 /// Hold from before the first job-record await until child cleanup completes.
@@ -56,6 +83,28 @@ impl Admission {
 pub(crate) struct Reservation {
     admission: Arc<Admission>,
     path: PathBuf,
+}
+
+impl Reservation {
+    pub(crate) fn shutdown(&self) -> CancellationToken {
+        self.admission.shutdown.clone()
+    }
+}
+
+/// Stop new reservations and request cleanup of every owned ingestion process.
+pub fn begin_shutdown() {
+    ADMISSION.close();
+}
+
+/// Wait for the daemon's shutdown signal without creating another OS handler.
+pub async fn shutdown_requested() {
+    ADMISSION.shutdown.cancelled().await;
+}
+
+/// Keep the runtime alive through child cleanup and completion persistence.
+pub async fn shutdown_and_wait() -> anyhow::Result<()> {
+    begin_shutdown();
+    ADMISSION.drain().await
 }
 
 impl Drop for Reservation {
@@ -148,5 +197,25 @@ mod tests {
         })
         .join();
         assert!(admission.reserve(Path::new("/fixture/tree")).is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_refuses_admission_and_waits_for_existing_owner() {
+        let admission = Arc::new(Admission::new(2));
+        let owned = admission.reserve(Path::new("/fixture/tree")).unwrap();
+        let shutdown = owned.shutdown();
+        admission.close();
+        assert!(shutdown.is_cancelled());
+        assert!(admission.reserve(Path::new("/fixture/other")).is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), admission.drain())
+                .await
+                .is_err()
+        );
+        drop(owned);
+        tokio::time::timeout(std::time::Duration::from_secs(1), admission.drain())
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

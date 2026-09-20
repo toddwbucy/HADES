@@ -7,7 +7,7 @@ pub mod daemon_client;
 pub mod db;
 pub mod dispatch;
 pub mod graph;
-pub(crate) mod ingest_jobs;
+pub mod ingest_jobs;
 pub mod ingest_routing;
 pub mod persephone;
 pub mod pipeline;

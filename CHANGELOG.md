@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Close ingestion admission on daemon shutdown, cancel owned process groups and
+  drain reservations before runtime exit; full persisted-state and actual daemon
+  ingestion lifecycle verification remains in #51.
+
 - Capture detached-ingest output through bounded pipes instead of retained
   temporary files; terminate owned process groups on overflow, deadline or leader
   exit. Full shutdown and persisted-state verification remains in #51.

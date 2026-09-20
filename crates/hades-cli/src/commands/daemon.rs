@@ -72,6 +72,26 @@ pub async fn run(
     socket_path: Option<&str>,
     mcp: Option<McpOptions>,
 ) -> Result<()> {
+    // Register before either listener can admit an ingestion job. Keep the
+    // cleanup path outside run_inner so startup/accept errors also drain owners.
+    let mut interrupt = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+    let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    let signals = tokio::spawn(async move {
+        tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+        hades_core::ingest_jobs::begin_shutdown();
+    });
+    let result = run_inner(config, socket_path, mcp).await;
+    let cleanup = hades_core::ingest_jobs::shutdown_and_wait().await;
+    signals.abort();
+    cleanup.context("ingestion shutdown cleanup failed")?;
+    result
+}
+
+async fn run_inner(
+    config: &HadesConfig,
+    socket_path: Option<&str>,
+    mcp: Option<McpOptions>,
+) -> Result<()> {
     let socket = socket_path.unwrap_or(DEFAULT_SOCKET);
     let pool = Arc::new(ArangoPool::from_config(config).context("failed to connect to ArangoDB")?);
     let config = Arc::new(config.clone());
@@ -169,7 +189,7 @@ pub async fn run(
     tracing::info!(socket, "daemon listening");
 
     // Accept loop with graceful shutdown.
-    let shutdown = shutdown_signal();
+    let shutdown = hades_core::ingest_jobs::shutdown_requested();
     tokio::pin!(shutdown);
 
     loop {
@@ -297,18 +317,6 @@ async fn write_frame_with_timeout(
 // ---------------------------------------------------------------------------
 // Signal handling
 // ---------------------------------------------------------------------------
-
-/// Wait for SIGTERM or SIGINT (Ctrl-C).
-async fn shutdown_signal() {
-    let ctrl_c = signal::ctrl_c();
-    let mut sigterm =
-        signal::unix::signal(signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = sigterm.recv() => {}
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests

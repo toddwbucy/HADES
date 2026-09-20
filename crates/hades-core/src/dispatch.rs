@@ -1622,20 +1622,28 @@ mod handlers {
         tokio::spawn(async move {
             // Transfer ownership before the handler can be cancelled at any
             // await after spawn. Detached jobs outlive the requesting client.
+            let shutdown = reservation.shutdown();
             let _reservation = reservation;
-            if let Some(pid) = pid
-                && let Err(error) = crud::update_document(
-                    &pool_for_task,
-                    INGEST_JOBS,
-                    &job_for_task,
-                    &json!({ "pid": pid }),
-                )
-                .await
-            {
-                tracing::error!(job = %job_for_task, %error, "failed to record ingest pid");
+            let persist_pid = async {
+                if let Some(pid) = pid
+                    && let Err(error) = crud::update_document(
+                        &pool_for_task,
+                        INGEST_JOBS,
+                        &job_for_task,
+                        &json!({ "pid": pid }),
+                    )
+                    .await
+                {
+                    tracing::error!(job = %job_for_task, %error, "failed to record ingest pid");
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {},
+                _ = persist_pid => {},
             }
             let (status, detail, envelope, stderr_bytes, stderr_truncated) =
-                match child.finish().await {
+                match child.finish(shutdown).await {
                     Ok(output) => {
                         let parsed = serde_json::from_slice::<Value>(&output.stdout);
                         // UTF-8 replacement can expand invalid bytes. Bound the
