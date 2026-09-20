@@ -11,6 +11,9 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Viewer envelope validation](viewer-envelope-review.md): private false-success
+  route reproduction and seven-parser status validation for #107.
+
 - [Provider contracts](provider-contracts.md): extraction/training gRPC versus
   embedding HTTP, status and source-level size/admission limits, and 78 private
   CPU cases; effective oversized-message boundaries remain to measure.
