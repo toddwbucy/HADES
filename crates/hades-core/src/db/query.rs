@@ -1,16 +1,19 @@
 //! AQL query execution with cursor-based pagination.
 //!
-//! By default, the initial cursor request goes through `pool.reader()`.
-//! Use [`ExecutionTarget::Writer`] for mutating AQL (INSERT, UPDATE,
-//! REMOVE).  Cursor continuation is always routed through the writer
-//! client because the read-only proxy socket does not support cursor
-//! state endpoints.
+//! Use [`ExecutionTarget::Writer`] for mutating AQL. When reader and writer
+//! endpoints differ, the entire cursor lifecycle uses the writer because the
+//! read-only proxy cannot continue or delete cursor state. A separate bounded
+//! task retains cursor ownership across caller cancellation.
+
+use std::time::Duration;
 
 use serde_json::Value;
+use tokio::sync::oneshot;
 use tracing::{debug, instrument, trace};
 
 use super::error::ArangoError;
 use super::pool::ArangoPool;
+use super::transport::ArangoClient;
 
 /// Default batch size for AQL queries.
 const DEFAULT_BATCH_SIZE: u32 = 1000;
@@ -18,7 +21,7 @@ const DEFAULT_BATCH_SIZE: u32 = 1000;
 /// Controls which pool endpoint receives the initial cursor request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExecutionTarget {
-    /// Route through `pool.reader()` — appropriate for read-only AQL.
+    /// Read-only AQL; use the shared reader or the writer for split endpoints.
     #[default]
     Reader,
     /// Route through `pool.writer()` — required for mutating AQL
@@ -39,12 +42,14 @@ pub struct QueryResult {
 
 /// Execute an AQL query with optional bind variables and pagination.
 ///
-/// The initial cursor request is routed based on `target`: reader for
-/// read-only queries, writer for mutating AQL.  Cursor continuation
-/// always goes through `pool.writer()` because the read-only proxy
-/// socket does not support `POST /_api/cursor/{id}`.
+/// Creation, continuation, and cleanup use the same client. Read queries use
+/// the reader only when its endpoint is shared with the writer; otherwise all
+/// cursor operations use the writer to avoid the read-only proxy limitation.
 ///
-/// All pages are accumulated into a single `Vec<Value>`.
+/// All pages are accumulated into a single `Vec<Value>`. A task owns the cursor
+/// across caller cancellation, with a 60-second query lifetime and two-second
+/// cleanup budget. Server `maxRuntime` and idle cursor TTL provide fallback
+/// bounds if transport fails or the Tokio runtime shuts down before deletion.
 #[instrument(skip(pool, bind_vars), fields(db = %pool.database()))]
 pub async fn query(
     pool: &ArangoPool,
@@ -54,100 +59,190 @@ pub async fn query(
     full_count: bool,
     target: ExecutionTarget,
 ) -> Result<QueryResult, ArangoError> {
-    let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
+    query_with_limits(
+        pool,
+        aql,
+        bind_vars,
+        batch_size,
+        full_count,
+        target,
+        QueryLimits::default(),
+    )
+    .await
+}
 
+#[derive(Clone, Copy)]
+struct QueryLimits {
+    lifetime: Duration,
+    cleanup: Duration,
+    cursor_ttl: Duration,
+}
+
+impl Default for QueryLimits {
+    fn default() -> Self {
+        Self {
+            lifetime: Duration::from_secs(60),
+            cleanup: Duration::from_secs(2),
+            cursor_ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+/// Own cursor state outside the caller's cancellable future. Creation is allowed
+/// to finish so cancellation before the first response does not discard its ID.
+/// Pagination observes receiver closure promptly; cleanup runs independently.
+#[allow(clippy::too_many_arguments)]
+async fn query_with_limits(
+    pool: &ArangoPool,
+    aql: &str,
+    bind_vars: Option<&Value>,
+    batch_size: Option<u32>,
+    full_count: bool,
+    target: ExecutionTarget,
+    limits: QueryLimits,
+) -> Result<QueryResult, ArangoError> {
+    let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
+    if batch_size == 0 {
+        return Err(ArangoError::Request(
+            "cursor batch size must be positive".into(),
+        ));
+    }
     let mut body = serde_json::json!({
         "query": aql,
         "batchSize": batch_size,
+        "ttl": limits.cursor_ttl.as_secs_f64(),
+        "options": {
+            "fullCount": full_count,
+            "maxRuntime": limits.lifetime.as_secs_f64(),
+        },
     });
-
     if let Some(vars) = bind_vars {
         body["bindVars"] = vars.clone();
     }
-
-    if full_count {
-        body["options"] = serde_json::json!({"fullCount": true});
-    }
-
     debug!(batch_size, full_count, ?target, "executing AQL query");
     trace!(aql, "query text");
-
-    // Choose the endpoint for the initial cursor request.
-    //
-    // Cursor state is server-side and tied to the endpoint that created
-    // it.  Continuation and cleanup always go through pool.writer()
-    // (the read-only proxy doesn't support cursor state endpoints), so
-    // when reader != writer we must also create the cursor on the writer
-    // to keep the entire cursor lifecycle on the same socket.
-    let initial_client = match target {
-        ExecutionTarget::Writer => pool.writer(),
-        ExecutionTarget::Reader if pool.is_shared() => pool.reader(),
-        ExecutionTarget::Reader => pool.writer(),
+    // The read-only proxy cannot continue/delete cursor state. Keep the entire
+    // lifecycle on the writer when endpoints differ, as before.
+    let client = match target {
+        ExecutionTarget::Reader if pool.is_shared() => pool.reader().clone(),
+        _ => pool.writer().clone(),
     };
-    let resp = initial_client.post("cursor", &body).await?;
-
-    let mut results = extract_results(&resp)?;
-    let extra = resp.get("extra").cloned();
-    let full_count_val = extra
-        .as_ref()
-        .and_then(|e| e["stats"]["fullCount"].as_u64());
-
-    let has_more = resp["hasMore"].as_bool().unwrap_or(false);
-    let cursor_id = resp["id"].as_str().map(String::from);
-
-    debug!(
-        first_batch = results.len(),
-        has_more,
-        cursor_id = cursor_id.as_deref().unwrap_or("none"),
-        "initial cursor response"
-    );
-
-    // Paginate through remaining results via writer (proxy limitation)
-    if has_more {
-        let id = cursor_id.as_deref().ok_or_else(|| {
-            ArangoError::Request("hasMore=true but no cursor ID in response".to_string())
-        })?;
-
-        let pagination_result = paginate(pool, id, &mut results).await;
-
-        // Always attempt cursor cleanup, even if pagination failed
-        let delete_path = format!("cursor/{id}");
-        if let Err(e) = pool.writer().delete(&delete_path).await {
-            trace!(error = %e, "cursor cleanup failed (non-fatal)");
-        }
-
-        // Propagate pagination error after cleanup
-        pagination_result?;
-    }
-
-    debug!(total_results = results.len(), "query complete");
-
-    Ok(QueryResult {
-        results,
-        full_count: full_count_val,
-        extra,
-    })
+    let (mut send, receive) = oneshot::channel();
+    tokio::spawn(async move {
+        let mut cursor = CursorOwner {
+            client,
+            ids: Vec::new(),
+        };
+        let result = tokio::time::timeout(
+            limits.lifetime,
+            execute_cursor(&mut cursor, &body, &mut send),
+        )
+        .await
+        .unwrap_or_else(|_| Err(ArangoError::Request("AQL cursor lifetime exceeded".into())));
+        cursor.cleanup(limits.cleanup).await;
+        let _ = send.send(result);
+    });
+    receive
+        .await
+        .map_err(|_| ArangoError::Request("cursor owner stopped before completion".into()))?
 }
 
-/// Fetch remaining cursor pages, appending to `results`.
-async fn paginate(
-    pool: &ArangoPool,
-    cursor_id: &str,
-    results: &mut Vec<Value>,
-) -> Result<(), ArangoError> {
-    loop {
-        let path = format!("cursor/{cursor_id}");
-        let resp = pool.writer().post(&path, &serde_json::json!({})).await?;
+struct CursorOwner {
+    client: ArangoClient,
+    // Normally one ID; retain a second unexpected ID for cleanup before rejecting
+    // a malformed continuation. An error stops pagination, bounding this at two.
+    ids: Vec<String>,
+}
 
-        let page = extract_results(&resp)?;
-        trace!(page_size = page.len(), "cursor page");
-        results.extend(page);
+impl CursorOwner {
+    fn observe(&mut self, response: &Value) -> Result<(), ArangoError> {
+        let Some(value) = response.get("id") else {
+            return Ok(());
+        };
+        let id = value
+            .as_str()
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            })
+            .ok_or_else(|| ArangoError::Request("invalid cursor ID".into()))?;
+        if self.ids.first().is_some_and(|known| known != id) {
+            self.ids.push(id.to_string());
+            return Err(ArangoError::Request(
+                "cursor ID changed during pagination".into(),
+            ));
+        }
+        if self.ids.is_empty() {
+            self.ids.push(id.to_string());
+        }
+        Ok(())
+    }
 
-        if !resp["hasMore"].as_bool().unwrap_or(false) {
-            break;
+    async fn cleanup(self, budget: Duration) {
+        let result = tokio::time::timeout(budget, async {
+            for id in self.ids {
+                if let Err(error) = self.client.delete(&format!("cursor/{id}")).await
+                    && !error.is_not_found()
+                {
+                    tracing::warn!(%error, "cursor deletion failed; server TTL remains the fallback");
+                }
+            }
+        }).await;
+        if result.is_err() {
+            tracing::warn!("cursor cleanup timed out; server TTL remains the fallback");
         }
     }
-    Ok(())
+}
+
+fn has_more(response: &Value) -> Result<bool, ArangoError> {
+    response
+        .get("hasMore")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| ArangoError::Request("cursor response missing boolean hasMore".into()))
+}
+
+async fn execute_cursor(
+    cursor: &mut CursorOwner,
+    body: &Value,
+    send: &mut oneshot::Sender<Result<QueryResult, ArangoError>>,
+) -> Result<QueryResult, ArangoError> {
+    if send.is_closed() {
+        return Err(ArangoError::Request("query caller cancelled".into()));
+    }
+    // Shield only creation. If the caller disappears during this request, the
+    // owner still receives and deletes the ID, bounded by the query lifetime.
+    let response = cursor.client.post("cursor", body).await?;
+    cursor.observe(&response)?; // capture ID BEFORE validating the first page
+    let mut results = extract_results(&response)?;
+    let extra = response.get("extra").cloned();
+    let full_count = extra
+        .as_ref()
+        .and_then(|e| e["stats"]["fullCount"].as_u64());
+    let mut more = has_more(&response)?;
+    while more {
+        let id = cursor.ids.first().ok_or_else(|| {
+            ArangoError::Request("hasMore=true but no cursor ID in response".into())
+        })?;
+        let path = format!("cursor/{id}");
+        let empty = serde_json::json!({});
+        let response = tokio::select! {
+            biased;
+            _ = send.closed() => return Err(ArangoError::Request("query caller cancelled".into())),
+            response = cursor.client.post(&path, &empty) => response?,
+        };
+        cursor.observe(&response)?;
+        results.extend(extract_results(&response)?);
+        more = has_more(&response)?;
+    }
+    debug!(total_results = results.len(), "query complete");
+    Ok(QueryResult {
+        results,
+        full_count,
+        extra,
+    })
 }
 
 /// Execute an AQL query and return the first result, or `None` if empty.
@@ -228,3 +323,7 @@ pub async fn remove_docs_by_fields(
     let result = query_single(pool, &aql, Some(&bind), ExecutionTarget::Writer).await?;
     Ok(result.and_then(|v| v.as_u64()).unwrap_or(0))
 }
+
+#[cfg(test)]
+#[path = "query_tests.rs"]
+mod tests;

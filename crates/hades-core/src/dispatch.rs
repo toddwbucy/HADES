@@ -47,8 +47,9 @@ fn validated_query_limit(limit: Option<u32>) -> Result<u32, HandlerError> {
 /// patience; the same handler now runs inside the daemon and the MCP server,
 /// where the allocation is charged to a shared long-lived process and two
 /// concurrent callers can exhaust it for everyone. Bounded here so an oversized
-/// collection is a clear, immediate error rather than a 60s `REQUEST_TIMEOUT`
-/// that also leaks the ArangoDB cursor.
+/// collection is a clear, immediate error rather than a 60s `REQUEST_TIMEOUT`.
+/// Cursor ownership survives cancellation in `db::query`; aggregate memory
+/// admission remains a separate requirement (#22).
 ///
 /// 100K vectors at ~2048 dimensions is roughly 4 GB materialized as JSON before
 /// the `Vec<f32>` copy, which is already generous for a shared process.
@@ -5052,12 +5053,9 @@ mod handlers {
     ///
     /// So the scan is bounded by [`MAX_SCANNED_EMBEDDINGS`] and refuses past it
     /// with a clear error instead of running into the daemon's 60s
-    /// `REQUEST_TIMEOUT`. A timeout would be the worse failure twice over: the
-    /// caller cannot tell it from a hung embedder, and dropping the future mid
-    /// `paginate` skips the `DELETE cursor/{id}` cleanup, leaving a server-side
-    /// cursor to expire on its own. `APPROX_NEAR_COSINE` is the real fix and is
-    /// tracked separately; this is the bound that makes the current
-    /// implementation safe to host.
+    /// `REQUEST_TIMEOUT`. Cursor ownership now survives caller cancellation,
+    /// but the row count is not an aggregate memory guarantee. Indexed retrieval
+    /// and shared admission budgets remain tracked in #22.
     ///
     /// Shared by `hades db query` and the MCP `db_query` tool so the two
     /// surfaces cannot drift apart in scoring. Note they can still differ in
@@ -5129,7 +5127,8 @@ mod handlers {
 
         // Refuse before scanning rather than after. Counting is a cheap indexed
         // operation; the scan is not, and the daemon would otherwise pay the
-        // full allocation and then hit REQUEST_TIMEOUT with a cursor left open.
+        // full allocation and then hit REQUEST_TIMEOUT. Cursor cleanup is owned
+        // independently, but admission still needs an aggregate byte budget (#22).
         let count_aql = "RETURN LENGTH(@@embeddings)";
         let count_bind = json!({ "@embeddings": profile.embeddings });
         let embedding_count =
