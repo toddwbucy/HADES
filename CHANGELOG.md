@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Refresh the audit fixture inventory with all 39 Rust integration targets and
+  explicit Python, script, opt-in and workstation execution boundaries (epic #12).
+
 - Verify structural-vector retention after changed parsed and parser-free source
   text using real CLI ingestion and private fixtures (epic #12).
 - Record private checkpoint/graph generation and partially persisted export
