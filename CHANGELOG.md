@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Bound Unix daemon connections to 64 and response writes to 15 seconds so
+  stalled readers cannot retain completed search responses indefinitely (#22).
+
 - Exact vector search folds bounded pages into top-K results with shared
   admission and bounded embedding, detail, and structural responses (#22).
   Invalid stored vectors and incompatible model/dimension metadata fail explicitly.
