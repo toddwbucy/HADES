@@ -54,7 +54,9 @@ All 11 checks passed. Administrative follow-up reads confirm both rejected inser
 left no document and the allowed insert is present. The first probe expected 403
 for database-level denial; the observed contract was 401. The retained run uses
 that exact status, with 403 still required for denied writes in an accessible
-database. Both runs cleaned up their owned server. No live endpoint was used.
+database. Both initial runs cleaned up their owned server. The retained final replay also
+removes its temporary credentials, logs and database directory before reporting
+success. No live endpoint was used.
 
 Repeat using existing matching binaries and adjacent ICU/timezone data:
 
@@ -65,7 +67,12 @@ PYTHONDONTWRITEBYTECODE=1 timeout 150 python3 scripts/verify_database_acl.py \
 
 The opt-in probe installs nothing and accepts no server URL. It uses a new 0700
 artifact directory, one CPU, low priority, small server caches, an 8 GiB server
-address-space limit, one owned process group and explicit cleanup. The recorded
+address-space limit, one owned process group and explicit cleanup. Setup and
+startup failures remove newly created state after stopping any owned child. If
+process shutdown itself fails, the probe fails and preserves its private directory
+instead of deleting files beneath a possibly running server. Three service-free
+cleanup contracts verify these paths; only those contracts run in the default
+operational unittest gate. Successful results are printed after cleanup. The recorded
 run used the private staged binaries from the historical restore rehearsal.
 This matrix is not a production credential inventory, a TCP test, a full
 administrative-operation matrix or an application deployment test. It is not part

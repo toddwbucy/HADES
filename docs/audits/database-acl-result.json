@@ -53,5 +53,6 @@
   "limitations": [
     "Synthetic Unix-socket ACL matrix, not deployed credentials/grants.",
     "No production configuration changes; no TCP or HADES transport tested."
-  ]
+  ],
+  "temporary_state_removed": true
 }

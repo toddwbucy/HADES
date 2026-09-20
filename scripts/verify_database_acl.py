@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -32,64 +33,64 @@ def main():
     os.umask(0o077)
     root = Path(tempfile.mkdtemp(prefix='hades-acl-', dir='/tmp'))
     print(root, flush=True)
-    isolation.lower_priority()
-    endpoint = root / 'arango.sock'
-    secret = secrets.token_hex(32)
-    secret_file = root / 'jwt.key'
-    secret_file.write_text(secret)
-    secret_file.chmod(0o400)
-    now = int(time.time())
-    header = b64(json.dumps({'alg': 'HS256', 'typ': 'JWT'}).encode())
-    claims = b64(json.dumps({'iss': 'arangodb', 'preferred_username': 'root', 'iat': now, 'exp': now + 300}).encode())
-    signing = header + '.' + claims
-    admin = 'Bearer ' + signing + '.' + b64(hmac.new(secret.encode(), signing.encode(), hashlib.sha256).digest())
-    password = secrets.token_urlsafe(24)
-    credentials = {name: 'Basic ' + base64.b64encode((name + ':' + password).encode()).decode()
-                   for name in ('fixture_reader', 'fixture_writer')}
-    cases = []
-
-    def request(method, path, body=None, authorization=admin, expected=200):
-        c = http.client.HTTPConnection('localhost', timeout=5)
-        c.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        c.sock.settimeout(5)
-        c.sock.connect(str(endpoint))
-        try:
-            headers = {'Content-Type': 'application/json'}
-            if authorization is not None:
-                headers['Authorization'] = authorization
-            c.request(method, path, json.dumps(body) if body is not None else None, headers)
-            response = c.getresponse()
-            raw = response.read(65537)
-            if len(raw) > 65536:
-                raise RuntimeError('private ACL response exceeded limit')
-            if response.status != expected:
-                raise RuntimeError(f'private ACL request expected {expected}, received {response.status}')
-            return json.loads(raw) if raw else None
-        finally:
-            c.close()
-
-    def check(name, method, path, body=None, authorization=None, expected=200):
-        request(method, path, body, authorization, expected)
-        cases.append({'case': name, 'status': expected})
-
-    def interrupted(signum, frame):
-        raise RuntimeError('private ACL probe interrupted')
-
-    signal.signal(signal.SIGTERM, interrupted)
-    signal.signal(signal.SIGINT, interrupted)
-    env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'LANG': 'C', 'OMP_NUM_THREADS': '1',
-           'CUDA_VISIBLE_DEVICES': '', 'ICU_DATA': str(binary.parent), 'ICU_DATA_LEGACY': str(binary.parent),
-           'TZ_DATA': str(binary.parent / 'tzdata')}
-    flags = ['--configuration', 'none', '--database.directory', str(root / 'data'),
-             '--server.endpoint', 'unix://' + str(endpoint), '--server.authentication', 'true',
-             '--server.authentication-unix-sockets', 'true', '--server.jwt-secret-keyfile', str(secret_file),
-             '--javascript.enabled', 'false', '--foxx.queues', 'false', '--server.statistics', 'false',
-             '--server.minimal-threads', '4', '--server.maximal-threads', '8', '--server.io-threads', '1',
-             '--rocksdb.block-cache-size', '67108864', '--rocksdb.total-write-buffer-size', '67108864',
-             '--rocksdb.write-buffer-size', '16777216', '--rocksdb.max-background-jobs', '2',
-             '--arangosearch.threads', '1', '--arangosearch.threads-limit', '1', '--log.output', '-']
     child = None
     try:
+        isolation.lower_priority()
+        endpoint = root / 'arango.sock'
+        secret = secrets.token_hex(32)
+        secret_file = root / 'jwt.key'
+        secret_file.write_text(secret)
+        secret_file.chmod(0o400)
+        now = int(time.time())
+        header = b64(json.dumps({'alg': 'HS256', 'typ': 'JWT'}).encode())
+        claims = b64(json.dumps({'iss': 'arangodb', 'preferred_username': 'root', 'iat': now, 'exp': now + 300}).encode())
+        signing = header + '.' + claims
+        admin = 'Bearer ' + signing + '.' + b64(hmac.new(secret.encode(), signing.encode(), hashlib.sha256).digest())
+        password = secrets.token_urlsafe(24)
+        credentials = {name: 'Basic ' + base64.b64encode((name + ':' + password).encode()).decode()
+                       for name in ('fixture_reader', 'fixture_writer')}
+        cases = []
+
+        def request(method, path, body=None, authorization=admin, expected=200):
+            c = http.client.HTTPConnection('localhost', timeout=5)
+            c.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.sock.settimeout(5)
+            c.sock.connect(str(endpoint))
+            try:
+                headers = {'Content-Type': 'application/json'}
+                if authorization is not None:
+                    headers['Authorization'] = authorization
+                c.request(method, path, json.dumps(body) if body is not None else None, headers)
+                response = c.getresponse()
+                raw = response.read(65537)
+                if len(raw) > 65536:
+                    raise RuntimeError('private ACL response exceeded limit')
+                if response.status != expected:
+                    raise RuntimeError(f'private ACL request expected {expected}, received {response.status}')
+                return json.loads(raw) if raw else None
+            finally:
+                c.close()
+
+        def check(name, method, path, body=None, authorization=None, expected=200):
+            request(method, path, body, authorization, expected)
+            cases.append({'case': name, 'status': expected})
+
+        def interrupted(signum, frame):
+            raise RuntimeError('private ACL probe interrupted')
+
+        signal.signal(signal.SIGTERM, interrupted)
+        signal.signal(signal.SIGINT, interrupted)
+        env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'LANG': 'C', 'OMP_NUM_THREADS': '1',
+               'CUDA_VISIBLE_DEVICES': '', 'ICU_DATA': str(binary.parent), 'ICU_DATA_LEGACY': str(binary.parent),
+               'TZ_DATA': str(binary.parent / 'tzdata')}
+        flags = ['--configuration', 'none', '--database.directory', str(root / 'data'),
+                 '--server.endpoint', 'unix://' + str(endpoint), '--server.authentication', 'true',
+                 '--server.authentication-unix-sockets', 'true', '--server.jwt-secret-keyfile', str(secret_file),
+                 '--javascript.enabled', 'false', '--foxx.queues', 'false', '--server.statistics', 'false',
+                 '--server.minimal-threads', '4', '--server.maximal-threads', '8', '--server.io-threads', '1',
+                 '--rocksdb.block-cache-size', '67108864', '--rocksdb.total-write-buffer-size', '67108864',
+                 '--rocksdb.write-buffer-size', '16777216', '--rocksdb.max-background-jobs', '2',
+                 '--arangosearch.threads', '1', '--arangosearch.threads-limit', '1', '--log.output', '-']
         with (root / 'server.log').open('w') as output:
             child = subprocess.Popen([str(binary), *flags], env=env, cwd=root, stdout=output,
                                      stderr=subprocess.STDOUT, start_new_session=True,
@@ -137,11 +138,15 @@ def main():
                   'owned_process_stopped': True,
                   'limitations': ['Synthetic Unix-socket ACL matrix, not deployed credentials/grants.',
                                   'No production configuration changes; no TCP or HADES transport tested.']}
-        (root / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-        print(json.dumps(result), flush=True)
     finally:
         if child is not None:
             isolation.stop_group(child)
+        # Only delete after owned-process cleanup succeeds. If stopping fails,
+        # preserve the private directory and fail rather than erase live files.
+        shutil.rmtree(root)
+    result['temporary_state_removed'] = True
+    print(json.dumps(result), flush=True)
+
 
 
 if __name__ == '__main__':
