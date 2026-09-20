@@ -4,6 +4,11 @@ This register distinguishes repository remediation from deployment and full audi
 completion. Baseline source: `a71d73bfe988e17d487a2db1d35dadf3a18f0664`.
 Repository status sampled on 2026-09-20. Epic #12 remains open.
 
+For the current reconciliation at `1c1adf8`, see the
+[acceptance refresh](acceptance-refresh.md). It supersedes stale open-work
+statements below where later focused reports establish remediation, preserves
+historical evidence boundaries, and adds read-only deployment metadata.
+
 ## Evidence locations
 
 - [Provider contracts](provider-contracts.md): extraction/training gRPC versus
