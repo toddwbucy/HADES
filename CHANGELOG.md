@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Document structural-vector provenance and refresh boundaries, including
+  ingestion retention differences and remaining audit verification (#12).
+
 - Record private CPU training cancellation and queued-prefetch cleanup
   reproductions, with explicit outcome and scheduling limits (#77).
 
