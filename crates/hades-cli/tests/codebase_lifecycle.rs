@@ -322,6 +322,83 @@ async fn daemon_shutdown_reaps_running_ingestion_and_persists_failure() {
                 assert!(!socket.exists());
                 embedder.hold.store(false, Ordering::SeqCst);
                 embedder.release.notify_one();
+                // A new daemon instance must admit a retry after the previous
+                // owner durably recorded failure, and persist normal completion.
+                let child = cli_command(
+                    &pool,
+                    &embedder,
+                    &["daemon", "--socket", socket.to_str().unwrap()],
+                )
+                .env("HADES_USE_GPU", "false")
+                .env("TOKIO_WORKER_THREADS", "2")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(&log).unwrap())
+                .spawn()
+                .unwrap();
+                let mut restarted = PrivateDaemon {
+                    child,
+                    ingest: None,
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                        assert!(restarted.child.try_wait().unwrap().is_none());
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let retry = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(retry["success"], true, "{retry}");
+                let retry_job = retry["data"]["job_id"].as_str().unwrap();
+                let retry_pid = retry["data"]["pid"].as_u64().unwrap() as u32;
+                restarted.ingest = Some((retry_pid, source.clone()));
+                let completed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                    loop {
+                        let status = daemon_request(
+                            &socket,
+                            json!({"command":"ingest.status","params":{"job_id":retry_job}}),
+                        )
+                        .await;
+                        assert_eq!(status["success"], true, "{status}");
+                        match status["data"]["status"].as_str() {
+                            Some("running" | "starting") => {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                            }
+                            _ => break status["data"].clone(),
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(completed["status"], "completed", "{completed}");
+                assert_eq!(completed["result"]["success"], true);
+                assert_ne!(completed["owner_instance"], recorded["owner_instance"]);
+                assert_eq!(unsafe { libc::kill(retry_pid as i32, 0) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+                validate(&pool, &embedder).await;
+                assert_eq!(
+                    unsafe { libc::kill(restarted.child.id().unwrap() as i32, signal) },
+                    0
+                );
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        restarted.child.wait()
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+                );
+                assert!(!socket.exists());
             }
         },
     )

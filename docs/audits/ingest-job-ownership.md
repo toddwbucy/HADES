@@ -74,7 +74,18 @@ is refused. SIGINT and SIGTERM each cause direct-child reaping before daemon exi
 a persisted failed job with a shutdown reason, removal of the daemon socket and
 preservation of the prior graph. This uses synthetic CPU embedding responses,
 not installed services or a model. It does not yet measure simultaneous child
-counts across multiple served databases or prove successful restart/retry.
+counts across multiple served databases. For each signal, a new daemon instance
+also retries the same source tree, completes ingestion with a new owner identity,
+reaps the child and passes graph validation against the disposable database.
+
+Process supervision now catches panics around capture/exit observation while
+retaining the process outside the unwind boundary, then signals its group and
+reaps the direct child. A private injected-panic contract verifies the child is
+absent while its reservation is still held, followed by readmission after release.
+This does not promise cleanup after an uncatchable process abort or SIGKILL.
+Canonical paths that cannot be represented as UTF-8 are rejected before admission
+or database access; a private symlink fixture prevents a serialization panic from
+replacing an ordinary invalid-parameter response.
 
 ## Remaining requirements before publication or closure
 

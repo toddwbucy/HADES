@@ -1,6 +1,8 @@
 //! Linux child-group ownership and bounded pipe capture for detached ingestion.
 use anyhow::{Context, Result, anyhow};
+use futures::FutureExt;
 use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -12,6 +14,8 @@ struct Limits {
     stdout: usize,
     stderr_tail: usize,
     runtime: Duration,
+    #[cfg(test)]
+    panic_supervision: bool,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -19,6 +23,8 @@ impl Default for Limits {
             stdout: 8 * 1024 * 1024,
             stderr_tail: 64 * 1024,
             runtime: Duration::from_secs(6 * 60 * 60),
+            #[cfg(test)]
+            panic_supervision: false,
         }
     }
 }
@@ -91,7 +97,9 @@ impl Process {
         let stdout = self.child.stdout.take().context("missing ingest stdout")?;
         let stderr = self.child.stderr.take().context("missing ingest stderr")?;
         let pid = self.id();
-        let captured = {
+        // Keep the process outside the unwind boundary so a supervisor panic
+        // cannot drop it before explicit group signalling and direct reaping.
+        let captured = AssertUnwindSafe(async {
             let capture = async {
                 tokio::try_join!(
                     read_stdout(stdout, limits.stdout),
@@ -100,6 +108,11 @@ impl Process {
             };
             tokio::pin!(capture);
             let work = async {
+                #[cfg(test)]
+                if limits.panic_supervision {
+                    tokio::task::yield_now().await;
+                    panic!("private supervisor fault");
+                }
                 tokio::select! {
                     result = &mut capture => {
                         let result = result?;
@@ -121,7 +134,10 @@ impl Process {
                 result = tokio::time::timeout(limits.runtime, work) =>
                     result.unwrap_or_else(|_| Err(anyhow!("ingest runtime limit exceeded"))),
             }
-        };
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("ingest supervision panicked")));
         let killed = self.group.kill();
         let status = self.child.wait().await.context("failed to reap ingest")?;
         killed?;
@@ -206,6 +222,7 @@ mod tests {
             stdout: 1024,
             stderr_tail: 32,
             runtime: Duration::from_secs(2),
+            panic_supervision: false,
         }
     }
     fn absent(pid: u32) -> bool {
@@ -227,6 +244,39 @@ mod tests {
         assert_eq!(output.stderr_tail.len(), 32);
         assert!(output.stderr_tail.ends_with(b"END"));
         assert!(absent(pid));
+    }
+
+    #[tokio::test]
+    async fn supervision_panic_reaps_child_before_reservation_release() {
+        use std::path::Path;
+        use std::sync::Arc;
+        let admission = Arc::new(super::super::Admission::new(1));
+        let reservation = admission
+            .reserve(Path::new("/private-fixture/panic"))
+            .unwrap();
+        let process = python("import time;time.sleep(10)");
+        let pid = process.id();
+        let error = process
+            .finish_with(Limits {
+                panic_supervision: true,
+                ..limits()
+            })
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("supervision panicked"));
+        assert!(absent(pid));
+        assert!(
+            admission
+                .reserve(Path::new("/private-fixture/other"))
+                .is_err()
+        );
+        drop(reservation);
+        assert!(
+            admission
+                .reserve(Path::new("/private-fixture/other"))
+                .is_ok()
+        );
     }
 
     #[tokio::test]

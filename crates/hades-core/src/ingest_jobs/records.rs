@@ -49,6 +49,12 @@ async fn start_with(
         name: "path".into(),
         reason: e.to_string(),
     })?;
+    if resolved.to_str().is_none() {
+        return Err(HandlerError::InvalidParameter {
+            name: "path".into(),
+            reason: "canonical ingestion path must be valid UTF-8".into(),
+        });
+    }
     let reservation = super::reserve(&resolved).map_err(service)?;
     if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict
@@ -602,6 +608,26 @@ mod tests {
                 Err(HandlerError::InvalidParameter { .. })
             ));
         }
+        // A UTF-8 symlink can resolve to a non-UTF-8 directory. Reject it
+        // before serializing the job row or issuing any database request.
+        use std::os::unix::ffi::OsStringExt;
+        let native = root
+            .path()
+            .join(std::ffi::OsString::from_vec(vec![b'x', 0xff]));
+        std::fs::create_dir(&native).unwrap();
+        let alias = root.path().join("native-alias");
+        std::os::unix::fs::symlink(&native, &alias).unwrap();
+        assert!(matches!(
+            start_with(
+                &mock.pool,
+                &config,
+                alias.to_str().unwrap(),
+                false,
+                python(&script)
+            )
+            .await,
+            Err(HandlerError::InvalidParameter { .. })
+        ));
         assert!(mock.events.try_recv().is_err());
     }
 }

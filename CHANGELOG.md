@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Verify successful ingestion retry after daemon restart and reap owned children
+  after a caught supervision panic before releasing admission; reject non-UTF-8
+  canonical paths before job-record serialization (#51).
+
 - Verify actual daemon shutdown with a running ingestion child against disposable
   ArangoDB, including child reaping, persisted failure and graph preservation (#51).
 
