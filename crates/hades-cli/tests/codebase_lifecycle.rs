@@ -200,3 +200,29 @@ async fn ingest_query_modify_move_delete_and_partial_failure_recover() {
         }
     }).await;
 }
+
+#[tokio::test]
+async fn failed_chunk_replacement_preserves_previous_file_graph() {
+    with_temp_db("failed_replace", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let file = tree.path().join("provider.py");
+        std::fs::write(&file, "def target():\n    return 'quartz_original'\n").unwrap();
+        ingest(&pool, &embedder, tree.path()).await;
+        let before_chunks = hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap();
+        let before_symbols = hades_core::db::crud::count_collection(&pool, "codebase_symbols").await.unwrap();
+        assert!(before_chunks > 0 && before_symbols > 0);
+        pool.writer().put("collection/codebase_chunks/properties", &json!({
+            "schema": {"level":"strict", "message":"isolated replacement rejection", "rule": {
+                "type":"object", "required":["audit_required_marker"]
+            }}
+        })).await.unwrap();
+        std::fs::write(&file, "def replacement():\n    return 'sapphire_revised'\n").unwrap();
+        let failed = cli(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()], false).await;
+        let after_chunks = hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap();
+        let after_symbols = hades_core::db::crud::count_collection(&pool, "codebase_symbols").await.unwrap();
+        println!("FAILED_REPLACEMENT_EVIDENCE {}", json!({"before_chunks":before_chunks,"before_symbols":before_symbols,"after_chunks":after_chunks,"after_symbols":after_symbols,"report":failed}));
+        assert_eq!(after_chunks, before_chunks, "failed replacement must preserve committed chunks");
+        assert_eq!(after_symbols, before_symbols, "failed replacement must preserve committed symbols");
+    }).await;
+}
