@@ -11,6 +11,10 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Native CLI inventory](cli-contracts.md): isolated help-only walk of 80 visible
+  leaf commands and embedding response-cap call-site trace; operational parity
+  remains separate review.
+
 - [Provider contracts](provider-contracts.md): extraction/training gRPC versus
   embedding HTTP, status and source-level size/admission limits, and 78 private
   CPU cases; effective oversized-message boundaries remain to measure.
