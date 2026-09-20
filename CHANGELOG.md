@@ -17,6 +17,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Changed
+
+- Code-file keys now include the canonical ingest root and a full path digest,
+  preserving distinct dotted, underscored, Unicode, long, and multi-root paths
+  (#13). Ingest rejects legacy or conflicting ownership before replacement;
+  drift rejects legacy comparisons. Existing corpora require the explicit rebuild
+  and rollback procedure in `docs/code-file-identities.md`.
+
 ### Added
 
 - **`config/schemas/codebase.yaml`**, the universal code graph as data. `hades

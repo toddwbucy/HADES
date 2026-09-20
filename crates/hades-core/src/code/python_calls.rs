@@ -37,10 +37,17 @@ use crate::db::keys;
 pub fn build_qualified_index(
     file_symbols: &HashMap<String, Vec<Symbol>>,
 ) -> HashMap<String, Vec<(String, String)>> {
+    build_qualified_index_scoped(file_symbols, "")
+}
+
+pub fn build_qualified_index_scoped(
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    namespace: &str,
+) -> HashMap<String, Vec<(String, String)>> {
     let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for (rel_path, symbols) in file_symbols {
-        let fkey = keys::file_key(rel_path);
+        let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
             if sym.kind == SymbolKind::Import {
                 continue;
@@ -71,11 +78,20 @@ pub fn resolve_python_calls(
     qualified_index: &HashMap<String, Vec<(String, String)>>,
     bare_name_index: &HashMap<String, Vec<(String, String)>>,
 ) -> Vec<Value> {
+    resolve_python_calls_scoped(file_symbols, qualified_index, bare_name_index, "")
+}
+
+pub fn resolve_python_calls_scoped(
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    qualified_index: &HashMap<String, Vec<(String, String)>>,
+    bare_name_index: &HashMap<String, Vec<(String, String)>>,
+    namespace: &str,
+) -> Vec<Value> {
     let mut edges = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
     for (rel_path, symbols) in file_symbols {
-        let fkey = keys::file_key(rel_path);
+        let fkey = keys::scoped_file_key(namespace, rel_path);
 
         for sym in symbols {
             // Only definition symbols can call other symbols.

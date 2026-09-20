@@ -13,7 +13,7 @@
 //! - Rust and Go semantic enrichment through language servers
 //! - Per-file error isolation in batch mode
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Instant;
@@ -225,6 +225,8 @@ pub async fn run_phase(
 
     // Compute base path for relative paths.
     let base = ingest_base_path(&path);
+    let namespace = base.to_str().context("ingest root must be valid UTF-8")?;
+    preflight_file_identities(&db, &base, &files).await?;
 
     // ── Analyzer preflight (#164/#167) ─────────────────────────────────
     // Resolve each needed analyzer (config/env override wins over PATH) and
@@ -365,6 +367,7 @@ pub async fn run_phase(
                 "no registered language or grammar",
                 force,
                 allow_analysis_downgrade,
+                namespace,
             )
             .await
         } else {
@@ -381,6 +384,7 @@ pub async fn run_phase(
                 allow_analysis_downgrade,
                 gopls_cmd.is_some(),
                 window_chars,
+                namespace,
             )
             .await
         };
@@ -392,7 +396,7 @@ pub async fn run_phase(
                 // set purged and rebuilt, so a symbol another file points at may
                 // have disappeared. Remember it for the post-run dangling sweep.
                 if r.skipped != Some(true) && r.success {
-                    rewritten_file_keys.push(keys::file_key(&rel_path));
+                    rewritten_file_keys.push(keys::scoped_file_key(namespace, &rel_path));
                 }
                 results.push(FileResult {
                     duration_ms: duration,
@@ -417,33 +421,13 @@ pub async fn run_phase(
         }
     }
 
-    // Record which ingest root these nodes belong to, for every file discovered
-    // under it — not just the ones this run rewrote. A re-ingest skips unchanged
-    // files, so stamping only rewritten nodes would leave most of an existing
-    // graph unattributed and `codebase drift` unable to tell one tree from
-    // another (#192).
-    //
-    // Runs after the file loop so nodes created by this run are already present.
-    let discovered_keys: Vec<String> = files
-        .iter()
-        .map(|f| file_key_for(&base, f))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    match stamp_ingest_root(&db, &base, &discovered_keys).await {
-        Ok(0) => {}
-        Ok(n) => info!(nodes = n, root = %base.display(), "recorded ingest root"),
-        // Attribution is metadata: losing it degrades drift's precision but must
-        // not fail an otherwise good ingest.
-        Err(e) => warn!(error = %e, "failed to record ingest root on file nodes"),
-    }
-
     // Resolve Python import graph edges (file→symbol where possible, file→file fallback).
-    let py_symbol_index = build_python_symbol_index(&imports.python_file_symbols);
-    let py_import_edges = resolve_python_imports(
+    let py_symbol_index = build_python_symbol_index_scoped(&imports.python_file_symbols, namespace);
+    let py_import_edges = resolve_python_imports_scoped(
         &imports.python_imports,
         &imports.python_file_symbols,
         &py_symbol_index,
+        namespace,
     );
     if !py_import_edges.is_empty() {
         info!(
@@ -460,11 +444,13 @@ pub async fn run_phase(
     // Resolve Python call graph edges (symbol → symbol). Uses the calls + parent_symbol
     // metadata attached during AST extraction; reuses the bare-name index already built
     // for imports as the Strategy-3 fallback.
-    let py_qualified_index = python_calls::build_qualified_index(&imports.python_file_symbols);
-    let py_call_edges = python_calls::resolve_python_calls(
+    let py_qualified_index =
+        python_calls::build_qualified_index_scoped(&imports.python_file_symbols, namespace);
+    let py_call_edges = python_calls::resolve_python_calls_scoped(
         &imports.python_file_symbols,
         &py_qualified_index,
         &py_symbol_index,
+        namespace,
     );
     if !py_call_edges.is_empty() {
         info!(
@@ -481,7 +467,8 @@ pub async fn run_phase(
     // Resolve compiler-grade C/C++/CUDA calls, including CUDA kernel launches.
     // libclang records target USRs and definition spans during each file parse;
     // this batch phase maps them onto HADES's cross-file span keys.
-    let cpp_call_edges = cpp_edges::resolve_cpp_calls(&base, &imports.cpp_file_symbols);
+    let cpp_call_edges =
+        cpp_edges::resolve_cpp_calls_scoped(&base, &imports.cpp_file_symbols, namespace);
     if !cpp_call_edges.is_empty() {
         info!(
             edge_count = cpp_call_edges.len(),
@@ -494,7 +481,8 @@ pub async fn run_phase(
         }
     }
 
-    let structural_edges = tree_sitter_edges::resolve(&imports.structural_file_symbols);
+    let structural_edges =
+        tree_sitter_edges::resolve_scoped(&imports.structural_file_symbols, namespace);
     if !structural_edges.calls.is_empty() {
         crud::insert_documents(&db, CODEBASE.calls_edges, &structural_edges.calls, true)
             .await
@@ -507,9 +495,13 @@ pub async fn run_phase(
     }
 
     // Resolve Rust import graph edges (file → symbol).
-    let rust_symbol_index = rust_imports::build_symbol_index(&imports.rust_file_symbols);
-    let rs_import_edges =
-        rust_imports::resolve_rust_imports(&imports.rust_imports, &rust_symbol_index);
+    let rust_symbol_index =
+        rust_imports::build_symbol_index_scoped(&imports.rust_file_symbols, namespace);
+    let rs_import_edges = rust_imports::resolve_rust_imports_scoped(
+        &imports.rust_imports,
+        &rust_symbol_index,
+        namespace,
+    );
     if !rs_import_edges.is_empty() {
         info!(
             edge_count = rs_import_edges.len(),
@@ -1184,39 +1176,9 @@ pub(crate) fn parse_language_arg(language: Option<&str>) -> Result<Option<Langua
 /// stale for the other (#192).
 pub(crate) const INGEST_ROOT_FIELD: &str = "ingest_root";
 
-/// Stamp `ingest_root` on every existing node in `keys` that does not already
-/// carry this root.
-///
-/// Returns how many nodes were updated. Nodes are matched by `_key` and missing
-/// ones are skipped, so this is safe to call with keys whose documents failed to
-/// write.
-///
-/// The value is overwritten rather than only filled when absent: a repository
-/// that moved on disk keeps its keys (they are root-relative) but changes root,
-/// and leaving the old value would exclude the whole tree from its own drift
-/// report. Last ingest wins, which is what the field claims to record.
-async fn stamp_ingest_root(db: &ArangoPool, base: &Path, keys: &[String]) -> Result<usize> {
-    if keys.is_empty() {
-        return Ok(0);
-    }
-    let root = base.display().to_string();
-    let aql = format!(
-        "FOR k IN @keys \
-           LET f = DOCUMENT(@@files, k) \
-           FILTER f != null AND f.{INGEST_ROOT_FIELD} != @root \
-           UPDATE f WITH {{ {INGEST_ROOT_FIELD}: @root }} IN @@files \
-           RETURN 1"
-    );
-    let bind = json!({ "@files": CODEBASE.files, "keys": keys, "root": root });
-    let rows =
-        hades_core::db::query::query(db, &aql, Some(&bind), None, false, ExecutionTarget::Writer)
-            .await?;
-    Ok(rows.results.len())
-}
-
 /// The base directory that ingest strips to form a file node's `rel_path`.
 ///
-/// A file node's `_key` is `keys::file_key(rel_path)` where `rel_path` is the
+/// A file node's `_key` is `keys::scoped_file_key(namespace, rel_path)` where `rel_path` is the
 /// path relative to this base — so anything comparing graph keys against the
 /// working tree (e.g. `codebase drift`) MUST derive keys through this same
 /// function, or every key mismatches and the comparison is meaningless.
@@ -1274,7 +1236,71 @@ pub(crate) fn rel_path_for(base: &Path, file_path: &Path) -> String {
 
 /// Compute the graph `_key` for a discovered file, relative to `base`.
 pub(crate) fn file_key_for(base: &Path, file_path: &Path) -> String {
-    keys::file_key(&rel_path_for(base, file_path))
+    keys::scoped_file_key(&base.to_string_lossy(), &rel_path_for(base, file_path))
+}
+
+/// Fail closed before replacing any legacy or conflicting file graph.
+async fn preflight_file_identities(db: &ArangoPool, base: &Path, files: &[PathBuf]) -> Result<()> {
+    let namespace = base.to_str().context("ingest root must be valid UTF-8")?;
+    let legacy = hades_core::db::query::query(
+        db,
+        "FOR f IN @@files FILTER f.file_key_version != 2 LIMIT 1 RETURN f._key",
+        Some(&json!({"@files": CODEBASE.files})),
+        Some(1),
+        false,
+        ExecutionTarget::Reader,
+    )
+    .await?;
+    if !legacy.results.is_empty() {
+        bail!(
+            "legacy code-file identities require explicit migration; ingest into an isolated new database and follow docs/code-file-identities.md; existing data was not purged"
+        );
+    }
+    let mut identities = HashMap::new();
+    for file in files {
+        file.to_str()
+            .context("source paths must be valid UTF-8; refusing lossy identity conversion")?;
+        let relative = rel_path_for(base, file);
+        let key = keys::scoped_file_key(namespace, &relative);
+        if let Some(previous) = identities.insert(key.clone(), relative.clone())
+            && previous != relative
+        {
+            bail!("file identity conflict between {previous} and {relative}; no files were purged");
+        }
+    }
+    let entries: Vec<_> = identities
+        .into_iter()
+        .map(|(key, path)| json!({"key":key,"path":path}))
+        .collect();
+    for batch in entries.chunks(500) {
+        let rows = hades_core::db::query::query(db,
+            "FOR item IN @items LET f = DOCUMENT(@@files, item.key) RETURN f == null OR (f.file_key_version == 2 AND f.path == item.path AND f.ingest_root == @root)",
+            Some(&json!({"@files":CODEBASE.files,"items":batch,"root":namespace})), Some(500), false, ExecutionTarget::Reader).await?;
+        if rows.results.len() != batch.len()
+            || rows.results.iter().any(|row| row.as_bool() != Some(true))
+        {
+            bail!("file identity conflict in ingest batch; refusing to purge existing data");
+        }
+    }
+    Ok(())
+}
+
+async fn verify_file_identity(
+    db: &ArangoPool,
+    namespace: &str,
+    relative: &str,
+    key: &str,
+) -> Result<()> {
+    let rows = hades_core::db::query::query(db,
+        "LET f = DOCUMENT(@@files, @key) RETURN f == null OR (f.file_key_version == 2 AND f.path == @path AND f.ingest_root == @root)",
+        Some(&json!({"@files": CODEBASE.files, "key": key, "path": relative, "root": namespace})),
+        Some(1), false, ExecutionTarget::Reader).await?;
+    if rows.results.first().and_then(Value::as_bool) != Some(true) {
+        bail!(
+            "file identity conflict for {relative}; stored root/path/version do not match; refusing to purge existing data"
+        );
+    }
+    Ok(())
 }
 
 /// A file under the ingest root that discovery deliberately did not pick up.
@@ -1554,6 +1580,7 @@ async fn ingest_file(
     allow_analysis_downgrade: bool,
     gopls_scheduled: bool,
     window_chars: usize,
+    namespace: &str,
 ) -> Result<FileResult> {
     // Read source.
     let source = std::fs::read_to_string(file_path)
@@ -1592,6 +1619,7 @@ async fn ingest_file(
                     &reason,
                     force,
                     allow_analysis_downgrade,
+                    namespace,
                 )
                 .await;
             }
@@ -1635,7 +1663,8 @@ async fn ingest_file(
     // this entirely, re-ingesting in place (#145) — the per-file purge below
     // touches only this file's own symbols and outbound edges, so inbound
     // authored bridge edges are preserved (unlike a cascading `db purge`).
-    let fkey = keys::file_key(rel_path);
+    let fkey = keys::scoped_file_key(namespace, rel_path);
+    verify_file_identity(db, namespace, rel_path, &fkey).await?;
     if preserve_higher_fidelity(
         db,
         &fkey,
@@ -2117,6 +2146,8 @@ async fn ingest_file(
         .len();
     let file_doc = json!({
         "_key": fkey,
+        "file_key_version": 2,
+        "ingest_root": namespace,
         "path": rel_path,
         "kind": "file",
         "language": lang.name(),
@@ -2285,10 +2316,12 @@ async fn ingest_unparsed_file(
     fallback_reason: &str,
     force: bool,
     allow_analysis_downgrade: bool,
+    namespace: &str,
 ) -> Result<FileResult> {
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
-    let fkey = keys::file_key(rel_path);
+    let fkey = keys::scoped_file_key(namespace, rel_path);
+    verify_file_identity(db, namespace, rel_path, &fkey).await?;
     let lang_label = language_label.unwrap_or_else(|| unparsed_language_label(rel_path));
 
     if preserve_higher_fidelity(
@@ -2435,6 +2468,8 @@ async fn ingest_unparsed_file(
     // create if absent.
     let total_lines = source.lines().count();
     let fields = json!({
+        "file_key_version": 2,
+        "ingest_root": namespace,
         "path": rel_path,
         "rel_path": rel_path,
         "kind": "file",
@@ -3193,6 +3228,7 @@ async fn run_rust_analyzer_phase(
         groups.len(),
         "rust-analyzer",
         "ra",
+        base.to_str().context("ingest root must be valid UTF-8")?,
     )
     .await
 }
@@ -3260,6 +3296,7 @@ async fn run_gopls_phase(
         groups.len(),
         "gopls",
         "gopls",
+        base.to_str().context("ingest root must be valid UTF-8")?,
     )
     .await?;
     stats.failed_workspaces = failed_modules;
@@ -3274,6 +3311,7 @@ async fn store_lsp_extractions(
     workspaces_attempted: usize,
     analyzer: &'static str,
     metadata_prefix: &'static str,
+    namespace: &str,
 ) -> Result<SemanticLspStats> {
     if all_extractions.is_empty() {
         return Ok(SemanticLspStats {
@@ -3292,7 +3330,7 @@ async fn store_lsp_extractions(
             )
         })
         .collect();
-    let resolver = LspEdgeResolver::new(all_extractions, analyzer);
+    let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace);
     let symbol_docs = resolver.build_symbol_documents();
     let semantic_edges = resolver.build_edges();
 
@@ -3423,7 +3461,7 @@ async fn store_lsp_extractions(
 
     let mut patched_count = 0;
     for (rel_path, sym_count, analyzed_at) in &file_patches {
-        let fkey = keys::file_key(rel_path);
+        let fkey = keys::scoped_file_key(namespace, rel_path);
         // Deliberately does NOT touch `analysis_tier`/`analyzer`. Those describe
         // the analysis that produced this node's `symbol_hash` and chunks, and
         // enrichment rewrites neither. Stamping the file `semantic` here made a
@@ -3462,7 +3500,7 @@ async fn store_lsp_extractions(
     // `file_key` index on `codebase_symbols` keeps the per-file count cheap.
     let touched_fkeys: Vec<String> = file_patches
         .iter()
-        .map(|(rel_path, _, _)| keys::file_key(rel_path))
+        .map(|(rel_path, _, _)| keys::scoped_file_key(namespace, rel_path))
         .collect();
     if !touched_fkeys.is_empty() {
         let n = touched_fkeys.len();
@@ -3515,12 +3553,20 @@ async fn store_lsp_extractions(
 /// Only creates edges for imports that resolve to files within the
 /// ingested set. External package imports are silently skipped.
 /// Build a symbol index for Python files: bare name → vec of (rel_path, symbol_key).
+#[cfg(test)]
 fn build_python_symbol_index(
     file_symbols: &HashMap<String, Vec<Symbol>>,
 ) -> HashMap<String, Vec<(String, String)>> {
+    build_python_symbol_index_scoped(file_symbols, "")
+}
+
+fn build_python_symbol_index_scoped(
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    namespace: &str,
+) -> HashMap<String, Vec<(String, String)>> {
     let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for (rel_path, symbols) in file_symbols {
-        let fkey = keys::file_key(rel_path);
+        let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
             // Only index definitions, not imports.
             if sym.kind == SymbolKind::Import {
@@ -3583,10 +3629,20 @@ fn resolve_module_to_file<'a>(
     })
 }
 
+#[cfg(test)]
 fn resolve_python_imports(
     python_imports: &HashMap<String, Vec<Symbol>>,
     python_file_symbols: &HashMap<String, Vec<Symbol>>,
     symbol_index: &HashMap<String, Vec<(String, String)>>,
+) -> Vec<Value> {
+    resolve_python_imports_scoped(python_imports, python_file_symbols, symbol_index, "")
+}
+
+fn resolve_python_imports_scoped(
+    python_imports: &HashMap<String, Vec<Symbol>>,
+    python_file_symbols: &HashMap<String, Vec<Symbol>>,
+    symbol_index: &HashMap<String, Vec<(String, String)>>,
+    namespace: &str,
 ) -> Vec<Value> {
     // Build module→file mapping from all known Python files.
     let module_to_file = build_python_module_map(python_file_symbols);
@@ -3595,7 +3651,7 @@ fn resolve_python_imports(
     let mut seen = std::collections::HashSet::new();
 
     for (source_path, import_syms) in python_imports {
-        let source_fkey = keys::file_key(source_path);
+        let source_fkey = keys::scoped_file_key(namespace, source_path);
 
         for sym in import_syms {
             let import_type = sym
@@ -3663,7 +3719,7 @@ fn resolve_python_imports(
                         && let Some(target_path) = target_file
                         && target_path != source_path
                     {
-                        let target_fkey = keys::file_key(target_path);
+                        let target_fkey = keys::scoped_file_key(namespace, target_path);
                         let edge_key = keys::edge_key(&source_fkey, "imports", &target_fkey);
                         if seen.insert(edge_key.clone()) {
                             edges.push(json!({
@@ -3685,7 +3741,7 @@ fn resolve_python_imports(
                     if let Some(target_path) = resolve_module_to_file(module, &module_to_file)
                         && target_path != source_path
                     {
-                        let target_fkey = keys::file_key(target_path);
+                        let target_fkey = keys::scoped_file_key(namespace, target_path);
                         let edge_key = keys::edge_key(&source_fkey, "imports", &target_fkey);
                         if seen.insert(edge_key.clone()) {
                             edges.push(json!({
@@ -3817,92 +3873,6 @@ mod tests {
             .unwrap_or(0)
     }
 
-    const FIXTURE_PREFIX_159: &str = "__hades_test159_";
-
-    /// Sweep tag for the #193 live test's fixtures, across all PIDs.
-    ///
-    /// Each live test owns its own tag and sweeps only that. A single shared
-    /// prefix would reclaim leaks from any test, which is tempting, but libtest
-    /// runs these `#[tokio::test]`s concurrently in one binary and the sweep is
-    /// a `REMOVE`: one test entering cleanup mid-run would delete the other's
-    /// live fixtures and fail it for reasons unrelated to what it tests. A tag
-    /// per test still reclaims that test's own leaks from every previous PID,
-    /// which is what the sweep is for.
-    const FIXTURE_PREFIX_193: &str = "__hades_test193_";
-
-    /// Do the codebase collections this test writes to actually exist?
-    ///
-    /// `ingest_file` is the low-level path and does not bootstrap collections —
-    /// the real `codebase ingest` command does that before calling it. Against a
-    /// database that is not a code graph, the first insert would fail with
-    /// "collection not found" and turn a skippable environment into a hard test
-    /// failure. Check first so the skip-if-absent convention actually holds.
-    async fn codebase_collections_present(pool: &ArangoPool) -> bool {
-        for col in [
-            CODEBASE.files,
-            CODEBASE.chunks,
-            CODEBASE.embeddings,
-            CODEBASE.symbols,
-        ] {
-            let aql = "RETURN LENGTH(FOR d IN @@col LIMIT 1 RETURN 1)";
-            let bind = json!({ "@col": col });
-            if hades_core::db::query::query_single(pool, aql, Some(&bind), ExecutionTarget::Reader)
-                .await
-                .is_err()
-            {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Remove fixtures left behind by *any* previous run, not just this PID.
-    ///
-    /// Assertion failures unwind before the trailing cleanup, so a failed run
-    /// leaks its PID-keyed docs permanently — the next run uses a new PID and
-    /// would never reclaim them. Sweeping the shared prefix keeps the test
-    /// leak-free in the project-management DB even across failures.
-    async fn cleanup_fixture_prefix(pool: &ArangoPool, prefix: &str) {
-        let stale = {
-            let aql = "FOR f IN @@files FILTER STARTS_WITH(f._key, @prefix) RETURN f._key";
-            let bind = json!({ "@files": CODEBASE.files, "prefix": prefix });
-            hades_core::db::query::query(
-                pool,
-                aql,
-                Some(&bind),
-                None,
-                false,
-                ExecutionTarget::Reader,
-            )
-            .await
-            .map(|r| {
-                r.results
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-        };
-        for fkey in stale {
-            cleanup_fixture(pool, &fkey).await;
-        }
-        // Chunks/embeddings whose file node was already gone are not reachable
-        // via the file-key sweep above, so clear them by their own prefix too.
-        for col in [CODEBASE.chunks, CODEBASE.embeddings, CODEBASE.symbols] {
-            let aql = "FOR d IN @@col FILTER STARTS_WITH(d.file_key, @prefix) REMOVE d IN @@col";
-            let bind = json!({ "@col": col, "prefix": prefix });
-            let _ = hades_core::db::query::query(
-                pool,
-                aql,
-                Some(&bind),
-                None,
-                false,
-                ExecutionTarget::Writer,
-            )
-            .await;
-        }
-    }
-
     async fn cleanup_fixture(pool: &ArangoPool, fkey: &str) {
         purge_file_symbols_and_edges(pool, fkey).await;
         delete_file_chunks(pool, fkey).await;
@@ -3989,6 +3959,7 @@ mod tests {
                         false,
                         false,
                         FALLBACK_WINDOW_CHARS,
+                        "",
                     )
                     .await
                     .expect("ingest")
@@ -4427,183 +4398,129 @@ mod tests {
         .await
     }
 
-    /// Requires ArangoDB (skips if the socket is absent, per the integration
-    /// test convention). PID-suffixed fixture keys. A failing assertion unwinds
-    /// past the trailing cleanup, so the leading `cleanup_fixture_prefix` sweep
-    /// is what actually keeps this leak-free across runs.
+    /// Uses a disposable database, including cleanup after assertion failures.
     #[tokio::test]
     async fn test_stamped_go_node_is_reingestable_but_still_guarded() {
-        let Some(pool) = test_pool() else { return };
-        if !codebase_collections_present(&pool).await {
-            eprintln!("skipping: target database has no codebase collections");
-            return;
-        }
-        // Reclaim anything a previously failed run of THIS test leaked (any PID).
-        cleanup_fixture_prefix(&pool, FIXTURE_PREFIX_193).await;
+        with_temp_db("stamped", Fixtures::Codebase, |pool| async move {
+            let config = HadesConfig::default();
+            let pid = std::process::id();
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("stamped.go");
+            let rel_path = format!("__hades_test193_{pid}/stamped.go");
+            let fkey = keys::file_key(&rel_path);
+            cleanup_fixture(&pool, &fkey).await;
 
-        let config = HadesConfig::default();
-        let pid = std::process::id();
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("stamped.go");
-        let rel_path = format!("__hades_test193_{pid}/stamped.go");
-        let fkey = keys::file_key(&rel_path);
-        cleanup_fixture(&pool, &fkey).await;
+            // A real Go module: `reenrichment_hatch` requires one, because
+            // `group_files_by_go_module` drops module-less files and gopls would
+            // never be handed this file otherwise.
+            fs::write(dir.path().join("go.mod"), "module example.com/fixture\n").unwrap();
+            fs::write(
+                &path,
+                "package fixture\n\nfunc Stamped(input uint64) uint64 { return input + 1 }\n",
+            )
+            .unwrap();
 
-        // A real Go module: `reenrichment_hatch` requires one, because
-        // `group_files_by_go_module` drops module-less files and gopls would
-        // never be handed this file otherwise.
-        fs::write(dir.path().join("go.mod"), "module example.com/fixture\n").unwrap();
-        fs::write(
-            &path,
-            "package fixture\n\nfunc Stamped(input uint64) uint64 { return input + 1 }\n",
-        )
-        .unwrap();
+            // First ingest: Go has no per-file semantic analyzer, so this lands at
+            // `structural` with a tree-sitter serialized digest.
+            let mut imports = ImportContext::default();
+            let first = ingest_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                &rel_path,
+                None,
+                &mut imports,
+                None,
+                false,
+                false,
+                false,
+                FALLBACK_WINDOW_CHARS,
+                "",
+            )
+            .await
+            .expect("first ingest failed");
+            assert!(
+                first.skipped.is_none_or(|s| !s),
+                "first ingest must not skip (error: {:?})",
+                first.error
+            );
 
-        // First ingest: Go has no per-file semantic analyzer, so this lands at
-        // `structural` with a tree-sitter serialized digest.
-        let mut imports = ImportContext::default();
-        let first = ingest_file(
-            &pool,
-            None,
-            &config,
-            &path,
-            &rel_path,
-            None,
-            &mut imports,
-            None,
-            false,
-            false,
-            false,
-            FALLBACK_WINDOW_CHARS,
-        )
-        .await
-        .expect("first ingest failed");
-        assert!(
-            first.skipped.is_none_or(|s| !s),
-            "first ingest must not skip (error: {:?})",
-            first.error
-        );
+            // Reproduce the pre-fix state: the old `store_lsp_extractions` stamped
+            // the file node `semantic` while leaving `symbol_hash` tree-sitter's.
+            upsert_merge_file_node(
+                &pool,
+                &fkey,
+                json!({ "analysis_tier": "semantic", "analyzer": "gopls" }),
+            )
+            .await
+            .expect("failed to stamp fixture node");
 
-        // Reproduce the pre-fix state: the old `store_lsp_extractions` stamped
-        // the file node `semantic` while leaving `symbol_hash` tree-sitter's.
-        upsert_merge_file_node(
-            &pool,
-            &fkey,
-            json!({ "analysis_tier": "semantic", "analyzer": "gopls" }),
-        )
-        .await
-        .expect("failed to stamp fixture node");
-
-        // The bug: with gopls scheduled, this returned skipped regardless of
-        // `--force`, because the guard runs ahead of the force check.
-        let mut imports = ImportContext::default();
-        let released = ingest_file(
-            &pool,
-            None,
-            &config,
-            &path,
-            &rel_path,
-            None,
-            &mut imports,
-            None,
-            true,
-            false,
-            true,
-            FALLBACK_WINDOW_CHARS,
-        )
-        .await
-        .expect("re-ingest with gopls scheduled failed");
-        assert!(
-            released.skipped.is_none_or(|s| !s),
-            "a stamped .go node must be re-ingestable when the gopls phase will \
+            // The bug: with gopls scheduled, this returned skipped regardless of
+            // `--force`, because the guard runs ahead of the force check.
+            let mut imports = ImportContext::default();
+            let released = ingest_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                &rel_path,
+                None,
+                &mut imports,
+                None,
+                true,
+                false,
+                true,
+                FALLBACK_WINDOW_CHARS,
+                "",
+            )
+            .await
+            .expect("re-ingest with gopls scheduled failed");
+            assert!(
+                released.skipped.is_none_or(|s| !s),
+                "a stamped .go node must be re-ingestable when the gopls phase will \
              re-enrich it (error: {:?})",
-            released.error
-        );
+                released.error
+            );
 
-        // And the guard must still hold when nothing will restore the purge —
-        // re-stamp, then re-ingest with no gopls phase scheduled.
-        upsert_merge_file_node(
-            &pool,
-            &fkey,
-            json!({ "analysis_tier": "semantic", "analyzer": "gopls" }),
-        )
-        .await
-        .expect("failed to re-stamp fixture node");
-        let mut imports = ImportContext::default();
-        let preserved = ingest_file(
-            &pool,
-            None,
-            &config,
-            &path,
-            &rel_path,
-            None,
-            &mut imports,
-            None,
-            true,
-            false,
-            false,
-            FALLBACK_WINDOW_CHARS,
-        )
-        .await
-        .expect("re-ingest without gopls failed");
-        assert_eq!(
-            preserved.skipped,
-            Some(true),
-            "with no re-enrichment scheduled the fidelity guard must still \
+            // And the guard must still hold when nothing will restore the purge —
+            // re-stamp, then re-ingest with no gopls phase scheduled.
+            upsert_merge_file_node(
+                &pool,
+                &fkey,
+                json!({ "analysis_tier": "semantic", "analyzer": "gopls" }),
+            )
+            .await
+            .expect("failed to re-stamp fixture node");
+            let mut imports = ImportContext::default();
+            let preserved = ingest_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                &rel_path,
+                None,
+                &mut imports,
+                None,
+                true,
+                false,
+                false,
+                FALLBACK_WINDOW_CHARS,
+                "",
+            )
+            .await
+            .expect("re-ingest without gopls failed");
+            assert_eq!(
+                preserved.skipped,
+                Some(true),
+                "with no re-enrichment scheduled the fidelity guard must still \
              preserve (error: {:?})",
-            preserved.error
-        );
-
-        cleanup_fixture(&pool, &fkey).await;
-    }
-
-    /// Connect to the integration-test database, or `None` to skip.
-    fn test_pool() -> Option<ArangoPool> {
-        let socket = std::path::PathBuf::from(
-            std::env::var("ARANGO_SOCKET")
-                .unwrap_or_else(|_| "/run/arangodb3/arangodb.sock".to_string()),
-        );
-        if !socket.exists() {
-            if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
-                panic!(
-                    "ARANGO_TESTS is set but socket not found at {}",
-                    socket.display()
-                );
-            }
-            eprintln!(
-                "skipping: ArangoDB socket not found at {}",
-                socket.display()
+                preserved.error
             );
-            return None;
-        }
-        let Ok(password) = std::env::var("ARANGO_PASSWORD") else {
-            eprintln!("skipping: ARANGO_PASSWORD not set");
-            return None;
-        };
-        // These tests re-ingest into a code graph, so they need one you name:
-        // `HADES_TEST_DB` has no default. It defaulted to `bident_burn` until
-        // 2026-09-14, a database that had no codebase collections and then no
-        // longer existed at all, so the live tests here skipped on every machine
-        // while strict mode reported green. A skip is now visible, and under
-        // `ARANGO_TESTS=1` it is a failure.
-        let Some(database) = std::env::var("HADES_TEST_DB")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-        else {
-            if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
-                panic!(
-                    "ARANGO_TESTS is set but HADES_TEST_DB is not: these tests re-ingest \
-                     into a code graph and need one named"
-                );
-            }
-            eprintln!(
-                "skipping: HADES_TEST_DB not set (these tests need a code graph to re-ingest into)"
-            );
-            return None;
-        };
-        let user = std::env::var("HADES_TEST_USER").unwrap_or_else(|_| "root".to_string());
-        let client = hades_core::db::ArangoClient::with_socket(socket, &database, &user, &password);
-        Some(ArangoPool::new(client.clone(), client))
+
+            cleanup_fixture(&pool, &fkey).await;
+        })
+        .await;
     }
 
     /// A re-ingest that produces *fewer* chunks than the previous run must not
@@ -4623,157 +4540,154 @@ mod tests {
     /// collide with real data, and removes every document it wrote.
     #[tokio::test]
     async fn test_reingest_shrinking_file_leaves_no_orphan_chunks() {
-        let Some(pool) = test_pool() else { return };
-        if !codebase_collections_present(&pool).await {
-            eprintln!("skipping: target database has no codebase collections");
-            return;
-        }
-        // Reclaim anything a previously failed run of THIS test leaked (any PID).
-        cleanup_fixture_prefix(&pool, FIXTURE_PREFIX_159).await;
+        with_temp_db("shrink", Fixtures::Codebase, |pool| async move {
+            let config = HadesConfig::default();
+            let pid = std::process::id();
 
-        let config = HadesConfig::default();
-        let pid = std::process::id();
-
-        // (extension, long source generator, short source) per parsed language.
-        let cases: Vec<(&str, String, &str)> = vec![
-            (
-                "rs",
-                (0..40)
-                    .map(|i| {
-                        format!(
-                            "/// Padded documentation for generated function {i}, long enough \
+            // (extension, long source generator, short source) per parsed language.
+            let cases: Vec<(&str, String, &str)> = vec![
+                (
+                    "rs",
+                    (0..40)
+                        .map(|i| {
+                            format!(
+                                "/// Padded documentation for generated function {i}, long enough \
                              that the chunker emits several chunks for this file.\n\
                              pub fn generated_{i}(input: u64) -> u64 {{\n\
                              \x20   let mut acc = input;\n\
                              \x20   for step in 0..{i}u64 {{ acc = acc.wrapping_add(step); }}\n\
                              \x20   acc\n\
                              }}\n\n"
-                        )
-                    })
-                    .collect(),
-                "pub fn only() -> u64 { 1 }\n",
-            ),
-            (
-                "go",
-                std::iter::once("package fixture\n\n".to_string())
-                    .chain((0..40).map(|i| {
-                        format!(
-                            "// Padded documentation for generated function {i}, long enough \
+                            )
+                        })
+                        .collect(),
+                    "pub fn only() -> u64 { 1 }\n",
+                ),
+                (
+                    "go",
+                    std::iter::once("package fixture\n\n".to_string())
+                        .chain((0..40).map(|i| {
+                            format!(
+                                "// Padded documentation for generated function {i}, long enough \
                              that the chunker emits several chunks for this file.\n\
                              func Generated{i}(input uint64) uint64 {{\n\
                              \x20   acc := input\n\
                              \x20   for step := 0; step < {i}; step++ {{ acc += uint64(step) }}\n\
                              \x20   return acc\n\
                              }}\n\n"
-                        )
-                    }))
-                    .collect(),
-                "package fixture\n\nfunc Only() uint64 { return 1 }\n",
-            ),
-        ];
+                            )
+                        }))
+                        .collect(),
+                    "package fixture\n\nfunc Only() uint64 { return 1 }\n",
+                ),
+            ];
 
-        for (ext, long_src, short_src) in cases {
-            let dir = TempDir::new().unwrap();
-            let path = dir.path().join(format!("shrink.{ext}"));
-            let rel_path = format!("__hades_test159_{pid}/shrink.{ext}");
-            let fkey = keys::file_key(&rel_path);
+            for (ext, long_src, short_src) in cases {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join(format!("shrink.{ext}"));
+                let rel_path = format!("__hades_test159_{pid}/shrink.{ext}");
+                let fkey = keys::file_key(&rel_path);
 
-            // Start clean in case this PID's fixture somehow survived.
-            cleanup_fixture(&pool, &fkey).await;
+                // Start clean in case this PID's fixture somehow survived.
+                cleanup_fixture(&pool, &fkey).await;
 
-            fs::write(&path, &long_src).unwrap();
-            let mut imports = ImportContext::default();
-            let first = ingest_file(
-                &pool,
-                None,
-                &config,
-                &path,
-                &rel_path,
-                None,
-                &mut imports,
-                None,
-                false,
-                false,
-                false,
-                FALLBACK_WINDOW_CHARS,
-            )
-            .await
-            .unwrap_or_else(|e| panic!("first ingest failed for .{ext}: {e}"));
-            let after_first = count_by_file_key(&pool, CODEBASE.chunks, &fkey).await;
-            assert!(
-                after_first > 1,
-                ".{ext} fixture must produce multiple chunks to exercise the shrink case, \
+                fs::write(&path, &long_src).unwrap();
+                let mut imports = ImportContext::default();
+                let first = ingest_file(
+                    &pool,
+                    None,
+                    &config,
+                    &path,
+                    &rel_path,
+                    None,
+                    &mut imports,
+                    None,
+                    false,
+                    false,
+                    false,
+                    FALLBACK_WINDOW_CHARS,
+                    "",
+                )
+                .await
+                .unwrap_or_else(|e| panic!("first ingest failed for .{ext}: {e}"));
+                let after_first = count_by_file_key(&pool, CODEBASE.chunks, &fkey).await;
+                assert!(
+                    after_first > 1,
+                    ".{ext} fixture must produce multiple chunks to exercise the shrink case, \
                  got {after_first}"
-            );
-            assert_eq!(
-                first.num_chunks.unwrap_or(0) as u64,
-                after_first,
-                ".{ext} first ingest: reported chunk count must match stored docs"
-            );
+                );
+                assert_eq!(
+                    first.num_chunks.unwrap_or(0) as u64,
+                    after_first,
+                    ".{ext} first ingest: reported chunk count must match stored docs"
+                );
 
-            fs::write(&path, short_src).unwrap();
-            let mut imports = ImportContext::default();
-            let second = ingest_file(
-                &pool,
-                None,
-                &config,
-                &path,
-                &rel_path,
-                None,
-                &mut imports,
-                None,
-                true,
-                false,
-                false,
-                FALLBACK_WINDOW_CHARS,
-            )
-            .await
-            .unwrap_or_else(|e| panic!("second ingest failed for .{ext}: {e}"));
-            let after_second = count_by_file_key(&pool, CODEBASE.chunks, &fkey).await;
+                fs::write(&path, short_src).unwrap();
+                let mut imports = ImportContext::default();
+                let second = ingest_file(
+                    &pool,
+                    None,
+                    &config,
+                    &path,
+                    &rel_path,
+                    None,
+                    &mut imports,
+                    None,
+                    true,
+                    false,
+                    false,
+                    FALLBACK_WINDOW_CHARS,
+                    "",
+                )
+                .await
+                .unwrap_or_else(|e| panic!("second ingest failed for .{ext}: {e}"));
+                let after_second = count_by_file_key(&pool, CODEBASE.chunks, &fkey).await;
 
-            // The regression: without the delete, after_second would still equal
-            // after_first, because overwrite-by-key only rewrote 0..N.
-            assert!(
-                after_second < after_first,
-                ".{ext} shrinking re-ingest left orphan chunks: {after_first} before, \
+                // The regression: without the delete, after_second would still equal
+                // after_first, because overwrite-by-key only rewrote 0..N.
+                assert!(
+                    after_second < after_first,
+                    ".{ext} shrinking re-ingest left orphan chunks: {after_first} before, \
                  {after_second} after (#159)"
-            );
-            assert_eq!(
-                second.num_chunks.unwrap_or(0) as u64,
-                after_second,
-                ".{ext} second ingest: reported chunk count must match stored docs (#159)"
-            );
+                );
+                assert_eq!(
+                    second.num_chunks.unwrap_or(0) as u64,
+                    after_second,
+                    ".{ext} second ingest: reported chunk count must match stored docs (#159)"
+                );
 
-            // No chunk may reference a symbol the purge removed (validate #7).
-            let dangling = {
-                let aql = "FOR c IN @@chunks FILTER c.file_key == @fk \
+                // No chunk may reference a symbol the purge removed (validate #7).
+                let dangling = {
+                    let aql = "FOR c IN @@chunks FILTER c.file_key == @fk \
                            FOR s IN (c.symbols || []) \
                            FILTER DOCUMENT(CONCAT(@syms_name, '/', s)) == null \
                            COLLECT WITH COUNT INTO n RETURN n";
-                let bind = json!({
-                    "@chunks": CODEBASE.chunks,
-                    "syms_name": CODEBASE.symbols,
-                    "fk": fkey,
-                });
-                hades_core::db::query::query_single(
-                    &pool,
-                    aql,
-                    Some(&bind),
-                    ExecutionTarget::Reader,
-                )
-                .await
-                .ok()
-                .flatten()
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-            };
-            assert_eq!(
-                dangling, 0,
-                ".{ext} chunks reference removed symbols (#159)"
-            );
+                    let bind = json!({
+                        "@chunks": CODEBASE.chunks,
+                        "syms_name": CODEBASE.symbols,
+                        "fk": fkey,
+                    });
+                    hades_core::db::query::query_single(
+                        &pool,
+                        aql,
+                        Some(&bind),
+                        ExecutionTarget::Reader,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                };
+                assert_eq!(
+                    dangling, 0,
+                    ".{ext} chunks reference removed symbols (#159)"
+                );
 
-            cleanup_fixture(&pool, &fkey).await;
-        }
+                cleanup_fixture(&pool, &fkey).await;
+            }
+        })
+        .await;
     }
 
     #[test]
@@ -5430,7 +5344,10 @@ mod tests {
         assert_eq!(canonical, detoured, "the same tree keyed two ways");
         assert_eq!(
             canonical,
-            vec!["build_rs".to_string(), "src_lib_rs".to_string()],
+            vec![
+                keys::scoped_file_key(tree.to_str().unwrap(), "build.rs"),
+                keys::scoped_file_key(tree.to_str().unwrap(), "src/lib.rs"),
+            ],
             "keys must be relative to the ingest root, not to how it was typed"
         );
     }
