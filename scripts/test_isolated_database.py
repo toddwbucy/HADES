@@ -28,15 +28,37 @@ def bounded_process():
     resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 
+def group_running(pgid):
+    # Linux-only runner. Zombies have exited and cannot consume resources;
+    # an orphan may remain a zombie until the host's init reaps it.
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            if int(fields[2]) == pgid and fields[0] != "Z":
+                return True
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return False
+
+
 def stop_group(child):
-    if child.poll() is not None:
-        return
-    os.killpg(child.pid, signal.SIGTERM)
-    try:
-        child.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
-        child.wait(timeout=10)
+    # The session leader may already have exited while descendants are alive.
+    # Only signal the private group created with start_new_session=True.
+    for signum, budget in ((signal.SIGTERM, 20), (signal.SIGKILL, 10)):
+        try:
+            os.killpg(child.pid, signum)
+        except ProcessLookupError:
+            child.poll()
+            return
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            child.poll()  # reap the direct child even while descendants exit
+            if not group_running(child.pid):
+                return
+            time.sleep(0.05)
+    raise RuntimeError(f"private process group {child.pid} did not stop")
 
 
 def main():

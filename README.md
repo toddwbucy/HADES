@@ -65,7 +65,7 @@ For low-latency local deployments, HADES connects to ArangoDB over a Unix domain
 
 **Build:**
 
-- Rust edition 2024 (stable 1.85+)
+- Rust edition 2024 (Rust 1.98.1)
 
 **Optional — only required for their respective command paths:**
 
@@ -145,7 +145,7 @@ sudo apt-get update && sudo apt-get install -y arangodb3
 During `apt-get install` you'll be prompted to set a root password
 for ArangoDB — note it, you'll use it in step 2.
 
-**Install Rust** (edition 2024, stable 1.85+):
+**Install Rust** (edition 2024, Rust 1.98.1):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
