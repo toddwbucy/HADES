@@ -369,6 +369,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Fail conformance adapter runs on incomplete scope, incompatible collections,
+  import rejections or invalid acknowledgements; report partial persistence (#68).
+
 - Select distinct document-research adapter/prompts in offline retrieval
   evaluation and reject oversized prefixed processor inputs before inference;
   record profile and token-count provenance while preserving code defaults (#12).
