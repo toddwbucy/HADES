@@ -9,9 +9,10 @@ The current isolated branch reserves one of two process-wide slots before the
 first database await. All served databases share the registry. Canonical paths
 conflict with equal, ancestor or descendant paths; similar string prefixes alone
 do not conflict. Lock poisoning and admission-query failures fail closed.
-Cancelling a handler before spawn drops its reservation. After spawn, the handler
-transfers both child and reservation into the detached task without an intervening
-await. Direct-child kill-on-drop is enabled as a fallback.
+Cancelling before job insertion releases the handler's reservation. Once the
+startup owner is created, it retains the reservation through record cleanup,
+including cancellation during insertion. Direct-child kill-on-drop remains a
+fallback behind explicit process-group cleanup.
 
 Four private registry tests exercise simultaneous admission, overlap, cancellation
 and poisoned state. A real-handler/private-socket contract holds two starts in
@@ -67,17 +68,14 @@ persisted job outcomes remains required.
 
 ## Remaining requirements before publication or closure
 
-- Replace the legacy database/PID-existence heuristic with explicit owner identity
-  and restart reconciliation; process-wide admission does not coordinate separate
-  daemons or establish ownership of historical children.
+- Verify conservative restart reconciliation and concurrent starts against a real
+  disposable database; process-wide admission does not coordinate separate daemons.
 - Own the process group through normal completion, shutdown, panic and task
   cancellation. Retain admission until descendants are stopped and the direct
   child is reaped; direct-child kill-on-drop alone does not prove that invariant.
-- Make starting/running/failed/orphaned states truthful across insertion, spawn,
-  PID-update and completion-recording failures. Bound persistence/retry work.
-- Verify bounded output and truthful persisted outcome fields through actual
-  handler/database fixtures, including non-UTF-8 diagnostics and malformed JSON.
-  Document compatibility of replacing retained log paths with bounded job records.
+- Verify persisted phases and output bounds against a real disposable database,
+  including ambiguous commits and response-size rejection. Existing private HTTP
+  fixtures below do not substitute for real ArangoDB semantics.
 - Preserve the effective selected configuration as well as the database in the
   spawned command; verify provisioning and root boundaries remain intact.
 - Add actual synthetic-child/process-group, noisy-output, failure-injection and
@@ -86,3 +84,29 @@ persisted job outcomes remains required.
 
 The current local increment is deliberately not presented as completion of #51.
 No production binary, service configuration, database or GPU workload is changed.
+
+## Local persisted-state increment
+
+`ingest_jobs::records` now owns startup and completion, extracted from dispatch.
+A random daemon-instance identity and in-memory `(database, job)` identity replace
+PID-existence admission checks. The admission query returns at most three compact
+rows with explicit cursor/response/server-memory limits. An unowned unfinished row
+blocks new jobs conservatively; status reports `recovery_required` and preserves
+the recorded phase. It does not infer whether another daemon's process is alive,
+signal a saved PID, or silently change historical records.
+
+The detached owner starts before the first job insertion await. Records begin as
+`starting`; a confirmed PID update changes them to `running`. If PID persistence
+fails, the child is stopped and reaped before failure persistence. Insertion
+uncertainty, pre-spawn client cancellation and spawn failures attempt a terminal
+failure record. Completion has three five-second write attempts with short fixed
+backoff; exhaustion leaves an explicitly unowned unfinished record requiring
+reconciliation. Startup writes have 64 KiB response limits and status reads a
+16 MiB ceiling. Successful transport exit with malformed JSON is a failed job.
+
+Private HTTP/actual synthetic-child contracts cover successful phases, uncertain
+insertion, cancelled insertion without spawn, missing executables, failed PID
+persistence with verified reaping, malformed JSON, non-UTF-8 diagnostic tails,
+three exhausted completion attempts, unowned-row admission refusal and invalid
+job IDs with no database traffic. A stale row naming the fixture process's live
+PID still reports unknown ownership. These are local, not deployment evidence.

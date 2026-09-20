@@ -141,9 +141,27 @@ name what was permitted, because a client that cannot tell "not allowed" from
 `ingest.start` returns a job id rather than blocking: real ingests run for
 minutes and the network transport caps a request at 60 seconds, so a blocking
 call would report failure for work that is still succeeding. `ingest.status` is
-Agent tier, since reading a job row is a bounded read. A row that never leaves
-`running` was orphaned by a daemon restart, and the status says so rather than
-implying progress.
+Agent tier, with a 16 MiB response ceiling and a 16- or 32-character hexadecimal
+job ID. New records begin as `starting` and include a random daemon-instance
+identity. Startup returns `running` only after recording the child's PID. A
+failed PID write stops the child; insertion uncertainty and spawn failure also
+attempt a terminal failure record. Completion persistence has three bounded
+attempts. Losing the client before spawn cancels startup; a confirmed running
+job remains detached from its caller.
+
+An unfinished record without a current in-memory owner is returned as
+`recovery_required`, retaining its `recorded_status`. Its process liveness and
+final outcome are unknown; a numeric PID is not ownership evidence. Unowned
+unfinished records block new ingestion in that database until an administrator
+verifies the old work and reconciles its record. Status reads do not mutate it,
+and the service never signals a historical PID. Multiple daemon instances are
+not a coordinated ingestion scheduler.
+
+Output is retained in the bounded job record, not temporary log files:
+`output_storage` is `bounded_job_record`, and `log_path`/`stderr_path` are null.
+Stdout is limited to 8 MiB; stderr retains its last 64 KiB and reports truncation.
+The provisional runtime ceiling is six hours, followed by group cleanup and
+direct-child reaping. The global two-job limit spans this daemon's databases.
 
 ## Error Codes
 

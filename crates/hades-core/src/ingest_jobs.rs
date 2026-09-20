@@ -1,12 +1,30 @@
 //! Process-wide admission for detached ingestion. Database rows are history,
 //! not an atomic lock: all endpoints in this process must share this registry.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) mod process;
+pub(crate) mod records;
+
+#[cfg(test)]
+pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+static INSTANCE: LazyLock<String> = LazyLock::new(|| format!("{:032x}", rand::random::<u128>()));
+pub(crate) fn instance() -> &'static str {
+    &INSTANCE
+}
+pub(crate) fn owns(database: &str, job: &str) -> bool {
+    ADMISSION.paths.lock().is_ok_and(|paths| {
+        paths.values().any(|identity| {
+            identity
+                .as_ref()
+                .is_some_and(|(db, id)| db == database && id == job)
+        })
+    })
+}
 
 const MAX_CONCURRENT: usize = 2;
 static ADMISSION: LazyLock<Arc<Admission>> =
@@ -14,7 +32,7 @@ static ADMISSION: LazyLock<Arc<Admission>> =
 
 struct Admission {
     limit: usize,
-    paths: Mutex<HashSet<PathBuf>>,
+    paths: Mutex<HashMap<PathBuf, Option<(String, String)>>>,
     shutdown: CancellationToken,
 }
 
@@ -22,7 +40,7 @@ impl Admission {
     fn new(limit: usize) -> Self {
         Self {
             limit,
-            paths: Mutex::new(HashSet::new()),
+            paths: Mutex::new(HashMap::new()),
             shutdown: CancellationToken::new(),
         }
     }
@@ -38,7 +56,7 @@ impl Admission {
         // Ancestors and descendants also overlap. Database selection does not
         // make concurrent analyzers over the same source tree independent.
         if paths
-            .iter()
+            .keys()
             .any(|path| path.starts_with(canonical_path) || canonical_path.starts_with(path))
         {
             return Err("an ingest already owns this tree or an overlapping tree".into());
@@ -49,7 +67,7 @@ impl Admission {
                 self.limit
             ));
         }
-        paths.insert(canonical_path.to_owned());
+        paths.insert(canonical_path.to_owned(), None);
         Ok(Reservation {
             admission: Arc::clone(self),
             path: canonical_path.to_owned(),
@@ -86,6 +104,19 @@ pub(crate) struct Reservation {
 }
 
 impl Reservation {
+    pub(crate) fn identify(&self, database: &str, job: &str) -> Result<(), String> {
+        let mut paths = self
+            .admission
+            .paths
+            .lock()
+            .map_err(|_| "ingest admission unavailable")?;
+        let identity = paths
+            .get_mut(&self.path)
+            .ok_or("ingest reservation missing")?;
+        *identity = Some((database.to_owned(), job.to_owned()));
+        Ok(())
+    }
+
     pub(crate) fn shutdown(&self) -> CancellationToken {
         self.admission.shutdown.clone()
     }

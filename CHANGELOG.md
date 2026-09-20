@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Track ingestion startup/completion with daemon-instance ownership, bounded
+  persistence retries and conservative recovery status; stop children when PID
+  persistence fails and refuse unresolved historical work (#51).
+
 - Gate actual-daemon SIGINT/SIGTERM and pending-ingestion reservation draining
   with private Unix-socket fixtures that fail before job insertion or spawn (#51).
 
