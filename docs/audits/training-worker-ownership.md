@@ -43,7 +43,9 @@ Private two-client CPU fixtures gate actual encoding and verify cancellation,
 deadline and shutdown ordering, changed weights after admitted work, retained
 ownership while work runs, old-token rejection and clean successor admission.
 A separate direct-handler test cancels twice and verifies the lock/backend remain
-owned until real CPU work drains. Existing training contracts cover ordinary
+owned until real CPU work drains. A same-owner request that expires while queued neither discards active state nor
+performs another optimizer update; active work may outlast the idle lease and
+renew on completion. Existing training contracts cover ordinary
 initialization, statuses, models, topology, metrics and checkpoint handoff.
 
 No production service, model, database or GPU was changed. These CPU contracts

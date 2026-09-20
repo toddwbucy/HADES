@@ -120,3 +120,46 @@ def test_repeated_handler_cancellation_keeps_worker_owned():
             release.set()
             await service.close()
     asyncio.run(run())
+
+
+def test_waiting_request_deadline_does_not_discard_active_owner():
+    async def run():
+        now = [0.0]
+        started, release = threading.Event(), threading.Event()
+        async with provider(loaded_service, lease_seconds=5, clock=lambda: now[0]) as (service, a, b):
+            owner = await acquire(a)
+            backend = service._backend
+            encode, step = backend._encode, backend.optimizer.step
+            completed_steps = []
+            def gated_encode():
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("private worker did not release")
+                return encode()
+            def counted_step(*args, **kwargs):
+                result = step(*args, **kwargs)
+                completed_steps.append(1)
+                return result
+            backend._encode, backend.optimizer.step = gated_encode, counted_step
+            request = pb.TrainStepRequest(train_edge_indices=[0], neg_src=[3], neg_dst=[0])
+            first = a.TrainStep(request, metadata=owner, timeout=3)
+            try:
+                async def entered():
+                    while not started.is_set():
+                        await asyncio.sleep(0.01)
+                await asyncio.wait_for(entered(), 2)
+                now[0] = 50  # active work is not an idle lease gap
+                with pytest.raises(grpc.aio.AioRpcError) as exc:
+                    await a.TrainStep(request, metadata=owner, timeout=0.1)
+                assert exc.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+                assert service._backend is backend
+                release.set()
+                await first
+                assert completed_steps == [1]
+                assert service._backend is backend
+                await a.RenewSession(pb.SessionRequest(), metadata=owner, timeout=2)
+                await rejected(b.AcquireSession, pb.AcquireSessionRequest(),
+                               code=grpc.StatusCode.RESOURCE_EXHAUSTED)
+            finally:
+                release.set()
+    asyncio.run(run())
