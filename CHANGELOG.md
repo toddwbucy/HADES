@@ -386,6 +386,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Store document metadata, chunks and embeddings in one transaction so rejected
+  replacement writes preserve the prior document (#88).
+
 - Fail structural embedding export on rejected or incomplete batches, report
   acknowledged progress and reject invalid export inputs before writes (#83).
 

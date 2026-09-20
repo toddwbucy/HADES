@@ -9,9 +9,8 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::chunking::{ChunkingStrategy, TextChunk};
 use crate::db::ArangoPool;
 use crate::db::collections::CollectionProfile;
-use crate::db::crud;
 use crate::db::keys;
-use crate::db::query;
+use crate::db::{ArangoError, transaction};
 use crate::persephone::embedding::{EmbedResult, EmbeddingClient, EmbeddingError};
 use crate::persephone::extraction::{
     ExtractOptions, ExtractResult, ExtractionClient, ExtractionError,
@@ -355,12 +354,6 @@ impl Pipeline {
     ) -> Result<(), PipelineError> {
         let profile = self.config.profile;
 
-        // -- Delete stale chunks/embeddings for this doc_key -----------------
-        // When overwriting, a rerun with fewer chunks would leave orphans.
-        if self.config.overwrite {
-            self.delete_doc_chunks(profile, doc_key).await?;
-        }
-
         // -- Metadata document ---------------------------------------------
         let metadata_doc = json!({
             "_key": doc_key,
@@ -374,36 +367,12 @@ impl Pipeline {
             "extractor_metadata": extract_result.metadata,
         });
 
-        let meta_res = crud::insert_documents(
-            &self.db,
-            profile.metadata,
-            &[metadata_doc],
-            self.config.overwrite,
-        )
-        .await?;
-        if meta_res.errors > 0 {
-            return Err(PipelineError::Other(format!(
-                "metadata import had {} errors",
-                meta_res.errors
-            )));
-        }
-
         // -- Chunk documents -----------------------------------------------
         let chunk_docs: Vec<Value> = chunks
             .iter()
             .enumerate()
             .map(|(i, chunk)| chunk_doc(profile, doc_key, i, chunk))
             .collect();
-
-        let chunk_res =
-            crud::insert_documents(&self.db, profile.chunks, &chunk_docs, self.config.overwrite)
-                .await?;
-        if chunk_res.errors > 0 {
-            return Err(PipelineError::Other(format!(
-                "chunk import had {} errors (created {})",
-                chunk_res.errors, chunk_res.created
-            )));
-        }
 
         // -- Embedding documents -------------------------------------------
         let embedding_docs: Vec<Value> = embed_result
@@ -413,65 +382,49 @@ impl Pipeline {
             .map(|(i, emb)| embedding_doc(profile, doc_key, i, emb))
             .collect();
 
-        let emb_res = crud::insert_documents(
-            &self.db,
-            profile.embeddings,
-            &embedding_docs,
-            self.config.overwrite,
-        )
-        .await?;
-        if emb_res.errors > 0 {
-            return Err(PipelineError::Other(format!(
-                "embedding import had {} errors (created {})",
-                emb_res.errors, emb_res.created
-            )));
-        }
-
-        debug!(
-            doc_key,
-            chunks = chunks.len(),
-            "stored metadata, chunks, and embeddings"
-        );
-        Ok(())
-    }
-
-    /// Delete existing chunk and embedding documents for a doc_key.
-    ///
-    /// Prevents stale rows when a rerun produces fewer chunks than before.
-    async fn delete_doc_chunks(
-        &self,
-        profile: &CollectionProfile,
-        doc_key: &str,
-    ) -> Result<(), PipelineError> {
-        // Deletes go through `query::remove_docs_by_fields`, which builds one
-        // bind object per query — the shape that makes the ArangoDB-1552
-        // declared-but-unused defect (every `--force` refresh aborting, #169)
-        // unrepresentable rather than merely fixed.
-        //
-        // The filter matches `doc_key` (what this pipeline has always written)
-        // OR the profile's declared foreign key: rows written by the legacy
-        // Python pipeline carry only the foreign key (`parent_key`), so a
-        // doc_key-only filter would leave them behind on refresh —
-        // accumulating stale chunks exactly like #159 did on the parsed code
-        // path (#165).
-        //
-        // The two removes are NOT transactional: chunks commit before
-        // embeddings run, so a transient failure of the second call leaves
-        // orphaned embeddings until the next successful overwrite of the same
-        // document, which clears them (each run deletes before writing).
-        // The window could be closed without a stream transaction by folding
-        // both removes into one multi-collection AQL query, as
-        // `db_purge_document` in dispatch.rs already does — a deliberate
-        // reuse-vs-atomicity tradeoff: the shared helper keeps the delete
-        // shape uniform across the doc and codebase pipelines, and the
-        // orphan state is accepted because it self-heals and is
-        // read-invisible (search joins embeddings to chunks that no longer
-        // exist and drops them).
-        let match_fields = ["doc_key", profile.foreign_key];
-        query::remove_docs_by_fields(&self.db, profile.chunks, &match_fields, doc_key).await?;
-        query::remove_docs_by_fields(&self.db, profile.embeddings, &match_fields, doc_key).await?;
-
-        debug!(doc_key, "deleted stale chunks and embeddings");
+        let batches = vec![
+            (profile.metadata, vec![metadata_doc]),
+            (profile.chunks, chunk_docs),
+            (profile.embeddings, embedding_docs),
+        ];
+        let collections = batches.iter().map(|(name, _)| name.to_string()).collect();
+        let overwrite = self.config.overwrite;
+        let doc_key = doc_key.to_owned();
+        transaction::run(&self.db, collections, move |client| async move {
+            if overwrite {
+                for collection in [profile.chunks, profile.embeddings] {
+                    let response = client.post("cursor", &json!({
+                        "query": "FOR d IN @@collection FILTER d.doc_key == @key OR d[@foreign_key] == @key REMOVE d IN @@collection",
+                        "bindVars": {"@collection":collection,"key":doc_key,"foreign_key":profile.foreign_key},
+                        "batchSize":1,"ttl":30,
+                        "options":{"maxRuntime":30,"failOnWarning":true}
+                    })).await?;
+                    if response["hasMore"] == true || response["result"] != json!([]) {
+                        return Err(ArangoError::Request("invalid document cleanup response".into()));
+                    }
+                }
+            }
+            let mode = if overwrite { "replace" } else { "conflict" };
+            for (collection, documents) in batches {
+                // Import API is not part of a stream transaction. Document API
+                // acknowledgments must match every submitted row before commit.
+                for batch in documents.chunks(2_000) {
+                    let response = client.post(
+                        &format!("document/{collection}?overwriteMode={mode}"), &json!(batch)
+                    ).await?;
+                    let rows = response.as_array().ok_or_else(|| ArangoError::Request(
+                        "invalid document replacement response".into()
+                    ))?;
+                    if rows.len() != batch.len() || rows.iter().zip(batch).any(|(row, doc)| {
+                        row["error"] == true || row["_key"] != doc["_key"]
+                            || row["_rev"].as_str().is_none_or(str::is_empty)
+                    }) {
+                        return Err(ArangoError::Request(format!("failed to store {collection} replacement documents")));
+                    }
+                }
+            }
+            Ok(())
+        }).await?;
         Ok(())
     }
 }

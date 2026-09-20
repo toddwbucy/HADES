@@ -33,3 +33,28 @@ Remediation and acceptance remain in #88: atomic per-document storage, ordinary
 and legacy foreign-key cleanup, duplicate rejection, cancellation and concurrent
 replacement contracts, with explicit commit-response ambiguity. The reproduction
 alone does not close that issue.
+
+## Transactional remediation in progress
+
+Prepared metadata, chunks and vectors now enter one existing `transaction::run`
+operation with exclusive locks on the three profile collections. Deletes use
+transaction-bound AQL and writes use the Document API, whose per-row identity
+and revision acknowledgments are checked before commit. The Import API is not
+transactional and is no longer used by this storage path. External extraction
+and embedding complete before lock acquisition.
+
+The expanded real database fixture passes: successful overwrite removes legacy
+foreign-key-only rows; a rejected embedding restores the exact previous JSON
+rows, including revisions; unrelated rows survive; overwrite=false rejects an
+existing document and preserves its metadata revision. The source document may
+have changed during preparation: this is atomic last-committer replacement,
+not source-revision conflict detection. Exclusive collection locks serialize
+writes at storage time. Cancellation and concurrent-writer pipeline fixtures
+remain required before the issue can close.
+
+The shared transaction owner bounds lock acquisition to five seconds, operations
+to 60 seconds and server transaction size to 32 MiB. Oversized replacements fail
+instead of falling back to partial writes. Cancellation before commit requests
+abort; a lost commit response leaves an uncertain outcome that requires durable
+state reconciliation before retry. This is one-document atomicity, not a whole
+batch transaction, source snapshot or production deployment.

@@ -74,18 +74,27 @@ async fn document_overwrite_failure_boundary() {
             tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor))
                 .serve_with_incoming(incoming).await.unwrap();
         });
-        let embedder = embedding_mock::start_embedder(&embed_path, 2).await;
+        let embedder = embedding_mock::start_embedder(&embed_path, 3).await;
         let mut peers = Peers(vec![server, embedder]);
         let pipeline = Pipeline::new(
             ExtractionClient::connect_unix_at(&extract_path).await.unwrap(),
             EmbeddingClient::connect_unix_at(&embed_path).await.unwrap(),
             pool.clone(), PipelineConfig::default(),
         );
+        for collection in ["documents", "chunks", "embeddings"] {
+            crud::insert_documents(&pool, collection, &[json!({"_key":"unrelated","parent_key":"elsewhere","allow":true})], false).await.unwrap();
+        }
         for rejected in [false, true] {
             let key = if rejected { "rejected" } else { "control" };
             crud::insert_documents(&pool, "documents", &[json!({"_key":key,"full_text":"old text"})], false).await.unwrap();
             crud::insert_documents(&pool, "chunks", &[json!({"_key":format!("{key}_chunk_0"),"doc_key":key,"parent_key":key,"text":"old text"})], false).await.unwrap();
             crud::insert_documents(&pool, "embeddings", &[json!({"_key":format!("{key}_chunk_0_emb"),"doc_key":key,"parent_key":key,"chunk_key":format!("{key}_chunk_0"),"embedding":[1,0],"allow":true})], false).await.unwrap();
+            for collection in ["chunks", "embeddings"] {
+                crud::insert_documents(&pool, collection, &[json!({"_key":format!("{key}_legacy"),"parent_key":key,"allow":true})], false).await.unwrap();
+            }
+            let old_metadata = crud::get_document(&pool, "documents", key).await.unwrap();
+            let old_chunk = crud::get_document(&pool, "chunks", &format!("{key}_chunk_0")).await.unwrap();
+            let old_embedding = crud::get_document(&pool, "embeddings", &format!("{key}_chunk_0_emb")).await.unwrap();
             if rejected {
                 pool.writer().put("collection/embeddings/properties", &json!({"schema":{"level":"strict","rule":{"type":"object","required":["allow"]},"message":"audit rejection"}})).await.unwrap();
             }
@@ -94,12 +103,35 @@ async fn document_overwrite_failure_boundary() {
             let metadata = crud::get_document(&pool, "documents", key).await.unwrap();
             let chunk = crud::get_document(&pool, "chunks", &format!("{key}_chunk_0")).await.unwrap();
             let embedding = crud::get_document(&pool, "embeddings", &format!("{key}_chunk_0_emb")).await;
-            assert_eq!(metadata["full_text"], "replacement text");
-            assert_eq!(chunk["text"], "replacement text");
+            assert_eq!(metadata["full_text"], if rejected { "old text" } else { "replacement text" });
+            assert_eq!(chunk["text"], if rejected { "old text" } else { "replacement text" });
+            let embedding = embedding.unwrap();
             if rejected {
-                assert!(embedding.unwrap_err().is_not_found());
-                println!("AUDIT: failed overwrite retained new metadata/chunk but removed old embedding; error={:?}", result.error);
-            } else { assert!(embedding.is_ok()); }
+                assert_eq!(metadata, old_metadata);
+                assert_eq!(chunk, old_chunk);
+                assert_eq!(embedding, old_embedding);
+                assert_eq!(embedding["allow"], true);
+                assert_eq!(embedding["embedding"], json!([1,0]));
+            } else {
+                assert_eq!(embedding["embedding"].as_array().unwrap().len(), 2048);
+            }
+        }
+        let duplicate_pipeline = Pipeline::new(
+            ExtractionClient::connect_unix_at(&extract_path).await.unwrap(),
+            EmbeddingClient::connect_unix_at(&embed_path).await.unwrap(),
+            pool.clone(), PipelineConfig { overwrite:false, ..PipelineConfig::default() },
+        );
+        let before = crud::get_document(&pool, "documents", "control").await.unwrap();
+        let duplicate = tokio::time::timeout(Duration::from_secs(10), duplicate_pipeline.process_document(&dir.path().join("fixture.txt"), "control", &OneChunk)).await.unwrap();
+        assert!(!duplicate.success);
+        assert_eq!(crud::get_document(&pool, "documents", "control").await.unwrap(), before);
+        for collection in ["chunks", "embeddings"] {
+            assert!(crud::get_document(&pool, collection, "control_legacy").await.unwrap_err().is_not_found());
+            assert!(crud::get_document(&pool, collection, "rejected_legacy").await.is_ok());
+        }
+        for collection in ["documents", "chunks", "embeddings"] {
+            let unrelated = crud::get_document(&pool, collection, "unrelated").await.unwrap();
+            assert_eq!(unrelated["parent_key"], "elsewhere");
         }
         for task in &peers.0 { task.abort(); }
         for task in peers.0.drain(..) { let _ = task.await; }
