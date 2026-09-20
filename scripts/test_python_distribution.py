@@ -2,6 +2,7 @@
 """Build fresh wheel/sdist and verify installed imports outside the checkout."""
 from pathlib import Path
 import os
+import importlib.metadata
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,41 @@ print("Installed wheel service imports and adapter resource passed")
 ''', str(target)], root)
 
 
+def verify_runtime_dependencies(wheel, root):
+    """Resolve the wheel's real runtime metadata in a clean, CPU-only venv."""
+    runtime = root / "runtime"
+    run(["-m", "venv", str(runtime)], root)
+    python = runtime / "bin" / "python"
+    cpu_version = importlib.metadata.version("torch")
+    if "+cpu" not in cpu_version:
+        raise RuntimeError("Distribution contracts require the locked CPU torch build")
+    constraints = root / "cpu-constraints.txt"
+    constraints.write_text(f"torch=={cpu_version}\n")
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("PIP_", "PYTHON"))}
+    environment.update({"PIP_CONFIG_FILE": os.devnull, "CUDA_VISIBLE_DEVICES": "",
+                        "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                        "PYTHONDONTWRITEBYTECODE": "1"})
+    subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
+                    "--cache-dir", str(root.parent / "pip-cache"),
+                    "--index-url", "https://pypi.org/simple",
+                    "--extra-index-url", "https://download.pytorch.org/whl/cpu",
+                    "--constraint", str(constraints), str(wheel)],
+                   cwd=root, env=environment, check=True, timeout=600)
+    subprocess.run([str(python), "-m", "pip", "check"], cwd=root,
+                   env=environment, check=True, timeout=30)
+    subprocess.run([str(python), "-I", "-c", """
+import pathlib, sys, generated
+sys.path.insert(0, str(pathlib.Path(generated.__file__).parent))
+from hades.training import training_pb2, training_pb2_grpc
+from persephone.embedding import embedding_pb2, embedding_pb2_grpc
+from persephone.extraction import extraction_pb2, extraction_pb2_grpc
+assert training_pb2.ModelConfig(hidden_dim=8).hidden_dim == 8
+assert not any(name in sys.modules for name in ('torch', 'transformers', 'docling'))
+print('Clean runtime dependency resolution and generated imports passed')
+"""], cwd=root, env=environment, check=True, timeout=30)
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="hades-python-package-") as temporary:
         root = Path(temporary)
@@ -51,6 +87,7 @@ def main():
         direct = root / "direct"
         direct.mkdir()
         verify_wheel(next((source / "dist").glob("*.whl")), direct)
+        verify_runtime_dependencies(next((source / "dist").glob("*.whl")), direct)
         archive = next((source / "dist").glob("*.tar.gz"))
         standalone = root / "standalone"
         with tarfile.open(archive) as stream:
@@ -61,6 +98,7 @@ def main():
         rebuilt = root / "rebuilt"
         rebuilt.mkdir()
         verify_wheel(next((unpacked / "dist").glob("*.whl")), rebuilt)
+        verify_runtime_dependencies(next((unpacked / "dist").glob("*.whl")), rebuilt)
         assert not (source / "generated").exists(), "wheel builds must not generate into source"
         run(["-c", "from setuptools.build_meta import build_editable; build_editable('editable')"], source)
         assert (source / "generated/hades/training/training_pb2.py").is_file()

@@ -45,7 +45,12 @@ This uses an isolated PEP 517 frontend to resolve declared build dependencies
 and build a fresh wheel and standalone source archive in temporary directories,
 installs both direct and rebuilt wheels into temporary targets, and imports service
 and generated RPC modules from outside the checkout with isolated Python paths.
-It checks the adapter schema resource and loads no models or running services.
+It checks the adapter schema resource. Each wheel is also installed normally
+with its declared dependencies in a fresh virtual environment, constrained to
+the locked CPU PyTorch build. `pip check` and generated-binding imports verify
+that wheel metadata supplies compatible RPC dependencies; the clean-environment
+probe does not import ML libraries, load models or start services. These normal
+installs need network access and additional temporary disk space.
 CI runs this before source-tree contract tests, so editable imports cannot hide
 missing wheel files. Use isolated environments for installation tests; do not
 install into an active service's virtual environment.
