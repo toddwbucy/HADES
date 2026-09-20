@@ -333,6 +333,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replacement_and_relationship_commit_cannot_both_use_one_revision() {
+        with_temp_db("stage_race", Fixtures::Codebase, |pool| async move {
+            let mut initial = prepared(None, "original");
+            initial.file["relationships_pending"] = json!(true);
+            let committed = initial.store(&pool).await.unwrap();
+            pool.writer().post("document/codebase_files", &json!({"_key":"target"})).await.unwrap();
+            let revisions = std::collections::HashMap::from([
+                ("file".to_owned(), committed.revision.clone()),
+                ("target".to_owned(), revision(pool.writer(), "target").await.unwrap().unwrap()),
+            ]);
+            let mut replacement = prepared(Some(committed.revision), "replacement");
+            replacement.purge_symbols = true;
+            replacement.file["relationships_pending"] = json!(true);
+            let edge = json!({"_key":"relationship", "_from":"codebase_files/file", "_to":"codebase_files/target"});
+            let (replaced, related) = tokio::join!(
+                replacement.store(&pool),
+                store_relationships(&pool, revisions, vec![(CODEBASE.calls_edges, vec![edge])])
+            );
+            assert_ne!(replaced.is_ok(), related.is_ok(), "a shared preparation revision admits only one stage");
+            let file = pool.reader().get("document/codebase_files/file").await.unwrap();
+            let chunk = pool.reader().get("document/codebase_chunks/chunk").await.unwrap();
+            let edge = pool.reader().get("document/codebase_calls_edges/relationship").await;
+            match replaced {
+                Ok(_) => {
+                assert_eq!(chunk["text"], "replacement");
+                assert_eq!(file["relationships_pending"], true);
+                assert!(edge.unwrap_err().is_not_found());
+                assert!(related.unwrap_err().to_string().contains("changed during relationship preparation"));
+                }
+                Err(error) => {
+                assert_eq!(chunk["text"], "original");
+                assert_eq!(file["relationships_pending"], false);
+                assert_eq!(edge.unwrap()["_to"], "codebase_files/target");
+                assert!(error.to_string().contains("changed during preparation"));
+            }
+            }
+        }).await;
+    }
+
+    #[tokio::test]
     async fn relationship_stage_rolls_back_retries_and_rejects_stale_inputs() {
         with_temp_db("relationship_atomic", Fixtures::Codebase, |pool| async move {
             let stored = prepared(None, "original").store(&pool).await.unwrap();

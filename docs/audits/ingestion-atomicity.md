@@ -140,8 +140,15 @@ Synthetic LSP CLI fixtures verify that a failed document-symbol request does not
 stamp an analyzed marker, and that one successful crate cannot hide another
 crate's startup failure. Committed file summaries remain visible in both cases.
 
-Remaining review includes full-ingest process death during persistence and
-concurrency across the separate stages. Source-hash checks detect observed drift but do not lock the
+A private race fixture starts file replacement and relationship persistence from
+the same file revision. Exactly one stage commits. If replacement wins, the
+changed chunk remains pending and the stale relationship is absent; if the
+relationship stage wins, the original chunk and acknowledged edge remain, and
+the stale replacement is rejected. The existing enrichment fixture separately
+rejects stale prepared revisions without changing the committed result.
+
+Remaining review includes full-ingest process death during persistence and a
+final implementation review of the stage boundaries. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
