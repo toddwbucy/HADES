@@ -238,58 +238,82 @@ pub async fn run_export(
         .await
         .with_context(|| format!("export cursor failed for '{collection}'"))?;
 
-    let cursor_id = resp["id"].as_str().map(String::from);
-
-    // Stream pages; capture result so we can clean up the cursor on error.
+    let mut cursor_ids = Vec::new();
+    // Capture safe IDs before validating pages so errors still clean up cursors.
     let stream_result: Result<u64> = async {
         let mut total: u64 = 0;
-
-        // Write first page.
-        if let Some(results) = resp.get("result").and_then(|v| v.as_array()) {
-            for doc in results {
+        let mut page = resp;
+        loop {
+            let (rows, more) = export_page(&page, &mut cursor_ids)?;
+            for doc in rows {
                 writeln!(writer, "{}", serde_json::to_string(doc)?)?;
                 total += 1;
             }
-        }
-
-        // Paginate remaining pages, writing each batch immediately.
-        let mut has_more = resp["hasMore"].as_bool().unwrap_or(false);
-        if has_more {
-            let id = cursor_id
-                .as_deref()
-                .context("hasMore=true but no cursor ID in export response")?;
-
-            while has_more {
-                let path = format!("cursor/{id}");
-                let page = pool
-                    .writer()
-                    .post(&path, &json!({}))
-                    .await
-                    .context("export cursor pagination failed")?;
-
-                if let Some(results) = page.get("result").and_then(|v| v.as_array()) {
-                    for doc in results {
-                        writeln!(writer, "{}", serde_json::to_string(doc)?)?;
-                        total += 1;
-                    }
-                }
-
-                has_more = page["hasMore"].as_bool().unwrap_or(false);
+            if !more {
+                break;
             }
+            let path = format!("cursor/{}", cursor_ids[0]);
+            page = pool
+                .writer()
+                .post(&path, &json!({}))
+                .await
+                .context("export cursor pagination failed")?;
         }
-
+        writer.flush().context("failed to flush export output")?;
         Ok(total)
     }
     .await;
 
-    // Best-effort cursor cleanup — always attempt if we got an ID.
-    if let Some(ref id) = cursor_id {
+    // A changed but safe ID is retained too; never interpolate unsafe IDs.
+    for id in cursor_ids {
         let _ = pool.writer().delete(&format!("cursor/{id}")).await;
     }
 
     let total = stream_result?;
     eprintln!("exported {total} documents from '{collection}'");
     Ok(())
+}
+
+/// Validate a complete page before emitting it; earlier pages may already have
+/// reached the output stream when a continuation fails.
+fn export_page<'a>(
+    page: &'a serde_json::Value,
+    cursor_ids: &mut Vec<String>,
+) -> Result<(&'a [serde_json::Value], bool)> {
+    if let Some(value) = page.get("id") {
+        let id = value
+            .as_str()
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            })
+            .context("invalid export cursor ID")?;
+        if cursor_ids.first().is_some_and(|known| known != id) {
+            cursor_ids.push(id.to_string());
+            anyhow::bail!("export cursor ID changed during pagination");
+        }
+        if cursor_ids.is_empty() {
+            cursor_ids.push(id.to_string());
+        }
+    }
+    let more = page
+        .get("hasMore")
+        .and_then(serde_json::Value::as_bool)
+        .context("export cursor response missing boolean hasMore")?;
+    let rows = page
+        .get("result")
+        .and_then(serde_json::Value::as_array)
+        .context("export cursor response missing result array")?;
+    if !rows.iter().all(serde_json::Value::is_object) {
+        anyhow::bail!("export cursor result contains a non-document value");
+    }
+    if more && cursor_ids.is_empty() {
+        anyhow::bail!("hasMore=true but no cursor ID in export response");
+    }
+    Ok((rows, more))
 }
 
 /// `hades db index-status [--collection C] [--format F]`
@@ -353,11 +377,12 @@ pub async fn run_databases(config: &HadesConfig, format: &str) -> Result<()> {
         .await
         .context("failed to list databases")?;
 
-    let databases = resp
-        .get("result")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let databases: Vec<String> = serde_json::from_value(
+        resp.get("result")
+            .cloned()
+            .context("database-list response missing result")?,
+    )
+    .context("database-list result must be an array of names")?;
 
     output::print_output(
         "db.databases",
