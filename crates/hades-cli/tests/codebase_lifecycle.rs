@@ -17,6 +17,8 @@ use tokio::task::JoinHandle;
 
 const MODEL: &str = "jinaai/jina-embeddings-v4";
 
+include!("fixtures/ingest_vector_freshness.rs");
+
 struct Embedder {
     fail: Arc<AtomicBool>,
     hold: Arc<AtomicBool>,

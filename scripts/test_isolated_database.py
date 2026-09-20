@@ -75,6 +75,8 @@ def main():
     benchmark.add_argument("--handler-benchmark", action="store_true", help="measure full search handlers on disposable fixtures")
     benchmark.add_argument("--training-alignment-python", type=Path,
                            help="run the cross-language training/export contract with this CPU interpreter")
+    benchmark.add_argument("--cli-lifecycle", action="store_true",
+                           help="run the CLI lifecycle contracts on the private server")
     benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
                            help="run one database contract on the same strict private server")
     parser.add_argument("--benchmark-rows", type=int, default=1024)
@@ -197,6 +199,9 @@ def main():
             else:
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
+            if args.cli_lifecycle:
+                command("cli-lifecycle", ["-p", "hades-cli", "--test", "codebase_lifecycle"])
+                return
             if args.training_alignment_python:
                 # Preserve a virtualenv interpreter symlink: resolving it can
                 # silently select the base interpreter without CPU dependencies.

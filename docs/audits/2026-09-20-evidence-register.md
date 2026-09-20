@@ -11,6 +11,8 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Changed-text vector retention](ingestion-vector-retention.md): actual CLI
+  re-ingestion verifies parsed replacement versus parser-free field retention.
 - [Graph generations](graph-generation-boundaries.md): real CPU checkpoint replay,
   changed tensor inputs and partial export persistence; no relevance score claim.
 
