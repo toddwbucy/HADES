@@ -203,7 +203,7 @@ def main():
             command("strict-prerequisite", ["-p", "hades-core", "--test", "arango_crud", "test_count_collection"],
                     missing, expect_missing_socket=True)
             targets = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                       "graph_loader", "graph_contract", "cursor_lifecycle", "transaction"]
+                       "graph_loader", "graph_contract", "cursor_lifecycle", "transaction", "structural_export_db"]
             command("database-contracts", ["-p", "hades-core", *[arg for target in targets for arg in ("--test", target)]])
             command("codebase", ["-p", "hades-cli", "--bin", "hades", "commands::codebase_"])
             command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle"])
