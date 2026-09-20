@@ -183,15 +183,18 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
             # duplicates one the ingest created is a join that proves nothing.
 
             for block in GRAPH.findall(text):
-                # Split on the record's own keyword. See module docstring.
-                for stanza in re.split(r"(?=^node: )", block, flags=re.M):
-                    line = NODE_LINE.search(stanza)
+                # Either keyword starts a new record: mixed adjacent records
+                # must not contribute metadata or body text to their neighbor.
+                stanzas = re.split(r"(?=^(?:node|edge): )", block, flags=re.M)
+                for stanza in stanzas:
+                    record = _record_head(stanza)
+                    line = NODE_LINE.search(record)
                     if not line:
                         continue
                     name = line.group(1).strip()
-                    kind = KIND.search(stanza)
+                    kind = KIND.search(record)
                     kind = kind.group(1) if kind else "unknown"
-                    tag = TAG.search(stanza)
+                    tag = TAG.search(record)
                     tag = tag.group(1) if tag else None
 
                     if not IDENT_OK.match(name):
@@ -212,7 +215,7 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
                     )
 
                 # Edge records within the same block.
-                for stanza in re.split(r"(?=^edge: )", block, flags=re.M):
+                for stanza in stanzas:
                     record = _record_head(stanza)
                     rel_m = EDGE_REL.search(record)
                     src_m = EDGE_FROM.search(record)

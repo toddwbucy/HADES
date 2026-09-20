@@ -372,6 +372,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep WeaverTools node and edge metadata within their own declaration records,
+  including adjacent mixed records without blank separators (#70).
+
 - Verify the actual daemon socket and database health in the fresh-install
   harness with bounded framing, response sizes and startup deadlines (#64).
 

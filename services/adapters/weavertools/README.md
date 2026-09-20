@@ -14,8 +14,8 @@ It lives here anyway because moving it would be disruptive to WeaverTools at
 its current stage. The intent, recorded so it is not forgotten: **once both
 projects are stable, this moves to WeaverTools and inverts.** Same boundary,
 opposite side — instead of HADES adapting WeaverTools' conventions inward,
-WeaverTools emits HADES records outward. That is why nothing in here writes to
-a database.
+WeaverTools emits HADES records outward. The extractor emits storage-independent
+records; the separate `write_graph.py` command persists them to ArangoDB.
 
 ## What it adapts
 
@@ -32,8 +32,9 @@ code drifted from the claim it makes about itself.
 
 ## Why it is trustworthy
 
-It reproduces WeaverTools' own census exactly, from an independent
-implementation:
+The original corpus comparison reproduced WeaverTools' own census from an
+independent implementation. These are historical measurements, not a current
+audit or a guarantee for another source revision:
 
 | metric | this | census baseline |
 |---|---|---|
@@ -60,11 +61,19 @@ path, since the rustup shim fails inside a workspace whose
 
 ## Deliberate constraints
 
-**No database driver is imported.** The modules emit `Node` and `Edge`
-records and persist nothing. That is what makes the eventual move to
-WeaverTools possible, and it is also why something else still has to write
-the records — see `docs/declarative-schema.md`, since declared edges are what
-that mechanism is for.
+**Extraction and persistence are separate.** `extractor.py` reads repository
+files and emits `Node` and `Edge` records without database access. The optional
+`write_graph.py` command reads database scope and writes collections, rows and
+an ingestion report over HTTP. `--dry-run` still reads database scope. It is not
+a whole-run transaction, and repeated imports do not remove stale records.
+See `docs/declarative-schema.md` for the declared-edge mechanism.
+
+**Local repository inputs.** The extractor walks local files, reads them whole
+and follows file symlinks; it is not a sandbox for untrusted repositories.
+`scip_reader.py` is a standalone exploratory wire-format reader, not a validated
+SCIP ingestion endpoint. Neither script is wired into the Rust daemon dispatch.
+The September 2026 adapter audit checked these boundaries statically; it did not
+rerun the historical WeaverTools census or certify arbitrary input sizes.
 
 **Python, in a tree that does extraction in Rust.** On architecture this
 belongs in `hades-core`. It is Python because it was written for a separate
