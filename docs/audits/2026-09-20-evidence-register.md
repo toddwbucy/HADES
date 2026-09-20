@@ -208,3 +208,8 @@ explicit limits are recorded in that review.
 [LSP transport deadlines](lsp-transport-review.md) retains the historical blocked
 write reproduction and the #94 private-peer remediation tests. Analyzer memory,
 preflight and descendant boundaries remain outside that verification.
+
+
+[LSP descendant ownership](lsp-descendant-review.md) records #100's bounded
+reproductions and process-group lifecycle tests. Process-group signalling does
+not contain descendants that intentionally escape their group.

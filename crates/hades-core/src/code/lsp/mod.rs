@@ -4,6 +4,7 @@ pub mod client;
 pub mod edges;
 pub mod go_symbols;
 pub mod gopls;
+mod process;
 pub mod rust_analyzer;
 pub mod rust_symbols;
 pub mod session;

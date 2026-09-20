@@ -21,6 +21,7 @@ use tokio::sync::{Mutex, Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::LspError;
+use super::process::ServerProcess;
 
 /// A pending request awaiting its response.
 type ResponseSender = oneshot::Sender<Result<Value, LspError>>;
@@ -81,7 +82,7 @@ impl Drop for FailureGuard {
 /// Content-Length framed JSON-RPC over stdin/stdout.
 pub struct LspClient {
     /// Handle to the child process.
-    owner: Option<tokio::task::JoinHandle<()>>,
+    owner: Option<tokio::task::JoinHandle<Result<(), LspError>>>,
     running: Arc<AtomicBool>,
     /// Stdin writer (wrapped in Mutex for exclusive access).
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -104,12 +105,13 @@ impl LspClient {
         args: &[&str],
         cwd: &std::path::Path,
     ) -> Result<Self, LspError> {
-        let mut child = Command::new(command)
+        let child = Command::new(command)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| {
@@ -120,11 +122,14 @@ impl LspClient {
                 }
             })?;
 
-        let stdin = child
+        let mut process = ServerProcess::new(child);
+        let stdin = process
+            .child
             .stdin
             .take()
             .ok_or_else(|| LspError::Process("no stdin handle".into()))?;
-        let stdout = child
+        let stdout = process
+            .child
             .stdout
             .take()
             .ok_or_else(|| LspError::Process("no stdout handle".into()))?;
@@ -153,15 +158,14 @@ impl LspClient {
         let owner_running = running.clone();
         let owner_transport = transport.clone();
         let owner = tokio::spawn(async move {
-            tokio::select! {
-                biased;
-                _ = owner_transport.stop.cancelled() => { let _ = child.kill().await; },
-                _ = child.wait() => {},
-            }
-            // The independent owner retains the child through cancellation and reap.
-            let _ = child.wait().await;
+            let result = process.finish(owner_transport.stop.clone()).await;
             owner_running.store(false, Ordering::Release);
-            // Let the reader drain any buffered final response before EOF.
+            if let Err(error) = &result {
+                owner_transport.close(&format!("LSP process cleanup failed: {error}"));
+            }
+            // The group is stopped and direct child reaped. Let the reader drain
+            // final buffered responses before EOF closes pending channels.
+            result
         });
 
         Ok(Self {
@@ -245,14 +249,14 @@ impl LspClient {
         if let Some(mut owner) = self.owner.take() {
             match tokio::time::timeout(SEND_TIMEOUT, &mut owner).await {
                 Ok(result) => {
-                    result.map_err(|e| LspError::Process(format!("LSP process owner: {e}")))?
+                    result.map_err(|e| LspError::Process(format!("LSP process owner: {e}")))??
                 }
                 Err(_) => {
                     self.transport.close("LSP shutdown grace expired");
                     tokio::time::timeout(SEND_TIMEOUT, owner)
                         .await
                         .map_err(|_| LspError::Timeout("language server reap".into()))?
-                        .map_err(|e| LspError::Process(format!("LSP process owner: {e}")))?;
+                        .map_err(|e| LspError::Process(format!("LSP process owner: {e}")))??;
                 }
             }
         }

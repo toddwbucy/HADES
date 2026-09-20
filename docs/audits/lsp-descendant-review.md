@@ -23,3 +23,25 @@ child on client drop, transport failure, shutdown and cancelled shutdown. Final
 buffered responses must still drain. Private peers must verify no running owned
 descendants for each termination path. Process groups do not contain descendants
 that deliberately escape them; kernel reap latency is not a hard deadline.
+
+
+## Remediation implementation
+
+LSP commands now start in a fresh process group. `ServerProcess` observes direct
+child exit without reaping (`waitid(WNOWAIT)`), signals the group, then reaps the
+leader. Client disposal and transport failures signal the independent owner;
+cancelled shutdown does not cancel that owner. A drop guard signals the group
+before Tokio handles its orphaned direct child on task unwinding. Cleanup errors
+are propagated through shutdown and fail the transport.
+
+Natural leader exit stops remaining group members before pipe EOF is awaited,
+while already-buffered final responses still drain through the existing reader.
+The bounds and limitations above remain: process groups are not a sandbox, and
+runtime teardown or uninterruptible kernel states do not provide a hard reap
+latency guarantee. Descendants can await system-adopter reaping after they stop.
+
+Initial private validation passed seven descendant integration cases (10.02
+seconds), all eight deadline regressions (10.01 seconds), and an injected owner
+unwind unit test (0.02 seconds). The latter intentionally panics in a private
+Tokio task, verifies the join reports panic, and checks direct-child reap plus no
+running descendant. No production process or actual language server was used.

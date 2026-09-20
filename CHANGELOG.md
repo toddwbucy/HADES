@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Own language-server process groups through normal exit, transport failure and
+  cancelled shutdown; stop descendants before reaping the leader (#100).
+
 - Apply LSP request deadlines across writer admission, transmission and response;
   clean pending requests on cancellation and close interrupted frames before reuse (#94).
 
