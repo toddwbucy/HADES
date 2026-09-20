@@ -6,6 +6,10 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Training active-compute cancellation](training-compute-cancellation.md): private
+  CPU ordering reproduction for #77; cancelled client outcomes can include a
+  completed model update, and the valid step does not yield to its event loop.
+
 - [Deployment provenance follow-up](2026-09-20-deployment-provenance.md): live
   executable hash, ELF build ID/compiler evidence and limits of source mapping.
 
