@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Confirm `Bastion/` as the paper-research audit corpus and record the private,
+  versioned snapshot protocol without publishing draft contents (#12).
+
 - Define candidate code-search and paper-draft research workloads, version-aware
   evidence judgments and remaining retrieval acceptance requirements (#12).
 

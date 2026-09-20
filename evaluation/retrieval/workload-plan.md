@@ -7,10 +7,18 @@ and separate results. The user identifies the research collection as evolving
 drafts of public-facing papers describing HADES **as intended when built**.
 A paper's present-tense claim therefore does not establish implemented behavior.
 
-The questions below are proposed audit seeds, not user-supplied workload examples
-or frozen relevance judgments. The exact collection, draft versions and independent
-judgments are still outstanding. No paper content or production collection was
-accessed to prepare this plan.
+The user confirmed `Bastion/` in the server checkout as the research corpus.
+Its nine Markdown drafts are excluded from Git. A private evaluation snapshot
+records each relative path, byte count, SHA-256 and source modification time;
+copied bytes were verified against those hashes. Reads were checked for per-file
+stability, not taken as an atomic snapshot of the whole directory. Preserve this
+snapshot for the run instead of mixing later edits into its judgments.
+
+The questions below remain proposed audit seeds, not user-supplied workload
+examples or frozen relevance judgments. The corpus location is resolved;
+passage boundaries, relevance judgments and measured retrieval results are still
+outstanding. Draft text and the detailed manifest remain private. No production
+database collection was queried or changed to capture the source documents.
 
 ## Candidate questions
 
