@@ -33,7 +33,9 @@ outcome; this protocol does not supply request IDs or exactly-once replay.
 Threads cannot forcibly interrupt allocator, kernel, library or filesystem calls.
 Shutdown waits for admitted work and has no hard time bound. External process
 termination can therefore interrupt file writes; this change does not add atomic
-checkpoint/output publication. Standalone direct backend calls used by some unit
+checkpoint/output publication by itself; the separate
+[artifact publication contract](training-artifact-publication.md) now stages and
+atomically replaces these files. Standalone direct backend calls used by some unit
 fixtures omit session ownership; production must retain SessionTrainingServicer.
 One active operation per provider bounds its worker submissions.
 
