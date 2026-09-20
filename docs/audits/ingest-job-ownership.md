@@ -77,6 +77,27 @@ not installed services or a model. It does not yet measure simultaneous child
 counts across multiple served databases. For each signal, a new daemon instance
 also retries the same source tree, completes ingestion with a new owner identity,
 reaps the child and passes graph validation against the disposable database.
+Before retry, the fixture inserts an unfinished record belonging to the previous
+owner, with the live test process's PID. The restarted daemon must report
+`recovery_required`, refuse admission and leave that record (including its
+revision) and graph unchanged. Only explicit fixture-side reconciliation to a
+terminal state permits the successful retry. This checks conservative recovery;
+it does not provide automatic recovery or establish the outcome of a lost job.
+
+The added lifecycle check exposed a completion/status race: a database read could
+return a running snapshot after the owner persisted completion and released its
+reservation. Status now samples ownership once and, for an unfinished row from
+the current instance whose owner is gone, refreshes the record once before
+classifying it. A private HTTP regression supplies a stale running response then
+a completed response, while the persistence-failure case supplies two unfinished
+responses and still requires recovery. Reads remain bounded and do not mutate
+the job record.
+
+Validation: the maintained private-database matrix passed after this fix
+(`strict-prerequisite`, `database-contracts`, `codebase`, `cli-lifecycle`), as did
+all 13 ingestion ownership unit tests. The initial lifecycle failure and the
+deterministic stale-snapshot regression establish why the refresh is needed.
+These results do not certify the remaining cross-database concurrency criteria.
 
 Process supervision now catches panics around capture/exit observation while
 retaining the process outside the unwind boundary, then signals its group and
@@ -89,8 +110,8 @@ replacing an ordinary invalid-parameter response.
 
 ## Remaining requirements before publication or closure
 
-- Verify conservative restart reconciliation and concurrent starts against a real
-  disposable database; process-wide admission does not coordinate separate daemons.
+- Verify concurrent starts against a real disposable database; process-wide
+  admission does not coordinate separate daemons.
 - Own the process group through normal completion, shutdown, panic and task
   cancellation. Retain admission until descendants are stopped and the direct
   child is reaped; direct-child kill-on-drop alone does not prove that invariant.

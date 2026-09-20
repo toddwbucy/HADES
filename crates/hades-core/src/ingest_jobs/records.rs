@@ -249,8 +249,32 @@ pub(crate) async fn status(pool: &ArangoPool, job: &str) -> Result<Value, Handle
             reason: "expected a 16- or 32-character hexadecimal job ID".into(),
         });
     }
-    let mut row = pool
-        .reader()
+    let mut row = read_job(pool, job).await?;
+    let owned = row["owner_instance"] == super::instance() && super::owns(pool.database(), job);
+    if matches!(row["status"].as_str(), Some("starting" | "running"))
+        && row["owner_instance"] == super::instance()
+        && !owned
+    {
+        // The owner persists its outcome before releasing admission. A read
+        // begun before that write can finish after release. Refresh once after
+        // observing the release rather than misclassifying a completed job.
+        row = read_job(pool, job).await?;
+    }
+    if matches!(row["status"].as_str(), Some("starting" | "running")) {
+        row["owned_by_service"] = json!(owned);
+        if !owned {
+            row["recorded_status"] = row["status"].clone();
+            row["status"] = json!("recovery_required");
+            row["note"] = json!(
+                "No current owner can verify this unfinished record. Process liveness and final outcome are unknown; reconcile before retrying. This response does not modify the stored record."
+            );
+        }
+    }
+    Ok(row)
+}
+
+async fn read_job(pool: &ArangoPool, job: &str) -> Result<Value, HandlerError> {
+    pool.reader()
         .clone()
         .with_response_limit(16 * 1024 * 1024)
         .map_err(service)?
@@ -265,19 +289,7 @@ pub(crate) async fn status(pool: &ArangoPool, job: &str) -> Result<Value, Handle
             } else {
                 service(error)
             }
-        })?;
-    if matches!(row["status"].as_str(), Some("starting" | "running")) {
-        let owned = row["owner_instance"] == super::instance() && super::owns(pool.database(), job);
-        row["owned_by_service"] = json!(owned);
-        if !owned {
-            row["recorded_status"] = row["status"].clone();
-            row["status"] = json!("recovery_required");
-            row["note"] = json!(
-                "No current owner can verify this unfinished record. Process liveness and final outcome are unknown; reconcile before retrying. This response does not modify the stored record."
-            );
-        }
-    }
-    Ok(row)
+        })
 }
 
 #[cfg(test)]
@@ -483,7 +495,8 @@ mod tests {
         let mut stale = row.clone();
         stale["status"] = json!("running");
         stale["pid"] = json!(std::process::id());
-        let mut reader = Mock::new(vec![Reply::page(stale)]).await;
+        let mut reader =
+            Mock::new(vec![Reply::page(stale.clone()), Reply::page(stale.clone())]).await;
         let result = status(&reader.pool, started["job_id"].as_str().unwrap())
             .await
             .unwrap();
@@ -493,6 +506,22 @@ mod tests {
         reader
             .event(&format!("GET document/{COLLECTION}/{job}"))
             .await;
+        reader
+            .event(&format!("GET document/{COLLECTION}/{job}"))
+            .await;
+        assert!(reader.events.try_recv().is_err());
+
+        // A delayed running snapshot must not override the terminal state
+        // persisted before the owner released its reservation.
+        let terminal = json!({"_key":job,"owner_instance":super::super::instance(),
+            "status":"completed","result":{"success":true}});
+        let mut reader = Mock::new(vec![Reply::page(stale), Reply::page(terminal.clone())]).await;
+        assert_eq!(status(&reader.pool, job).await.unwrap(), terminal);
+        for _ in 0..2 {
+            reader
+                .event(&format!("GET document/{COLLECTION}/{job}"))
+                .await;
+        }
         assert!(reader.events.try_recv().is_err());
     }
 

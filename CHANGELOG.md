@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Verify that a restarted daemon reports unowned unfinished ingestion jobs as
+  requiring recovery, preserves their records and refuses admission until explicit
+  reconciliation, even when a saved PID belongs to a live fixture process; refresh
+  a stale running snapshot after ownership ends to avoid falsely reporting recovery
+  for a just-completed job (#51).
+
 - Verify successful ingestion retry after daemon restart and reap owned children
   after a caught supervision panic before releasing admission; reject non-UTF-8
   canonical paths before job-record serialization (#51).

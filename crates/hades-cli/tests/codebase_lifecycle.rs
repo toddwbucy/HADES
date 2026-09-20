@@ -348,6 +348,56 @@ async fn daemon_shutdown_reaps_running_ingestion_and_persists_failure() {
                 })
                 .await
                 .unwrap();
+                // Simulate an interrupted previous owner. Its saved PID is a
+                // live, unrelated fixture process: neither PID existence nor
+                // reuse establishes ownership for this new daemon instance.
+                let stale_job = "0123456789abcdef0123456789abcdef";
+                hades_core::db::crud::insert_document(
+                    &pool,
+                    "hades_ingest_jobs",
+                    &json!({"_key":stale_job,"status":"running",
+                        "owner_instance":recorded["owner_instance"],
+                        "pid":std::process::id(),"path":source}),
+                )
+                .await
+                .unwrap();
+                let stale_before =
+                    hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", stale_job)
+                        .await
+                        .unwrap();
+                let stale_status = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.status","params":{"job_id":stale_job}}),
+                )
+                .await;
+                assert_eq!(stale_status["success"], true, "{stale_status}");
+                assert_eq!(stale_status["data"]["status"], "recovery_required");
+                assert_eq!(stale_status["data"]["recorded_status"], "running");
+                assert_eq!(stale_status["data"]["owned_by_service"], false);
+                let refused = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(refused["success"], false, "{refused}");
+                assert_eq!(
+                    hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", stale_job)
+                        .await
+                        .unwrap(),
+                    stale_before,
+                    "reading or refusing an unowned job must not rewrite its record"
+                );
+                assert_eq!(snapshot_graph(&pool).await, before);
+                // Only this disposable fixture is reconciled explicitly. The
+                // daemon must never infer a terminal outcome from a saved PID.
+                hades_core::db::crud::update_document(
+                    &pool,
+                    "hades_ingest_jobs",
+                    stale_job,
+                    &json!({"status":"failed","detail":"fixture-only reconciliation"}),
+                )
+                .await
+                .unwrap();
                 let retry = daemon_request(
                     &socket,
                     json!({"command":"ingest.start","params":{"path":source}}),
@@ -399,6 +449,9 @@ async fn daemon_shutdown_reaps_running_ingestion_and_persists_failure() {
                     .success()
                 );
                 assert!(!socket.exists());
+                hades_core::db::crud::delete_document(&pool, "hades_ingest_jobs", stale_job)
+                    .await
+                    .unwrap();
             }
         },
     )
