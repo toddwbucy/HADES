@@ -1,0 +1,25 @@
+{
+  "source_revision": "a563d843b63eaad15c9c4d563fa366dcfba0b47b",
+  "scope": "Actual CLI against private Unix HTTP fixture, no live database",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "3e57cdc498350b3e272a714d055ba200709631d97757138241d73947bb01afb3",
+    "crates/hades-core/src/db/transport.rs": "b3d5777b20ee38df1327c44df60bea5e8e2ac2cf57c505a0c42448a63599107a",
+    "crates/hades-cli/src/commands/db_graph.rs": "77a2d9c8c823d5156ae7038c9dba4e7371e1c061bb93727466d8c11b709f9daa",
+    "crates/hades-cli/tests/db_response_shapes.rs": "1d519f5257b3de6ef660d0cf4257c2ca9388a7dbf169e3f308a6e89a3b35028d"
+  },
+  "observed": {
+    "response": {},
+    "request": "GET /_db/fixture/_api/gharial",
+    "exit_code": 0,
+    "stdout": {
+      "command": "db.graph.list",
+      "data": {
+        "graphs": []
+      },
+      "success": true
+    },
+    "stderr": ""
+  },
+  "controls": "Valid empty graphs array and one named graph with empty edgeDefinitions exited zero before malformed-case assertion.",
+  "test_result": "Expected failure: graph_list_rejects_malformed_success_responses; 0 passed, 1 failed, 4 filtered; 0.02s; cargo exit 101"
+}

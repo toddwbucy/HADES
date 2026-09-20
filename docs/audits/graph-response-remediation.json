@@ -1,0 +1,26 @@
+{
+  "baseline_revision": "2c0071f",
+  "scope": "Private Unix HTTP peers; actual CLI plus transport-independent daemon service, no production use",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "8c5d5293a699c874576cbcf597fca5ae662427ed369c19446ace12e1d1fd2cb0",
+    "crates/hades-core/src/service.rs": "4b4b9074d1975cd1aca5669c73d0393344bf7a6fecb0c4c045e92b52b3ff0fa0",
+    "crates/hades-cli/tests/db_response_shapes.rs": "4261e74a06373bab4bc21103b5d037a05bd03f8ca2884d0b7783d5e97f782fce",
+    "crates/hades-cli/src/commands/db_graph.rs": "77a2d9c8c823d5156ae7038c9dba4e7371e1c061bb93727466d8c11b709f9daa",
+    "crates/hades-core/tests/common/cursor_mock.rs": "857b48feb1487974be6ed423ac4440d0c5b9330ffefc6def9e4f70c3e9e56c94"
+  },
+  "cli_result": "5 tests passed, 0 failed, 0.09s",
+  "graph_cli_cases": {
+    "malformed": 10,
+    "valid": 3
+  },
+  "observed_empty_object": {
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "Error: invalid graph-list response\n\nCaused by:\n    request error: graphs must be an array\n"
+  },
+  "service_result": "2 tests passed, 0 failed, 0.00s",
+  "service_scope": [
+    "Malformed list and automatic discovery produce QUERY_FAILED, no data, preserved request ID, and no traversal request",
+    "Valid absence and ambiguity remain errors; one graph produces a query bound to its actual name"
+  ]
+}
