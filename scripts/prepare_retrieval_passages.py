@@ -38,7 +38,7 @@ def prepare(snapshot, max_bytes=4096):
     """Verify snapshot files before returning an unlabeled passage artifact."""
     if type(max_bytes) is not int or not 4 <= max_bytes <= 65536:
         raise ValueError("max_bytes must be between 4 and 65536")
-    snapshot = Path(snapshot)
+    snapshot = Path(snapshot).resolve(strict=True)
     with (snapshot / "manifest.json").open("rb") as stream:
         manifest_bytes = stream.read(1024 * 1024 + 1)
     if len(manifest_bytes) > 1024 * 1024:
@@ -48,6 +48,8 @@ def prepare(snapshot, max_bytes=4096):
     if not isinstance(entries, list) or not entries or len(entries) > MAX_PASSAGES:
         raise ValueError("manifest needs a bounded nonempty document list")
     root = (snapshot / "documents").resolve(strict=True)
+    if not root.is_relative_to(snapshot):
+        raise ValueError("documents directory escapes snapshot")
     seen, documents, sources = set(), [], []
     total = 0
     for entry in entries:

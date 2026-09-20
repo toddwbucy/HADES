@@ -75,6 +75,16 @@ class PassageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "escapes snapshot"):
             passages.prepare(self.root)
 
+    def test_top_level_documents_symlink_cannot_change_containment_root(self):
+        self.snapshot(b"x")
+        (self.root / "documents/draft.md").unlink()
+        (self.root / "documents").rmdir()
+        with tempfile.TemporaryDirectory() as outside:
+            (Path(outside) / "draft.md").write_bytes(b"x")
+            (self.root / "documents").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "documents directory escapes snapshot"):
+                passages.prepare(self.root)
+
     def test_declared_oversize_is_rejected_before_file_read(self):
         manifest = self.snapshot(b"x")
         manifest["documents"][0]["bytes"] = passages.MAX_DOCUMENT_BYTES + 1
