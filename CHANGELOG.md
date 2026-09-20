@@ -123,6 +123,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Retain an actual CLI/private Unix-peer regression for malformed graph-list
   replies being reported as an empty successful result (epic #12).
 
+- Trace all 33 database CLI leaves through defaults, routing,
+  result semantics and explicit validation limits (epic #12).
+
 - Retain an actual CLI/disposable-ArangoDB partial-insert false-success
   reproduction and remediation with document read-back evidence (#120).
 
