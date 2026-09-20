@@ -50,12 +50,13 @@ def stop_group(child):
         try:
             os.killpg(child.pid, signum)
         except ProcessLookupError:
-            child.poll()
+            child.wait(timeout=1)
             return
         deadline = time.monotonic() + budget
         while time.monotonic() < deadline:
             child.poll()  # reap the direct child even while descendants exit
             if not group_running(child.pid):
+                child.wait(timeout=1)
                 return
             time.sleep(0.05)
     raise RuntimeError(f"private process group {child.pid} did not stop")
@@ -67,6 +68,10 @@ def main():
     server.add_argument("--arangod", type=Path, help="existing binary; never installs a server")
     server.add_argument("--docker", action="store_true", help="run the pinned CI image with no network")
     parser.add_argument("--command-timeout", type=int, default=900)
+    parser.add_argument("--benchmark", action="store_true", help="run the opt-in synthetic retrieval benchmark")
+    parser.add_argument("--benchmark-rows", type=int, default=1024)
+    parser.add_argument("--benchmark-dimension", type=int, default=64)
+    parser.add_argument("--benchmark-trials", type=int, default=16)
     args = parser.parse_args()
     if args.command_timeout <= 0:
         parser.error("command timeout must be positive")
@@ -113,9 +118,11 @@ def main():
 
     results = {}
 
-    def command(name, cargo_args, command_env=None, expect_missing_socket=False):
+    def command(name, cargo_args, command_env=None, expect_missing_socket=False, ignored=False):
         argv = ["cargo", "test", "--locked", "--offline", *cargo_args,
                 "--", "--test-threads=1", "--nocapture"]
+        if ignored:
+            argv.append("--ignored")
         log_path = root / f"{name}.log"
         with log_path.open("w") as log:
             child = subprocess.Popen(argv, cwd=REPO, env=command_env or env,
@@ -180,6 +187,12 @@ def main():
             else:
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
+            if args.benchmark:
+                env.update({"HADES_BENCH_ROWS": str(args.benchmark_rows),
+                            "HADES_BENCH_DIMENSION": str(args.benchmark_dimension),
+                            "HADES_BENCH_TRIALS": str(args.benchmark_trials)})
+                command("retrieval-benchmark", ["-p", "hades-core", "--test", "retrieval_benchmark"], ignored=True)
+                return
             missing = dict(env)
             missing.pop("ARANGO_SOCKET")
             command("strict-prerequisite", ["-p", "hades-core", "--test", "arango_crud", "test_count_collection"],
