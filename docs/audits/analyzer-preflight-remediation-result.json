@@ -1,13 +1,15 @@
 {
   "issue": 96,
-  "integrated_main": "f525d1a35339324f09be00a70beada7aadded0fb",
+  "integrated_main": "d9b0aa2ab8ac02ff15f17b45eae5c949c47c1eaa",
   "tests": {
     "analyzer_integration": 6,
     "analyzer_integration_seconds": 10.0,
     "lsp_integration": 8,
     "lsp_integration_seconds": 10.01,
     "existing_preflight_unit": 6,
-    "cli_downgrade_unit": 1
+    "cli_downgrade_unit": 1,
+    "memory_integration": 6,
+    "memory_integration_seconds": 0.42
   },
   "clippy": "core lib/integration and CLI binary passed with -D warnings",
   "sha256": {
@@ -16,7 +18,7 @@
     "crates/hades-core/src/code/lsp/mod.rs": "66706c56600d4767bb61801550822b04ce61df10efe2ade0596595c0c6c5cd9d",
     "crates/hades-cli/src/commands/codebase_ingest.rs": "f43c1e641a07aee6f519abc6b3935254598c7e58810be64b74622f2065ce5ab1",
     "crates/hades-core/tests/analyzer_preflight.rs": "01229ffdd36001bde22254d7598a7d728cbe82f9cb287be8e5d6cf83b6433fd6",
-    ".github/workflows/ci.yml": "339f3ebe6a462c008a243ac86d63a472d9013146fb88e34b78a5a8be2519aa30"
+    ".github/workflows/ci.yml": "c27f653527e3527789ea4759e91fc9c0b93f0bd4cf8b4330a2291aa11975d132"
   },
   "production_changed": false,
   "limits": [

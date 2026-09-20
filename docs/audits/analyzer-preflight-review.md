@@ -75,3 +75,7 @@ the new test was moved above that documentation. No runtime defect was identifie
 in this review. This was author self-review, not independent third-party review.
 The external review provider reported a capacity/spending limit; its green status
 is not evidence that an external review took place.
+
+After integration of memory-limit main `d9b0aa2`, the six preflight, eight
+deadline and six memory integration tests all passed (10.00/10.01/0.42 seconds).
+The combined CI entries are preserved.
