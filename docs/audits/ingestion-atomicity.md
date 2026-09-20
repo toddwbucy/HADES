@@ -38,10 +38,20 @@ has been sent cannot promise rollback.
 - Competing prepared updates admit exactly one commit; rejected fallback writes
   preserve both merged metadata and existing chunks. Both private contracts pass.
 
-This does **not** close #40. Remaining review includes LSP enrichment and the
-cross-file relationship phase, end-to-end cancellation, and errors from external
-analyzers/embedders. Existing embedding degradation behavior can commit new text
-with incomplete vectors and reports embedding failures separately; its acceptance
-semantics require explicit review. The transaction protects the prepared database
+LSP enrichment now commits its prepared symbols, edges, success metadata and
+recomputed counts as one separate atomic stage. File revisions are captured
+before language-server work; stale preparations are rejected. A metadata-schema
+fault after symbol insertion rolls back the entire stage, and retry succeeds.
+Structural file commits that preceded enrichment remain durable.
+
+Embedding preparation errors now return a failed file result with its embedding
+diagnostic before starting persistence. A malformed-response fixture confirms
+all previously committed graph contents survive and retry succeeds. Source-only
+ingestion when no embedding backend connects retains its existing explicit
+warning behavior; it does not fabricate vectors.
+
+This does **not** close #40. Remaining review includes the cross-file relationship
+and inbound-remap phase, end-to-end cancellation, physical source changes during
+external analysis, and additional fallback/analyzer failure coverage. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.

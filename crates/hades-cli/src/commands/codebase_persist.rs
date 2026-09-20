@@ -78,7 +78,11 @@ impl Replacement {
     }
 }
 
-async fn query(client: &ArangoClient, aql: &str, binds: Value) -> Result<(), ArangoError> {
+pub(super) async fn query(
+    client: &ArangoClient,
+    aql: &str,
+    binds: Value,
+) -> Result<(), ArangoError> {
     let result = client
         .post(
             "cursor",

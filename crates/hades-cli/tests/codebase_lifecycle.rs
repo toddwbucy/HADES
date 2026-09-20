@@ -8,12 +8,17 @@ use hades_core::db::{ArangoPool, keys};
 use hades_core::test_support::{Fixtures, with_temp_db};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 const MODEL: &str = "jinaai/jina-embeddings-v4";
 
 struct Embedder {
+    fail: Arc<AtomicBool>,
     socket: PathBuf,
     task: JoinHandle<()>,
     _directory: tempfile::TempDir,
@@ -28,11 +33,14 @@ impl Embedder {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("embedder.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let fail = Arc::new(AtomicBool::new(false));
+        let fault = fail.clone();
         let app = Router::new()
             .route("/v1/models", get(|| async {
                 Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]}))
             }))
-            .route("/v1/embeddings", post(|Json(body): Json<Value>| async move {
+            .route("/v1/embeddings", post(move |Json(body): Json<Value>| { let fault = fault.clone(); async move {
+                if fault.load(Ordering::SeqCst) { return Json(json!({"error":"injected embedding failure"})); }
                 assert_eq!(body["task"], "code", "code ingest/query must agree on the adapter");
                 let inputs = body["input"].as_array().unwrap();
                 let mut data = Vec::new();
@@ -51,11 +59,12 @@ impl Embedder {
                     }
                 }
                 Json(json!({"model":MODEL,"data":data}))
-            }));
+            }}));
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
+            fail,
             socket,
             task,
             _directory: directory,
@@ -251,4 +260,38 @@ async fn snapshot_graph(pool: &ArangoPool) -> Value {
         snapshot.insert(collection.into(), json!(result.results));
     }
     Value::Object(snapshot)
+}
+
+#[tokio::test]
+async fn embedding_failure_preserves_committed_graph_before_transaction() {
+    with_temp_db(
+        "embedding_rollback",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            let file = tree.path().join("provider.py");
+            std::fs::write(&file, "def target():\n    return 'quartz_original'\n").unwrap();
+            ingest(&pool, &embedder, tree.path()).await;
+            let before = snapshot_graph(&pool).await;
+            std::fs::write(&file, "def target():\n    return 'sapphire_revised'\n").unwrap();
+            embedder.fail.store(true, Ordering::SeqCst);
+            let failed = cli(
+                &pool,
+                &embedder,
+                &["ingest", tree.path().to_str().unwrap()],
+                false,
+            )
+            .await;
+            assert_eq!(
+                failed["code"]["embedding"]["files_with_embedding_failures"],
+                1
+            );
+            assert_eq!(snapshot_graph(&pool).await, before);
+            embedder.fail.store(false, Ordering::SeqCst);
+            ingest(&pool, &embedder, tree.path()).await;
+            validate(&pool, &embedder).await;
+        },
+    )
+    .await;
 }

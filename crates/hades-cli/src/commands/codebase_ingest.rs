@@ -71,12 +71,8 @@ struct FileResult {
     num_chunks: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_embeddings: Option<usize>,
-    /// Set when the chunks were stored but the embed call failed. The file
-    /// is structurally ingested (symbols, chunks, edges all present), but
-    /// the chunks have no associated embeddings — typically a transient
-    /// embedder failure (OOM on the embedding service GPU, request timeout,
-    /// etc.). The user-facing summary counts these as
-    /// `partial_embedding_failures` so they don't get lost in a green run.
+    /// Embedding preparation failed; the previous committed graph is retained.
+    /// The summary keeps this diagnostic separate from database write failures.
     #[serde(skip_serializing_if = "Option::is_none")]
     embedding_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1867,7 +1863,7 @@ async fn ingest_file(
                     None,
                 ),
                 Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
+                    warn!(path = rel_path, error = %e, "embedding preparation failed; retaining committed graph");
                     (Vec::new(), Some(e.to_string()))
                 }
             }
@@ -2092,6 +2088,20 @@ async fn ingest_file(
         }
         _ => (Vec::new(), None),
     };
+    if let Some(error) = &embedding_error {
+        return Ok(FileResult {
+            path: rel_path.to_owned(),
+            success: false,
+            language: Some(lang.name().to_owned()),
+            num_symbols: None,
+            num_chunks: None,
+            num_embeddings: None,
+            embedding_error: Some(error.clone()),
+            skipped: Some(false),
+            error: Some("embedding preparation failed; committed file graph retained".into()),
+            duration_ms: 0,
+        });
+    }
     let num_embeddings_written = embedding_docs.len();
 
     // Build file document (after embedding so we can record embedding_count).
@@ -2391,13 +2401,27 @@ async fn ingest_unparsed_file(
                     (docs, None)
                 }
                 Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
+                    warn!(path = rel_path, error = %e, "embedding preparation failed; retaining committed graph");
                     (Vec::new(), Some(e.to_string()))
                 }
             }
         }
         _ => (Vec::new(), None),
     };
+    if let Some(error) = &embedding_error {
+        return Ok(FileResult {
+            path: rel_path.to_owned(),
+            success: false,
+            language: Some(lang_label.to_owned()),
+            num_symbols: None,
+            num_chunks: None,
+            num_embeddings: None,
+            embedding_error: Some(error.clone()),
+            skipped: Some(false),
+            error: Some("embedding preparation failed; committed file graph retained".into()),
+            duration_ms: 0,
+        });
+    }
     let num_embeddings_written = embedding_docs.len();
 
     // Merge the file node — preserve any pre-existing fields, set only ours,
@@ -3093,7 +3117,7 @@ struct SemanticLspStats {
     /// to adopt it.
     workspaces_attempted: usize,
     /// Documents ArangoDB rejected individually (illegal key, bad body).
-    /// Non-zero means degraded-but-usable enrichment.
+    /// Retained for output compatibility; atomic stores report store_failed instead.
     store_errors: usize,
     /// The store stage failed wholesale (request-level error). Analysis
     /// results exist but none of them reached the database.
@@ -3119,6 +3143,7 @@ async fn run_rust_analyzer_phase(
     rust_files: &[PathBuf],
     command: Option<&str>,
 ) -> Result<SemanticLspStats> {
+    let revisions = enrichment_revisions(db, base, rust_files).await?;
     let groups = group_files_by_crate(rust_files);
     if groups.is_empty() {
         return Ok(SemanticLspStats::default());
@@ -3186,6 +3211,7 @@ async fn run_rust_analyzer_phase(
     store_lsp_extractions(
         db,
         all_extractions,
+        revisions,
         crates_analyzed,
         groups.len(),
         "rust-analyzer",
@@ -3204,6 +3230,7 @@ async fn run_gopls_phase(
     go_files: &[PathBuf],
     command: Option<&str>,
 ) -> Result<SemanticLspStats> {
+    let revisions = enrichment_revisions(db, base, go_files).await?;
     let groups = group_files_by_go_module(go_files);
     if groups.is_empty() {
         return Ok(SemanticLspStats::default());
@@ -3254,6 +3281,7 @@ async fn run_gopls_phase(
     let mut stats = store_lsp_extractions(
         db,
         all_extractions,
+        revisions,
         modules_analyzed,
         groups.len(),
         "gopls",
@@ -3265,10 +3293,33 @@ async fn run_gopls_phase(
     Ok(stats)
 }
 
-/// Persist language-neutral LSP symbol documents and semantic edges.
+async fn enrichment_revisions(
+    db: &ArangoPool,
+    base: &Path,
+    files: &[PathBuf],
+) -> Result<HashMap<String, Option<String>>> {
+    let namespace = base.to_str().context("ingest root must be valid UTF-8")?;
+    let mut revisions = HashMap::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(base)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        let key = keys::scoped_file_key(namespace, &relative);
+        let revision = super::codebase_persist::revision(db.writer(), &key).await?;
+        revisions.insert(relative, revision);
+    }
+    Ok(revisions)
+}
+
+/// Enrichment is a separate atomic stage: failed stores retain the committed
+/// structural graph and do not publish partial symbols, edges or success flags.
+#[allow(clippy::too_many_arguments)]
 async fn store_lsp_extractions(
     db: &ArangoPool,
     all_extractions: HashMap<String, FileExtraction>,
+    revisions: HashMap<String, Option<String>>,
     workspaces: usize,
     workspaces_attempted: usize,
     analyzer: &'static str,
@@ -3282,229 +3333,103 @@ async fn store_lsp_extractions(
             ..Default::default()
         });
     }
-    let file_patches: Vec<(String, usize, String)> = all_extractions
+    let file_patches: Vec<_> = all_extractions
         .iter()
         .map(|(path, extraction)| {
             (
                 path.clone(),
+                keys::scoped_file_key(namespace, path),
                 extraction.symbols.len(),
                 extraction.analyzed_at.clone(),
             )
         })
         .collect();
     let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace);
-    let symbol_docs = resolver.build_symbol_documents();
+    let symbols = resolver
+        .build_symbol_documents()
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let semantic_edges = resolver.build_edges();
-
-    let mut stored_symbols = 0usize;
-    let mut stored_edges = 0usize;
-    let mut store_errors = 0usize;
-
-    // Store enriched symbol documents (overwrite=true for idempotent re-runs).
-    // Per-document error reporting (#180): one rejected document degrades one
-    // symbol, not the whole batch, and ArangoDB's rejection reasons are logged
-    // instead of swallowed.
-    if !symbol_docs.is_empty() {
-        let docs: Vec<Value> = symbol_docs
-            .iter()
-            .filter_map(|s| serde_json::to_value(s).ok())
-            .collect();
-        match crud::insert_documents_detailed(db, CODEBASE.symbols, &docs, true).await {
-            Ok((result, details)) => {
-                stored_symbols = (result.created + result.updated) as usize;
-                store_errors += result.errors as usize;
-                if result.errors > 0 {
-                    warn!(
-                        analyzer,
-                        rejected = result.errors,
-                        stored = stored_symbols,
-                        details = %details.iter().take(5).cloned().collect::<Vec<_>>().join(" | "),
-                        "ArangoDB rejected some symbol documents (first 5 reasons shown)"
-                    );
-                }
-                info!(
-                    count = stored_symbols,
-                    analyzer, "stored LSP symbol documents"
-                );
-            }
-            Err(e) => {
-                // Request-level failure: nothing was stored. Keep the analysis
-                // stats so the caller reports the store as the failed stage
-                // rather than pretending the analyzer produced nothing.
-                warn!(
-                    analyzer,
-                    error = %e,
-                    "failed to store symbol documents; skipping edge store"
-                );
-                return Ok(SemanticLspStats {
-                    workspaces,
-                    store_failed: true,
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    // Store edges grouped by collection (collection-per-relation).
-    if !semantic_edges.is_empty() {
-        // Build edge documents with deterministic keys.
-        let edge_docs: Vec<(EdgeKind, Value)> = semantic_edges
-            .iter()
-            .map(|e| {
-                let from_suffix = e.from.rsplit('/').next().unwrap_or(&e.from);
-                let to_suffix = e.to.rsplit('/').next().unwrap_or(&e.to);
-                let edge_key = keys::edge_key(from_suffix, e.kind.as_str(), to_suffix);
-                let mut doc = json!({
-                    "_key": edge_key,
-                    "_from": e.from,
-                    "_to": e.to,
-                    "analysis_tier": "semantic",
-                    "analyzer": analyzer,
-                    "resolution": "semantic",
-                });
-                // Merge edge metadata.
-                if let Value::Object(meta) = &e.metadata
-                    && let Value::Object(ref mut obj) = doc
-                {
-                    for (k, v) in meta {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-                (e.kind, doc)
-            })
-            .collect();
-
-        // Group by edge kind and insert into the appropriate collection.
-        for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
-            let docs: Vec<Value> = edge_docs
-                .iter()
-                .filter(|(k, _)| *k == kind)
-                .map(|(_, d)| d.clone())
-                .collect();
-            if !docs.is_empty() {
-                match crud::insert_documents_detailed(db, kind.collection(), &docs, true).await {
-                    Ok((result, details)) => {
-                        stored_edges += (result.created + result.updated) as usize;
-                        store_errors += result.errors as usize;
-                        if result.errors > 0 {
-                            warn!(
-                                analyzer,
-                                collection = kind.collection(),
-                                rejected = result.errors,
-                                details = %details.iter().take(5).cloned().collect::<Vec<_>>().join(" | "),
-                                "ArangoDB rejected some edge documents (first 5 reasons shown)"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            analyzer,
-                            collection = kind.collection(),
-                            error = %e,
-                            "failed to store edge batch"
-                        );
-                        return Ok(SemanticLspStats {
-                            symbols: stored_symbols,
-                            edges: stored_edges,
-                            workspaces,
-                            workspaces_attempted,
-                            store_errors,
-                            store_failed: true,
-                            // Filled in by the phase, which knows which failed.
-                            failed_workspaces: Vec::new(),
-                        });
-                    }
-                }
-            }
-        }
-
-        info!(count = stored_edges, analyzer, "stored LSP semantic edges");
-    }
-
-    let mut patched_count = 0;
-    for (rel_path, sym_count, analyzed_at) in &file_patches {
-        let fkey = keys::scoped_file_key(namespace, rel_path);
-        // Deliberately does NOT touch `analysis_tier`/`analyzer`. Those describe
-        // the analysis that produced this node's `symbol_hash` and chunks, and
-        // enrichment rewrites neither. Stamping the file `semantic` here made a
-        // Go node advertise a fidelity its own digest did not have, and — because
-        // `preserve_higher_fidelity` compares against exactly this field — meant
-        // every later run offered `structural`, lost, and skipped the file
-        // permanently, `--force` included (#193). The enrichment is recorded
-        // under the prefixed keys below, and the symbols and edges it writes
-        // carry `analysis_tier: "semantic"` on themselves.
-        let mut patch = json!({});
-        if let Value::Object(fields) = &mut patch {
-            fields.insert(format!("{metadata_prefix}_analyzed"), json!(true));
-            fields.insert(format!("{metadata_prefix}_symbol_count"), json!(sym_count));
-            fields.insert(format!("{metadata_prefix}_analyzed_at"), json!(analyzed_at));
-        }
-        match crud::update_document(db, CODEBASE.files, &fkey, &patch).await {
-            Ok(_) => patched_count += 1,
-            Err(e) => {
-                debug!(file_key = %fkey, error = %e, "failed to patch file document (non-fatal)");
-            }
-        }
-    }
-    if patched_count > 0 {
-        info!(
-            count = patched_count,
-            analyzer, "patched file documents with semantic LSP metadata"
-        );
-    }
-
-    // Recompute `symbol_count` from the authoritative stored set for every
-    // LSP-touched file. Enrichment adds symbols (struct fields, methods) beyond
-    // the syn primitives that `ingest_file` counted, so the syn-based
-    // `symbol_count` is now stale (#126). Counting the actually-stored symbols
-    // keeps the denorm consistent — the same "count from the stored set" stance
-    // as #113 — and treats the richer RA granularity as canonical. The
-    // `file_key` index on `codebase_symbols` keeps the per-file count cheap.
-    let touched_fkeys: Vec<String> = file_patches
+    let edge_docs: Vec<(EdgeKind, Value)> = semantic_edges
         .iter()
-        .map(|(rel_path, _, _)| keys::scoped_file_key(namespace, rel_path))
+        .map(|e| {
+            let from_suffix = e.from.rsplit('/').next().unwrap_or(&e.from);
+            let to_suffix = e.to.rsplit('/').next().unwrap_or(&e.to);
+            let edge_key = keys::edge_key(from_suffix, e.kind.as_str(), to_suffix);
+            let mut doc = json!({
+                "_key": edge_key,
+                "_from": e.from,
+                "_to": e.to,
+                "analysis_tier": "semantic",
+                "analyzer": analyzer,
+                "resolution": "semantic",
+            });
+            // Merge edge metadata.
+            if let Value::Object(meta) = &e.metadata
+                && let Value::Object(ref mut obj) = doc
+            {
+                for (k, v) in meta {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            (e.kind, doc)
+        })
         .collect();
-    if !touched_fkeys.is_empty() {
-        let n = touched_fkeys.len();
-        let aql = "FOR fk IN @fkeys \
-                   LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) \
-                   UPDATE fk WITH { symbol_count: c } IN @@files";
-        let bind = json!({
-            "fkeys": touched_fkeys,
-            "@sym": CODEBASE.symbols,
-            "@files": CODEBASE.files,
-        });
-        match hades_core::db::query::query(
-            db,
-            aql,
-            Some(&bind),
-            None,
-            false,
-            ExecutionTarget::Writer,
-        )
-        .await
-        {
-            Ok(_) => debug!(
-                files = n,
-                analyzer, "recomputed symbol_count after semantic LSP enrichment"
-            ),
-            Err(e) => warn!(
-                error = %e,
-                analyzer,
-                "failed to recompute symbol_count after LSP enrichment (non-fatal)"
-            ),
-        }
-    }
 
+    let symbol_count = symbols.len();
+    let edge_count = edge_docs.len();
+    let collections = CODEBASE
+        .all_collections()
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    let stored = hades_core::db::transaction::run(db, collections, move |client| async move {
+        for (path, key, _, _) in &file_patches {
+            let expected = revisions.get(path).ok_or_else(|| hades_core::db::ArangoError::Request("missing enrichment preparation revision".into()))?;
+            if expected.is_none() || &super::codebase_persist::revision(&client, key).await? != expected {
+                return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
+            }
+        }
+        let mut batches = vec![(CODEBASE.symbols, symbols)];
+        for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
+            batches.push((kind.collection(), edge_docs.iter().filter(|(k, _)| *k == kind).map(|(_, d)| d.clone()).collect()));
+        }
+        for (collection, docs) in batches {
+            if docs.is_empty() { continue; }
+            let response = client.post(&format!("document/{collection}?overwriteMode=replace"), &json!(docs)).await?;
+            let rows = response.as_array().ok_or_else(|| hades_core::db::ArangoError::Request("invalid enrichment batch response".into()))?;
+            if rows.len() != docs.len() || rows.iter().any(|row| row["error"] == true) {
+                return Err(hades_core::db::ArangoError::Request(format!("failed enrichment batch in {collection}")));
+            }
+        }
+        for (_, key, count, analyzed_at) in &file_patches {
+            let patch = json!({format!("{metadata_prefix}_analyzed"):true,
+                format!("{metadata_prefix}_symbol_count"):count,
+                format!("{metadata_prefix}_analyzed_at"):analyzed_at});
+            client.patch(&format!("document/{}/{key}", CODEBASE.files), &patch).await?;
+        }
+        super::codebase_persist::query(&client,
+            "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
+            json!({"fkeys":file_patches.iter().map(|(_,key,_,_)| key).collect::<Vec<_>>(),
+                "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+        Ok(())
+    }).await;
+    if let Err(error) = stored {
+        warn!(%error, analyzer, "atomic enrichment store failed; committed graph retained");
+        return Ok(SemanticLspStats {
+            workspaces,
+            workspaces_attempted,
+            store_failed: true,
+            ..Default::default()
+        });
+    }
     Ok(SemanticLspStats {
-        symbols: stored_symbols,
-        edges: stored_edges,
+        symbols: symbol_count,
+        edges: edge_count,
         workspaces,
         workspaces_attempted,
-        store_errors,
-        store_failed: false,
-        // Filled in by the phase, which knows which failed.
-        failed_workspaces: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -5446,5 +5371,135 @@ mod tests {
         assert_eq!(windows[0].text, "bbbbcccc");
         assert_eq!(windows[0].boundaries, vec![(0, 4), (4, 8)]);
         assert_eq!(windows[0].chunk_indices, vec![3, 4]);
+    }
+
+    #[tokio::test]
+    async fn enrichment_rejects_partial_metadata_and_stale_preparation() {
+        use hades_core::code::lsp::symbols::ExtractedSymbol;
+        with_temp_db("enrichment_atomic", Fixtures::Codebase, |pool| async move {
+            let namespace = "/isolated";
+            let path = "fixture.rs";
+            let key = keys::scoped_file_key(namespace, path);
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({"_key":key,"path":path,"symbol_count":0,"content_hash":"original"}),
+                )
+                .await
+                .unwrap();
+            let before = pool
+                .writer()
+                .get(&format!("document/codebase_files/{key}"))
+                .await
+                .unwrap();
+            let revisions = HashMap::from([(
+                path.to_owned(),
+                Some(before["_rev"].as_str().unwrap().to_owned()),
+            )]);
+            let mut extraction = FileExtraction::empty();
+            extraction.symbols.push(ExtractedSymbol {
+                name: "target".into(),
+                qualified_name: "target".into(),
+                kind: "function".into(),
+                visibility: "public".into(),
+                signature: "fn target()".into(),
+                start_line: 0,
+                end_line: 1,
+                parent_symbol: None,
+                impl_trait: None,
+                is_pyo3: false,
+                is_ffi: false,
+                is_unsafe: false,
+                derives: Vec::new(),
+                python_name: None,
+                calls: Vec::new(),
+            });
+            let extractions = HashMap::from([(path.to_owned(), extraction)]);
+            pool.writer().put("collection/codebase_files/properties", &json!({
+                "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+            })).await.unwrap();
+            let failed = store_lsp_extractions(
+                &pool,
+                extractions.clone(),
+                revisions.clone(),
+                1,
+                1,
+                "fixture",
+                "fixture",
+                namespace,
+            )
+            .await
+            .unwrap();
+            assert!(failed.store_failed);
+            assert_eq!(failed.symbols, 0);
+            assert_eq!(
+                pool.writer()
+                    .get(&format!("document/codebase_files/{key}"))
+                    .await
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                crud::count_collection(&pool, CODEBASE.symbols)
+                    .await
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                crud::count_collection(&pool, CODEBASE.defines_edges)
+                    .await
+                    .unwrap(),
+                0
+            );
+            pool.writer()
+                .put(
+                    "collection/codebase_files/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            let success = store_lsp_extractions(
+                &pool,
+                extractions.clone(),
+                revisions.clone(),
+                1,
+                1,
+                "fixture",
+                "fixture",
+                namespace,
+            )
+            .await
+            .unwrap();
+            assert!(!success.store_failed);
+            assert_eq!(success.symbols, 1);
+            let committed = pool
+                .writer()
+                .get(&format!("document/codebase_files/{key}"))
+                .await
+                .unwrap();
+            assert_eq!(committed["fixture_analyzed"], true);
+            assert_eq!(committed["symbol_count"], 1);
+            let stale = store_lsp_extractions(
+                &pool,
+                extractions,
+                revisions,
+                1,
+                1,
+                "fixture",
+                "fixture",
+                namespace,
+            )
+            .await
+            .unwrap();
+            assert!(stale.store_failed);
+            assert_eq!(
+                pool.writer()
+                    .get(&format!("document/codebase_files/{key}"))
+                    .await
+                    .unwrap(),
+                committed
+            );
+        })
+        .await;
     }
 }

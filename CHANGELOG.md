@@ -319,8 +319,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Stage parsed and fallback file replacements before a serial database
   transaction; retain previous graph state on persistence failure and reject
   stale prepared writes. Independent transaction ownership aborts cancellation
-  and callback failures. Ingestion atomicity audit and enrichment coverage remain
-  in progress (#40).
+  and callback failures. LSP enrichment commits symbols, edges and metadata
+  atomically, rejects stale preparations, and embedding preparation errors retain
+  the prior graph. Cross-file atomicity audit remains in progress (#40).
 
 - Allow detail rows up to the aggregate search result budget by paging one row
   with bounded envelope headroom; regenerate vector/metric provenance hashes and
