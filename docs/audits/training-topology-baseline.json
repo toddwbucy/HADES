@@ -2,7 +2,7 @@
   "fixture": "synthetic directed 8-node ring; 4 train/2 val/2 test edges",
   "device": "cpu",
   "torch": "2.14.0+cu130",
-  "limitations": "Synthetic regression baseline only; does not establish production quality. AUC correction tracked in #17.",
+  "limitations": "Synthetic regression baseline only; does not establish production quality. AUC uses tie-correct pair ranking.",
   "results": [
     {
       "architecture": "rgcn",

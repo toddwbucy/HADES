@@ -28,7 +28,7 @@ use hades_core::training::{EvalResult, TrainingClient, TrainingError};
 use hades_proto::training::{ModelConfig, OptimizerConfig};
 
 use crate::prefetcher::{PrefetchConfig, PrefetchError, Prefetcher};
-use crate::tensor::{EdgeSplit, negative_sample};
+use crate::tensor::{EdgeSplit, TensorError, negative_sample_seeded};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -37,6 +37,11 @@ use crate::tensor::{EdgeSplit, negative_sample};
 /// Errors from the training orchestrator.
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
+    #[error("invalid training run: {0}")]
+    InvalidRun(String),
+
+    #[error("sampling failed: {0}")]
+    Sampling(#[from] TensorError),
     /// gRPC/training service error.
     #[error("training service error: {0}")]
     Training(#[from] TrainingError),
@@ -83,7 +88,7 @@ pub struct TrainConfig {
     pub epochs: usize,
     /// Early stopping patience (epochs without val improvement).
     pub patience: usize,
-    /// Validate every N epochs (0 = never validate, skip early stopping).
+    /// Validate every N epochs (must be positive).
     pub val_every: usize,
 
     // -- Negative sampling / prefetch --
@@ -91,6 +96,8 @@ pub struct TrainConfig {
     pub neg_sampling_ratio: f64,
     /// Number of epochs to prefetch ahead.
     pub prefetch_depth: usize,
+    /// Split/sampling seed; this does not seed model initialization or GPU kernels.
+    pub seed: u64,
 
     // -- Device --
     /// PyTorch device string (e.g. "cuda:0", "cpu").
@@ -117,6 +124,7 @@ impl Default for TrainConfig {
             val_every: 1,
             neg_sampling_ratio: 1.0,
             prefetch_depth: 2,
+            seed: 0,
             device: "cuda:0".to_string(),
             architecture: "rgcn".to_string(),
         }
@@ -149,6 +157,7 @@ impl TrainConfig {
     fn prefetch_config(&self) -> PrefetchConfig {
         PrefetchConfig {
             prefetch_depth: self.prefetch_depth,
+            seed: self.seed,
             neg_sampling_ratio: self.neg_sampling_ratio,
         }
     }
@@ -242,6 +251,16 @@ impl Orchestrator {
         checkpoint_dir: &Path,
     ) -> Result<TrainResult, OrchestratorError> {
         let cfg = &self.config;
+        if cfg.epochs == 0
+            || cfg.val_every == 0
+            || split.train_idx.is_empty()
+            || split.val_idx.is_empty()
+            || split.test_idx.is_empty()
+        {
+            return Err(OrchestratorError::InvalidRun(
+                "epochs, validation cadence, and every split must be nonempty".into(),
+            ));
+        }
 
         // Ensure checkpoint directory exists
         std::fs::create_dir_all(checkpoint_dir)?;
@@ -299,6 +318,7 @@ impl Orchestrator {
         );
 
         while let Some(batch) = prefetcher.next_batch().await {
+            let batch = batch?;
             let epoch = batch.epoch;
             total_epochs = epoch + 1;
 
@@ -323,6 +343,17 @@ impl Orchestrator {
             } else {
                 None
             };
+
+            if !step.loss.is_finite()
+                || !step.accuracy.is_finite()
+                || val.is_some_and(|v| {
+                    !v.loss.is_finite() || !v.accuracy.is_finite() || !v.auc.is_finite()
+                })
+            {
+                return Err(OrchestratorError::InvalidRun(
+                    "nonfinite metrics; checkpoint selection aborted".into(),
+                ));
+            }
 
             // Record metrics
             epoch_metrics.push(EpochMetrics {
@@ -351,25 +382,34 @@ impl Orchestrator {
 
             // Early stopping check
             if let Some(eval) = val {
-                if eval.loss < best_val_loss {
-                    best_val_loss = eval.loss;
-                    best_epoch = epoch;
-                    self.client.checkpoint(&checkpoint_path).await?;
-                    checkpoint_saved = true;
-                    debug!(epoch, val_loss = eval.loss, "new best — checkpoint saved");
-                } else if epoch.saturating_sub(best_epoch) >= cfg.patience {
-                    info!(
-                        epoch,
-                        best_epoch,
-                        patience = cfg.patience,
-                        "early stopping triggered"
-                    );
-                    early_stopped = true;
-                    break;
+                match validation_decision(
+                    eval.loss,
+                    best_val_loss,
+                    epoch,
+                    best_epoch,
+                    cfg.patience,
+                )? {
+                    ValidationDecision::Save => {
+                        self.client.checkpoint(&checkpoint_path).await?;
+                        best_val_loss = eval.loss;
+                        best_epoch = epoch;
+                        checkpoint_saved = true;
+                        debug!(epoch, val_loss = eval.loss, "new best — checkpoint saved");
+                    }
+                    ValidationDecision::Stop => {
+                        early_stopped = true;
+                        break;
+                    }
+                    ValidationDecision::Continue => {}
                 }
             }
         }
 
+        if !checkpoint_saved {
+            return Err(OrchestratorError::InvalidRun(
+                "no valid checkpoint produced".into(),
+            ));
+        }
         // ── Phase 5: Restore best model ──────────────────────────────
         if checkpoint_saved {
             self.client
@@ -381,15 +421,26 @@ impl Orchestrator {
         // ── Phase 6: Test evaluation ─────────────────────────────────
         let graph_ref = Arc::clone(&graph);
         let test_count = split.test_idx.len();
-        let test_neg = tokio::task::spawn_blocking(move || negative_sample(&graph_ref, test_count))
-            .await
-            .expect("test negative sampling panicked");
+        let seed = cfg.seed.wrapping_add(2);
+        let test_neg = tokio::task::spawn_blocking(move || {
+            negative_sample_seeded(&graph_ref, test_count, seed)
+        })
+        .await
+        .map_err(|e| OrchestratorError::InvalidRun(e.to_string()))??;
 
         let test_eval = self
             .client
             .evaluate(split.test_idx.clone(), test_neg.src, test_neg.dst)
             .await?;
 
+        if !test_eval.loss.is_finite()
+            || !test_eval.accuracy.is_finite()
+            || !test_eval.auc.is_finite()
+        {
+            return Err(OrchestratorError::InvalidRun(
+                "nonfinite test metrics".into(),
+            ));
+        }
         info!(
             test_loss = format!("{:.4}", test_eval.loss),
             test_acc = format!("{:.3}", test_eval.accuracy),
@@ -420,6 +471,34 @@ impl std::fmt::Debug for Orchestrator {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum ValidationDecision {
+    Save,
+    Continue,
+    Stop,
+}
+
+fn validation_decision(
+    loss: f32,
+    best_loss: f32,
+    epoch: usize,
+    best_epoch: usize,
+    patience: usize,
+) -> Result<ValidationDecision, OrchestratorError> {
+    if !loss.is_finite() {
+        return Err(OrchestratorError::InvalidRun(
+            "nonfinite validation loss".into(),
+        ));
+    }
+    Ok(if loss < best_loss {
+        ValidationDecision::Save
+    } else if epoch.saturating_sub(best_epoch) >= patience {
+        ValidationDecision::Stop
+    } else {
+        ValidationDecision::Continue
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -427,6 +506,29 @@ impl std::fmt::Debug for Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validation_checkpoints_only_improve_and_ties_exhaust_patience() {
+        let mut best = f32::INFINITY;
+        let mut best_epoch = 0;
+        let mut checkpoints = Vec::new();
+        for (epoch, loss) in [1.0, 0.5, 0.5, 0.6].into_iter().enumerate() {
+            match validation_decision(loss, best, epoch, best_epoch, 2).unwrap() {
+                ValidationDecision::Save => {
+                    checkpoints.push(epoch);
+                    best = loss;
+                    best_epoch = epoch;
+                }
+                ValidationDecision::Continue => assert_eq!(epoch, 2),
+                ValidationDecision::Stop => assert_eq!(epoch, 3),
+            }
+        }
+        assert_eq!(checkpoints, vec![0, 1]);
+        assert_eq!(best_epoch, 1);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(validation_decision(invalid, best, 4, best_epoch, 2).is_err());
+        }
+    }
 
     /// Local fixture matching the historical NL ontology shape.
     const NUM_RELATIONS: usize = 22;
@@ -561,6 +663,7 @@ mod tests {
             prefetch_depth: 4,
             device: "cuda:2".into(),
             architecture: "hetero_sage".into(),
+            seed: 0,
         };
         assert_eq!(cfg.hidden_dim, 512);
         assert_eq!(cfg.val_every, 5);
