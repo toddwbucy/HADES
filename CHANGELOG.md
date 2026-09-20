@@ -389,6 +389,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Bound analyzer version probes to ten seconds and 64 KiB per output stream;
+  keep ingestion probes off the async executor and clean owned process groups
+  through timeout or cancellation (#96).
+
 - Retain ordinary and late-chunk embedding workers through cancellation and
   drain admitted work before idle or lifespan model cleanup (#92).
 

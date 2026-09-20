@@ -242,7 +242,8 @@ pub async fn run_phase(
             config.analyzers.rust_analyzer.as_deref(),
             &base,
             allow_analysis_downgrade,
-        )?
+        )
+        .await?
     } else {
         None
     };
@@ -252,7 +253,8 @@ pub async fn run_phase(
             config.analyzers.gopls.as_deref(),
             &base,
             allow_analysis_downgrade,
-        )?
+        )
+        .await?
     } else {
         None
     };
@@ -3837,13 +3839,13 @@ fn resolve_python_imports_scoped(
 /// per-directory (#164): the same `rust-analyzer` can work in a shell and die
 /// inside a repo whose rust-toolchain.toml pins a toolchain missing the
 /// component. Probing anywhere else validates the wrong toolchain.
-fn preflight_or_bail(
+async fn preflight_or_bail(
     name: &str,
     configured: Option<&str>,
     workspace: &Path,
     allow_analysis_downgrade: bool,
 ) -> Result<Option<String>> {
-    let probe = hades_core::code::lsp::resolve_and_probe(name, configured, workspace);
+    let probe = hades_core::code::lsp::resolve_and_probe_async(name, configured, workspace).await;
     match probe.outcome {
         Ok(version) => {
             info!(analyzer = name, %version, source = probe.source, "analyzer preflight passed");
@@ -3976,6 +3978,27 @@ mod tests {
     ///
     /// No embedder: chunks are stored either way, and the text is what is under
     /// test. Runs in its own database, so the counts are exact.
+    #[tokio::test]
+    async fn analyzer_preflight_still_requires_explicit_downgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = "/nonexistent/hades-audit-analyzer";
+        let strict = preflight_or_bail("rust-analyzer", Some(missing), root.path(), false).await;
+        assert!(strict.unwrap_err().to_string().contains("preflight failed"));
+        assert!(
+            preflight_or_bail("rust-analyzer", Some(missing), root.path(), true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            preflight_or_bail("fixture", Some("/usr/bin/python3"), root.path(), false)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("/usr/bin/python3")
+        );
+    }
+
     #[tokio::test]
     async fn a_comment_only_edit_removes_the_retired_chunk_text() {
         with_temp_db("chunktext", Fixtures::Codebase, |pool| async move {

@@ -27,4 +27,26 @@ the group; stronger sandboxing is a separate boundary.
 
 The ordinary LSP stream's frame/notification memory and descendant boundaries,
 and the `go install` build/download subprocess, are separate remaining scope.
-No implementation or production change is represented by this baseline.
+The baseline above is preserved separately from the remediation below.
+
+
+## Remediation implementation
+
+Version probes now capture at most 64 KiB per stream using nonblocking pipes,
+with a ten-second runtime ceiling and explicit overflow errors. Both streams
+are serviced in bounded chunks. A fresh process group is owned until signalling
+and direct-child reap, including on errors and unwinding. Natural leader exit
+is observed with `waitid(WNOWAIT)` so descendants can be signalled before the
+leader's PID is released; buffered version output is then drained.
+
+Synchronous tools callers retain the public probe API. Async ingestion uses
+`resolve_and_probe_async`, whose blocking worker owns cleanup after its caller
+is cancelled. A drop guard signals cancellation, checked before spawning and
+during bounded capture. The same resolution helper supplies configured/managed/
+PATH precedence to both APIs, retaining workspace and version-argument semantics.
+
+The deadline does not promise preemption of kernel spawn/reap or blocking-worker
+queue admission. The worker keeps ownership through cleanup; cancellation may
+return to the caller before the worker finishes. Descendants that deliberately
+leave the process group are not contained, and descendants killed after leader
+exit can await reaping by the system's adopter. No production deployment.

@@ -203,3 +203,9 @@ source-to-backup mismatch and snapshot inventory. P1 #63 remains open pending
 alternate-backup evidence and recovery objectives. A small synthetic logical
 restore passed with matching documents, edges, graph, schema and indexes; its
 explicit limits are recorded in that review.
+
+
+[Analyzer preflight boundaries](analyzer-preflight-review.md) records #96's
+historical runtime-blocking/output-capture probe and the bounded, owned-process
+remediation. Private synthetic peers cover cancellation, output limits and
+inherited pipes; no live analyzer service or production installation was changed.
