@@ -10,3 +10,8 @@ protobuf>=4.25
 safetensors>=0.4
 pytest>=8
 build>=1.2
+
+# Real HTTP/ASGI contracts with a stubbed model backend (no model downloads).
+fastapi>=0.110
+uvicorn>=0.27
+httpx>=0.27
