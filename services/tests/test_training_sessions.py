@@ -137,28 +137,30 @@ def test_failed_initialization_can_release_and_successor_starts_clean():
     asyncio.run(run())
 
 
-def test_cancelled_operation_retains_owner_until_release_or_expiry():
+def test_cancelled_operation_drains_then_discards_owner():
     async def run():
-        started = asyncio.Event()
+        started, finish = asyncio.Event(), asyncio.Event()
         class SlowBackend:
             async def InitModel(self, request, context):
                 started.set()
-                await asyncio.Event().wait()
-        now = [0.0]
-        async with provider(SlowBackend, lease_seconds=5, clock=lambda: now[0]) as (_, a, b):
+                await finish.wait()
+                return pb.InitModelResponse(device="cpu")
+        async with provider(SlowBackend) as (service, a, b):
             owner = await acquire(a)
             pending = a.InitModel(pb.InitModelRequest(), metadata=owner, timeout=3)
             await asyncio.wait_for(started.wait(), 2)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await pending
-            await a.RenewSession(pb.SessionRequest(), metadata=owner, timeout=3)
-            await rejected(b.AcquireSession, pb.AcquireSessionRequest(),
-                           code=grpc.StatusCode.RESOURCE_EXHAUSTED)
-            now[0] = 6
+            assert service._backend is not None
+            finish.set()
+            async def discarded():
+                while service._backend is not None:
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(discarded(), 2)
+            await rejected(a.RenewSession, pb.SessionRequest(), owner)
             successor = await acquire(b)
             assert successor != owner
-            await rejected(a.ReleaseSession, pb.SessionRequest(), owner)
     asyncio.run(run())
 
 

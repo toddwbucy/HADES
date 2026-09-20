@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generated"))
 from hades.training import training_pb2, training_pb2_grpc  # noqa: E402
 
 from .session import SessionTrainingServicer
+from .worker import blocking_rpc
 from .contract import validate_contract
 from .config import TrainingConfig  # noqa: E402
 from .rgcn_model import HadesRGCN  # noqa: E402
@@ -246,6 +247,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         return torch.as_tensor(list(values), dtype=torch.long, device=self.device)
 
     # -- RPCs -------------------------------------------------------------
+    @blocking_rpc
     async def InitModel(self, request, context):
         device = self.config.resolve_device(request.device)
         if device is None:
@@ -271,6 +273,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         logger.info("InitModel: %d params on %s", num_params, device)
         return training_pb2.InitModelResponse(num_parameters=num_params, device=device)
 
+    @blocking_rpc
     async def LoadGraph(self, request, context):
         await self._require_model(context)
         from safetensors import safe_open, SafetensorError
@@ -371,6 +374,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         )
         return local_embeddings[global_to_local[targets]]
 
+    @blocking_rpc
     async def TrainStep(self, request, context):
         await self._require_loaded(context)
         if self.train_idx is None:
@@ -397,6 +401,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         self.optimizer.step()
         return training_pb2.TrainStepResponse(loss=float(loss.detach()), accuracy=acc)
 
+    @blocking_rpc
     async def Evaluate(self, request, context):
         await self._require_loaded(context)
         if self.train_idx is None:
@@ -422,6 +427,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
         return training_pb2.EvaluateResponse(loss=float(loss), accuracy=acc, auc=auc)
 
+    @blocking_rpc
     async def GetEmbeddings(self, request, context):
         await self._require_loaded(context)
         try:
@@ -457,6 +463,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             num_nodes=num_nodes, embed_dim=embed_dim, embeddings=payload
         )
 
+    @blocking_rpc
     async def Checkpoint(self, request, context):
         await self._require_model(context)
         if self.model_contract is None:
@@ -488,6 +495,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         size = os.path.getsize(request.path)
         return training_pb2.CheckpointResponse(path=request.path, size_bytes=size)
 
+    @blocking_rpc
     async def LoadCheckpoint(self, request, context):
         device = self.config.resolve_device(request.device)
         if device is None:

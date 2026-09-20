@@ -386,6 +386,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep training RPC computation off the provider loop and drain interrupted
+  operations before discarding their session or admitting a successor (#77).
+
 - Cancel and join owned prefetch sampling jobs during explicit shutdown, with
   cooperative cancellation during edge indexing and candidate generation (#77).
 
