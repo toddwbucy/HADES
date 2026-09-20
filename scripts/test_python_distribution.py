@@ -47,8 +47,7 @@ def main():
         shutil.copytree(REPO / "services", source, ignore=shutil.ignore_patterns(
             ".venv", "__pycache__", "*.egg-info", "build", "dist", "generated", "proto"))
         shutil.copytree(REPO / "proto", source.parent / "proto")
-        run(["-c", "from setuptools.build_meta import build_wheel, build_sdist; "
-             "build_wheel('dist'); build_sdist('dist')"], source)
+        run(["-m", "build", "--wheel", "--sdist", "--outdir", "dist", "."], source)
         direct = root / "direct"
         direct.mkdir()
         verify_wheel(next((source / "dist").glob("*.whl")), direct)
@@ -58,7 +57,7 @@ def main():
             stream.extractall(standalone, filter="data")
         unpacked = next(standalone.iterdir())
         # There is no ../proto here: the sdist must carry all of its own inputs.
-        run(["-c", "from setuptools.build_meta import build_wheel; build_wheel('dist')"], unpacked)
+        run(["-m", "build", "--wheel", "--outdir", "dist", "."], unpacked)
         rebuilt = root / "rebuilt"
         rebuilt.mkdir()
         verify_wheel(next((unpacked / "dist").glob("*.whl")), rebuilt)

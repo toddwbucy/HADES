@@ -1,0 +1,52 @@
+{
+  "source_parent": "b1b9103",
+  "source_sha256": {
+    "crates/hades-core/tests/search_handler_benchmark.rs": "4d56949a430db9e12b73424c6e29a6cd10bb98abb15b1057b1462efa78946306",
+    "crates/hades-core/tests/common/embedding_mock.rs": "8d52dd512e6098e16e09fbbf70a0db0eb171d62c5fe9018dda00e6dd9c6c22ac",
+    "scripts/test_isolated_database.py": "e90c2a4826e53015e5d85988b7992e88688e14da518c197e4cea53b604631ddd"
+  },
+  "server_version": "3.12.11",
+  "runner": "private Unix sockets; one CPU affinity; nice 10; 8 GiB address-space limit",
+  "results": [
+    {
+      "baseline_rss_kib": 12872,
+      "concurrency": 1,
+      "dimension": 2048,
+      "hybrid": true,
+      "k": 1000,
+      "largest_response_bytes": 1059729,
+      "p50_ms": 2700.9086780000002,
+      "p95_ms": 2730.949873,
+      "p99_ms": 2730.949873,
+      "query_bytes": 65536,
+      "rows": 1024,
+      "sampled_peak_rss_kib": 31488,
+      "scope": "full service handler and retained serialized results; fixed-vector embedder; excludes model inference and daemon/MCP socket queues",
+      "structural_dimension": 2048,
+      "trials": 16
+    },
+    {
+      "baseline_rss_kib": 31616,
+      "concurrency": 4,
+      "dimension": 2048,
+      "hybrid": true,
+      "k": 1000,
+      "largest_response_bytes": 1059729,
+      "p50_ms": 10348.952223,
+      "p95_ms": 10641.62628,
+      "p99_ms": 10641.62628,
+      "query_bytes": 65536,
+      "rows": 1024,
+      "sampled_peak_rss_kib": 73796,
+      "scope": "full service handler and retained serialized results; fixed-vector embedder; excludes model inference and daemon/MCP socket queues",
+      "structural_dimension": 2048,
+      "trials": 16
+    }
+  ],
+  "limitations": [
+    "16 trials; p95/p99 are pilot observations, not reliable tail estimates",
+    "Shared process allocator across cases; active host; no simultaneous audit compilation during measurement",
+    "Fixed-vector embedder; no model inference or daemon/MCP transport queues",
+    "Synthetic equal-score vectors, near-limit text results, maximum K and query text; does not establish a general RSS ceiling"
+  ]
+}

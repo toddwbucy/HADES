@@ -1,0 +1,466 @@
+{
+  "version": 2,
+  "source_revision": "049c1aaf47182f9c18ef54012e4d3468b7627498",
+  "judgment_policy": "Author-created code-navigation seed. Grade 3 identifies the function directly implementing the requested behavior; unlisted functions are unjudged (treated as 0 for this seed). Not an external or exhaustive relevance benchmark. Queries fixed before inference.",
+  "documents": [
+    {
+      "id": "root-key",
+      "source": "crates/hades-core/src/db/keys.rs",
+      "symbol": "scoped_file_key",
+      "start_line": 72,
+      "end_line": 103,
+      "source_sha256": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+      "excerpt_sha256": "075f1d26952c78ab347ccc944966a97e68513a18e51eb17d2de01e1b35743f6c",
+      "excerpt_truncated": false,
+      "text": "/// Identify a file by its exact root namespace and relative UTF-8 path.\n///\n/// Full SHA-256 covers length-delimited components; the bounded ASCII prefix\n/// is cosmetic. Callers canonicalize the root and reject non-UTF-8 paths before\n/// use. Changing roots intentionally changes identities and requires migration.\n/// The result leaves room for symbol/chunk/embedding suffixes under ArangoDB's\n/// 254-byte document-key limit.\npub fn scoped_file_key(namespace: &str, rel_path: &str) -> String {\n    let mut hasher = Sha256::new();\n    hasher.update(b\"hades:file:v2\\0\");\n    for component in [namespace, rel_path] {\n        hasher.update((component.len() as u64).to_be_bytes());\n        hasher.update(component.as_bytes());\n    }\n    let readable: String = rel_path\n        .chars()\n        .take(32)\n        .map(|c| {\n            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {\n                c\n            } else {\n                '_'\n            }\n        })\n        .collect();\n    let digest: String = hasher\n        .finalize()\n        .iter()\n        .map(|b| format!(\"{b:02x}\"))\n        .collect();\n    format!(\"f2_{readable}__{digest}\")\n}\n"
+    },
+    {
+      "id": "version-id",
+      "source": "crates/hades-core/src/db/keys.rs",
+      "symbol": "normalize_document_key",
+      "start_line": 14,
+      "end_line": 28,
+      "source_sha256": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+      "excerpt_sha256": "513d268c221fd3649c4fc58bfd0707c72081c8efbc7e590e8e50f58cfbffa0f9",
+      "excerpt_truncated": false,
+      "text": "/// Normalize a raw identifier into an ArangoDB document key.\n///\n/// 1. Strip trailing version suffix (`v1`, `v2`, etc.)\n/// 2. Replace `.` and `/` with `_`\n///\n/// # Examples\n/// ```\n/// # use hades_core::db::keys::normalize_document_key;\n/// assert_eq!(normalize_document_key(\"2501.12345v2\"), \"2501_12345\");\n/// assert_eq!(normalize_document_key(\"hep-th/9901001\"), \"hep-th_9901001\");\n/// ```\npub fn normalize_document_key(raw: &str) -> String {\n    let stripped = VERSION_SUFFIX.replace(raw, \"\");\n    stripped.replace(['.', '/'], \"_\")\n}\n"
+    },
+    {
+      "id": "chunk-id",
+      "source": "crates/hades-core/src/db/keys.rs",
+      "symbol": "chunk_key",
+      "start_line": 44,
+      "end_line": 53,
+      "source_sha256": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+      "excerpt_sha256": "2f4e7613570b0bce7ac2692d222b1daec995f51ade7c3de36aa96c8f875ba109",
+      "excerpt_truncated": false,
+      "text": "/// Build a chunk key from a normalized document key and chunk index.\n///\n/// # Examples\n/// ```\n/// # use hades_core::db::keys::chunk_key;\n/// assert_eq!(chunk_key(\"2501_12345\", 3), \"2501_12345_chunk_3\");\n/// ```\npub fn chunk_key(doc_key: &str, index: usize) -> String {\n    format!(\"{doc_key}_chunk_{index}\")\n}\n"
+    },
+    {
+      "id": "embedding-id",
+      "source": "crates/hades-core/src/db/keys.rs",
+      "symbol": "embedding_key",
+      "start_line": 55,
+      "end_line": 64,
+      "source_sha256": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+      "excerpt_sha256": "830e3554cc3531bf956f8ddc040969cae0391591cd133d4ddb7f5a0ecb850cf6",
+      "excerpt_truncated": false,
+      "text": "/// Build an embedding key from a chunk key.\n///\n/// # Examples\n/// ```\n/// # use hades_core::db::keys::embedding_key;\n/// assert_eq!(embedding_key(\"2501_12345_chunk_3\"), \"2501_12345_chunk_3_emb\");\n/// ```\npub fn embedding_key(chunk_key: &str) -> String {\n    format!(\"{chunk_key}_emb\")\n}\n"
+    },
+    {
+      "id": "vector-index",
+      "source": "crates/hades-core/src/db/index.rs",
+      "symbol": "create_vector_index",
+      "start_line": 98,
+      "end_line": 147,
+      "source_sha256": "70e439b83395e1c1b8f00389b003afa267aae824933f6ad5fc6a5ab0a0108794",
+      "excerpt_sha256": "0166bba8db656bdbd54d6f300e83144a1ff57d1303b53ec34b40694d4edc0418",
+      "excerpt_truncated": false,
+      "text": "pub async fn create_vector_index(\n    pool: &ArangoPool,\n    collection: &str,\n    field: &str,\n    dimension: u32,\n    n_lists: Option<u32>,\n    n_probe: u32,\n    metric: VectorMetric,\n) -> Result<IndexInfo, ArangoError> {\n    let n_lists = match n_lists {\n        Some(n) => n,\n        None => {\n            // Auto-calculate from collection size\n            let aql = format!(\"RETURN LENGTH({collection})\");\n            let result =\n                query::query_single(pool, &aql, None, query::ExecutionTarget::Reader).await?;\n            let doc_count = result.and_then(|v| v.as_u64()).unwrap_or(0);\n            (doc_count / 15).max(1) as u32\n        }\n    };\n\n    let encoded = encode_query_value(collection);\n    let path = format!(\"index?collection={encoded}\");\n    let body = serde_json::json!({\n        \"type\": \"vector\",\n        \"fields\": [field],\n        \"params\": {\n            \"metric\": metric.as_str(),\n            \"dimension\": dimension,\n            \"nLists\": n_lists,\n            \"defaultNProbe\": n_probe,\n        },\n    });\n\n    debug!(\n        collection,\n        field,\n        dimension,\n        n_lists,\n        n_probe,\n        metric = metric.as_str(),\n        \"creating vector index\"\n    );\n\n    let resp = pool.writer().post(&path, &body).await?;\n    let info: IndexInfo = serde_json::from_value(resp)?;\n\n    debug!(id = %info.id, \"vector index created\");\n    Ok(info)\n}\n"
+    },
+    {
+      "id": "index-detect",
+      "source": "crates/hades-core/src/db/index.rs",
+      "symbol": "detect_vector_index",
+      "start_line": 158,
+      "end_line": 183,
+      "source_sha256": "70e439b83395e1c1b8f00389b003afa267aae824933f6ad5fc6a5ab0a0108794",
+      "excerpt_sha256": "fd98a8bdf357eaa474efeb883758e24d0cb546b6ee09ed384cf8b2c9e6d1298c",
+      "excerpt_truncated": false,
+      "text": "/// Find the first vector index on a collection and return its metric.\n///\n/// Returns `None` if no vector index exists.\npub async fn detect_vector_index(\n    pool: &ArangoPool,\n    collection: &str,\n) -> Result<Option<VectorMetric>, ArangoError> {\n    let indexes = list_indexes(pool, collection).await?;\n    for idx in &indexes {\n        if idx.index_type == \"vector\" {\n            let metric = idx\n                .params\n                .as_ref()\n                .and_then(|p| p.get(\"metric\"))\n                .and_then(|m| m.as_str())\n                .unwrap_or(\"cosine\");\n            let vm = match metric {\n                \"l2\" => VectorMetric::L2,\n                \"innerProduct\" => VectorMetric::InnerProduct,\n                _ => VectorMetric::Cosine,\n            };\n            return Ok(Some(vm));\n        }\n    }\n    Ok(None)\n}\n"
+    },
+    {
+      "id": "index-list",
+      "source": "crates/hades-core/src/db/index.rs",
+      "symbol": "list_indexes",
+      "start_line": 68,
+      "end_line": 91,
+      "source_sha256": "70e439b83395e1c1b8f00389b003afa267aae824933f6ad5fc6a5ab0a0108794",
+      "excerpt_sha256": "2c93720c785acec6c51c0f3116135298b681b2ff97dbd8c2c05832e5f77a1741",
+      "excerpt_truncated": false,
+      "text": "pub async fn list_indexes(\n    pool: &ArangoPool,\n    collection: &str,\n) -> Result<Vec<IndexInfo>, ArangoError> {\n    let encoded = encode_query_value(collection);\n    let path = format!(\"index?collection={encoded}\");\n    let resp = pool.reader().get(&path).await?;\n\n    let indexes = resp\n        .get(\"indexes\")\n        .and_then(|v| v.as_array())\n        .ok_or_else(|| {\n            ArangoError::Request(\"index list response missing 'indexes' array\".to_string())\n        })?;\n\n    let mut result = Vec::with_capacity(indexes.len());\n    for idx in indexes {\n        let info: IndexInfo = serde_json::from_value(idx.clone())?;\n        result.push(info);\n    }\n\n    debug!(collection, count = result.len(), \"listed indexes\");\n    Ok(result)\n}\n"
+    },
+    {
+      "id": "cursor-fold",
+      "source": "crates/hades-core/src/db/query.rs",
+      "symbol": "query_fold",
+      "start_line": 164,
+      "end_line": 263,
+      "source_sha256": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
+      "excerpt_sha256": "2e1e1ef6d6e71030493179f10d5630f9a3af057b121a353d297c6f27a96c59cf",
+      "excerpt_truncated": true,
+      "text": "/// Fold rows one page at a time, retaining cursor ownership after cancellation.\n///\n/// `guard` is retained through cleanup, including when the caller disappears or\n/// the fold fails. Pass an admission permit here to keep abandoned requests\n/// charged to their resource budget until their owner has finished.\n/// Server streaming/memory options follow the AQL cursor HTTP API:\n/// <https://docs.arango.ai/arangodb/stable/develop/http-api/queries/aql-queries/>.\npub async fn query_fold<T, F, G>(\n    pool: &ArangoPool,\n    aql: &str,\n    bind_vars: Value,\n    limits: FoldLimits,\n    mut state: T,\n    mut fold: F,\n    guard: G,\n) -> Result<T, ArangoError>\nwhere\n    T: Send + 'static,\n    F: FnMut(&mut T, Value) -> Result<(), ArangoError> + Send + 'static,\n    G: Send + 'static,\n{\n    if limits.batch_size == 0\n        || limits.response_bytes == 0\n        || limits.max_rows == 0\n        || limits.server_memory_bytes == 0\n    {\n        return Err(ArangoError::Request(\n            \"streaming fold limits must be positive\".into(),\n        ));\n    }\n    let lifetime = QueryLimits::default();\n    let body = serde_json::json!({\n        \"query\": aql, \"bindVars\": bind_vars, \"batchSize\": limits.batch_size,\n        \"memoryLimit\": limits.server_memory_bytes,\n        \"ttl\": lifetime.cursor_ttl.as_secs_f64(),\n        \"options\": {\"stream\": true, \"maxRuntime\": lifetime.lifetime.as_secs_f64()},\n    });\n    let client = if pool.is_shared() {\n        pool.reader()\n    } else {\n        pool.writer()\n    }\n    .clone()\n    .with_response_limit(limits.response_bytes)?;\n    let (mut send, receive) = oneshot::channel();\n    tokio::spawn(async move {\n        let mut cursor = CursorOwner {\n            client,\n            ids: Vec::new(),\n        };\n        let result = tokio::time::timeout(lifetime.lifetime, async {\n            if send.is_closed() {\n                return Err(ArangoError::Request(\"query caller cancelled\".into()));\n            }\n            // Shield creation so an available cursor ID survives caller loss.\n            let mut response = cursor.client.post(\"cursor\", &body).await?;\n            let mut count = 0_u64;\n            loop {\n                cursor.observe(&response)?;\n                if send.is_closed() {\n                    return Err(ArangoError::Request(\"query caller cancelled\".into()));\n                }\n                let more = has_more(&response)?;\n                let rows = response.get_mut(\"result\").and_then(Value::as_array_mut)\n                    .ok_or_else(|| ArangoError::Request(\"cursor response missing result array\".into()))?;\n                count = count.checked_add(rows.len() as u64)\n                    .filter(|count| *count <= limits.max_rows)\n                    .ok_or_else(|| ArangoError::Request(\"streaming query row budget exceeded\".into()))?;\n                for row in std::mem::take(rows) {\n                    if send.is_closed() {\n                        return Err(ArangoError::Request(\"query caller cancelled\".into()));\n                    }\n                    fold(&mut state, row)?;\n                }\n                if !more { break; }\n                let id = cursor.ids.first().ok_or_else(||\n                    ArangoError::Request(\"hasMore=true but no cursor ID in response\".into()))?;\n                let path = format!(\"cursor/{id}\");\n                let empty = serde_json::json!({});\n                // Drop the old page before requesting another one.\n                drop(response);\n                response = tokio::select! {\n                    biased;\n                    _ = send.closed() => return Err(ArangoError::Request(\"query caller cancelled\".into())),\n                    response = cursor.client.post(&path, &empty) => response?,\n                };\n                // Cooperative yield also bounds cancellation latency for cached\n                // responses and inexpensive folds on single-thread runtimes.\n                tokio::task::yield_now().await;\n            }\n            Ok(state)\n        })"
+    },
+    {
+      "id": "cursor-delete",
+      "source": "crates/hades-core/src/db/query.rs",
+      "symbol": "cleanup",
+      "start_line": 299,
+      "end_line": 312,
+      "source_sha256": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
+      "excerpt_sha256": "0d252f39e468c671a26f5ef68554274fb0d58a56499d5e94c9cf2289576a5c92",
+      "excerpt_truncated": false,
+      "text": "    async fn cleanup(self, budget: Duration) {\n        let result = tokio::time::timeout(budget, async {\n            for id in self.ids {\n                if let Err(error) = self.client.delete(&format!(\"cursor/{id}\")).await\n                    && !error.is_not_found()\n                {\n                    tracing::warn!(%error, \"cursor deletion failed; server TTL remains the fallback\");\n                }\n            }\n        }).await;\n        if result.is_err() {\n            tracing::warn!(\"cursor cleanup timed out; server TTL remains the fallback\");\n        }\n    }\n"
+    },
+    {
+      "id": "cursor-id",
+      "source": "crates/hades-core/src/db/query.rs",
+      "symbol": "observe",
+      "start_line": 273,
+      "end_line": 297,
+      "source_sha256": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
+      "excerpt_sha256": "8358cae31c32ac083c6097389bbc05115776d8d2477201e8c7b2992c1054ef93",
+      "excerpt_truncated": false,
+      "text": "    fn observe(&mut self, response: &Value) -> Result<(), ArangoError> {\n        let Some(value) = response.get(\"id\") else {\n            return Ok(());\n        };\n        let id = value\n            .as_str()\n            .filter(|id| {\n                !id.is_empty()\n                    && id.len() <= 128\n                    && id\n                        .bytes()\n                        .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')\n            })\n            .ok_or_else(|| ArangoError::Request(\"invalid cursor ID\".into()))?;\n        if self.ids.first().is_some_and(|known| known != id) {\n            self.ids.push(id.to_string());\n            return Err(ArangoError::Request(\n                \"cursor ID changed during pagination\".into(),\n            ));\n        }\n        if self.ids.is_empty() {\n            self.ids.push(id.to_string());\n        }\n        Ok(())\n    }\n"
+    },
+    {
+      "id": "delete-fields",
+      "source": "crates/hades-core/src/db/query.rs",
+      "symbol": "remove_docs_by_fields",
+      "start_line": 394,
+      "end_line": 440,
+      "source_sha256": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
+      "excerpt_sha256": "3633683b9c3a8ec2f1895898f707975f58faa084e106657b805daf7d06bb9e7a",
+      "excerpt_truncated": false,
+      "text": "/// Remove every document in `collection` where ANY of `fields` equals `value`.\n/// Returns the number of documents removed.\n///\n/// This is the single supported shape for field-match deletes. It exists\n/// because the inlined versions kept reproducing the same two defects:\n///\n/// - **ArangoDB error 1552.** One bind map shared across two single-collection\n///   queries declares a parameter the first query never uses, and ArangoDB\n///   rejects declared-but-unused binds. That aborted every `--force` document\n///   refresh (#169). Here each call builds exactly its own binds, so the\n///   defect class is unrepresentable.\n/// - **Field drift between writer and reader.** Field names arrive as data\n///   (attribute-name binds, `d.@f`), so callers pass the same constants the\n///   write path uses instead of re-typing them into query strings.\n///   Attribute-name binds are resolved at parse time, before planning:\n///   verified via `_api/explain` that `FILTER d.@f0 == @value` selects the\n///   same persistent index (`IndexNode`, `fields=file_key`) as the literal\n///   `FILTER d.file_key == @value`.\npub async fn remove_docs_by_fields(\n    pool: &ArangoPool,\n    collection: &str,\n    fields: &[&str],\n    value: &str,\n) -> Result<u64, ArangoError> {\n    if fields.is_empty() {\n        return Err(ArangoError::Request(\n            \"remove_docs_by_fields: no fields given\".to_string(),\n        ));\n    }\n    // FILTER d.@f0 == @value OR d.@f1 == @value ...\n    let filter = fields\n        .iter()\n        .enumerate()\n        .map(|(i, _)| format!(\"d.@f{i} == @value\"))\n        .collect::<Vec<_>>()\n        .join(\" OR \");\n    let aql = format!(\n        \"LET removed = (FOR d IN @@col FILTER {filter} REMOVE d IN @@col RETURN 1) \\\n         RETURN LENGTH(removed)\"\n    );\n    let mut bind = serde_json::json!({ \"@col\": collection, \"value\": value });\n    for (i, f) in fields.iter().enumerate() {\n        bind[format!(\"f{i}\")] = serde_json::json!(f);\n    }\n    let result = query_single(pool, &aql, Some(&bind), ExecutionTarget::Writer).await?;\n    Ok(result.and_then(|v| v.as_u64()).unwrap_or(0))\n}\n"
+    },
+    {
+      "id": "session-tier",
+      "source": "crates/hades-core/src/service.rs",
+      "symbol": "resolve_session",
+      "start_line": 167,
+      "end_line": 193,
+      "source_sha256": "5ee651c5d9d8a17295db00d61c4bbf8737b7ab978ea307d60bb596eaa8a00b07",
+      "excerpt_sha256": "dc2dc893a6b5d78a85a4e71daed435d0c00c6f15164e547a8143228902e3d29b",
+      "excerpt_truncated": false,
+      "text": "/// Resolve the effective session tier from the transport policy and the\n/// request's optional self-declared session.\n///\n/// Absent \u2192 the policy ceiling (admin locally, agent on the network).\n/// `\"agent\"` \u2192 agent, always honored (self-restriction).\n/// `\"admin\"` \u2192 admin only when the ceiling allows it; otherwise\n/// `ACCESS_DENIED`, because silently downgrading an explicit claim would\n/// misreport what tier the commands then run at.\npub fn resolve_session(\n    policy: &ConnectionPolicy,\n    requested: Option<SessionKind>,\n    request_id: &Option<String>,\n) -> Result<SessionKind, DaemonResponse> {\n    match requested {\n        None => Ok(policy.max_tier),\n        Some(SessionKind::Agent) => Ok(SessionKind::Agent),\n        Some(SessionKind::Admin) => match policy.max_tier {\n            SessionKind::Admin => Ok(SessionKind::Admin),\n            SessionKind::Agent => Err(DaemonResponse::err(\n                \"ACCESS_DENIED\",\n                \"transport policy caps this connection at agent tier; \\\n                 admin session is not available on this endpoint\",\n            )\n            .with_request_id(request_id.clone())),\n        },\n    }\n}\n"
+    },
+    {
+      "id": "service-errors",
+      "source": "crates/hades-core/src/service.rs",
+      "symbol": "handler_error_code",
+      "start_line": 379,
+      "end_line": 397,
+      "source_sha256": "5ee651c5d9d8a17295db00d61c4bbf8737b7ab978ea307d60bb596eaa8a00b07",
+      "excerpt_sha256": "58e33a7e149360467b5e09829f38380c8b46d1a0cdb3d44703d7abbe7b25d33c",
+      "excerpt_truncated": false,
+      "text": "/// Map a [`HandlerError`] to a protocol error code string.\npub fn handler_error_code(e: &HandlerError) -> &'static str {\n    match e {\n        HandlerError::InvalidNodeId { .. }\n        | HandlerError::InvalidLimit { .. }\n        | HandlerError::InvalidParameter { .. } => \"INVALID_PARAMS\",\n        HandlerError::NodeNotFound(_) | HandlerError::DocumentNotFound { .. } => \"NOT_FOUND\",\n        HandlerError::NoEmbedding { .. } | HandlerError::InvalidEmbedding { .. } => \"QUERY_FAILED\",\n        // A query that failed because something was not there is a different\n        // answer from a query that broke, and a caller surveying a graph needs\n        // to tell them apart: \"no such collection\" ends the question, while\n        // QUERY_FAILED invites a retry. Reported by one session as turning a\n        // single question into six probes to establish a negative.\n        HandlerError::Query { source, .. } if source.is_not_found() => \"NOT_FOUND\",\n        HandlerError::Query { .. } => \"QUERY_FAILED\",\n        HandlerError::SearchOverloaded => \"SEARCH_OVERLOADED\",\n        HandlerError::ServiceError(_) => \"SERVICE_ERROR\",\n    }\n}\n"
+    },
+    {
+      "id": "query-limit",
+      "source": "crates/hades-core/src/dispatch.rs",
+      "symbol": "validated_query_limit",
+      "start_line": 20,
+      "end_line": 41,
+      "source_sha256": "a86a4bbe65e73b0296874b562e152884b1878e83daa07006cbb1fbdbc41b4606",
+      "excerpt_sha256": "cef835795b1dc3f52e0b30b9811c003d9003a9af4cab4118cf9d32f8c4b1e57d",
+      "excerpt_truncated": false,
+      "text": "/// Validate `db.query`'s `limit`, rejecting rather than clamping.\n///\n/// `0` is rejected because `0.min(MAX_LIMIT)` is `0`: the search returned\n/// `{\"success\": true, \"result_count\": 0}`, which an agent cannot tell apart from\n/// \"nothing matched\", so it retries with new phrasings against a limit that can\n/// never return anything. That is the turn-burning ambiguity #187 exists to\n/// remove, arriving through a different door.\n///\n/// Above `MAX_LIMIT` is rejected rather than clamped because the pre-#187 CLI\n/// honoured whatever `-n` was passed. Clamping would silently return exactly\n/// 1000 rows with nothing in the JSON envelope or on stderr saying the result\n/// had been truncated, which is the same class of quiet misreport.\nfn validated_query_limit(limit: Option<u32>) -> Result<u32, HandlerError> {\n    let limit = limit.unwrap_or(10);\n    if limit == 0 || limit > MAX_LIMIT {\n        return Err(HandlerError::InvalidLimit {\n            limit,\n            max: MAX_LIMIT,\n        });\n    }\n    Ok(limit)\n}\n"
+    },
+    {
+      "id": "keyword-blend",
+      "source": "crates/hades-core/src/dispatch.rs",
+      "symbol": "hybrid_rerank",
+      "start_line": 5301,
+      "end_line": 5326,
+      "source_sha256": "a86a4bbe65e73b0296874b562e152884b1878e83daa07006cbb1fbdbc41b4606",
+      "excerpt_sha256": "9f64e74c51a3cb5a00176faeaad18b5d6e30b4c8c38fffc12538485aa23bebb9",
+      "excerpt_truncated": false,
+      "text": "    /// Blend vector similarity with keyword term coverage:\n    /// `0.7 * vector + 0.3 * keyword`, then re-sort.\n    fn hybrid_rerank(query_text: &str, mut results: Vec<Value>) -> Vec<Value> {\n        let query_terms = tokenize(query_text);\n        if query_terms.is_empty() {\n            return results;\n        }\n\n        for result in &mut results {\n            let vector_score = result[\"score\"].as_f64().unwrap_or(0.0);\n            let text = result[\"text\"].as_str().unwrap_or(\"\");\n            let keyword_score = keyword_tf_score(&query_terms, text);\n\n            result[\"vector_score\"] = json!(vector_score);\n            result[\"keyword_score\"] = json!(keyword_score);\n            result[\"score\"] = json!(0.7 * vector_score + 0.3 * keyword_score);\n        }\n\n        results.sort_by(|a, b| {\n            let sa = a[\"score\"].as_f64().unwrap_or(0.0);\n            let sb = b[\"score\"].as_f64().unwrap_or(0.0);\n            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)\n        });\n\n        results\n    }\n"
+    },
+    {
+      "id": "graph-blend",
+      "source": "crates/hades-core/src/dispatch.rs",
+      "symbol": "structural_rerank",
+      "start_line": 5328,
+      "end_line": 5463,
+      "source_sha256": "a86a4bbe65e73b0296874b562e152884b1878e83daa07006cbb1fbdbc41b4606",
+      "excerpt_sha256": "391c7444e4205494004bc5d3fd6fa26c7af7606cd88dcf5619a373ac9533f714",
+      "excerpt_truncated": true,
+      "text": "    /// Blend search scores with RGCN structural-embedding similarity.\n    ///\n    /// Builds a centroid from the top-3 results that carry a structural\n    /// embedding, scores every result against it, and blends\n    /// `0.7 * current + 0.3 * structural`. Degrades to a no-op when the\n    /// graph has no structural embeddings or their dimensions disagree.\n    async fn structural_rerank(\n        pool: &ArangoPool,\n        metadata_col: &str,\n        results: &[Value],\n        admission: std::sync::Arc<tokio::sync::SemaphorePermit<'static>>,\n    ) -> Result<Vec<Value>, HandlerError> {\n        use std::collections::HashMap;\n\n        let parent_keys: Vec<&str> = results\n            .iter()\n            .filter_map(|r| r.get(\"parent_key\").and_then(|v| v.as_str()))\n            .collect();\n\n        if parent_keys.is_empty() {\n            return Ok(results.to_vec());\n        }\n\n        let aql = \"FOR key IN @keys \\\n                   LET doc = DOCUMENT(CONCAT(@col, '/', key)) \\\n                   RETURN { _key: key, structural_embedding: doc.structural_embedding }\";\n        let bind = json!({ \"keys\": parent_keys, \"col\": metadata_col });\n\n        let emb_map: HashMap<String, Vec<f32>> = query::query_fold(\n            pool,\n            aql,\n            bind,\n            query::FoldLimits {\n                batch_size: 4,\n                response_bytes: 256 * 1024,\n                max_rows: results.len() as u64,\n                server_memory_bytes: 32 * 1024 * 1024,\n            },\n            HashMap::new(),\n            |map, doc| {\n                if doc[\"structural_embedding\"].is_null() {\n                    return Ok(());\n                }\n                let invalid = || {\n                    crate::db::ArangoError::Request(\n                        \"invalid structural embedding; retrain the corpus\".into(),\n                    )\n                };\n                let key = doc[\"_key\"]\n                    .as_str()\n                    .filter(|key| key.len() <= 254)\n                    .ok_or_else(invalid)?;\n                let arr = doc[\"structural_embedding\"]\n                    .as_array()\n                    .filter(|arr| !arr.is_empty() && arr.len() <= 2048)\n                    .ok_or_else(invalid)?;\n                let vec = arr\n                    .iter()\n                    .map(|value| {\n                        value\n                            .as_f64()\n                            .filter(|value| value.is_finite() && (*value as f32).is_finite())\n                            .map(|value| value as f32)\n                            .ok_or_else(invalid)\n                    })\n                    .collect::<Result<Vec<_>, _>>()?;\n                map.insert(key.to_string(), vec);\n                Ok(())\n            },\n            admission,\n        )\n        .await\n        .map_err(|source| HandlerError::Query {\n            context: \"bounded structural retrieval failed\".into(),\n            source,\n        })?;\n\n        if emb_map.is_empty() {\n            tracing::info!(\"no structural embeddings found, skipping structural fusion\");\n            return Ok(results.to_vec());\n        }\n\n        let top_vecs: Vec<&Vec<f32>> = results\n            .iter()\n            .filter_map(|r| {\n                let key = r.get(\"parent_key\").and_then(|v| v.as_str())?;\n                emb_map.get(key)\n            })\n            .take(3)\n            .collect();\n\n        if top_vecs.is_empty() {\n            return Ok(results.to_vec());\n        }\n\n        let expected_dim = top_vecs[0].len();\n        if top_vecs.iter().any(|v| v.len() != expected_dim) {\n            tracing::info!(\"mismatched structural embedding dimensions, skipping fusion\");\n            return Ok(results.to_vec());\n        }\n\n        let centroid = compute_centroid(&top_vecs);\n\n        let mut fused: Vec<Value> = results\n            .iter()\n            .map(|r| {\n                let mut r = r.clone();\n                let current_score = r[\"score\"].as_f64().unwrap_or(0.0);\n                le"
+    },
+    {
+      "id": "split-count",
+      "source": "crates/hades-prefetch/src/tensor.rs",
+      "symbol": "negative_sample_count",
+      "start_line": 243,
+      "end_line": 260,
+      "source_sha256": "addba1947db3602c40d980cbef1c4ff24065075413a07dcb553758da357546d5",
+      "excerpt_sha256": "04371b4a28f83d1f88852cc5b53eb6c8e2f3e4299fa161f3e68e89d42cfc367b",
+      "excerpt_truncated": false,
+      "text": "pub fn negative_sample_count(positives: usize, ratio: f64) -> Result<usize, TensorError> {\n    if !ratio.is_finite() || ratio <= 0.0 {\n        return Err(TensorError::InvalidNegSamplingRatio { neg: ratio });\n    }\n    let count = positives as f64 * ratio;\n    if !count.is_finite()\n        || count < 1.0\n        || count > MAX_NEGATIVE_SAMPLES as f64\n        || count as usize > MAX_NEGATIVE_SAMPLES\n    {\n        return Err(TensorError::ValidationFailed {\n            message:\n                \"negative sample count is zero, nonfinite, or exceeds supported vector capacity\"\n                    .into(),\n        });\n    }\n    Ok(count as usize)\n}\n"
+    },
+    {
+      "id": "split-group",
+      "source": "crates/hades-prefetch/src/tensor.rs",
+      "symbol": "split_graph_edges",
+      "start_line": 211,
+      "end_line": 238,
+      "source_sha256": "addba1947db3602c40d980cbef1c4ff24065075413a07dcb553758da357546d5",
+      "excerpt_sha256": "4d0762efd84ae2df968ab28a3988e51e2332a85957e1605b60a49db4b27ce7ed",
+      "excerpt_truncated": false,
+      "text": "/// Partition unordered endpoint pairs, keeping duplicate and inverse relations\n/// together. The link decoder scores endpoints without relation types, so even\n/// differently typed edges between the same endpoints must share a split.\npub fn split_graph_edges(\n    graph: &GraphData,\n    config: &SplitConfig,\n) -> Result<EdgeSplit, TensorError> {\n    let mut groups: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();\n    for (index, (&src, &dst)) in graph.edge_src.iter().zip(&graph.edge_dst).enumerate() {\n        groups\n            .entry((src.min(dst), src.max(dst)))\n            .or_default()\n            .push(index as u32);\n    }\n    let groups: Vec<_> = groups.into_values().collect();\n    let partition = split_edges(groups.len(), config)?;\n    let expand = |indices: &[u32]| {\n        indices\n            .iter()\n            .flat_map(|&i| groups[i as usize].iter().copied())\n            .collect()\n    };\n    Ok(EdgeSplit {\n        train_idx: expand(&partition.train_idx),\n        val_idx: expand(&partition.val_idx),\n        test_idx: expand(&partition.test_idx),\n    })\n}\n"
+    },
+    {
+      "id": "negative-links",
+      "source": "crates/hades-prefetch/src/tensor.rs",
+      "symbol": "negative_sample_seeded",
+      "start_line": 271,
+      "end_line": 344,
+      "source_sha256": "addba1947db3602c40d980cbef1c4ff24065075413a07dcb553758da357546d5",
+      "excerpt_sha256": "27e4bf42c7321f96e5a9351684a1370d90b8c80fc654e869410fa478d63c6513",
+      "excerpt_truncated": false,
+      "text": "/// Deterministic bounded sampling; never return fewer samples than requested.\npub fn negative_sample_seeded(\n    graph: &GraphData,\n    num_neg: usize,\n    seed: u64,\n) -> Result<NegativeSamples, TensorError> {\n    if num_neg == 0 {\n        return Ok(NegativeSamples {\n            src: Vec::new(),\n            dst: Vec::new(),\n        });\n    }\n    if num_neg > MAX_NEGATIVE_SAMPLES {\n        return Err(TensorError::ValidationFailed {\n            message: \"negative sample count exceeds supported vector capacity\".into(),\n        });\n    }\n    if graph.num_nodes < 2 || graph.num_nodes > u32::MAX as usize {\n        return Err(TensorError::ValidationFailed {\n            message: \"negative sampling requires 2..=u32::MAX nodes\".into(),\n        });\n    }\n\n    // Build existing edge set for O(1) lookup\n    let mut existing: HashSet<(u32, u32)> = HashSet::with_capacity(graph.num_edges);\n    for (&s, &d) in graph.edge_src.iter().zip(&graph.edge_dst) {\n        existing.insert((s, d));\n        existing.insert((d, s));\n    }\n\n    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);\n    let mut neg_src = Vec::new();\n    let mut neg_dst = Vec::new();\n    for values in [&mut neg_src, &mut neg_dst] {\n        values\n            .try_reserve_exact(num_neg)\n            .map_err(|error| TensorError::ValidationFailed {\n                message: format!(\"cannot allocate negative samples: {error}\"),\n            })?;\n    }\n    let max_attempts = num_neg.saturating_mul(10);\n    let mut attempts = 0;\n    let num_nodes = graph.num_nodes as u32;\n\n    while neg_src.len() < num_neg && attempts < max_attempts {\n        // Generate candidates in batches for efficiency\n        let batch_size = num_neg.min(1024).min(max_attempts - attempts);\n        for _ in 0..batch_size {\n            let s: u32 = rng.random_range(0..num_nodes);\n            let d: u32 = rng.random_range(0..num_nodes);\n            if s != d && !existing.contains(&(s, d)) {\n                neg_src.push(s);\n                neg_dst.push(d);\n                if neg_src.len() >= num_neg {\n                    break;\n                }\n            }\n        }\n        attempts += batch_size;\n    }\n\n    if neg_src.len() != num_neg {\n        return Err(TensorError::ValidationFailed {\n            message: format!(\n                \"insufficient negative samples: requested {num_neg}, found {} within {max_attempts} attempts; graph may be too dense\",\n                neg_src.len()\n            ),\n        });\n    }\n    Ok(NegativeSamples {\n        src: neg_src,\n        dst: neg_dst,\n    })\n}\n"
+    },
+    {
+      "id": "model-precondition",
+      "source": "services/training/server.py",
+      "symbol": "_require_model",
+      "start_line": 152,
+      "end_line": 155,
+      "source_sha256": "505a314de9bd03718270854192162a84c24b96d596d3406223001ac66f5d3a75",
+      "excerpt_sha256": "6ff5a5ea3b2de25aa155dd5693d52ccd1692690bd776abfa7615e297f00926b9",
+      "excerpt_truncated": false,
+      "text": "    async def _require_model(self, context):\n        if self.model is None:\n            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, \"InitModel not called\")\n\n"
+    },
+    {
+      "id": "train-adjacency",
+      "source": "services/training/server.py",
+      "symbol": "_adjacency, _encode, TrainStep",
+      "source_sha256": "505a314de9bd03718270854192162a84c24b96d596d3406223001ac66f5d3a75",
+      "excerpt_sha256": "ffd5c8fd46770043455cb5ed3470d7f26a3db1d4b664cdab430c7d9c66e1310f",
+      "excerpt_truncated": false,
+      "text": "    def _adjacency(self):\n        if self.train_idx is None:\n            return self.edge_src, self.edge_dst, self.edge_type\n        return tuple(t[self.train_idx] for t in (self.edge_src, self.edge_dst, self.edge_type))\n\n    def _encode(self) -> torch.Tensor:\n        return self.model.encode(\n            self.x, self.node_collections, *self._adjacency()\n        )\n\n    async def TrainStep(self, request, context):\n        await self._require_loaded(context)\n        if self.train_idx is None:\n            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, \"load a graph with explicit training splits\")\n        try:\n            pos_idx, neg_src, neg_dst = self._step_indices(\n                request.train_edge_indices, request.neg_src, request.neg_dst\n            )\n            if not torch.isin(pos_idx, self.train_idx).all():\n                raise ValueError(\"training targets must belong to train_idx\")\n        except ValueError as exc:\n            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))\n        self.model.train()\n        self.optimizer.zero_grad()\n        emb = self._encode()\n        pos_src, pos_dst = self.edge_src[pos_idx], self.edge_dst[pos_idx]\n        pos_score = self.model.score(emb, pos_src, pos_dst)\n        neg_score = self.model.score(emb, neg_src, neg_dst)\n        try:\n            loss, acc = _bce_link_loss(pos_score, neg_score)\n        except ValueError as exc:\n            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))\n        loss.backward()\n        self.optimizer.step()\n        return training_pb2.TrainStepResponse(loss=float(loss.detach()), accuracy=acc)\n",
+      "segments": [
+        {
+          "symbol": "_adjacency",
+          "start_line": 195,
+          "end_line": 198,
+          "excerpt_sha256": "950d2f8cc1fcce4cc5d725a0dbd4e021fadcbe271e94967b9cd31d181989f614",
+          "text": "    def _adjacency(self):\n        if self.train_idx is None:\n            return self.edge_src, self.edge_dst, self.edge_type\n        return tuple(t[self.train_idx] for t in (self.edge_src, self.edge_dst, self.edge_type))\n"
+        },
+        {
+          "symbol": "_encode",
+          "start_line": 326,
+          "end_line": 329,
+          "excerpt_sha256": "d6c1c70100044f6f8d7709729f4aa3e5f69d6213fb3af1efd21b20e7fabc3f8f",
+          "text": "    def _encode(self) -> torch.Tensor:\n        return self.model.encode(\n            self.x, self.node_collections, *self._adjacency()\n        )\n"
+        },
+        {
+          "symbol": "TrainStep",
+          "start_line": 373,
+          "end_line": 397,
+          "excerpt_sha256": "67b449b109305c12150d93c8a327ab541dd43fd21cca055a7a73c0c2e4f32a1c",
+          "text": "    async def TrainStep(self, request, context):\n        await self._require_loaded(context)\n        if self.train_idx is None:\n            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, \"load a graph with explicit training splits\")\n        try:\n            pos_idx, neg_src, neg_dst = self._step_indices(\n                request.train_edge_indices, request.neg_src, request.neg_dst\n            )\n            if not torch.isin(pos_idx, self.train_idx).all():\n                raise ValueError(\"training targets must belong to train_idx\")\n        except ValueError as exc:\n            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))\n        self.model.train()\n        self.optimizer.zero_grad()\n        emb = self._encode()\n        pos_src, pos_dst = self.edge_src[pos_idx], self.edge_dst[pos_idx]\n        pos_score = self.model.score(emb, pos_src, pos_dst)\n        neg_score = self.model.score(emb, neg_src, neg_dst)\n        try:\n            loss, acc = _bce_link_loss(pos_score, neg_score)\n        except ValueError as exc:\n            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))\n        loss.backward()\n        self.optimizer.step()\n        return training_pb2.TrainStepResponse(loss=float(loss.detach()), accuracy=acc)\n"
+        }
+      ]
+    },
+    {
+      "id": "checkpoint-restore",
+      "source": "services/training/server.py",
+      "symbol": "LoadCheckpoint",
+      "start_line": 490,
+      "end_line": 530,
+      "source_sha256": "505a314de9bd03718270854192162a84c24b96d596d3406223001ac66f5d3a75",
+      "excerpt_sha256": "f3b89525b6175a82b0f116fe350d7c006af43068bca0260d68233e46460cdfd4",
+      "excerpt_truncated": false,
+      "text": "    async def LoadCheckpoint(self, request, context):\n        device = self.config.resolve_device(request.device)\n        if device is None:\n            await context.abort(\n                grpc.StatusCode.INVALID_ARGUMENT,\n                \"no device declared: checkpoint loading requires an explicit \"\n                \"device per run (hades --gpu N). There is no fallback device \"\n                \"by design.\",\n            )\n        # weights_only=True: the checkpoint holds only tensors + basic types,\n        # and refusing arbitrary unpickling avoids code execution from a\n        # tampered checkpoint file.\n        candidate = TrainingServicer(self.config)\n        try:\n            candidate.device = torch.device(device)\n            ckpt = torch.load(request.path, map_location=candidate.device, weights_only=True)\n            candidate.model_config = training_pb2.ModelConfig(**ckpt[\"model_config\"])\n            if \"graph_contract\" not in ckpt:\n                raise ValueError(\"legacy checkpoint lacks semantic provenance; retrain with a versioned graph contract\")\n            candidate.model_contract = validate_contract(ckpt[\"graph_contract\"], candidate.model_config, ckpt[\"in_dim\"])\n            candidate.opt_config = self.opt_config or training_pb2.OptimizerConfig()\n            num_params = candidate._build_model(ckpt.get(\"in_dim\", DEFAULT_FEATURE_DIM))\n            candidate.model.load_state_dict(ckpt[\"model\"])\n            if \"optimizer\" in ckpt:\n                candidate.optimizer.load_state_dict(ckpt[\"optimizer\"])\n        except FileNotFoundError as exc:\n            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))\n        except (ValueError, KeyError, TypeError, RuntimeError, OSError, EOFError, pickle.UnpicklingError) as exc:\n            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))\n        if candidate.device != self.device or candidate.model_contract != self.graph_contract:\n            self._clear_graph()\n        self.model_contract = candidate.model_contract\n        self.device, self.model_config, self.opt_config = (\n            candidate.device, candidate.model_config, candidate.opt_config\n        )\n        self.in_dim, self.model, self.optimizer = candidate.in_dim, candidate.model, candidate.optimizer\n        return training_pb2.LoadCheckpointResponse(\n            model_config=self.model_config, num_parameters=num_params, device=device\n        )\n\n\n"
+    },
+    {
+      "id": "graph-load",
+      "source": "services/training/server.py",
+      "symbol": "LoadGraph",
+      "start_line": 273,
+      "end_line": 325,
+      "source_sha256": "505a314de9bd03718270854192162a84c24b96d596d3406223001ac66f5d3a75",
+      "excerpt_sha256": "4d81f9de14c1da99d969c94879bdbf08904a6c5b483603ed8fc4d2834d1f806d",
+      "excerpt_truncated": false,
+      "text": "    async def LoadGraph(self, request, context):\n        await self._require_model(context)\n        from safetensors import safe_open, SafetensorError\n\n        try:\n            with safe_open(request.safetensors_path, framework=\"pt\", device=\"cpu\") as file:\n                t = {name: file.get_tensor(name) for name in file.keys()}\n                metadata = file.metadata() or {}\n            if \"graph_contract\" not in metadata:\n                raise ValueError(\"graph has no semantic contract; rebuild it with the schema-aware loader\")\n            x, nc, src, dst, rel = self._graph_tensors(t)\n            train_idx = self._training_split(t)\n            contract = validate_contract(json.loads(metadata[\"graph_contract\"]), self.model_config, x.size(1))\n            if self.model_contract is not None and contract != self.model_contract:\n                raise ValueError(\"graph contract differs from the bound model/checkpoint; initialize and train a new model\")\n            for index, name in enumerate(contract[\"collection_names\"]):\n                if not contract[\"feature_models\"][name] and torch.any(x[nc == index] != 0):\n                    raise ValueError(f\"collection {name} has features without model provenance\")\n            # Reject incompatible metadata entirely on CPU before allocating\n            # a second graph on the model's device.\n            x, nc, src, dst, rel = (tensor.to(self.device) for tensor in (x, nc, src, dst, rel))\n            if train_idx is not None:\n                train_idx = train_idx.to(self.device)\n        except FileNotFoundError as exc:\n            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))\n        except (ValueError, KeyError, TypeError, RuntimeError, OSError, SafetensorError) as exc:\n            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))\n        feature_dim = x.size(1)\n        if feature_dim != self.in_dim:\n            if self.model_contract is not None:\n                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, \"checkpoint feature dimension is incompatible\")\n            logger.info(\"rebuilding model for feature_dim=%d (was %d)\", feature_dim, self.in_dim)\n            self._build_model(feature_dim)\n\n        self.x = x\n        self.node_collections = nc\n        self.edge_src, self.edge_dst, self.edge_type = src, dst, rel\n        self.train_idx = train_idx\n        self.model_contract = self.graph_contract = contract\n\n        num_nodes = self.x.size(0)\n        num_edges = self.edge_src.size(0)\n        gpu_bytes = 0\n        if self.device.type == \"cuda\":\n            gpu_bytes = torch.cuda.memory_allocated(self.device)\n        logger.info(\"LoadGraph: %d nodes, %d edges, dim=%d\", num_nodes, num_edges, feature_dim)\n        return training_pb2.LoadGraphResponse(\n            num_nodes=num_nodes,\n            num_edges=num_edges,\n            feature_dim=feature_dim,\n            gpu_memory_bytes=gpu_bytes,\n        )\n\n"
+    },
+    {
+      "id": "score-valid",
+      "source": "services/training/server.py",
+      "symbol": "_validate_scores",
+      "start_line": 78,
+      "end_line": 83,
+      "source_sha256": "505a314de9bd03718270854192162a84c24b96d596d3406223001ac66f5d3a75",
+      "excerpt_sha256": "d9eaa78361adada85a1470f8e8b8ba2b28070214cb62264bec6a3d0b1ad11810",
+      "excerpt_truncated": false,
+      "text": "def _validate_scores(pos_score, neg_score):\n    if any(scores.ndim != 1 or scores.numel() == 0 or not torch.isfinite(scores).all()\n           for scores in (pos_score, neg_score)):\n        raise ValueError(\"metrics require nonempty finite one-dimensional scores for both classes\")\n\n\n"
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-root-key",
+      "text": "How are identically named source files in different ingest roots kept from overwriting one another?",
+      "relevance": {
+        "root-key": 3
+      }
+    },
+    {
+      "id": "q-version-id",
+      "text": "Where are version suffixes removed and punctuation replaced in external document identifiers?",
+      "relevance": {
+        "version-id": 3
+      }
+    },
+    {
+      "id": "q-chunk-id",
+      "text": "How is a chunk identifier constructed from a document identifier and its position?",
+      "relevance": {
+        "chunk-id": 3
+      }
+    },
+    {
+      "id": "q-embedding-id",
+      "text": "How does a chunk get the key for its stored vector record?",
+      "relevance": {
+        "embedding-id": 3
+      }
+    },
+    {
+      "id": "q-vector-index",
+      "text": "Where is a nearest-neighbor index created with a vector dimension and centroid count?",
+      "relevance": {
+        "vector-index": 3
+      }
+    },
+    {
+      "id": "q-index-detect",
+      "text": "How does search discover whether a collection has a vector index and which distance metric it uses?",
+      "relevance": {
+        "index-detect": 3
+      }
+    },
+    {
+      "id": "q-index-list",
+      "text": "Where are the database indexes enumerated and their returned metadata decoded?",
+      "relevance": {
+        "index-list": 3
+      }
+    },
+    {
+      "id": "q-cursor-fold",
+      "text": "Which query path processes one page at a time while retaining the resource reservation during cancellation cleanup?",
+      "relevance": {
+        "cursor-fold": 3
+      }
+    },
+    {
+      "id": "q-cursor-delete",
+      "text": "Where are known cursor identifiers deleted with a bounded cleanup deadline?",
+      "relevance": {
+        "cursor-delete": 3
+      }
+    },
+    {
+      "id": "q-cursor-id",
+      "text": "Where are unsafe or changing cursor identifiers detected before continuing pagination?",
+      "relevance": {
+        "cursor-id": 3
+      }
+    },
+    {
+      "id": "q-delete-fields",
+      "text": "How can documents be removed when any of several fields equals a supplied value?",
+      "relevance": {
+        "delete-fields": 3
+      }
+    },
+    {
+      "id": "q-session-tier",
+      "text": "Where is a network client prevented from gaining administrator privileges through a session field?",
+      "relevance": {
+        "session-tier": 3
+      }
+    },
+    {
+      "id": "q-service-errors",
+      "text": "Where are typed failures mapped into protocol error codes?",
+      "relevance": {
+        "service-errors": 3
+      }
+    },
+    {
+      "id": "q-query-limit",
+      "text": "How are zero and excessively large requested search result counts rejected?",
+      "relevance": {
+        "query-limit": 3
+      }
+    },
+    {
+      "id": "q-keyword-blend",
+      "text": "How is semantic similarity blended with keyword coverage when ordering search results?",
+      "relevance": {
+        "keyword-blend": 3
+      }
+    },
+    {
+      "id": "q-graph-blend",
+      "text": "Where do graph embeddings influence the ordering of retrieved passages?",
+      "relevance": {
+        "graph-blend": 3
+      }
+    },
+    {
+      "id": "q-split-count",
+      "text": "Where is the number of negative examples derived from a positive count and sampling ratio?",
+      "relevance": {
+        "split-count": 3
+      }
+    },
+    {
+      "id": "q-split-group",
+      "text": "How are reverse and duplicate graph links kept in the same data split?",
+      "relevance": {
+        "split-group": 3
+      }
+    },
+    {
+      "id": "q-negative-links",
+      "text": "Where are reproducible negative links sampled without selecting known graph edges?",
+      "relevance": {
+        "negative-links": 3
+      }
+    },
+    {
+      "id": "q-model-precondition",
+      "text": "Where does a training RPC fail before proceeding when its model has not been initialized?",
+      "relevance": {
+        "model-precondition": 3
+      }
+    },
+    {
+      "id": "q-train-adjacency",
+      "text": "How are held-out graph links excluded from message passing during training?",
+      "relevance": {
+        "train-adjacency": 3
+      }
+    },
+    {
+      "id": "q-checkpoint-restore",
+      "text": "Where are saved model weights and checkpoint compatibility restored?",
+      "relevance": {
+        "checkpoint-restore": 3
+      }
+    },
+    {
+      "id": "q-graph-load",
+      "text": "Where is an incoming graph checked against the restored model contract?",
+      "relevance": {
+        "graph-load": 3
+      }
+    },
+    {
+      "id": "q-score-valid",
+      "text": "Where are empty or nonfinite link-prediction scores rejected before evaluation?",
+      "relevance": {
+        "score-valid": 3
+      }
+    }
+  ],
+  "structural_baseline": "same-source-file membership; not learned production graph embeddings",
+  "corrections": [
+    "Reviewed correction: train-adjacency now includes _adjacency and its _encode/TrainStep callers rather than the split-validation helper. Queries and judgments are otherwise unchanged; frozen before version-2 inference."
+  ]
+}

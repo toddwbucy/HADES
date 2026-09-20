@@ -10,6 +10,7 @@ pub mod graph;
 pub mod ingest_routing;
 pub mod persephone;
 pub mod pipeline;
+pub mod retrieval;
 pub mod schema_apply;
 pub mod service;
 /// Throwaway-database harness for write tests. Feature-gated: see the module.

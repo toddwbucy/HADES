@@ -391,6 +391,7 @@ pub fn handler_error_code(e: &HandlerError) -> &'static str {
         // single question into six probes to establish a negative.
         HandlerError::Query { source, .. } if source.is_not_found() => "NOT_FOUND",
         HandlerError::Query { .. } => "QUERY_FAILED",
+        HandlerError::SearchOverloaded => "SEARCH_OVERLOADED",
         HandlerError::ServiceError(_) => "SERVICE_ERROR",
     }
 }

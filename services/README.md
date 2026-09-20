@@ -41,7 +41,8 @@ With the hashed CPU CI dependencies installed, run:
 python scripts/test_python_distribution.py
 ```
 
-This builds a fresh wheel and standalone source archive in temporary directories,
+This uses an isolated PEP 517 frontend to resolve declared build dependencies
+and build a fresh wheel and standalone source archive in temporary directories,
 installs both direct and rebuilt wheels into temporary targets, and imports service
 and generated RPC modules from outside the checkout with isolated Python paths.
 It checks the adapter schema resource and loads no models or running services.
