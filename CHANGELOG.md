@@ -372,6 +372,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Fail conformance adapter runs on incomplete scope, incompatible collections,
+  import rejections or invalid acknowledgements; report partial persistence (#68).
 - Keep WeaverTools node and edge metadata within their own declaration records,
   including adjacent mixed records without blank separators (#70).
 
