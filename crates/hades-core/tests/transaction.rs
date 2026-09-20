@@ -162,3 +162,118 @@ async fn cancelled_operation_rolls_back_and_releases_exclusive_lock() {
     )
     .await;
 }
+
+/// Subprocess entry point; ordinary test runs do nothing here. The parent owns
+/// the disposable database and passes its identity explicitly.
+#[tokio::test]
+async fn abandoned_transaction_child() {
+    let Ok(database) = std::env::var("HADES_TRANSACTION_CHILD_DB") else {
+        return;
+    };
+    assert!(database.starts_with("hades_test_"));
+    assert_eq!(std::env::var("ARANGO_TESTS").unwrap(), "1");
+    let socket = std::env::var("ARANGO_SOCKET").unwrap();
+    let client =
+        ArangoClient::with_socket(socket.into(), &database, "root", "isolated-fixture-only");
+    let pool = ArangoPool::new(client.clone(), client);
+    transaction::run(&pool, vec!["codebase_files".into()], |client| async move {
+        client.delete("document/codebase_files/retained").await?;
+        client
+            .post("document/codebase_files", &json!({"_key":"partial"}))
+            .await?;
+        std::fs::write(
+            std::env::var("HADES_TRANSACTION_CHILD_READY").unwrap(),
+            "writes completed",
+        )
+        .unwrap();
+        std::future::pending::<Result<(), ArangoError>>().await
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn killed_writer_rolls_back_on_server_expiry_and_releases_lock() {
+    with_temp_db("process_death", Fixtures::Codebase, |pool| async move {
+        pool.writer()
+            .post(
+                "document/codebase_files",
+                &json!({"_key":"retained","value":7}),
+            )
+            .await
+            .unwrap();
+        let before = pool
+            .reader()
+            .get("document/codebase_files/retained")
+            .await
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "abandoned_transaction_child", "--nocapture"])
+            .env("HADES_TRANSACTION_CHILD_DB", pool.database())
+            .env("HADES_TRANSACTION_CHILD_READY", &ready)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !ready.exists() {
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "writer exited before writing"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("writer never reached the transaction checkpoint");
+        child.start_kill().unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!status.success());
+        // There is no client cleanup task left alive. The private server uses
+        // its normal 60-second stream idle timeout; allow its cleanup sweep.
+        tokio::time::timeout(std::time::Duration::from_secs(100), async {
+            loop {
+                let expected = before.clone();
+                let recovered = transaction::run(
+                    &pool,
+                    vec!["codebase_files".into()],
+                    move |client| async move {
+                        assert_eq!(
+                            client.get("document/codebase_files/retained").await?,
+                            expected
+                        );
+                        assert!(
+                            client
+                                .get("document/codebase_files/partial")
+                                .await
+                                .unwrap_err()
+                                .is_not_found()
+                        );
+                        client
+                            .post("document/codebase_files", &json!({"_key":"after_expiry"}))
+                            .await?;
+                        Ok(())
+                    },
+                )
+                .await;
+                if recovered.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("abandoned transaction did not roll back and release its lock");
+        assert!(
+            pool.reader()
+                .get("document/codebase_files/after_expiry")
+                .await
+                .is_ok()
+        );
+    })
+    .await;
+}

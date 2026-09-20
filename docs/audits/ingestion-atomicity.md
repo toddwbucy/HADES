@@ -97,11 +97,18 @@ A process-level CLI test blocks a replacement embedding request on a private moc
 kills and reaps only that CLI process, compares all eight graph collections to
 their prior contents, then retries and validates retrieval of the changed text.
 This proves interruption during preparation preserves committed data. It does
-not establish process-death cleanup after a stream transaction has begun; the
-in-process cancellation/lock-release contract covers a different boundary.
+not by itself establish cleanup after a stream transaction has begun. A separate
+transaction-writer subprocess test deletes an existing document and inserts a
+new one under an exclusive stream transaction, signals that both writes finished,
+then is killed and reaped. With no client cleanup task left alive, the next
+exclusive transaction must recover the exact original document, find the partial
+insert absent, and commit a new write after server expiry. The private ArangoDB
+uses its normal 60-second streaming idle timeout; the test permits a 100-second
+cleanup window. This exercises the shared transaction primitive, not a full CLI
+process interrupted at every persistence request.
 
 Remaining review includes target indexing when higher-fidelity preservation
-bypasses normal analysis, process death during persistence, and additional analyzer
+bypasses normal analysis, full-ingest process death during persistence, and additional analyzer
 failure coverage. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
