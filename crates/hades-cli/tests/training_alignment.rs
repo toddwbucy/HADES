@@ -288,3 +288,37 @@ async fn training_rows_remain_attached_to_qualified_node_ids() {
     )
     .await;
 }
+
+#[tokio::test]
+#[ignore = "requires the private database runner and an explicit CPU Python interpreter"]
+async fn actual_cli_training_exports_best_checkpoint_vectors() {
+    let python =
+        std::env::var("HADES_ALIGNMENT_PYTHON").expect("explicit CPU interpreter required");
+    with_temp_db("cli_training_lifecycle", Fixtures::Empty, move |pool| async move {
+        for name in ["papers", "concepts", "hades_schema"] {
+            crud::create_collection(&pool, name, Some(2)).await.unwrap();
+        }
+        crud::create_collection(&pool, "links", Some(3)).await.unwrap();
+        for collection in ["papers", "concepts"] {
+            let rows: Vec<_> = (0..4).map(|i| json!({"_key":format!("n{i}"), "embedding":[i as f32 + 1., 0.5], "model":"fixture:v1"})).collect();
+            crud::insert_documents(&pool, collection, &rows, false).await.unwrap();
+        }
+        let edges: Vec<_> = (0..12).map(|i| json!({"_key":format!("e{i}"), "_from":format!("papers/n{}", i/3), "_to":format!("concepts/n{}", i%3)})).collect();
+        crud::insert_documents(&pool, "links", &edges, false).await.unwrap();
+        crud::insert_documents(&pool, "hades_schema", &[
+            json!({"_key":"meta", "schema_type":"schema_meta", "relation_order":["links"], "num_relations":1, "feature_dim":2, "model_type":"hetero_sage"}),
+            json!({"_key":"links", "schema_type":"edge_definition", "name":"links", "from_collections":["papers"], "to_collections":["concepts"]}),
+        ], false).await.unwrap();
+        let schema = RuntimeSchema::load(&pool).await.unwrap();
+        let (graph, ids) = graph::load(&pool, &schema).await.unwrap();
+        let names: Vec<_> = (0..graph.num_nodes).map(|i| ids.get_arango_id(i).unwrap()).collect();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("manifest.json"), serde_json::to_vec(&json!({
+            "ids":names, "database":pool.database(), "database_socket":std::env::var("ARANGO_SOCKET").unwrap(), "cli_binary":env!("CARGO_BIN_EXE_hades"),
+        })).unwrap()).unwrap();
+        let peer = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../services/tests/cli_training_lifecycle_peer.py");
+        let output = std::process::Command::new("timeout").args(["--kill-after=5", "90", &python]).arg(peer).arg(root.path()).env("CUDA_VISIBLE_DEVICES", "").env("PYTHONDONTWRITEBYTECODE", "1").output().unwrap();
+        assert!(output.status.success(), "CPU training failed: {}", String::from_utf8_lossy(&output.stderr));
+        println!("CLI training lifecycle: {}", String::from_utf8_lossy(&output.stdout));
+    }).await;
+}

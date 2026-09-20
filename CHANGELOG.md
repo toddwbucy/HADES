@@ -122,6 +122,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Retain private CLI reproductions of malformed database-list and export responses
   being reported as successful, with separate remediation evidence (#118).
+- Verify actual CLI CPU training/checkpoint/export and the distinct training-edge
+  versus full-graph update contexts with isolated fixtures (epic #12).
 
 - Retain a private real-CLI reproduction and remediation evidence for training
   session release racing normal runtime shutdown (#115).

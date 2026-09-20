@@ -1,0 +1,19 @@
+{
+  "runtime_base": "f0446d8aef67760efdc699f9d2bbe3e16bf288c5",
+  "scope": "Synthetic CPU fixture, declared cuda:0 mapped to CPU; no GPU/deployment/quality claim",
+  "source_sha256": {
+    "crates/hades-cli/tests/training_alignment.rs": "fcdb804a875c4cca02f44ebe5fe00dedceab02a13251276ed370000fe5836433",
+    "services/tests/cli_training_lifecycle_peer.py": "ef8b96dbeddc5eaa7a8c85e01989fe96f45f0135d2930f992c06d169b77b6e75",
+    "crates/hades-cli/src/commands/graph_embed_train.rs": "b27a289470839528d3543f610d5926223e4cc659c3ab41ce10733d9b525de927",
+    "crates/hades-cli/src/commands/graph_embed_update.rs": "fe9c7e9667eb6b8b3e22977faeb8f4e2ecfe6bd5cd11097b18b13d850f166cf7",
+    "crates/hades-core/src/training.rs": "cca96eb331455fc858a6f8d527368f87f16fc6b975a630c5bc4b6548791983f7",
+    "crates/hades-prefetch/src/orchestrator.rs": "d883d4d50bb0685fa6f32c4c6a15bc877b04ebe76ffd455821151d8fa13ed9a4",
+    "crates/hades-prefetch/src/tensor.rs": "793c738aeddf8d0695789a2dec39d93ea91bc3b8bbada35be198872848bf42f7",
+    "services/training/server.py": "bfbe55ac82d5f88a3881a9e4e7acd424ba06ed69a6c9454d0cfed87bbd0ac9ef",
+    "services/training/session.py": "1c5cbebfce8e79a93765bcd3df1d7d5a0c4d41993ca1aa86acedbc10b8829576",
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131"
+  },
+  "private_server_exit_code": 0,
+  "test_log": "   Compiling hades-cli v0.3.0 (/tmp/hades-cli-training-lifecycle/crates/hades-cli)\n    Finished `test` profile [unoptimized] target(s) in 0.67s\n     Running tests/training_alignment.rs (/tmp/hades-audit-target/debug/deps/training_alignment-8ee12f9464ed13b9)\n\nrunning 2 tests\ntest actual_cli_training_exports_best_checkpoint_vectors ... CLI training lifecycle: {\"train_epochs\": 2, \"exported_nodes\": 7, \"best_checkpoint_vectors_exact\": true, \"immediate_update_matches_full_graph_checkpoint\": true, \"changed_with_full_graph_context\": [\"concepts/n0\", \"concepts/n1\", \"concepts/n2\"], \"sessions_released\": 2, \"device_adaptation\": \"declared cuda:0 mapped to CPU\", \"training\": {\"best_epoch\": 1, \"best_val_loss\": 1.6264468431472778, \"early_stopped\": false, \"elapsed_seconds\": 0, \"sampling_seed\": 1729, \"test\": {\"accuracy\": 0.5, \"auc\": 0.0, \"loss\": 1.62702476978302}, \"total_epochs\": 2}}\n\nok\ntest training_rows_remain_attached_to_qualified_node_ids ... CPU generation evidence: {\"compatible_checkpoints_with_distinct_weights\": true, \"exact_checkpoint_replay\": true, \"changed_output_ids\": {\"features\": [\"papers/same\", \"concepts/same\"], \"neighbors\": [\"concepts/same\"]}}\n{\"actual_cli_full_export\": 3, \"actual_cli_missing_only_export\": 1, \"unselected_rows_and_revisions_preserved\": true, \"update_and_train_error_release_before_exit\": true, \"immediate_successors_after_errors\": true, \"failed_operations_preserve_database_rows\": true, \"release_failure_suppresses_success\": true, \"operation_error_remains_primary_on_release_failure\": true, \"device_adaptation\": \"private provider maps declared cuda:0 to CPU\", \"live_training_socket_and_gpu_devices_hidden\": true}\n\nFailed refresh: one acknowledged new-checkpoint vector; two old-checkpoint vectors retained; explicit export error.\nCLI missing-only: changed database features plus mixed existing vectors produce no-op with exact row/revision preservation; full mode and a null vector require the absent checkpoint. Live training socket and GPU devices hidden.\nok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.37s\n\n",
+  "clippy": "hades-cli training_alignment; warnings denied; passed"
+}
