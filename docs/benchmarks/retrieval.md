@@ -39,3 +39,22 @@ was 1,160 ms for streaming and 2.9 ms for four-probe indexed search. Both indexe
 settings matched exact top-10 results on this synthetic fixture. Sampled client
 RSS peaked below 16 MiB across these engine-only cases. These observations do
 not size the complete daemon or establish production-model relevance quality.
+
+## Full-handler allocation pilot
+
+Run `python3 scripts/test_isolated_database.py --arangod /path/to/arangod
+--handler-benchmark --benchmark-rows 1024 --benchmark-trials 16` as one command.
+The runner creates a private database and fixed-vector mock embedder. This opt-in
+fixture exercises service admission, embedding-response parsing, exact scan,
+1,000-result hydration, hybrid and 2,048-dimensional structural reranking, a
+64 KiB query, and retained response JSON plus serialization buffers. It excludes
+model inference and Unix/MCP transport queues.
+
+[Captured pilot](search-handler-pilot-1024x2048.json): peak client RSS was 30.8 MiB
+at concurrency one and 72.1 MiB at concurrency four. Responses serialized to
+1,059,729 bytes including the query envelope. Median latency was 2.70 s and
+10.35 s respectively on the runner's single CPU affinity. Both cases passed and
+the private server exited cleanly. Sixteen trials and a shared allocator make
+these allocation pilots, not stable tail-latency estimates or an RSS guarantee.
+Corpus scaling and transport retention still require separate validation before
+finalizing the provisional search and MCP budgets.

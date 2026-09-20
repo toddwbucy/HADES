@@ -35,7 +35,9 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum SessionError {
-    #[error("MCP response retention is full; retry after completed replay caches expire")]
+    #[error(
+        "MCP session, request, or stream capacity is full; close unused streams and retry with backoff"
+    )]
     Overloaded,
     #[error(transparent)]
     Inner(#[from] LocalSessionManagerError),
@@ -46,6 +48,8 @@ pub(super) enum SessionError {
 pub(super) struct BoundedSessionManager {
     inner: Arc<LocalSessionManager>,
     sessions_budget: Arc<Semaphore>,
+    requests_budget: Arc<Semaphore>,
+    streams_budget: Arc<Semaphore>,
     retained: Arc<Mutex<HashMap<(SessionId, u64), RetainedRequest>>>,
     closed: Arc<std::sync::Mutex<HashMap<SessionId, watch::Receiver<bool>>>>,
 }
@@ -57,6 +61,8 @@ impl Default for BoundedSessionManager {
             retained: Arc::default(),
             closed: Arc::default(),
             sessions_budget: SESSIONS.clone(),
+            requests_budget: REQUESTS.clone(),
+            streams_budget: SSE_STREAMS.clone(),
         }
     }
 }
@@ -283,7 +289,8 @@ impl SessionManager for BoundedSessionManager {
         &self,
         id: &SessionId,
     ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
-        let permit = SSE_STREAMS
+        let permit = self
+            .streams_budget
             .clone()
             .try_acquire_owned()
             .map_err(|_| SessionError::Overloaded)?;
@@ -298,7 +305,8 @@ impl SessionManager for BoundedSessionManager {
         id: &SessionId,
         last_event_id: String,
     ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
-        let stream_permit = SSE_STREAMS
+        let stream_permit = self
+            .streams_budget
             .clone()
             .try_acquire_owned()
             .map_err(|_| SessionError::Overloaded)?;
@@ -341,7 +349,7 @@ impl SessionManager for BoundedSessionManager {
         message: ClientJsonRpcMessage,
     ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
         let permit = Arc::new(
-            REQUESTS
+            self.requests_budget
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| SessionError::Overloaded)?,
@@ -487,6 +495,66 @@ mod tests {
         }
     }
 
+    async fn initialized_session(
+        manager: &BoundedSessionManager,
+    ) -> (
+        SessionId,
+        rmcp::service::RunningService<RoleServer, TestServer>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        use rmcp::ServiceExt;
+        let (id, transport) = manager.create_session().await.unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let server = TestServer(release.clone());
+        let service = tokio::spawn(async move { server.serve(transport).await.unwrap() });
+        let init = serde_json::from_value(serde_json::json!({
+            "jsonrpc":"2.0", "id":0, "method":"initialize", "params": {
+                "protocolVersion":"2025-03-26", "capabilities":{},
+                "clientInfo":{"name":"isolated-test", "version":"1"}
+            }
+        }))
+        .unwrap();
+        manager.initialize_session(&id, init).await.unwrap();
+        manager
+            .accept_message(
+                &id,
+                serde_json::from_value(serde_json::json!({
+                "jsonrpc":"2.0", "method":"notifications/initialized"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let service = service.await.unwrap();
+        (id, service, release)
+    }
+
+    #[tokio::test]
+    async fn idle_initialized_session_expires_and_reaps() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut manager = BoundedSessionManager {
+                sessions_budget: Arc::new(Semaphore::new(1)),
+                ..Default::default()
+            };
+            Arc::get_mut(&mut manager.inner)
+                .unwrap()
+                .session_config
+                .keep_alive = Some(Duration::from_millis(30));
+            let (id, service, _) = initialized_session(&manager).await;
+            let _ = service.waiting().await;
+            loop {
+                if manager.sessions_budget.available_permits() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(!manager.has_session(&id).await.unwrap());
+            assert!(manager.closed.lock().unwrap().is_empty());
+        })
+        .await
+        .expect("idle initialized session is reaped");
+    }
+
     #[test]
     fn oversized_response_becomes_small_terminal_error_with_original_id() {
         let message: ServerJsonRpcMessage = serde_json::from_value(serde_json::json!({
@@ -510,6 +578,34 @@ mod tests {
         let size = serde_json::to_vec(&value).unwrap().len();
         assert!(serde_json::to_writer(ByteBudget(size), &value).is_ok());
         assert!(serde_json::to_writer(ByteBudget(size - 1), &value).is_err());
+    }
+
+    #[tokio::test]
+    async fn abandoned_initialization_expires_and_reaps_session() {
+        use rmcp::ServiceExt;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut manager = BoundedSessionManager {
+                sessions_budget: Arc::new(Semaphore::new(1)),
+                ..Default::default()
+            };
+            Arc::get_mut(&mut manager.inner)
+                .unwrap()
+                .session_config
+                .init_timeout = Some(Duration::from_millis(20));
+            let (id, transport) = manager.create_session().await.unwrap();
+            let server = TestServer(Arc::new(tokio::sync::Notify::new()));
+            assert!(server.serve(transport).await.is_err());
+            loop {
+                if manager.sessions_budget.available_permits() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(!manager.has_session(&id).await.unwrap());
+            assert!(manager.closed.lock().unwrap().is_empty());
+        })
+        .await
+        .expect("abandoned init is reaped");
     }
 
     #[tokio::test]
@@ -555,36 +651,17 @@ mod tests {
 
     #[tokio::test]
     async fn sdk_active_request_resumes_and_releases_reservation() {
-        use rmcp::ServiceExt;
         tokio::time::timeout(Duration::from_secs(5), async {
-            let mut manager = BoundedSessionManager::default();
+            let mut manager = BoundedSessionManager {
+                requests_budget: Arc::new(Semaphore::new(1)),
+                streams_budget: Arc::new(Semaphore::new(1)),
+                ..Default::default()
+            };
             Arc::get_mut(&mut manager.inner)
                 .unwrap()
                 .session_config
                 .completed_cache_ttl = Duration::from_millis(100);
-            let (id, transport) = manager.create_session().await.unwrap();
-            let release = Arc::new(tokio::sync::Notify::new());
-            let server = TestServer(release.clone());
-            let service = tokio::spawn(async move { server.serve(transport).await.unwrap() });
-            let init = serde_json::from_value(serde_json::json!({
-                "jsonrpc":"2.0", "id":0, "method":"initialize", "params": {
-                    "protocolVersion":"2025-03-26", "capabilities":{},
-                    "clientInfo":{"name":"isolated-test", "version":"1"}
-                }
-            }))
-            .unwrap();
-            manager.initialize_session(&id, init).await.unwrap();
-            manager
-                .accept_message(
-                    &id,
-                    serde_json::from_value(serde_json::json!({
-                        "jsonrpc":"2.0", "method":"notifications/initialized"
-                    }))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-            let service = service.await.unwrap();
+            let (id, service, release) = initialized_session(&manager).await;
             let ping = serde_json::from_value(
                 serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"ping"}),
             )
@@ -592,6 +669,24 @@ mod tests {
             let mut stream = Box::pin(manager.create_stream(&id, ping).await.unwrap());
             let priming = stream.next().await.unwrap();
             let resume_id = priming.event_id.unwrap();
+            let extra = serde_json::from_value(
+                serde_json::json!({"jsonrpc":"2.0", "id":99, "method":"ping"}),
+            )
+            .unwrap();
+            assert!(matches!(
+                manager.create_stream(&id, extra).await,
+                Err(SessionError::Overloaded)
+            ));
+            let standalone = manager.create_standalone_stream(&id).await.unwrap();
+            assert!(matches!(
+                manager.create_standalone_stream(&id).await,
+                Err(SessionError::Overloaded)
+            ));
+            assert!(matches!(
+                manager.resume(&id, resume_id.clone()).await,
+                Err(SessionError::Overloaded)
+            ));
+            drop(standalone);
             drop(stream);
             assert_eq!(manager.retained.lock().await.len(), 1);
             let mut resumed = Box::pin(manager.resume(&id, resume_id.clone()).await.unwrap());
@@ -603,6 +698,17 @@ mod tests {
             ));
             assert!(resumed.next().await.is_none());
             drop(resumed);
+            let extra = serde_json::from_value(
+                serde_json::json!({"jsonrpc":"2.0", "id":99, "method":"ping"}),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    manager.create_stream(&id, extra).await,
+                    Err(SessionError::Overloaded)
+                ),
+                "completed owner still retains capacity until cleanup"
+            );
             // rmcp 2.2 removes normal terminal-response caches immediately,
             // despite exposing a completed-cache TTL for other close paths.
             assert!(manager.resume(&id, resume_id.clone()).await.is_err());

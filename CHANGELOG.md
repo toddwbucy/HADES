@@ -35,6 +35,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add an opt-in disposable-database full-search-handler memory benchmark, including
+  maximum result count/query text, hybrid/structural reranking, and serialization;
+  cover MCP request/stream overload and session initialization/idle expiry (#22).
+
 - Bound MCP sessions, retained requests, GET/resume streams, and serialized SDK
   messages; preserve active-request resume and clean up cancelled request caches
   independently of HTTP clients (#22). Oversized responses return an explicit

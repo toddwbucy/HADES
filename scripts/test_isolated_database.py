@@ -68,7 +68,9 @@ def main():
     server.add_argument("--arangod", type=Path, help="existing binary; never installs a server")
     server.add_argument("--docker", action="store_true", help="run the pinned CI image with no network")
     parser.add_argument("--command-timeout", type=int, default=900)
-    parser.add_argument("--benchmark", action="store_true", help="run the opt-in synthetic retrieval benchmark")
+    benchmark = parser.add_mutually_exclusive_group()
+    benchmark.add_argument("--benchmark", action="store_true", help="run the opt-in synthetic retrieval benchmark")
+    benchmark.add_argument("--handler-benchmark", action="store_true", help="measure full search handlers on disposable fixtures")
     parser.add_argument("--benchmark-rows", type=int, default=1024)
     parser.add_argument("--benchmark-dimension", type=int, default=64)
     parser.add_argument("--benchmark-trials", type=int, default=16)
@@ -187,13 +189,14 @@ def main():
             else:
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
-            if args.benchmark:
+            if args.benchmark or args.handler_benchmark:
                 if not args.docker:
                     env["HADES_BENCH_SERVER_PID"] = str(child.pid)
                 env.update({"HADES_BENCH_ROWS": str(args.benchmark_rows),
                             "HADES_BENCH_DIMENSION": str(args.benchmark_dimension),
                             "HADES_BENCH_TRIALS": str(args.benchmark_trials)})
-                command("retrieval-benchmark", ["-p", "hades-core", "--test", "retrieval_benchmark"], ignored=True)
+                target = "search_handler_benchmark" if args.handler_benchmark else "retrieval_benchmark"
+                command(target, ["-p", "hades-core", "--test", target], ignored=True)
                 return
             missing = dict(env)
             missing.pop("ARANGO_SOCKET")
