@@ -386,6 +386,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Reject malformed stored structural vectors in lookup and neighbor requests;
+  exclude invalid candidates before neighbor scoring (#85).
+
 - Fail structural embedding export on rejected or incomplete batches, report
   acknowledged progress and reject invalid export inputs before writes (#83).
 
