@@ -1,0 +1,14 @@
+{
+  "source_revision": "b48060ae08703d9ff90be6cadccad26a0ce581c6",
+  "source_sha256": {
+    "crates/hades-frontend/src/server.rs": "31f9e86d313a29c64a0462b83f64e64a068cf8cd1ccdf1fc94a56d1ce73ed44a",
+    "crates/hades-frontend/src/assemble.rs": "ad3a1a88e9a5778c09ec9d1cc3cfef34a87214f9171b0764f7c951bc611cd195",
+    "crates/hades-frontend/src/backend_process.rs": "6440a8352417d589b42f7433168fffbbfdd7be0fbe36b9a784358032ce5660da",
+    "docs/audits/repros/viewer_failure_envelope.rs": "78356975bfcb821a723ecb937d80e3abc711828a0006cca9161c537066894ecf"
+  },
+  "fixture": "Append retained module to server.rs in an isolated checkout; cargo test --offline -p hades-frontend --bin hades-viewer audit_envelope_baseline -- --test-threads=1",
+  "passed": 1,
+  "seconds": 0.04,
+  "observed": "success:true and success:false synthetic graph envelopes both rendered HTTP200 with synthetic graph name",
+  "scope": "Actual private child and in-process router, no live database/backend/viewer. Does not demonstrate current production CLI emits the contradictory envelope."
+}
