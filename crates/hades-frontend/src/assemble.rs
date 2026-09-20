@@ -20,7 +20,6 @@ use crate::contract::{
 };
 use anyhow::{Context, Result, anyhow};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tokio::process::Command;
 
 /// A parsed ArangoDB document.
 type Doc = serde_json::Map<String, serde_json::Value>;
@@ -33,18 +32,8 @@ const CHUNK_COLLECTION: &str = "codebase_chunks";
 /// the viewer offers exactly the databases ArangoDB grants — the ACL layer is the
 /// authority, matching HADES's own security model.
 pub async fn discover_databases(bin: &str) -> Result<Vec<String>> {
-    let output = Command::new(bin)
-        .args(["--db", "_system", "db", "databases"])
-        .output()
-        .await
-        .with_context(|| format!("failed to spawn `{bin}`"))?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "`{bin} --db _system db databases` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    parse_database_list(&output.stdout)
+    let stdout = crate::backend_process::run(bin, &["--db", "_system", "db", "databases"]).await?;
+    parse_database_list(&stdout)
 }
 
 /// Parse `db databases` output (`.data.databases[]`).
@@ -78,25 +67,9 @@ pub struct Backend {
 impl Backend {
     /// Run `hades --db <database> <args...>` and return captured stdout.
     async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let output = Command::new(&self.bin)
-            .arg("--db")
-            .arg(&self.database)
-            .args(args)
-            .output()
-            .await
-            .with_context(|| format!("failed to spawn `{}`", self.bin))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!(
-                "`{} --db {} {}` failed ({}): {}",
-                self.bin,
-                self.database,
-                args.join(" "),
-                output.status,
-                stderr.trim()
-            ));
-        }
-        Ok(output.stdout)
+        let mut argv = vec!["--db", self.database.as_str()];
+        argv.extend_from_slice(args);
+        crate::backend_process::run(&self.bin, &argv).await
     }
 
     /// List named graphs available in the database (via the Gharial-backed
@@ -254,10 +227,26 @@ impl Backend {
             .ok_or_else(|| anyhow!("named graph `{graph_name}` not found in {}", self.database))?;
 
         let (edge_collections, node_collections) = discover_collections(&graph);
+        if edge_collections.len() + node_collections.len() > 32 {
+            return Err(anyhow!("viewer graph exceeds 32-collection budget"));
+        }
+        let mut remaining_bytes = 8 * 1024 * 1024;
+        let mut remaining_documents = 50_000;
+        let mut charge = |docs: &Vec<Doc>| -> Result<()> {
+            if docs.len() > remaining_documents {
+                return Err(anyhow!("viewer graph exceeds document budget"));
+            }
+            remaining_documents -= docs.len();
+            crate::payload::charge(docs, &mut remaining_bytes)
+                .context("viewer graph exceeds aggregate byte budget")?;
+            Ok(())
+        };
 
         let mut node_docs = BTreeMap::new();
         for col in &node_collections {
-            node_docs.insert(col.clone(), self.export_collection(col).await?);
+            let docs = self.export_collection(col).await?;
+            charge(&docs)?;
+            node_docs.insert(col.clone(), docs);
         }
         // With a cap in play, take the induced subgraph over the vertices we
         // actually fetched; uncapped, a plain export is already consistent.
@@ -269,11 +258,15 @@ impl Backend {
                 .filter_map(|d| take_str(d, "_id"))
                 .collect();
             for col in &edge_collections {
-                edge_docs.insert(col.clone(), self.export_edges_within(col, &ids).await?);
+                let docs = self.export_edges_within(col, &ids).await?;
+                charge(&docs)?;
+                edge_docs.insert(col.clone(), docs);
             }
         } else {
             for col in &edge_collections {
-                edge_docs.insert(col.clone(), self.export_collection(col).await?);
+                let docs = self.export_collection(col).await?;
+                charge(&docs)?;
+                edge_docs.insert(col.clone(), docs);
             }
         }
 
@@ -1041,5 +1034,49 @@ mod tests {
         assert!(snap.meta.partial);
         assert_eq!(snap.meta.node_count, 1);
         assert_eq!(snap.meta.node_total, 50);
+    }
+}
+
+#[cfg(test)]
+mod audit_resource_probe {
+    use super::Backend;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn backend_rejects_two_megabyte_diagnostic() {
+        let _fixture = crate::backend_process::SCRIPT_FIXTURE.lock().await;
+        // Synthetic child only. No HADES binary, endpoint or corpus is used.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("hades-viewer-probe-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let script = root.join("synthetic-backend");
+        std::fs::write(&script,
+            "#!/usr/bin/python3\nimport sys\nsys.stderr.write('X' * (2 * 1024 * 1024))\nsys.exit(1)\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let backend = Backend {
+            bin: script.to_str().unwrap().into(),
+            database: "fixture".into(),
+            limit: Some(1),
+        };
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), backend.list_graphs())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("stderr exceeded its byte limit"), "{error}");
+        assert!(error.len() < 1024);
+        assert!(!error.contains(&"X".repeat(1024)));
     }
 }
