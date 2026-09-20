@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace seven native embedding/extraction command contracts and explicit
+  provider, subprocess and output-file limits (epic #12).
+
 - Retain actual CLI/private-peer reproductions of materialization scan failures
   reported as success in normal and dry-run modes (epic #12).
 
