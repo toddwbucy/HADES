@@ -27,7 +27,25 @@ class LaTeXExtractor:
 
     # Tar bomb limits
     MAX_TAR_MEMBERS = 500
-    MAX_TAR_EXPANDED_BYTES = 200 * 1024 * 1024  # 200 MB
+    MAX_TAR_EXPANDED_BYTES = 200 * 1024 * 1024  # 200 MiB of extracted files
+    MAX_SOURCE_BYTES = 200 * 1024 * 1024  # decoded only after this byte check
+    MAX_TAR_STREAM_BYTES = MAX_TAR_EXPANDED_BYTES + 1024 * 1024  # headers/padding included
+
+    @staticmethod
+    def _read_source(stream: Any, limit: int) -> str:
+        raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError(f"Source expanded size exceeds limit of {limit} bytes")
+        return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _copy_archive(source: Any, destination: Any, limit: int) -> None:
+        total = 0
+        while block := source.read(min(64 * 1024, limit - total + 1)):
+            total += len(block)
+            if total > limit:
+                raise ValueError(f"Archive expanded stream exceeds limit of {limit} bytes")
+            destination.write(block)
 
     def extract(
         self,
@@ -65,47 +83,58 @@ class LaTeXExtractor:
         """Extract from arXiv .tar.gz source package."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            with tarfile.open(path, "r:gz") as tar:
-                # Security: filter members
-                safe = [
-                    m for m in tar.getmembers()
-                    if (m.isreg() or m.isdir()) and self._is_safe(m, tmp_path)
-                ]
-                if len(safe) > self.MAX_TAR_MEMBERS:
+            # Bound the complete gzip stream before tarfile can allocate PAX
+            # headers or an unbounded member list. Keep archive bytes on disk.
+            archive = tmp_path / "source.tar"
+            with gzip.open(path, "rb") as source, archive.open("wb") as destination:
+                self._copy_archive(source, destination, self.MAX_TAR_STREAM_BYTES)
+            extracted = tmp_path / "files"
+            with tarfile.open(archive, "r:") as tar:
+                safe = []
+                file_paths = set()
+                total_bytes = 0
+                for count, member in enumerate(tar, 1):
+                    # Count unsafe entries too: filtering is not an admission limit.
+                    if count > self.MAX_TAR_MEMBERS:
+                        raise ValueError(f"Archive member count exceeds limit of {self.MAX_TAR_MEMBERS}")
+                    if not (member.isreg() or member.isdir()) or not self._is_safe(member, extracted):
+                        continue
+                    if member.isreg():
+                        canonical = (extracted / member.name).resolve()
+                        if canonical in file_paths:
+                            raise ValueError("Archive contains duplicate source paths")
+                        file_paths.add(canonical)
+                    total_bytes += member.size if member.isreg() else 0
+                    if total_bytes > self.MAX_TAR_EXPANDED_BYTES:
+                        raise ValueError(f"Archive expanded size exceeds limit of {self.MAX_TAR_EXPANDED_BYTES} bytes")
+                    safe.append(member)
+                # Only the largest regular .tex member is used. Read it directly
+                # instead of writing archive-controlled paths or permissions.
+                tex_files = [member for member in safe if member.isreg() and member.name.endswith(".tex")]
+                if not tex_files:
                     return ExtractionResult(
-                        error=f"Archive has {len(safe)} members, exceeds limit of {self.MAX_TAR_MEMBERS}",
+                        error="No .tex files found in archive",
                         processing_time=time.time() - start,
                     )
-                total_bytes = sum(m.size for m in safe if m.isreg())
-                if total_bytes > self.MAX_TAR_EXPANDED_BYTES:
-                    return ExtractionResult(
-                        error=f"Archive expanded size {total_bytes} bytes exceeds limit of {self.MAX_TAR_EXPANDED_BYTES}",
-                        processing_time=time.time() - start,
-                    )
-                tar.extractall(tmp_path, members=safe)
-
-            # Find the main .tex file (largest)
-            tex_files = list(tmp_path.rglob("*.tex"))
-            if not tex_files:
-                return ExtractionResult(
-                    error="No .tex files found in archive",
-                    processing_time=time.time() - start,
-                )
-
-            main_tex = max(tex_files, key=lambda f: f.stat().st_size)
-            latex = main_tex.read_text(encoding="utf-8", errors="replace")
+                main_tex = max(tex_files, key=lambda member: member.size)
+                source = tar.extractfile(main_tex)
+                if source is None:
+                    raise ValueError("Archive main source is not readable")
+                with source:
+                    latex = self._read_source(source, self.MAX_SOURCE_BYTES)
 
             return self._build_result(latex, path, start, extract_tables, extract_equations)
 
     def _extract_plain_gz(self, path: Path, start: float, extract_tables: bool = True, extract_equations: bool = True) -> ExtractionResult:
         """Extract from gzipped .tex file."""
-        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
-            latex = f.read()
+        with gzip.open(path, "rb") as f:
+            latex = self._read_source(f, self.MAX_SOURCE_BYTES)
         return self._build_result(latex, path, start, extract_tables, extract_equations)
 
     def _extract_tex(self, path: Path, start: float, extract_tables: bool = True, extract_equations: bool = True) -> ExtractionResult:
         """Extract from plain .tex file."""
-        latex = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as source:
+            latex = self._read_source(source, self.MAX_SOURCE_BYTES)
         return self._build_result(latex, path, start, extract_tables, extract_equations)
 
     def _build_result(self, latex: str, path: Path, start: float, extract_tables: bool = True, extract_equations: bool = True) -> ExtractionResult:

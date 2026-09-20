@@ -282,6 +282,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Bound plain/gzipped LaTeX source bytes and the complete decompressed tar stream
+  before parsing archive headers. Count rejected entries toward the member limit,
+  reject duplicate normalized source paths, and read the main member directly
+  without materializing archive-controlled paths or permissions (#35).
+
 - The embedder profile selector now persists exactly one enabled instance,
   reconciles failed/runtime-enabled profiles without restarting an already-selected
   service, validates responder identity, and attempts rollback on switch failure
