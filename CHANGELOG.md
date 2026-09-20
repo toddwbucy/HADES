@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Security
+
+- Require Admin authority for filesystem smell scans; route the MCP smell report
+  to bounded, database-only recorded associations (#49).
+
 ### Documentation
 
 - Record the live daemon artifact/compiler provenance and explicit source-mapping

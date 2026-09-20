@@ -315,11 +315,7 @@ async fn shutdown_signal() {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-use hades_core::db::ArangoClient;
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../../hades-core/tests/common/cursor_mock.rs"]
-mod cursor_mock;
+use super::cursor_mock;
 
 #[cfg(test)]
 mod tests {

@@ -460,7 +460,7 @@ struct SmellReportArgs {
     #[schemars(description = db_field_doc!())]
     db: Option<String>,
     #[schemars(
-        description = "Repo-root-relative file path (or file key) to report code smells for"
+        description = "Exact stored relative file path or codebase_files/<key> ID; no local filesystem access"
     )]
     path: String,
 }
@@ -791,14 +791,16 @@ impl HadesMcpServer {
         .await
     }
 
-    #[tool(description = "Report recorded code smells for a file in the codebase graph.")]
+    #[tool(
+        description = "Report up to 100 recorded smell associations by exact stored file path or codebase_files ID. Reads the graph only; does not scan local files."
+    )]
     async fn smell_report(
         &self,
         Parameters(a): Parameters<SmellReportArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.run(
             a.db,
-            DaemonCommand::SmellReport(SmellReportParams { path: a.path }),
+            DaemonCommand::SmellStoredReport(SmellReportParams { path: a.path }),
         )
         .await
     }
@@ -1038,6 +1040,9 @@ pub async fn serve_app(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+use super::cursor_mock;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -1059,6 +1064,39 @@ mod tests {
             ConnectionPolicy::agent_only(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mcp_smell_report_dispatches_database_only_under_agent_policy() {
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result": [], "hasMore": false}),
+        )])
+        .await;
+        let config = HadesConfig::with_database("fixture");
+        let cache = Arc::new(PoolCache::new(config.clone(), &[], Vec::new()).unwrap());
+        cache.pools.write().await.insert(
+            "fixture".into(),
+            (Arc::new(config), Arc::new(mock.pool.clone())),
+        );
+        let server = HadesMcpServer::new(cache, ConnectionPolicy::agent_only());
+        let result = server
+            .smell_report(Parameters(SmellReportArgs {
+                db: None,
+                path: "nonexistent/stored-file.rs".into(),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(serialized.contains("stored_graph"), "{serialized}");
+        let request = mock.event("POST cursor").await;
+        assert_eq!(request["bindVars"]["path"], "nonexistent/stored-file.rs");
+        assert!(
+            request["query"]
+                .as_str()
+                .unwrap()
+                .contains("FOR e IN compliance_edges")
+        );
     }
 
     // --- tokens ------------------------------------------------------------
