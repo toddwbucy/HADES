@@ -6,6 +6,26 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 struct Viewer(Child);
+// Adopt only this fixture's orphaned descendants so the test does not depend on
+// PID 1's reaping schedule. The viewer still must reap its own direct backend.
+struct Subreaper(i32);
+impl Subreaper {
+    fn install() -> Self {
+        let mut previous = 0;
+        // SAFETY: valid writable flag pointer and documented Linux prctl calls.
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &mut previous), 0);
+            assert_eq!(libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1), 0);
+        }
+        Self(previous)
+    }
+}
+impl Drop for Subreaper {
+    fn drop(&mut self) {
+        // SAFETY: restore this test process's previous setting only.
+        unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, self.0) };
+    }
+}
 impl Drop for Viewer {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -35,10 +55,56 @@ impl Drop for FixtureCleanup {
     }
 }
 fn running(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|s| s.rsplit_once(") ").map(|(_, rest)| !rest.starts_with('Z')))
-        .unwrap_or(false)
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat
+            .rsplit_once(") ")
+            .expect("valid private process stat")
+            .1
+            .starts_with('Z'),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("cannot inspect private process {pid}: {error}"),
+    }
+}
+fn absent(pid: u32) -> bool {
+    // SAFETY: signal zero inspects existence without signalling any process.
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+fn reap_adopted_descendants(children: &[u32]) {
+    assert_eq!(children.len(), 2);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // Never reap the backend here: its disappearance is the viewer's contract.
+    while !absent(children[0]) {
+        assert!(
+            Instant::now() < deadline,
+            "viewer did not reap direct backend"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let descendant = children[1];
+    loop {
+        let mut status = 0;
+        // SAFETY: wait for only the recorded synthetic descendant adopted by
+        // this test's subreaper. No wait(-1) or ambient-process cleanup.
+        let result = unsafe { libc::waitpid(descendant as i32, &mut status, libc::WNOHANG) };
+        if result == descendant as i32 {
+            assert!(libc::WIFSIGNALED(status));
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+            break;
+        }
+        assert_eq!(
+            result,
+            0,
+            "cannot reap adopted private descendant: {}",
+            std::io::Error::last_os_error()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "private descendant survived group cleanup"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(children.iter().all(|pid| absent(*pid)));
 }
 fn pids(root: &Path) -> Vec<u32> {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -55,6 +121,7 @@ fn pids(root: &Path) -> Vec<u32> {
 
 #[test]
 fn termination_reaps_discovery_dump_and_http_children() {
+    let _subreaper = Subreaper::install();
     for mode in ["serve", "dump", "http", "disconnect"] {
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let root = tempfile::tempdir().unwrap();
@@ -147,6 +214,7 @@ time.sleep(10)
                 );
                 std::thread::sleep(Duration::from_millis(10));
             }
+            reap_adopted_descendants(&children);
         }
     }
 }

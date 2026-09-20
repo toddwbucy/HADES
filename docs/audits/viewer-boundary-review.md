@@ -101,6 +101,13 @@ verifies that disconnecting the HTTP client stops its synthetic child/grandchild
 before viewer shutdown. These fixtures never invoke an installed HADES binary,
 database or real document corpus.
 
+The lifecycle fixture uses a test-only Linux subreaper: the viewer must reap its
+direct backend itself, while the fixture adopts and reaps the synthetic orphan
+grandchild. It verifies the grandchild exited from SIGKILL and both recorded PIDs
+are absent (`kill(pid, 0)` returns ESRCH). This proves group termination without
+depending on PID 1's reaping schedule; the production viewer does not claim to reap
+non-child descendants itself. Process-inspection errors do not count as cleanup.
+
 The actual router now has contracts for rejected Host/auth/database inputs
 (with no child launch), default/explicit allowed database requests, malformed
 backend JSON and sanitized nonzero-exit responses. A separate shutdown-broadcast
