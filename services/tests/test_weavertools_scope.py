@@ -28,15 +28,23 @@ sys.path.insert(0, str(ROOT / "adapters"))
 
 from weavertools.extractor import ingest, read_documents  # noqa: E402
 
-REPO = Path("/opt/weavertools/WeaverTools")
-pytestmark = pytest.mark.skipif(
-    not (REPO / "docs").is_dir(),
-    reason=f"needs the WeaverTools corpus at {REPO}",
-)
+DECLARING = "docs/fixture-Spec.md"
 
-# One real declaring file, and the count it carries. Chosen because the
-# code-to-assertion chain in every report traverses it.
-DECLARING = "docs/crates/weaver-harness/weaver-trace/weaver-trace-Spec.md"
+
+@pytest.fixture
+def repo(tmp_path):
+    """A declared graph and citing files owned entirely by this test."""
+    documents = {
+        DECLARING: "```graph\nnode: fixture-assertion\nkind: assertion\n```\n",
+        "docs/second-Spec.md": "```graph\nnode: fixture-second\nkind: assertion\n```\n",
+        "crates/fixture/src/lib.rs": "//! conforms: fixture-assertion\npub fn first() {}\n",
+        "crates/fixture/tests/check.rs": "//! conforms: fixture-second\nfn check() {}\n",
+    }
+    for relative, text in documents.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return tmp_path
 
 
 def _rel_md(root: Path) -> set[str]:
@@ -47,22 +55,22 @@ def _rel_md(root: Path) -> set[str]:
     }
 
 
-def test_unbounded_scope_reads_the_declaring_file():
+def test_unbounded_scope_reads_the_declaring_file(repo):
     """The baseline: with no scope, the file's declarations are read."""
-    docs = read_documents(REPO, None)
+    docs = read_documents(repo, None)
     assert any(n.path == DECLARING for n in docs.nodes), (
         "the baseline itself is broken: nothing was read from " + DECLARING
     )
 
 
-def test_a_file_outside_the_scope_declares_nothing():
+def test_a_file_outside_the_scope_declares_nothing(repo):
     """The defect, in the shape that produced it.
 
     Everything is in scope except one declaring file. Nothing it declares may
     reach the graph, and no edge may name it.
     """
-    scope = _rel_md(REPO) - {DECLARING}
-    docs = read_documents(REPO, scope)
+    scope = _rel_md(repo) - {DECLARING}
+    docs = read_documents(repo, scope)
 
     assert not [n for n in docs.nodes if n.path == DECLARING], (
         "an out-of-scope file produced nodes, so `declared-in` would name a "
@@ -73,14 +81,14 @@ def test_a_file_outside_the_scope_declares_nothing():
     )
 
 
-def test_an_excluded_declaring_file_is_reported_by_name():
+def test_an_excluded_declaring_file_is_reported_by_name(repo):
     """Silence is the other half of the defect.
 
     A count that came out low reads exactly like a clean run, so the file is
     named.
     """
-    scope = _rel_md(REPO) - {DECLARING}
-    docs = read_documents(REPO, scope)
+    scope = _rel_md(repo) - {DECLARING}
+    docs = read_documents(repo, scope)
 
     named = [n for n in docs.notes if n.startswith("out of scope") and DECLARING in n]
     assert named, f"{DECLARING} was dropped without being reported: {docs.notes[-3:]}"
@@ -90,38 +98,38 @@ def test_an_excluded_declaring_file_is_reported_by_name():
     ), "the summary count does not record the exclusion"
 
 
-def test_every_declared_in_target_is_inside_the_scope():
+def test_every_declared_in_target_is_inside_the_scope(repo):
     """The invariant, over the whole corpus.
 
     This is the property `write_graph` used to check against the database after
     the fact. Holding it here means the bad edge is never computed.
     """
-    scope = _rel_md(REPO)
-    docs, _ = ingest(REPO, scope, None)
+    scope = _rel_md(repo)
+    docs, _ = ingest(repo, scope, None)
     targets = {e.dst for e in docs.edges if e.relation == "declared-in"}
     assert targets <= scope, f"declared-in targets outside the scope: {targets - scope}"
 
 
-def test_scoping_out_a_citing_file_drops_its_cites_edges():
+def test_scoping_out_a_citing_file_drops_its_cites_edges(repo):
     """The same rule on the code half.
 
     A `cites` edge runs from a `codebase_files` node, so a citation in a file the
     ingest never took is an edge with no source.
     """
     rs = sorted(
-        str(p.relative_to(REPO))
-        for p in (REPO / "crates").rglob("*.rs")
+        str(p.relative_to(repo))
+        for p in (repo / "crates").rglob("*.rs")
         if "target" not in p.parts
     )
     assert rs, "no .rs files under crates/, the corpus is not what this test assumes"
 
     full = set(rs)
-    docs, code_full = ingest(REPO, _rel_md(REPO), full)
+    docs, code_full = ingest(repo, _rel_md(repo), full)
     cited_from = {e.src for e in code_full.edges if e.relation == "cites"}
     assert cited_from, "no cites edges at all, so this test proves nothing"
 
     victim = sorted(cited_from)[0]
-    _, code_less = ingest(REPO, _rel_md(REPO), full - {victim})
+    _, code_less = ingest(repo, _rel_md(repo), full - {victim})
     assert victim not in {e.src for e in code_less.edges}, (
         f"{victim} is out of scope and still produced cites edges"
     )

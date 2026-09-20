@@ -24,36 +24,23 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `protoc` must be on PATH: `hades-proto`'s `build.rs` shells out through
   `tonic-build` to compile `proto/**`.
 
-Tests fall into three classes, which is why CI does not run a bare
-`cargo test --workspace`:
+The authoritative test matrix is [docs/specs/workstation-specific-tests.md](docs/specs/workstation-specific-tests.md).
 
 ```bash
-cargo test --workspace --lib --bins          # what CI gates on (unit tests, incl. the CLI binary)
-cargo test -p hades-core --test pipeline     # one integration target
-cargo test -p hades-core --lib config::      # filter by path within a crate
+cargo test --workspace --lib --bins
+cargo fetch --locked
+python3 scripts/test_isolated_database.py --docker
+# Or --arangod /path/to/an/existing/test/arangod in an isolated checkout.
 ```
 
-- Unit tests live in `src/` next to the code (~630 `#[test]`/`#[tokio::test]`
-  across the workspace).
-- `crates/*/tests/*.rs` integration targets need external resources. They
-  self-skip when the *socket* is missing (`ARANGO_SOCKET` names it; the default
-  `/run/arangodb3/arangodb.sock` is the system install's, and a user-level
-  arangod binds elsewhere) and honor a strict flag that turns a skip into a
-  panic (`ARANGO_TESTS=1` for the `arango_*` and `graph_loader` targets;
-  `HADES_CUDA_FIXTURE` for the libclang probe). The convention is specified in
-  `docs/specs/workstation-specific-tests.md`. A missing *database* is not a
-  skip: `arango_transport`, `arango_crud`, `arango_index` and `arango_query`
-  still name `bident_burn` and a seeded `persephone_tasks`, neither of which
-  exists, so they fail until the Persephone pass moves them onto
-  `hades_core::test_support::with_temp_db` the way `arango_cache` already is.
-- Service-dependent targets with no skip guard — `embedding_client`,
-  `extraction_client`, `training_client` — and analyzer-dependent ones
-  (`clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`) fail on a bare
-  machine by design. Run them only where the service or binary exists.
-- End-to-end graph invariants: `HADES_BIN=target/release/hades
-  ./scripts/bident_burn_smoke.sh` (needs live ArangoDB + embedder; uses a
-  dedicated `bident_burn_smoke` database). `scripts/cli_audit.sh` is the
-  weaker "does every command run" companion.
+CI also executes service-free client/protocol contracts, the hashed Python CPU
+suite, and mocked embedder profile switching. Database tests use fresh databases
+through `hades_core::test_support::with_temp_db`; ARANGO_SOCKET must explicitly name
+a separate test server, and ARANGO_TESTS=1 turns missing prerequisites into failure.
+The runner supplies both, bounds resources, and cleans up its own processes.
+Python adapter tests generate their corpus. Analyzer/CUDA probes remain optional
+and require their documented prerequisites. Never run named-database legacy smoke
+scripts or inference workloads against the active server during audit discovery.
 
 ## Architecture
 
