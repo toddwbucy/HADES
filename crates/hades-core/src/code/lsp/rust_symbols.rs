@@ -138,7 +138,8 @@ impl<'a> RustSymbolExtractor<'a> {
                 }
                 Err(e) => {
                     warn!("failed to extract symbols from {}: {e}", rel);
-                    results.insert(rel, FileExtraction::empty());
+                    // Omit failed files so callers can distinguish failure
+                    // from a successful extraction of an empty source file.
                 }
             }
         }

@@ -1,0 +1,71 @@
+{
+  "issue": 40,
+  "source_revision": "16c4f7d",
+  "server_version": "3.12.11",
+  "fixture": "failed_chunk_replacement_preserves_previous_file_graph",
+  "fault": "strict schema rejects replacement chunks in disposable database",
+  "private_server_exit": 0,
+  "observed": {
+    "after_chunks": 0,
+    "after_symbols": 0,
+    "before_chunks": 1,
+    "before_symbols": 1,
+    "report": {
+      "code": {
+        "completed": 0,
+        "cpp_call_edges": 0,
+        "dangling_inbound_edges": 0,
+        "duration_ms": 12,
+        "embedding": {
+          "embedding_failure_paths": [],
+          "files_embedded": 0,
+          "files_with_embedding_failures": 0,
+          "service_connected": true,
+          "total_embeddings": 0
+        },
+        "failed": 1,
+        "gopls": {
+          "edges": 0,
+          "modules_analyzed": 0,
+          "store_errors": 0,
+          "store_failed": false,
+          "symbols": 0
+        },
+        "import_edges": 0,
+        "python_call_edges": 0,
+        "python_import_edges": 0,
+        "repointed_inbound_edges": 0,
+        "results": [
+          {
+            "duration_ms": 7,
+            "error": "failed to store chunk documents",
+            "language": null,
+            "path": "provider.py",
+            "success": false
+          }
+        ],
+        "rust_analyzer": {
+          "crates_analyzed": 0,
+          "edges": 0,
+          "store_errors": 0,
+          "store_failed": false,
+          "symbols": 0
+        },
+        "rust_import_edges": 0,
+        "skipped": 0,
+        "structural_call_edges": 0,
+        "structural_import_edges": 0,
+        "total": 1
+      },
+      "document_phase_error": null,
+      "documents": null,
+      "duration_ms": 14,
+      "routed": {
+        "code": 1,
+        "documents": 0,
+        "unrouted": 0
+      },
+      "unrouted": []
+    }
+  }
+}
