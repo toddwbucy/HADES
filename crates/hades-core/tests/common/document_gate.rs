@@ -19,6 +19,7 @@ pub struct Gate {
     pub entered: Arc<Notify>,
     pub release: Arc<Notify>,
     pub aborted: Arc<Notify>,
+    pub beginning: Arc<Notify>,
     task: tokio::task::JoinHandle<()>,
     _dir: tempfile::TempDir,
 }
@@ -36,11 +37,13 @@ impl Gate {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let aborted = Arc::new(Notify::new());
+        let beginning = Arc::new(Notify::new());
         let state = (
             entered.clone(),
             release.clone(),
             aborted.clone(),
             Arc::new(AtomicBool::new(true)),
+            beginning.clone(),
         );
         let client = reqwest::Client::builder()
             .unix_socket(backend.socket_path().unwrap())
@@ -69,6 +72,7 @@ impl Gate {
                                     let mut forward = client.request(method.clone(), format!("{base}{path}"))
                                         .basic_auth(user, Some(password)).header("content-type","application/json").body(bytes);
                                     if let Some(id) = transaction { forward = forward.header("x-arango-trx-id",id); }
+                                    if path == "transaction/begin" { state.4.notify_one(); }
                                     let response = forward.send().await.unwrap();
                                     let status = response.status().as_u16();
                                     let response: Value = response.json().await.unwrap();
@@ -94,6 +98,7 @@ impl Gate {
             entered,
             release,
             aborted,
+            beginning,
             task,
             _dir: dir,
         }
