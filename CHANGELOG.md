@@ -27,10 +27,21 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   trees; fail closed on admission-query errors and transfer child ownership before
   awaiting PID persistence. Full lifecycle/output remediation remains in #51.
 
+- Bound viewer CLI child output and runtime, retain process admission through
+  cancellation cleanup, and prevent child diagnostics from entering HTTP errors (#52).
+- Bound viewer graph accumulation, JSON serialization, concurrent connections
+  and request/socket lifetimes (#52).
+- Handle viewer SIGINT/SIGTERM before discovery; cancel and reap owned child
+  groups on shutdown, with real private HTTP/disconnect and router contracts (#52).
+- Verify viewer cumulative graph budgets, HTTP 503 admission/readmission and
+  whole-request deadlines; preserve a resource-limited slow-reader measurement (#52).
 - Require Admin authority for filesystem smell scans; route the MCP smell report
   to bounded, database-only recorded associations (#49).
 
 ### Documentation
+
+- Define candidate code-search and paper-draft research workloads, version-aware
+  evidence judgments and remaining retrieval acceptance requirements (#12).
 
 - Record the live daemon artifact/compiler provenance and explicit source-mapping
   limitation; refresh packaging and additional audit-remediation status (#12).

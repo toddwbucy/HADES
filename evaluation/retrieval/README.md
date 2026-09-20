@@ -1,5 +1,9 @@
 # Repository retrieval evaluation, version 2
 
+The next [representative workload plan](workload-plan.md) covers both code search
+and evolving public-paper drafts. It distinguishes intended capabilities from
+implementation evidence; its candidate questions are not yet frozen judgments.
+
 `repository-v2.json` freezes 24 code-navigation questions and 24 function excerpts
 from HADES before inference. Each excerpt records its source path, revision,
 line range, content hash, and truncation status. These are author-created seed
