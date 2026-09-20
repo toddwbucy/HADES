@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Record isolated CLI reproductions of passing compliance reports with missing
+  definitions or failed embedding probes (#12).
+
 ### Security
 
 - Reject WeaverTools adapter HTTP redirects before forwarding credentials or

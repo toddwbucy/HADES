@@ -42,12 +42,22 @@ async fn run_root(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Ve
         }
     });
     let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let embed_socket = root.path().join("embedder.sock");
+    let embed_listener = tokio::net::UnixListener::bind(&embed_socket).unwrap();
+    let embed_app = Router::new().fallback(|| async {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "private fixture unavailable",
+        )
+    });
+    let embed_peer =
+        tokio::spawn(async move { axum::serve(embed_listener, embed_app).await.unwrap() });
     let config = root.path().join("config.json");
     std::fs::write(
         &config,
         serde_json::to_vec(&json!({"database":{
             "name":"fixture", "username":"fixture", "sockets":{"readonly":socket,"readwrite":socket}
-        }}))
+        }, "embedding":{"service":{"socket":embed_socket}}}))
         .unwrap(),
     )
     .unwrap();
@@ -67,6 +77,8 @@ async fn run_root(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Ve
         .args(args)
         .kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await;
+    embed_peer.abort();
+    let _ = embed_peer.await;
     peer.abort();
     let _ = peer.await;
     let output = output.expect("private CLI exceeded deadline").unwrap();
@@ -350,5 +362,58 @@ async fn orientation_does_not_hide_metadata_read_failures() {
     assert_eq!(
         incorrect_successes, 0,
         "metadata read failures must not become successful empty data"
+    );
+}
+
+#[tokio::test]
+async fn compliance_report_does_not_pass_missing_or_unavailable_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("claim.rs");
+    std::fs::write(&file, "// CS-32\nfn example() {}\n").unwrap();
+    let path = file.to_str().unwrap();
+    let empty = json!({"result":[],"hasMore":false});
+    let found = json!({"result":[{"_key":"smell-032-test","_id":"smell_specs/smell-032-test","name":"CS-32: example","smell_id":32}],"hasMore":false});
+    let edge = json!({"result":[{"enforcement_type":"static"}],"hasMore":false});
+    let mut incorrect_passes = 0;
+    for (case, replies) in [
+        ("missing_definition", vec![empty.clone(), empty.clone()]),
+        ("unavailable_probe", vec![empty.clone(), found, edge]),
+    ] {
+        let (output, calls) = run_root(&["smell", "report", path], replies).await;
+        assert!(output.status.success(), "{case}: {output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["data"]["ref_verification"]["refs_found"], 1);
+        if case == "missing_definition" {
+            assert_eq!(
+                value["data"]["ref_verification"]["missing_from_graph"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(calls.len(), 2);
+        } else {
+            let probes = value["data"]["embedding_probe"].as_array().unwrap();
+            assert_eq!(probes.len(), 1);
+            assert!(probes[0]["error"].is_string());
+            assert!(probes[0]["pass"].is_null());
+            assert_eq!(calls.len(), 3);
+        }
+        assert!(
+            calls
+                .iter()
+                .all(|call| call == "POST /_db/fixture/_api/cursor")
+        );
+        println!(
+            "{case}: exit={:?} report={} stderr={}",
+            output.status.code(),
+            value,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        incorrect_passes += usize::from(value["data"]["passed"] == true);
+    }
+    assert_eq!(
+        incorrect_passes, 0,
+        "incomplete compliance evidence must not pass"
     );
 }
