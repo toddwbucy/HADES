@@ -205,10 +205,19 @@ restore passed with matching documents, edges, graph, schema and indexes; its
 explicit limits are recorded in that review.
 
 
+[Analyzer preflight boundaries](analyzer-preflight-review.md) records #96's
+historical runtime-blocking/output-capture probe and the bounded, owned-process
+remediation. Private synthetic peers cover cancellation, output limits and
+inherited pipes; no live analyzer service or production installation was changed.
+
 [LSP transport deadlines](lsp-transport-review.md) retains the historical blocked
 write reproduction and the #94 private-peer remediation tests. Analyzer memory,
 preflight and descendant boundaries remain outside that verification.
 
+
+[LSP descendant ownership](lsp-descendant-review.md) records #100's bounded
+reproductions and process-group lifecycle tests. Process-group signalling does
+not contain descendants that intentionally escape their group.
 
 [LSP memory boundaries](lsp-memory-review.md) retains #98's bounded baseline and
 per-transport framing, notification and pending-admission remediation. This is

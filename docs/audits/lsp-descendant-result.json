@@ -1,0 +1,17 @@
+{
+  "source_revision": "f525d1a35339324f09be00a70beada7aadded0fb",
+  "fixture": "private Python fork; descendants self-exit after two seconds",
+  "results": {
+    "tests_passed": 2,
+    "seconds": 2.02,
+    "descendant_survives_client_drop_and_direct_reap": true,
+    "natural_leader_exit_request_returns_250ms_timeout_instead_of_prompt_process_failure": true,
+    "direct_children_reaped": true,
+    "descendants_no_longer_running_before_test_return": true
+  },
+  "sha256": {
+    "crates/hades-core/src/code/lsp/client.rs": "dd2808c939fbf5ede2294450b91a1729e91aa4562d0c53de31d6146ec3ad39e5",
+    "docs/audits/repros/lsp_descendants.rs": "d476875a72f32e6479f741de05427eb411ae0b30635038f5b4fc35c4d9972354"
+  },
+  "production_changed": false
+}

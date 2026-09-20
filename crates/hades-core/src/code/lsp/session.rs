@@ -472,21 +472,12 @@ pub fn preflight_binary(
     version_args: &[&str],
     workspace: &std::path::Path,
 ) -> Result<String, LspError> {
-    let out = std::process::Command::new(command)
-        .args(version_args)
-        .current_dir(workspace)
-        .output()
-        .map_err(|e| LspError::Process(format!("failed to spawn {command}: {e}")))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(LspError::Process(format!(
-            "{command} {} failed (run from {}): {}",
-            version_args.join(" "),
-            workspace.display(),
-            err.trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    super::preflight::run(
+        command,
+        version_args,
+        workspace,
+        tokio_util::sync::CancellationToken::new(),
+    )
 }
 
 /// The version invocation each analyzer understands. gopls has no
@@ -554,15 +545,51 @@ fn resolve_and_probe_in(
     managed_dir: &std::path::Path,
     workspace: &std::path::Path,
 ) -> AnalyzerStatus {
-    let (command, source, is_pinned) = match configured {
+    let (command, source, is_pinned) = resolve_command(analyzer, configured, managed_dir);
+    let outcome = preflight_binary(&command, version_args_for(analyzer), workspace)
+        .map_err(|e| e.to_string());
+    AnalyzerStatus {
+        command,
+        source,
+        configured: is_pinned,
+        outcome,
+    }
+}
+
+fn resolve_command(
+    analyzer: &str,
+    configured: Option<&str>,
+    managed_dir: &Path,
+) -> (String, &'static str, bool) {
+    match configured {
         Some(p) => (p.to_string(), "config/env", true),
         None => match managed_tool_in(managed_dir, analyzer) {
             Some(p) => (p.to_string_lossy().into_owned(), "managed", false),
             None => (analyzer.to_string(), "PATH", false),
         },
+    }
+}
+
+/// Resolve and probe without blocking the async executor. Cancellation signals
+/// the owned blocking worker, which retains the child until group cleanup/reap.
+pub async fn resolve_and_probe_async(
+    analyzer: &str,
+    configured: Option<&str>,
+    workspace: &Path,
+) -> AnalyzerStatus {
+    let (command, source, is_pinned) = resolve_command(analyzer, configured, &managed_tools_dir());
+    let worker_command = command.clone();
+    let args = version_args_for(analyzer);
+    let workspace = workspace.to_path_buf();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let worker = tokio::task::spawn_blocking(move || {
+        super::preflight::run(&worker_command, args, &workspace, cancel)
+    });
+    let outcome = match worker.await {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(error) => Err(format!("analyzer preflight worker failed: {error}")),
     };
-    let outcome = preflight_binary(&command, version_args_for(analyzer), workspace)
-        .map_err(|e| e.to_string());
     AnalyzerStatus {
         command,
         source,

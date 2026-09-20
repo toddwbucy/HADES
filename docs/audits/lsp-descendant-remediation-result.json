@@ -1,0 +1,29 @@
+{
+  "issue": 100,
+  "integrated_main": "9826de8d0aaae52d2f9874f3b46e2ec26c06af8a",
+  "tests": {
+    "descendant_integration": 7,
+    "descendant_seconds": 10.03,
+    "deadline_integration": 8,
+    "deadline_seconds": 10.02,
+    "memory_integration": 6,
+    "memory_seconds": 0.42,
+    "owner_unwind_unit": 1,
+    "preflight_integration": 6,
+    "preflight_seconds": 10.01
+  },
+  "clippy": "core library and three LSP integration targets passed with -D warnings",
+  "sha256": {
+    "crates/hades-core/src/code/lsp/client.rs": "3efee6083d8a26b847b845da310efa5710c61df12cea24ed0182038a8088d94f",
+    "crates/hades-core/src/code/lsp/process.rs": "ae9af864388cd0f2c6979f3b7cfefa1864477a468069690768c846ecf2565086",
+    "crates/hades-core/src/code/lsp/mod.rs": "041542121698b3ad4cff6d362d7e07f84422e0d9eac5826c72e5859842b5cfa6",
+    "crates/hades-core/tests/lsp_descendants.rs": "26f7c68837401f3053536aebe0d08b3b80e14049eb7cbaa3d95bf79a795f6ca0",
+    ".github/workflows/ci.yml": "ff1776b5bb87e3713761473911f920bcfd563c4ef4f01851950f16538164acb1"
+  },
+  "production_changed": false,
+  "limits": [
+    "Owned process group, not a sandbox for intentionally escaped descendants",
+    "No hard kernel reap/runtime-teardown guarantee",
+    "Stopped orphan descendants may await adopter reaping"
+  ]
+}
