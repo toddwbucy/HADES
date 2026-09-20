@@ -29,8 +29,21 @@ Acknowledgment errors distinguish row counts, values and ignored-write stats. Th
 contracts remain applicable. A separate `structural_export_db` test is wired
 into the strict disposable-server CI runner: it verifies full and subset writes,
 then a missing target after an acknowledged batch, checking earlier persistence
-and that a later node is untouched. Real-server execution is pending final CI;
-mock success alone does not certify ArangoDB transaction behavior.
+and that a later node is untouched. The real-server contract also passed locally on a fresh Unix-only ArangoDB
+3.12.11 instance with one CPU, 8 GiB child limits and a 300-second command
+deadline. Both owned process groups stopped; the [retained result](structural-export-db-result.json)
+binds selected source hashes. The first run exposed a test assertion that
+distinguished JSON integers from floats; corrected comparisons verify numeric
+values and the complete replay passes. This establishes the tested batch
+boundaries, not whole-export transactionality. Final CI/review are still required.
+
+The runner now accepts a constrained single-contract selection for focused
+replay; default CI still executes its full configured suite:
+
+```sh
+python scripts/test_isolated_database.py --arangod /path/to/test/arangod \
+  --contract structural_export_db --command-timeout 300
+```
 
 No production export, repair, model or data was changed. This review does not
 establish that a trained model is useful, that target documents still match the

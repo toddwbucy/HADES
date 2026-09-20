@@ -13,6 +13,8 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parents[1]
+DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
+                      "graph_loader", "graph_contract", "cursor_lifecycle", "transaction", "structural_export_db"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
@@ -71,6 +73,8 @@ def main():
     benchmark = parser.add_mutually_exclusive_group()
     benchmark.add_argument("--benchmark", action="store_true", help="run the opt-in synthetic retrieval benchmark")
     benchmark.add_argument("--handler-benchmark", action="store_true", help="measure full search handlers on disposable fixtures")
+    benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
+                           help="run one database contract on the same strict private server")
     parser.add_argument("--benchmark-rows", type=int, default=1024)
     parser.add_argument("--benchmark-dimension", type=int, default=64)
     parser.add_argument("--benchmark-trials", type=int, default=16)
@@ -198,12 +202,14 @@ def main():
                 target = "search_handler_benchmark" if args.handler_benchmark else "retrieval_benchmark"
                 command(target, ["-p", "hades-core", "--test", target], ignored=True)
                 return
+            if args.contract:
+                command(args.contract, ["-p", "hades-core", "--test", args.contract])
+                return
             missing = dict(env)
             missing.pop("ARANGO_SOCKET")
             command("strict-prerequisite", ["-p", "hades-core", "--test", "arango_crud", "test_count_collection"],
                     missing, expect_missing_socket=True)
-            targets = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                       "graph_loader", "graph_contract", "cursor_lifecycle", "transaction", "structural_export_db"]
+            targets = DATABASE_CONTRACTS
             command("database-contracts", ["-p", "hades-core", *[arg for target in targets for arg in ("--test", target)]])
             command("codebase", ["-p", "hades-cli", "--bin", "hades", "commands::codebase_"])
             command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle"])

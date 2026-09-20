@@ -5,7 +5,16 @@ use hades_core::graph::export::{
 };
 use hades_core::graph::types::IDMap;
 use hades_core::test_support::{Fixtures, with_temp_db};
-use serde_json::json;
+use serde_json::{Value, json};
+
+fn numeric_vector(value: &Value) -> Vec<f64> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_f64().unwrap())
+        .collect()
+}
 
 #[tokio::test]
 async fn real_export_and_missing_target_preserve_explicit_partial_progress() {
@@ -33,12 +42,16 @@ async fn real_export_and_missing_target_preserve_explicit_partial_progress() {
             .await
             .unwrap();
         assert_eq!(
-            crud::get_document(&pool, "nodes", "a").await.unwrap()["structural_embedding"],
-            json!([1., 2.])
+            numeric_vector(
+                &crud::get_document(&pool, "nodes", "a").await.unwrap()["structural_embedding"]
+            ),
+            vec![1., 2.]
         );
         assert_eq!(
-            crud::get_document(&pool, "nodes", "b").await.unwrap()["structural_embedding"],
-            json!([9., 8.])
+            numeric_vector(
+                &crud::get_document(&pool, "nodes", "b").await.unwrap()["structural_embedding"]
+            ),
+            vec![9., 8.]
         );
         let mut targets = IDMap::new();
         targets.get_or_create("nodes/a");
@@ -56,12 +69,16 @@ async fn real_export_and_missing_target_preserve_explicit_partial_progress() {
             }
         ));
         assert_eq!(
-            crud::get_document(&pool, "nodes", "a").await.unwrap()["structural_embedding"],
-            json!([5., 6.])
+            numeric_vector(
+                &crud::get_document(&pool, "nodes", "a").await.unwrap()["structural_embedding"]
+            ),
+            vec![5., 6.]
         );
         assert_eq!(
-            crud::get_document(&pool, "nodes", "b").await.unwrap()["structural_embedding"],
-            json!([9., 8.])
+            numeric_vector(
+                &crud::get_document(&pool, "nodes", "b").await.unwrap()["structural_embedding"]
+            ),
+            vec![9., 8.]
         );
     })
     .await;
