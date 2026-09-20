@@ -45,3 +45,10 @@ seconds), all eight deadline regressions (10.01 seconds), and an injected owner
 unwind unit test (0.02 seconds). The latter intentionally panics in a private
 Tokio task, verifies the join reports panic, and checks direct-child reap plus no
 running descendant. No production process or actual language server was used.
+
+
+After integrating `d9b0aa2`, all seven descendant tests (10.03 seconds), eight
+deadline tests (10.01 seconds) and six memory tests (0.42 seconds) passed.
+Focused Clippy passed with `-D warnings`. The combined CI target retains all
+three suites. Selected final hashes are recorded in
+[lsp-descendant-remediation-result.json](lsp-descendant-remediation-result.json).
