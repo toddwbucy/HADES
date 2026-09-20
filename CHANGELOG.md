@@ -123,6 +123,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Trace all 18 task command contracts, including workflow, partial-write and
   session/reviewer limitations (epic #12).
 
+- Trace status, orientation and analyzer-management command contracts, including
+  failure-status and installation evidence limits (epic #12).
+
 - Retain actual CLI/private-peer reproductions of materialization scan failures
   reported as success in normal and dry-run modes (epic #12).
 

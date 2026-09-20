@@ -1,0 +1,20 @@
+{
+  "source_revision": "a9a152be592a3dc95a834ee27ceb9fd3cd986622",
+  "scope": "Source trace of four status/orientation/analyzer leaves; not runtime certification",
+  "leaves": [
+    "status",
+    "orient",
+    "tools status",
+    "tools install"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/system.rs": "3db33ce2fe7cd0deb11336475e98f1ebb1d73422ed49360b099773c663ea9931",
+    "crates/hades-cli/src/commands/tools.rs": "7bac5e0dcb51f26cc6695e1a730506cff2c26993ed069e0986f3b4795a0ddf55",
+    "crates/hades-cli/src/commands/output.rs": "28469b8f0e81d4e0bdd03026d6ba52f492c76c675ef826f60c046bfeb65235c8",
+    "crates/hades-core/src/dispatch.rs": "8c5d5293a699c874576cbcf597fca5ae662427ed369c19446ace12e1d1fd2cb0",
+    "crates/hades-core/src/db/pool.rs": "2778429f1a940d70ce2fbd1064eb82855f0755fd03daef1a2ae761c17d96fde1",
+    "crates/hades-core/src/code/lsp/session.rs": "6af3b5c56ba5af0370a1bf363f23bee2d571f21d411919804df3846751e8507e",
+    "crates/hades-core/src/code/lsp/preflight.rs": "dd5a50134330737915ae67a002868c0aac4a88f0040eb289d722038e107f6cc9"
+  }
+}
