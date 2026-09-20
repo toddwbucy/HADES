@@ -282,6 +282,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Bound plain/gzipped LaTeX source bytes and the complete decompressed tar stream
+  before parsing archive headers. Count rejected entries toward the member limit,
+  reject duplicate normalized source paths, and read the main member directly
+  without materializing archive-controlled paths or permissions. Validate raw
+  PAX/GNU header sizes before metadata allocation, including on older Python
+  runtimes; bound metadata bytes and count hidden extended headers (#35).
+
 - Convert embedding tensors to detached CPU float32 before NumPy export,
   supporting bfloat16 model output and tensors requiring gradients. Conversion
   to float32 preserves batch shape and ordering, including lists of tensor rows
