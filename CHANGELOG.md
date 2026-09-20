@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Define candidate code-search and paper-draft research workloads, version-aware
+  evidence judgments and remaining retrieval acceptance requirements (#12).
+
 - Record the live daemon artifact/compiler provenance and explicit source-mapping
   limitation; refresh packaging and additional audit-remediation status (#12).
 

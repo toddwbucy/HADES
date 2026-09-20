@@ -135,3 +135,9 @@ Compare vector-only and graph-assisted retrieval with recall@k, MRR/nDCG, latenc
 and memory, distinguishing learned structural embeddings from file membership.
 The existing 24-query seed remains preliminary. Representative judgments, measured
 results and baseline-derived regression thresholds are still outstanding.
+
+The research corpus consists of evolving public-facing paper drafts describing
+the intended completed project. The [workload plan](../../evaluation/retrieval/workload-plan.md)
+records candidate questions, a version-aware judgment protocol and a planned
+claim-to-code check. Draft claims alone do not establish implemented capabilities. The exact
+collection snapshot and independent judgments remain outstanding.
