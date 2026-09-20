@@ -27,8 +27,10 @@ database:
 
   sockets:
     # metis proxy is planned but not built; talk to arangod directly for now.
-    # Read/write separation is enforced by ArangoDB ACLs on the `hades` user,
-    # not by HADES code — both sockets point at the same socket file.
+    # These names select routes, not separate credentials or permissions.
+    # Both clients use the same database username/password. ArangoDB grants
+    # apply equally to both unless an external proxy enforces another policy.
+    # Authentication must be enabled for database user grants to apply.
     readonly: /run/arangodb3/arangodb.sock
     readwrite: /run/arangodb3/arangodb.sock
 

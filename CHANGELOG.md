@@ -73,6 +73,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   evidence register distinguishing merged fixes, deployment state and remaining
   full-audit acceptance work.
 
+- Record the active database authentication boundary and a private 11-case ACL
+  matrix; clarify that reader/writer routes share credentials and permissions (#74).
+
 ### Changed
 
 - Refresh epic #12 evidence dispositions, revision-bound coverage and remaining

@@ -1,0 +1,58 @@
+{
+  "server_version": "3.12.11",
+  "status": "passed",
+  "cases": [
+    {
+      "case": "missing_credentials_rejected",
+      "status": 401
+    },
+    {
+      "case": "wrong_credentials_rejected",
+      "status": 401
+    },
+    {
+      "case": "reader_read_allowed",
+      "status": 200
+    },
+    {
+      "case": "reader_write_denied",
+      "status": 403
+    },
+    {
+      "case": "writer_read_allowed",
+      "status": 200
+    },
+    {
+      "case": "writer_write_allowed",
+      "status": 202
+    },
+    {
+      "case": "writer_collection_override_denied",
+      "status": 403
+    },
+    {
+      "case": "fixture_reader_other_database_denied",
+      "status": 401
+    },
+    {
+      "case": "fixture_reader_administrative_listing_denied",
+      "status": 401
+    },
+    {
+      "case": "fixture_writer_other_database_denied",
+      "status": 401
+    },
+    {
+      "case": "fixture_writer_administrative_listing_denied",
+      "status": 401
+    }
+  ],
+  "denied_documents_absent": true,
+  "allowed_document_present": true,
+  "owned_process_stopped": true,
+  "limitations": [
+    "Synthetic Unix-socket ACL matrix, not deployed credentials/grants.",
+    "No production configuration changes; no TCP or HADES transport tested."
+  ],
+  "temporary_state_removed": true
+}
