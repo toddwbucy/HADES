@@ -6063,8 +6063,11 @@ mod handlers {
 
         let static_passed = check_result["passed"].as_bool().unwrap_or(true);
         let has_unlinked = verify_result["unlinked"].as_u64().unwrap_or(0) > 0;
-        let any_probe_failed = probes.iter().any(|p| p["pass"] == json!(false));
-        let passed = static_passed && !has_unlinked && !any_probe_failed;
+        let has_missing = verify_result["missing"].as_u64().unwrap_or(0) > 0;
+        // Required evidence must affirmatively pass. An unavailable probe has
+        // pass:null and retains its error diagnostic; it is not evidence of compliance.
+        let all_probes_passed = probes.iter().all(|p| p["pass"] == json!(true));
+        let passed = static_passed && !has_missing && !has_unlinked && all_probes_passed;
 
         Ok(json!({
             "path": path,

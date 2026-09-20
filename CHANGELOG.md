@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevent compliance reports from passing when smell definitions are missing or
+  required embedding probes fail; retain evidence diagnostics (#133).
+
 ### Added
 
 - Record isolated CLI reproductions of passing compliance reports with missing

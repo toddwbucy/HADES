@@ -1252,3 +1252,66 @@ mod orientation_outcome_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod compliance_outcome_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn report_envelope_preserves_incomplete_evidence_and_verdict() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("claim.rs");
+        let socket = root.path().join("embedding.sock");
+        // No verified reference in these cases, so no embedding request is needed.
+        let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let mut config = HadesConfig::default();
+        config.embedding.service.socket = socket.display().to_string();
+        let empty = json!({"result":[],"hasMore":false});
+        let found = json!({"result":[{"_key":"smell-032-test","_id":"smell_specs/smell-032-test","name":"CS-32: example","smell_id":32}],"hasMore":false});
+        for (case, content, rows, expected) in [
+            ("empty", "fn example() {}", vec![empty.clone()], true),
+            (
+                "missing",
+                "// CS-32",
+                vec![empty.clone(), empty.clone()],
+                false,
+            ),
+            (
+                "unlinked",
+                "// CS-32",
+                vec![empty.clone(), found, empty],
+                false,
+            ),
+        ] {
+            std::fs::write(&file, content).unwrap();
+            let mock =
+                cursor_mock::Mock::new(rows.into_iter().map(cursor_mock::Reply::page).collect())
+                    .await;
+            let payload = serde_json::to_vec(&json!({"command":"smell.report",
+                "request_id":"compliance-verdict","params":{"path":file}}))
+            .unwrap();
+            let response = handle_request(
+                &mock.pool,
+                &config,
+                ConnectionPolicy::local_admin(),
+                &payload,
+                Duration::from_secs(3),
+            )
+            .await;
+            assert!(response.success, "{case}: {response:?}");
+            assert_eq!(response.request_id.as_deref(), Some("compliance-verdict"));
+            assert!(response.error.is_none());
+            let data = response.data.unwrap();
+            assert_eq!(data["passed"], expected, "{case}: {data}");
+            if case != "empty" {
+                let key = if case == "missing" {
+                    "missing_from_graph"
+                } else {
+                    "unlinked_claims"
+                };
+                assert_eq!(data["ref_verification"][key].as_array().unwrap().len(), 1);
+            }
+        }
+    }
+}

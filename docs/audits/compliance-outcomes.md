@@ -36,3 +36,28 @@ and needs explicit disposition rather than accidental behavior changes.
 Unreadable-file omissions, filesystem traversal limits, claim identity ambiguity,
 and sequential linking partial writes remain separate audit candidates. This
 reproduction establishes neither a production incident nor full compliance safety.
+
+## Remediation
+
+The shared report handler now requires zero missing definitions and an affirmative
+boolean true from every generated probe, in addition to the existing static and
+unlinked-claim checks. Null/error probes retain their diagnostics and prevent a
+passing verdict. Empty reports retain their existing passing behavior.
+
+The CLI and daemon still report successful execution when they successfully
+produce a report: outer success and exit 0 mean report generation completed.
+Consumers must use `data.passed` for the compliance verdict. This preserves the
+same convention for static violations and low similarity; connection/query
+errors that prevent generation remain operational failures. No field was removed.
+
+Nine actual-CLI response tests passed, including both reproduced defects and five
+controls (empty, static violation, unlinked reference, valid identical vectors,
+and orthogonal vectors). One shared-service test passed for missing, unlinked,
+and empty reports, preserving request ID and detailed evidence. Successful probe
+controls use synthetic 2,048-dimensional vectors, not a live model or calibrated
+quality benchmark. Remediation hashes and test summaries are recorded separately;
+the baseline response artifact is unchanged.
+
+Unreadable inputs skipped before verification remain a separate audit gap. This
+fix does not establish filesystem completeness, relevance of the fixed similarity
+threshold, or atomicity of linking operations. Nothing was deployed.
