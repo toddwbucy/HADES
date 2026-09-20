@@ -142,10 +142,17 @@ pub fn leaf_name(path: &str) -> &str {
 pub fn build_symbol_index(
     file_symbols: &HashMap<String, Vec<Symbol>>,
 ) -> HashMap<String, Vec<(String, String)>> {
+    build_symbol_index_scoped(file_symbols, "")
+}
+
+pub fn build_symbol_index_scoped(
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    namespace: &str,
+) -> HashMap<String, Vec<(String, String)>> {
     let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for (rel_path, symbols) in file_symbols {
-        let fkey = keys::file_key(rel_path);
+        let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
             // Skip imports themselves — we only want definitions.
             if sym.kind == SymbolKind::Import {
@@ -175,11 +182,19 @@ pub fn resolve_rust_imports(
     rust_imports: &HashMap<String, Vec<String>>,
     symbol_index: &HashMap<String, Vec<(String, String)>>,
 ) -> Vec<serde_json::Value> {
+    resolve_rust_imports_scoped(rust_imports, symbol_index, "")
+}
+
+pub fn resolve_rust_imports_scoped(
+    rust_imports: &HashMap<String, Vec<String>>,
+    symbol_index: &HashMap<String, Vec<(String, String)>>,
+    namespace: &str,
+) -> Vec<serde_json::Value> {
     let mut edges = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for (source_path, use_paths) in rust_imports {
-        let source_fkey = keys::file_key(source_path);
+        let source_fkey = keys::scoped_file_key(namespace, source_path);
 
         for use_path in use_paths {
             let stripped = strip_crate_qualifiers(use_path);

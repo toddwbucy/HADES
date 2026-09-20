@@ -23,12 +23,20 @@ struct IndexedSymbol {
 
 /// Resolve semantic call records into `codebase_calls_edges` documents.
 pub fn resolve_cpp_calls(base: &Path, file_symbols: &HashMap<String, Vec<Symbol>>) -> Vec<Value> {
+    resolve_cpp_calls_scoped(base, file_symbols, "")
+}
+
+pub fn resolve_cpp_calls_scoped(
+    base: &Path,
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    namespace: &str,
+) -> Vec<Value> {
     let mut by_usr: HashMap<String, Vec<IndexedSymbol>> = HashMap::new();
     let mut by_location: HashMap<(String, usize), Vec<IndexedSymbol>> = HashMap::new();
     let mut by_qname: HashMap<String, Vec<IndexedSymbol>> = HashMap::new();
 
     for (rel_path, symbols) in file_symbols {
-        let fkey = keys::file_key(rel_path);
+        let fkey = keys::scoped_file_key(namespace, rel_path);
         for symbol in symbols.iter().filter(|s| s.kind != SymbolKind::Import) {
             let qname = symbol.qualified_name();
             let indexed = IndexedSymbol {
@@ -51,7 +59,7 @@ pub fn resolve_cpp_calls(base: &Path, file_symbols: &HashMap<String, Vec<Symbol>
     let mut edges = Vec::new();
     let mut seen = HashSet::new();
     for (source_path, symbols) in file_symbols {
-        let source_fkey = keys::file_key(source_path);
+        let source_fkey = keys::scoped_file_key(namespace, source_path);
         for caller in symbols.iter().filter(|s| s.kind != SymbolKind::Import) {
             let Some(calls) = caller.metadata.get("calls").and_then(Value::as_array) else {
                 continue;

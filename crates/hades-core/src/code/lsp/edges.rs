@@ -105,7 +105,7 @@ pub struct SymbolDocument {
     pub visibility: String,
     pub signature: String,
     pub file_path: String,
-    /// Key of the file node this symbol belongs to (`keys::file_key(file_path)`).
+    /// Key of the file node this symbol belongs to (`keys::scoped_file_key(&self.namespace, file_path)`).
     /// Must be stored explicitly — the document `_key` is *derived* from it, but
     /// downstream queries (coverage, RGCN feature loading, `symbol_count_consistency`)
     /// read this field. See #124.
@@ -131,6 +131,7 @@ pub struct SymbolDocument {
 /// - Symbol documents for the `codebase_symbols` collection
 /// - Edge documents for the `codebase_edges` collection
 pub struct LspEdgeResolver {
+    namespace: String,
     /// Input: rel_path → extraction data.
     file_data: HashMap<String, FileExtraction>,
     /// Index: qualified_name → vec of (rel_path, symbol_key).
@@ -142,7 +143,16 @@ pub struct LspEdgeResolver {
 impl LspEdgeResolver {
     /// Create a new resolver from extraction data.
     pub fn new(file_data: HashMap<String, FileExtraction>, analyzer: &'static str) -> Self {
+        Self::new_scoped(file_data, analyzer, "")
+    }
+
+    pub fn new_scoped(
+        file_data: HashMap<String, FileExtraction>,
+        analyzer: &'static str,
+        namespace: &str,
+    ) -> Self {
         let mut resolver = Self {
+            namespace: namespace.into(),
             file_data,
             symbol_index: HashMap::new(),
             analyzer,
@@ -162,7 +172,7 @@ impl LspEdgeResolver {
                     continue;
                 };
 
-                let fk = keys::file_key(rel_path);
+                let fk = keys::scoped_file_key(&self.namespace, rel_path);
                 let sk = keys::symbol_key(&fk, &sym.qualified_name, sym.start_line as usize + 1);
 
                 documents.push(SymbolDocument {
@@ -207,7 +217,7 @@ impl LspEdgeResolver {
         let mut seen: HashSet<(String, String, &str)> = HashSet::new();
 
         for (rel_path, extraction) in &self.file_data {
-            let fk = keys::file_key(rel_path);
+            let fk = keys::scoped_file_key(&self.namespace, rel_path);
 
             for sym in &extraction.symbols {
                 let sk = keys::symbol_key(&fk, &sym.qualified_name, sym.start_line as usize + 1);
@@ -320,7 +330,7 @@ impl LspEdgeResolver {
     /// Build the symbol index for call resolution.
     fn build_index(&mut self) {
         for (rel_path, extraction) in &self.file_data {
-            let fk = keys::file_key(rel_path);
+            let fk = keys::scoped_file_key(&self.namespace, rel_path);
             for sym in &extraction.symbols {
                 if sym.qualified_name.is_empty() {
                     continue;
@@ -434,7 +444,7 @@ impl LspEdgeResolver {
                     .filter(|symbol| symbol.start_line <= line && line <= symbol.end_line)
                     .min_by_key(|symbol| symbol.end_line - symbol.start_line)
             })?;
-        let file_key = keys::file_key(actual_path);
+        let file_key = keys::scoped_file_key(&self.namespace, actual_path);
         Some(keys::symbol_key(
             &file_key,
             &symbol.qualified_name,
@@ -729,12 +739,34 @@ mod tests {
         // #124: every symbol must carry a non-null file_key equal to
         // file_key(file_path), and the document _key must be prefixed by it.
         let expected_fk = keys::file_key("src/lib.rs");
-        assert_eq!(expected_fk, "src_lib_rs");
+        assert!(expected_fk.starts_with("f2_src_lib_rs__"));
         for d in &docs {
             assert_eq!(d.file_key, expected_fk);
             assert_eq!(d.file_key, keys::file_key(&d.file_path));
             assert!(d.key.starts_with(&expected_fk));
         }
+    }
+
+    #[test]
+    fn scoped_symbol_documents_use_the_requested_root() {
+        let mut files = HashMap::new();
+        files.insert(
+            "src/lib.rs".into(),
+            make_extraction(vec![make_symbol("run", "function")]),
+        );
+        let first = LspEdgeResolver::new_scoped(files.clone(), "rust-analyzer", "/one")
+            .build_symbol_documents();
+        let second =
+            LspEdgeResolver::new_scoped(files, "rust-analyzer", "/two").build_symbol_documents();
+        assert_eq!(
+            first[0].file_key,
+            keys::scoped_file_key("/one", "src/lib.rs")
+        );
+        assert_eq!(
+            second[0].file_key,
+            keys::scoped_file_key("/two", "src/lib.rs")
+        );
+        assert_ne!(first[0].key, second[0].key);
     }
 
     #[test]

@@ -18,6 +18,10 @@ pub struct StructuralEdges {
 /// Resolve only unambiguous name relationships. These edges remain marked as
 /// syntactic and must never be interpreted as compiler-resolved facts.
 pub fn resolve(files: &HashMap<String, Vec<Symbol>>) -> StructuralEdges {
+    resolve_scoped(files, "")
+}
+
+pub fn resolve_scoped(files: &HashMap<String, Vec<Symbol>>, namespace: &str) -> StructuralEdges {
     let mut targets: HashMap<&str, Vec<(&str, &Symbol)>> = HashMap::new();
     for (path, symbols) in files {
         for symbol in symbols.iter().filter(|s| s.kind.is_primitive()) {
@@ -31,7 +35,7 @@ pub fn resolve(files: &HashMap<String, Vec<Symbol>>) -> StructuralEdges {
     let mut result = StructuralEdges::default();
     let mut seen_calls = HashSet::new();
     for (source_path, symbols) in files {
-        let source_file_key = keys::file_key(source_path);
+        let source_file_key = keys::scoped_file_key(namespace, source_path);
         for caller in symbols.iter().filter(|s| s.kind == SymbolKind::Function) {
             let from_key = keys::symbol_key(
                 &source_file_key,
@@ -49,7 +53,7 @@ pub fn resolve(files: &HashMap<String, Vec<Symbol>>) -> StructuralEdges {
                     continue;
                 };
                 let (target_path, target) = candidates[0];
-                let target_file_key = keys::file_key(target_path);
+                let target_file_key = keys::scoped_file_key(namespace, target_path);
                 let to_key = keys::symbol_key(
                     &target_file_key,
                     &target.qualified_name(),
@@ -106,8 +110,8 @@ pub fn resolve(files: &HashMap<String, Vec<Symbol>>) -> StructuralEdges {
             {
                 continue;
             }
-            let from_key = keys::file_key(source_path);
-            let to_key = keys::file_key(target_path);
+            let from_key = keys::scoped_file_key(namespace, source_path);
+            let to_key = keys::scoped_file_key(namespace, target_path);
             result.imports.push(json!({
                 "_key": keys::edge_key(&from_key, "imports", &to_key),
                 "_from": format!("{}/{}", CODEBASE.files, from_key),

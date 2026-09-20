@@ -5658,23 +5658,10 @@ mod handlers {
         dot / (mag_a * mag_b)
     }
 
-    /// Generate candidate document keys for a source file path.
-    ///
-    /// Given a file like `conductor.rs`, generates:
-    /// `["conductor", "conductor-rs", "conductor_rs"]`
-    /// Generate candidate document keys for a file path.
-    ///
-    /// The canonical key (matching what `codebase ingest` writes via
-    /// `keys::file_key(rel_path)`) is produced first — this is the form
-    /// `src/lib.rs` → `src_lib_rs` that's actually stored in
-    /// `codebase_files`. The basename-derived variants follow as
-    /// fallbacks for legacy databases that may have different key shapes.
-    ///
-    /// `scan_root` is the directory the verify pass was launched against
-    /// (so we can compute `path` relative to it). When `path` is not
-    /// inside `scan_root` (defensive case — shouldn't happen during a
-    /// normal scan), the canonical step is skipped and only basename
-    /// variants are produced.
+    /// Generate read-lookup candidates, preferring the canonical root-scoped key.
+    /// Legacy relative-path and basename shapes remain fallback candidates.
+    /// Single-file verification tries ancestor root namespaces because its
+    /// original ingest root is not available in the invocation.
     pub(crate) fn candidate_doc_keys(
         scan_root: &std::path::Path,
         path: &std::path::Path,
@@ -5683,30 +5670,28 @@ mod handlers {
 
         let mut keys: Vec<String> = Vec::new();
 
-        // Canonical form: file_key over the path relative to scan_root.
-        // E.g., `src/lib.rs` relative to project root → `src_lib_rs`.
-        if let Ok(rel) = path.strip_prefix(scan_root) {
-            let rel_str = rel.to_string_lossy();
-            if !rel_str.is_empty() {
-                keys.push(keys::file_key(&rel_str));
+        // Modern root-scoped identity first. Legacy candidates are read-only
+        // compatibility hints, never keys for new graph writes.
+        let root = scan_root
+            .canonicalize()
+            .unwrap_or_else(|_| scan_root.to_path_buf());
+        let file = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let Ok(relative) = file.strip_prefix(&root) {
+            if !relative.as_os_str().is_empty() {
+                keys.push(keys::scoped_file_key(
+                    &root.to_string_lossy(),
+                    &relative.to_string_lossy(),
+                ));
+                keys.push(keys::legacy_file_key(&relative.to_string_lossy()));
             } else {
-                // path == scan_root (single-file scan): no relative
-                // path is available, so we can't know which depth
-                // the file was originally ingested at. Emit
-                // file_key candidates for every parent-suffix —
-                // covers ingests done from various directory roots.
-                // For `/proj/src/lib.rs`: `proj_src_lib_rs`,
-                // `src_lib_rs`, `lib_rs`.
-                let parts: Vec<&str> = path
-                    .components()
-                    .filter_map(|c| match c {
-                        std::path::Component::Normal(s) => s.to_str(),
-                        _ => None,
-                    })
-                    .collect();
-                for i in 0..parts.len() {
-                    let suffix = parts[i..].join("/");
-                    keys.push(keys::file_key(&suffix));
+                for parent in file.ancestors().skip(1) {
+                    if let Ok(relative) = file.strip_prefix(parent) {
+                        keys.push(keys::scoped_file_key(
+                            &parent.to_string_lossy(),
+                            &relative.to_string_lossy(),
+                        ));
+                        keys.push(keys::legacy_file_key(&relative.to_string_lossy()));
+                    }
                 }
             }
         }
@@ -8262,6 +8247,10 @@ mod tests {
         assert!(
             keys3.contains(&"src_lib_rs".into()),
             "canonical file_key form missing from {keys3:?}"
+        );
+        assert_eq!(
+            keys3[0],
+            crate::db::keys::scoped_file_key("/proj", "src/lib.rs")
         );
         // Basename fallbacks still present.
         assert!(keys3.contains(&"lib".into()));

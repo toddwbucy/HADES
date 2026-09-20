@@ -63,16 +63,48 @@ pub fn embedding_key(chunk_key: &str) -> String {
     format!("{chunk_key}_emb")
 }
 
-/// Normalize a file path into an ArangoDB document key.
-///
-/// Replaces `/` and `.` with `_`. No version stripping.
-///
-/// # Examples
-/// ```
-/// # use hades_core::db::keys::file_key;
-/// assert_eq!(file_key("core/models.py"), "core_models_py");
-/// ```
+/// Versioned, collision-resistant file identity in an unscoped namespace.
+/// Production ingest uses [`scoped_file_key`] with its canonical root.
 pub fn file_key(rel_path: &str) -> String {
+    scoped_file_key("", rel_path)
+}
+
+/// Identify a file by its exact root namespace and relative UTF-8 path.
+///
+/// Full SHA-256 covers length-delimited components; the bounded ASCII prefix
+/// is cosmetic. Callers canonicalize the root and reject non-UTF-8 paths before
+/// use. Changing roots intentionally changes identities and requires migration.
+/// The result leaves room for symbol/chunk/embedding suffixes under ArangoDB's
+/// 254-byte document-key limit.
+pub fn scoped_file_key(namespace: &str, rel_path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"hades:file:v2\0");
+    for component in [namespace, rel_path] {
+        hasher.update((component.len() as u64).to_be_bytes());
+        hasher.update(component.as_bytes());
+    }
+    let readable: String = rel_path
+        .chars()
+        .take(32)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("f2_{readable}__{digest}")
+}
+
+/// Pre-v2 key shape, solely for migration inspection and legacy read lookup.
+/// Never use this for a new ingest write.
+pub fn legacy_file_key(rel_path: &str) -> String {
     rel_path.replace(['.', '/'], "_")
 }
 
@@ -318,13 +350,36 @@ mod tests {
 
     #[test]
     fn test_file_key() {
-        assert_eq!(file_key("core/models.py"), "core_models_py");
-        assert_eq!(file_key("README.md"), "README_md");
-        assert_eq!(file_key("src/lib.rs"), "src_lib_rs");
-        assert_eq!(
-            file_key("core/persephone/models.py"),
-            "core_persephone_models_py"
+        let key = file_key("core/models.py");
+        assert!(key.starts_with("f2_core_models_py__"));
+        assert_eq!(key, scoped_file_key("", "core/models.py"));
+        assert_ne!(file_key("a/b.py"), file_key("a_b.py"));
+        assert_ne!(file_key("a.b.py"), file_key("a_b.py"));
+        assert_ne!(
+            scoped_file_key("/one", "src/main.py"),
+            scoped_file_key("/two", "src/main.py")
         );
+        assert_ne!(scoped_file_key("a", "bc"), scoped_file_key("ab", "c"));
+        assert_eq!(legacy_file_key("core/models.py"), "core_models_py");
+    }
+
+    #[test]
+    fn file_identity_handles_unicode_and_long_paths_with_legal_bounded_keys() {
+        let paths = [
+            "src/λ.py".to_string(),
+            "src/_.py".into(),
+            "a/".repeat(1000),
+            "b/".repeat(1000),
+        ];
+        let mut distinct = std::collections::HashSet::new();
+        for path in paths {
+            let key = scoped_file_key("/root/δ", &path);
+            assert!(key.len() <= 101);
+            assert!(key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'));
+            assert!(distinct.insert(key.clone()));
+            assert!(embedding_key(&chunk_key(&key, usize::MAX)).len() <= 254);
+            assert!(symbol_key(&key, &"λ".repeat(1000), 10).len() <= 254);
+        }
     }
 
     #[test]

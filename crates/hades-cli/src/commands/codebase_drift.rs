@@ -13,31 +13,11 @@
 //! - **changed** — a matched file whose content differs from what was ingested
 //! - **unhandled** — a file under the root that ingest has no handler for
 //!
-//! "Under this root" is load-bearing. File keys are relative to the ingest root,
-//! so they carry no evidence of which tree produced them; a comparison that read
-//! the whole `codebase_files` collection reported every node of a second tree as
-//! stale while those files sat untouched on disk (#192). Ingest now records an
-//! `ingest_root` on each node and this command compares only its own.
-//!
-//! That scopes the comparison, and it is all it scopes. `keys::file_key` is
-//! still purely root-relative, so two trees sharing a relative path (`src/main.py`
-//! in both) share one document, and the later ingest overwrites the earlier. Root
-//! attribution makes drift stop mislabelling the *other* tree's nodes; it cannot
-//! separate nodes that were never distinct. Non-overlapping trees are handled;
-//! colliding ones need the root folded into the key, which is a migration. Nodes
-//! belonging to another root are excluded and reported under `other_roots`;
-//! nodes predating attribution are kept (dropping them would report an entire
-//! existing graph as uningested) and listed under `stale.unattributed_keys`,
-//! held out of `stale.keys` so a `--full` pipe into `codebase retire` cannot
-//! delete a node this command could not prove belongs here.
-//!
-//! Attribution is recorded over the files ingest *discovers*, so re-ingesting a
-//! root attributes every node whose file still exists. A node whose file is
-//! already gone is never discovered and can never be attributed by any number of
-//! re-ingests — which is precisely the population `stale` exists to surface. On
-//! a graph built before attribution, expect a residual `unattributed` count that
-//! only a reviewed `codebase retire` clears. It does not grow: everything
-//! ingested from now on carries its root.
+//! File identities include the canonical ingest root and relative UTF-8 path.
+//! Stored `ingest_root` scopes comparisons, so another root's files cannot be
+//! reported as stale. Legacy identities require explicit migration before drift:
+//! comparing their keys against new identities would produce unsafe retirement
+//! candidates. See `docs/code-file-identities.md`.
 //!
 //! The last two exist because their absence made a clean report a false green
 //! (#183). A file ingest cannot handle used to fall outside drift's notion of
@@ -70,7 +50,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::json;
 use tracing::info;
 
@@ -115,9 +95,13 @@ pub async fn run_drift(
     // The same walk also reports what ingest would NOT pick up, so files with no
     // handler are counted rather than falling outside the comparison entirely.
     let base = ingest_base_path(&path);
+    base.to_str().context("ingest root must be valid UTF-8")?;
     let discovery = discover_files_detailed(&path, lang_override, &unparsed_set)
         .context("failed to discover source files")?;
     let files = discovery.files;
+    for file in &files {
+        file.to_str().context("source paths must be valid UTF-8")?;
+    }
     let disk: BTreeSet<String> = files.iter().map(|f| file_key_for(&base, f)).collect();
 
     // Graph side, restricted to nodes belonging to this ingest root (#192).
@@ -192,12 +176,8 @@ pub async fn run_drift(
             // owns, so it is safe to hand to `codebase retire`.
             "keys": sample(&stale_attributed),
             "truncated": stale_attributed.len() > limit,
-            // Stale keys on nodes with no recorded ingest root, listed rather
-            // than counted so they can be reviewed instead of piped. They
-            // predate attribution and cannot be confirmed to belong to this
-            // tree. Re-ingest stamps any whose file still exists; one whose file
-            // is already gone can never be attributed by any re-ingest, and is
-            // pre-#192 backlog to clear with a reviewed `retire`.
+            // Defensively hold out malformed v2 nodes lacking root attribution.
+            // Review their ownership; never pipe them into automatic retirement.
             "unattributed": stale_unattributed.len(),
             "unattributed_keys": sample(&stale_unattributed),
             "unattributed_truncated": stale_unattributed.len() > limit,
@@ -283,9 +263,8 @@ pub async fn run_drift(
              root, so they cannot be confirmed to belong to this tree. They are \
              listed separately as `stale.unattributed_keys` and are NOT in \
              `stale.keys`, so a `--full` pipe into `codebase retire` will not \
-             touch them. Re-ingesting each root attributes any whose file still \
-             exists; one whose file is already gone can never be attributed, and \
-             is pre-attribution backlog to clear with a reviewed retire.",
+             touch them. Review the missing ownership metadata using \
+             docs/code-file-identities.md before changing these records.",
             stale_unattributed.len(),
             stale.len(),
         );
@@ -315,21 +294,16 @@ pub async fn run_drift(
 
 /// The `codebase_files` nodes that belong to this ingest root.
 ///
-/// Splitting the collection by root is what keeps a second tree in the same
-/// database out of this one's `stale` bucket (#192). File keys are relative to
-/// the ingest root, so they carry no evidence of which tree produced them —
-/// without the stored `ingest_root` a comparison against one root reports every
-/// node of the other as stale, while those files sit untouched on disk. That
-/// matters more than a wrong count because `--full` exists to feed
-/// `codebase retire`, which deletes.
+/// The recorded root keeps other trees out of the retirement candidates.
+/// Legacy identities are rejected before classification, since their old keys
+/// cannot be compared safely against the current key scheme.
 ///
 /// Three groups come back, because "not this root" and "root unknown" are
 /// different answers and only one of them is safe to act on:
 ///
 /// - `in_scope`: nodes stamped with this root, plus nodes with no stamp at all.
-///   The unstamped ones predate `ingest_root` and cannot be attributed either
-///   way, so they are kept rather than silently dropped — excluding them would
-///   report a whole existing graph as uningested.
+///   Unstamped v2 nodes are malformed; keep them visible for ownership review
+///   while excluding them from automatic retirement candidates.
 /// - `unattributed`: which of those carry no stamp, so the caller can say how
 ///   much of its answer rests on an assumption.
 /// - `other_roots`: nodes excluded as belonging elsewhere, with the roots they
@@ -353,7 +327,7 @@ async fn graph_file_side(pool: &ArangoPool, base: &std::path::Path) -> Result<Gr
     let aql = format!(
         "FOR f IN @@files \
            FILTER f.{field} == null OR f.{field} == @root \
-           RETURN {{ key: f._key, hash: f.content_hash, attributed: f.{field} != null }}",
+           RETURN {{ key: f._key, hash: f.content_hash, attributed: f.{field} != null, version: f.file_key_version, path: f.path, root: f.{field} }}",
         field = INGEST_ROOT_FIELD
     );
     let bind = json!({ "@files": CODEBASE.files, "root": root });
@@ -441,19 +415,28 @@ async fn graph_file_hashes(
 ) -> Result<Vec<(String, Option<String>, bool)>> {
     let bind = bind.clone();
     match query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader).await {
-        Ok(rows) => Ok(rows
-            .results
-            .iter()
-            .filter_map(|v| {
-                let key = v.get("key")?.as_str()?.to_string();
+        Ok(rows) => rows.results.iter().map(|v| {
+                if v.get("version").and_then(|v| v.as_u64()) != Some(2) {
+                    bail!("legacy code-file identities require explicit migration before drift; follow docs/code-file-identities.md");
+                }
+                let key = v.get("key").and_then(|k| k.as_str()).context("invalid file identity in drift response")?.to_string();
                 let hash = v.get("hash").and_then(|h| h.as_str()).map(str::to_string);
                 let attributed = v
                     .get("attributed")
                     .and_then(|a| a.as_bool())
                     .unwrap_or(false);
-                Some((key, hash, attributed))
+                if attributed {
+                    let root = v.get("root").and_then(|r| r.as_str())
+                        .context("invalid file identity: missing or malformed ingest root")?;
+                    let path = v.get("path").and_then(|p| p.as_str())
+                        .context("invalid file identity: missing or malformed relative path")?;
+                    if hades_core::db::keys::scoped_file_key(root, path) != key {
+                        bail!("file identity conflict in drift response; refusing retirement candidates for mismatched root/path/key");
+                    }
+                }
+                Ok((key, hash, attributed))
             })
-            .collect()),
+            .collect(),
         Err(e) if is_missing_collection(&e) => Ok(Vec::new()),
         Err(e) => Err(e).context("failed to read codebase_files keys"),
     }
