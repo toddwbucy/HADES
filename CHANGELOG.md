@@ -363,6 +363,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Add strict retrieval judgment coverage for representative datasets: preserve
+  unjudged rankings, withhold incomplete scores and aggregates, and distinguish
+  unsupported no-positive cases while preserving historical seed results (#12).
+
 - Isolate dispatch and authorization unit tests with private cursor mocks; require
   exact allowed-query results and no requests from rejected commands (#47).
 - Fence the complete training-provider lifecycle with expiring session ownership;
