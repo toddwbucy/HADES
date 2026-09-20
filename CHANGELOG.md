@@ -27,6 +27,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Database clients can bound each HTTP response before JSON parsing; response
+  bodies now share the request deadline instead of waiting indefinitely after
+  headers. This supports the bounded retrieval work in #22.
+
 - **`config/schemas/codebase.yaml`**, the universal code graph as data. `hades
   ingest` creates its collections and gharial edge definitions directly and leaves
   `hades_schema` holding at most the empty `meta` that `--seed empty` writes, so

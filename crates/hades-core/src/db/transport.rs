@@ -9,7 +9,7 @@ use std::time::Duration;
 use base64::Engine;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{Method, Request, StatusCode, Uri};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -42,6 +42,8 @@ pub struct ArangoClient {
     auth_header: Option<String>,
     /// Timeout for individual HTTP requests.
     request_timeout: Duration,
+    /// Optional wire-byte ceiling, enforced before JSON deserialization.
+    response_limit: Option<usize>,
     /// The hyper client for Unix socket connections.
     unix_client: Option<Client<UnixConnector, Full<Bytes>>>,
     /// The hyper client for TCP connections.
@@ -90,6 +92,7 @@ impl ArangoClient {
             database,
             auth_header,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            response_limit: None,
             unix_client: None,
             tcp_client: None,
         };
@@ -134,6 +137,7 @@ impl ArangoClient {
             database: database.to_string(),
             auth_header: Some(format!("Basic {encoded}")),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            response_limit: None,
             unix_client: Some(Client::unix()),
             tcp_client: None,
         }
@@ -151,6 +155,7 @@ impl ArangoClient {
             database: database.to_string(),
             auth_header: Some(format!("Basic {encoded}")),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            response_limit: None,
             unix_client: None,
             tcp_client: Some(
                 Client::builder(TokioExecutor::new())
@@ -158,6 +163,20 @@ impl ArangoClient {
                     .build(connector),
             ),
         }
+    }
+
+    /// Set a per-response wire-byte ceiling before JSON parsing.
+    ///
+    /// This bounds the HTTP payload, not the parsed JSON heap or total bytes
+    /// across cursor pages. Callers must budget those separately.
+    pub fn with_response_limit(mut self, bytes: usize) -> Result<Self, ArangoError> {
+        if bytes == 0 {
+            return Err(ArangoError::Request(
+                "response byte limit must be positive".into(),
+            ));
+        }
+        self.response_limit = Some(bytes);
+        Ok(self)
     }
 
     /// The database this client targets.
@@ -265,18 +284,27 @@ impl ArangoClient {
             return Err(ArangoError::Request("no transport configured".to_string()));
         };
 
-        let response = tokio::time::timeout(timeout, response_future)
+        let deadline = tokio::time::Instant::now() + timeout;
+        let response = tokio::time::timeout_at(deadline, response_future)
             .await
             .map_err(|_| {
                 ArangoError::Request(format!("request timed out after {}s", timeout.as_secs()))
             })??;
 
         let status = response.status();
-        let body_bytes = response
-            .into_body()
-            .collect()
+        let body = Limited::new(
+            response.into_body(),
+            self.response_limit.unwrap_or(usize::MAX),
+        );
+        let body_bytes = tokio::time::timeout_at(deadline, body.collect())
             .await
-            .map_err(|e| ArangoError::Request(e.to_string()))?
+            .map_err(|_| {
+                ArangoError::Request(format!(
+                    "response body timed out within {}s request budget",
+                    timeout.as_secs_f64()
+                ))
+            })?
+            .map_err(|error| ArangoError::Request(format!("response body rejected: {error}")))?
             .to_bytes();
 
         trace!(
@@ -369,6 +397,85 @@ fn resolve_socket(config: &HadesConfig, read_only: bool) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    async fn bounded_mock(
+        response: &'static [u8],
+        delay: Duration,
+    ) -> (tempfile::TempDir, ArangoClient, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("transport.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+                assert!(request.len() <= 4096, "mock request headers too large");
+            }
+            stream.write_all(response).await.unwrap();
+            tokio::time::sleep(delay).await;
+        });
+        let client = ArangoClient::with_socket(socket, "fixture", "root", "fixture");
+        (dir, client, task)
+    }
+
+    #[tokio::test]
+    async fn bounded_response_accepts_exact_limit() {
+        let (_dir, client, task) = bounded_mock(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}",
+            Duration::ZERO,
+        )
+        .await;
+        let value = client
+            .with_response_limit(11)
+            .unwrap()
+            .get("version")
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!({"ok": true}));
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_response_rejects_chunked_overflow_before_json() {
+        let (_dir, client, task) = bounded_mock(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nabcdef\r\n6\r\nghijkl\r\n0\r\n\r\n", Duration::ZERO
+        ).await;
+        let error = client
+            .with_response_limit(11)
+            .unwrap()
+            .get("version")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("length limit exceeded"),
+            "{error}"
+        );
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_response_body_shares_request_deadline() {
+        let (_dir, mut client, task) = bounded_mock(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{",
+            Duration::from_secs(5),
+        )
+        .await;
+        client.request_timeout = Duration::from_millis(100);
+        let error = client
+            .with_response_limit(11)
+            .unwrap()
+            .get("version")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("response body timed out"),
+            "{error}"
+        );
+        task.abort();
+        let _ = task.await;
+    }
+
     #[test]
     fn test_build_uri_tcp() {
         let client = ArangoClient {
@@ -377,6 +484,7 @@ mod tests {
             database: "test_db".into(),
             auth_header: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            response_limit: None,
             unix_client: None,
             tcp_client: None,
         };
@@ -396,6 +504,7 @@ mod tests {
             database: "test_db".into(),
             auth_header: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            response_limit: None,
             unix_client: None,
             tcp_client: None,
         };
