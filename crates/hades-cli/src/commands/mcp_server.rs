@@ -791,14 +791,16 @@ impl HadesMcpServer {
         .await
     }
 
-    #[tool(description = "Report recorded code smells for a file in the codebase graph.")]
+    #[tool(
+        description = "Report up to 100 recorded smell associations by exact stored file path or codebase_files ID. Reads the graph only; does not scan local files."
+    )]
     async fn smell_report(
         &self,
         Parameters(a): Parameters<SmellReportArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.run(
             a.db,
-            DaemonCommand::SmellReport(SmellReportParams { path: a.path }),
+            DaemonCommand::SmellStoredReport(SmellReportParams { path: a.path }),
         )
         .await
     }
