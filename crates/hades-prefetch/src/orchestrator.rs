@@ -405,6 +405,10 @@ impl Orchestrator {
             }
         }
 
+        prefetcher.shutdown().await.map_err(|error| {
+            OrchestratorError::InvalidRun(format!("prefetch shutdown failed: {error}"))
+        })?;
+
         if !checkpoint_saved {
             return Err(OrchestratorError::InvalidRun(
                 "no valid checkpoint produced".into(),
