@@ -273,6 +273,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   inverse and duplicate endpoint pairs together, serialize and return one shared
   partition, and reject invalid partitions or training on held-out edges.
 
+- Reject embedding responses with duplicate, missing, or invalid input indices,
+  nonnumeric or nonfinite vectors, unexpected dimensions, or incompatible model
+  identities before associating vectors with chunks (#16). Apply vector and model
+  checks to late chunking too; preserve valid out-of-order response handling.
+
 - Training RPCs now await precondition failures and validate graph tensors, sample indices, model configuration, and checkpoint loads before replacing active state (#18). Invalid requests return explicit gRPC statuses; reinitializing a model clears the previous graph. CPU tests exercise these contracts over temporary Unix sockets.
 
 - **A partial re-ingest no longer dangles a dependent's edges** (#9). `symbol_key`

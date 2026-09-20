@@ -50,8 +50,13 @@ pub struct EmbeddingClientConfig {
     pub endpoint: EmbeddingEndpoint,
     /// Model identifier sent in every request (`model` field of the OpenAI
     /// embeddings request body). HADES is bound to Jina V4 capabilities;
-    /// configure this to match whatever model your engine has loaded.
+    /// configure this to match whatever model your engine has loaded. Responses
+    /// must name this model; the reference Jina registry ID also accepts an
+    /// absolute local directory ending in `jinaai--jina-embeddings-v4`.
     pub model: String,
+    /// Required vector width (default 2048). Never infer this from an untrusted
+    /// response. Set explicitly when configuring another model or vector width.
+    pub expected_dimension: u32,
     /// Request timeout.
     pub timeout: Duration,
     /// Connection timeout.
@@ -88,6 +93,7 @@ impl Default for EmbeddingClientConfig {
         Self {
             endpoint: EmbeddingEndpoint::Tcp(DEFAULT_ENDPOINT_URL.to_string()),
             model: DEFAULT_MODEL.to_string(),
+            expected_dimension: 2048,
             timeout: DEFAULT_TIMEOUT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
@@ -213,6 +219,11 @@ impl EmbeddingClient {
     /// on the first request.
     #[instrument(skip_all)]
     pub async fn connect(config: EmbeddingClientConfig) -> Result<Self, EmbeddingError> {
+        if config.model.trim().is_empty() || config.expected_dimension == 0 {
+            return Err(EmbeddingError::Connection(
+                "model must be nonempty and expected_dimension must be positive".into(),
+            ));
+        }
         match &config.endpoint {
             EmbeddingEndpoint::Unix(path) => {
                 if !path.exists() {
@@ -320,14 +331,19 @@ impl EmbeddingClient {
         }
 
         let mut completed: BTreeMap<usize, Vec<Vec<f32>>> = BTreeMap::new();
-        let mut model = self.config.model.clone();
+        let mut model: Option<String> = None;
         let mut dimension = 0u32;
         let mut total_duration_ms = 0u64;
 
         while let Some((start, batch)) = work.pop_front() {
             match self.embed_single_request(batch, task, batch_size).await {
                 Ok(result) => {
-                    model = result.model;
+                    if model.as_ref().is_some_and(|name| name != &result.model) {
+                        return Err(EmbeddingError::InvalidResponse(
+                            "model identity changed across embedding batches".into(),
+                        ));
+                    }
+                    model = Some(result.model);
                     if dimension == 0 {
                         dimension = result.dimension;
                     } else if result.dimension != dimension {
@@ -364,7 +380,7 @@ impl EmbeddingClient {
 
         Ok(EmbedResult {
             embeddings: all_embeddings,
-            model,
+            model: model.unwrap_or_else(|| self.config.model.clone()),
             dimension,
             duration_ms: total_duration_ms,
         })
@@ -440,9 +456,13 @@ impl EmbeddingClient {
             let resp = self
                 .request(Method::POST, "/embeddings", Some(&body))
                 .await?;
-            if model.is_none() {
-                model = resp["model"].as_str().map(String::from);
+            let response_model = validated_response_model(&resp, &self.config.model)?;
+            if model.as_ref().is_some_and(|name| name != &response_model) {
+                return Err(EmbeddingError::InvalidResponse(
+                    "model identity changed across late-chunked inputs".into(),
+                ));
             }
+            model = Some(response_model);
             let data = resp["data"]
                 .as_array()
                 .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'data' array".into()))?;
@@ -454,18 +474,13 @@ impl EmbeddingClient {
                 // returns plain embeddings with no chunk metadata, and
                 // `unwrap_or(0)` would collapse every vector of the input onto
                 // chunk 0 and write one embedding where the caller expected N.
-                let embedding: Vec<f32> = item["embedding"]
-                    .as_array()
-                    .ok_or_else(|| EmbeddingError::InvalidResponse("missing 'embedding'".into()))?
-                    .iter()
-                    .map(|v| {
-                        v.as_f64().map(|f| f as f32).ok_or_else(|| {
-                            EmbeddingError::InvalidResponse(
-                                "embedding contains a non-numeric element".into(),
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<f32>, EmbeddingError>>()?;
+                if item["index"].as_u64() != Some(0) {
+                    return Err(EmbeddingError::InvalidResponse(
+                        "late-chunked response index must be 0 for a single input".into(),
+                    ));
+                }
+                let embedding =
+                    validated_vector(&item["embedding"], self.config.expected_dimension)?;
                 if dimension == 0 {
                     dimension = embedding.len() as u32;
                 } else if embedding.len() as u32 != dimension {
@@ -613,51 +628,38 @@ impl EmbeddingClient {
 
         // Sort by `index` to guarantee input-order alignment regardless of
         // server-side reordering (some engines parallelize and may reorder).
-        let mut indexed: Vec<(usize, Vec<f32>)> = data
-            .iter()
-            .map(|item| {
-                let idx = item["index"].as_u64().unwrap_or(0) as usize;
-                let embedding: Vec<f32> = item["embedding"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_f64().map(|f| f as f32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (idx, embedding)
-            })
-            .collect();
-        indexed.sort_by_key(|(i, _)| *i);
-        let embeddings: Vec<Vec<f32>> = indexed.into_iter().map(|(_, v)| v).collect();
-
-        if embeddings.len() != texts.len() {
+        if data.len() != texts.len() {
             return Err(EmbeddingError::InvalidResponse(format!(
                 "expected {} embeddings, got {}",
                 texts.len(),
-                embeddings.len()
+                data.len()
             )));
         }
-
-        // Derive dimension from first non-empty embedding; verify all match.
-        let dimension = embeddings.first().map(|v| v.len() as u32).unwrap_or(0);
-        for (i, emb) in embeddings.iter().enumerate() {
-            if emb.len() as u32 != dimension {
+        let mut embeddings = vec![None; texts.len()];
+        for item in data {
+            let index = item["index"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|&n| n < texts.len())
+                .ok_or_else(|| {
+                    EmbeddingError::InvalidResponse(
+                        "embedding index must be an integer in the input range".into(),
+                    )
+                })?;
+            if embeddings[index].is_some() {
                 return Err(EmbeddingError::InvalidResponse(format!(
-                    "embedding[{}] has dimension {}, expected {}",
-                    i,
-                    emb.len(),
-                    dimension
+                    "duplicate embedding index {index}"
                 )));
             }
+            embeddings[index] = Some(validated_vector(
+                &item["embedding"],
+                self.config.expected_dimension,
+            )?);
         }
-
-        // Engine echoes the model name back in the response; fall back to
-        // the configured one if absent.
-        let model = resp["model"]
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| self.config.model.clone());
+        // Equal row count and unique in-range indices prove complete coverage.
+        let embeddings: Vec<Vec<f32>> = embeddings.into_iter().map(Option::unwrap).collect();
+        let dimension = self.config.expected_dimension;
+        let model = validated_response_model(&resp, &self.config.model)?;
 
         debug!(
             count = embeddings.len(),
@@ -860,6 +862,62 @@ impl EmbeddingClient {
             }
         }
     }
+}
+
+/// Validate the wire vector before any values are associated with a chunk (#16).
+fn validated_vector(value: &serde_json::Value, expected: u32) -> Result<Vec<f32>, EmbeddingError> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| EmbeddingError::InvalidResponse("embedding must be an array".into()))?;
+    if values.is_empty() || values.len() != expected as usize {
+        return Err(EmbeddingError::InvalidResponse(format!(
+            "embedding dimension {}, expected {expected}",
+            values.len()
+        )));
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .map(|n| n as f32)
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| {
+                    EmbeddingError::InvalidResponse(
+                        "embedding values must be finite float32 numbers".into(),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn validated_response_model(
+    resp: &serde_json::Value,
+    expected: &str,
+) -> Result<String, EmbeddingError> {
+    let served = resp["model"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            EmbeddingError::InvalidResponse("embedding response must identify its model".into())
+        })?;
+    // The reference backend serves a local model directory while requests name
+    // the registry ID. Accept that documented alias, not an arbitrary sole model
+    // from /models. A different vector space must never silently pass as Jina.
+    let reference_id = |name: &str| {
+        name == DEFAULT_MODEL
+            || (std::path::Path::new(name).is_absolute()
+                && std::path::Path::new(name)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    == Some("jinaai--jina-embeddings-v4"))
+    };
+    if served != expected && !(reference_id(served) && reference_id(expected)) {
+        return Err(EmbeddingError::InvalidResponse(format!(
+            "response model '{served}' is incompatible with requested model '{expected}'"
+        )));
+    }
+    Ok(served.to_string())
 }
 
 /// Parse an endpoint string into an [`EmbeddingEndpoint`].
