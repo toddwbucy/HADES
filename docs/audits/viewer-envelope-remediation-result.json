@@ -1,0 +1,13 @@
+{
+  "base_revision": "b48060ae08703d9ff90be6cadccad26a0ce581c6",
+  "source_sha256": {
+    "crates/hades-frontend/src/assemble.rs": "6d1e826b61ed3b637c520f30d1665026c9d1d03bb08b28943e27430ed6dfffa7",
+    "crates/hades-frontend/src/server.rs": "acadd7e054ac9b53e587701c08a20c0c1a7d2273e3ce5f6ce92d4b1dd707103f"
+  },
+  "command": "cargo test --offline -p hades-frontend --bin hades-viewer -- --test-threads=1",
+  "passed": 29,
+  "failed": 0,
+  "seconds": 1.72,
+  "scope": "Private backend children and in-process routers; no live database/viewer, no browser execution",
+  "clippy": "cargo clippy --offline -p hades-frontend --all-targets -- -D warnings: PASS after naming parser function-pointer type"
+}

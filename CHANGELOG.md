@@ -400,6 +400,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   reject conflicting declarations and legacy layouts before writes, and make
   retained stale-row semantics explicit (#109).
 
+- Reject explicit failed or malformed backend success envelopes in viewer JSON
+  parsers before consuming graph data, preserving legacy omission support (#107).
+
 - Publish LSP document-open state only after didOpen is sent; keep failed and
   cancelled reads retryable and order same-URI opens/closes independently (#102).
 
