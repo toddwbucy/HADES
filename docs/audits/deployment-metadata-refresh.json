@@ -1,0 +1,166 @@
+{
+  "observation_date": "2026-09-20",
+  "repository_evidence_revision": "1c1adf8962723c83535d317951a13b102c8afe59",
+  "collection": "Read-only process metadata, scoped socket inode mapping, installed distribution metadata, and one successful bounded GET /v1/models. No inference, third-party Python imports, restart or data mutation.",
+  "inputs": {
+    "processes": {
+      "sha256": "b5ef7af077f673e9ce5d91e9fdeaeb6112ae8e70d3e05972fb81eb258c052a30",
+      "data": {
+        "processes": [
+          {
+            "service": "daemon",
+            "pid": 4240,
+            "executable": "/home/todd/.local/bin/hades",
+            "executable_sha256": "993712814319be5f663a3c98fdb51b13c27a144def1adcb81c1178109af986ac",
+            "cwd": "/home/todd",
+            "python_module": null,
+            "python_scripts": []
+          },
+          {
+            "service": "database",
+            "pid": 3014,
+            "executable": "/home/todd/git/arangodb/build/bin/arangod",
+            "executable_sha256": "03275307f9cd0d8153c7f772e9283db502d6d32c932519b52c094986aab697bb",
+            "cwd": "/home/todd",
+            "python_module": null,
+            "python_scripts": []
+          },
+          {
+            "service": "extraction",
+            "pid": 3018,
+            "executable": "/home/todd/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12",
+            "executable_sha256": "021044895e95be79dc2f110367607e684119afbc8ce75f6f0eec94844e0acec7",
+            "cwd": "/opt/HADES/services",
+            "python_module": "extraction.server",
+            "python_scripts": []
+          },
+          {
+            "service": "embedding_gpu2",
+            "pid": 3016,
+            "executable": "/home/todd/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12",
+            "executable_sha256": "021044895e95be79dc2f110367607e684119afbc8ce75f6f0eec94844e0acec7",
+            "cwd": "/opt/HADES/services",
+            "python_module": "embedding.http_server",
+            "python_scripts": []
+          }
+        ],
+        "installed_hades_sha256": "993712814319be5f663a3c98fdb51b13c27a144def1adcb81c1178109af986ac",
+        "limitations": [
+          "Executable identity does not identify loaded Python source or model weights",
+          "Command arguments other than allowlisted Python module/script identifiers were not retained",
+          "No environment values or credentials retained"
+        ]
+      }
+    },
+    "listeners": {
+      "sha256": "54dae1c4bf52b0df12c0ec2098736b16582b83afb1e804e59ca98df1a188748b",
+      "data": [
+        {
+          "service": "daemon",
+          "pid": 4240,
+          "listeners": [
+            {
+              "transport": "tcp",
+              "address": "192.168.0.203",
+              "port": 10443
+            },
+            {
+              "transport": "unix",
+              "path": "/home/todd/.local/share/hades/run/hades.sock"
+            }
+          ]
+        },
+        {
+          "service": "database",
+          "pid": 3014,
+          "listeners": [
+            {
+              "transport": "tcp",
+              "address": "127.0.0.1",
+              "port": 8529
+            },
+            {
+              "transport": "unix",
+              "path": "/home/todd/.local/share/arangodb3/run/arangodb.sock"
+            }
+          ]
+        },
+        {
+          "service": "extraction",
+          "pid": 3018,
+          "listeners": [
+            {
+              "transport": "unix",
+              "path": "/home/todd/.local/share/hades/run/extractor.sock"
+            }
+          ]
+        },
+        {
+          "service": "embedding_gpu2",
+          "pid": 3016,
+          "listeners": [
+            {
+              "transport": "tcp",
+              "address": "127.0.0.1",
+              "port": 8087
+            },
+            {
+              "transport": "unix",
+              "path": "@cuda-uvmfd-4026531836-3016@"
+            }
+          ]
+        }
+      ]
+    },
+    "model": {
+      "sha256": "c74dcab031a22e50351e587fb7f703daff14e28c9a2c89eb6ac9dd6f62a0979c",
+      "data": {
+        "endpoint": "http://127.0.0.1:8087/v1/models",
+        "http_status": 200,
+        "models": [
+          {
+            "id": "/bulk-store/books/models/jinaai--jina-embeddings-v4",
+            "dimension": 2048,
+            "max_seq_length": 11900,
+            "supported_tasks": [
+              "retrieval.passage",
+              "retrieval.query",
+              "text-matching",
+              "code"
+            ],
+            "device": "cuda:0",
+            "physical_device": "cuda:2",
+            "profile": "gpu2"
+          }
+        ],
+        "scope": "Provider-reported configuration metadata, not inference readiness or weight-byte identity",
+        "initial_default_port_probe": "127.0.0.1:8000 refused; actual listener mapped to PID3016 at8087 before this request"
+      }
+    },
+    "python": {
+      "sha256": "21ecc141f1b0d030d069837fc10adabf4eb79ed5398a3c7a2a23d6634e649c95",
+      "data": {
+        "site_packages": "/opt/HADES/services/.venv/lib/python3.12/site-packages",
+        "launchers": {
+          "extraction": "/opt/HADES/services/.venv/bin/python",
+          "embedding_gpu2": "/opt/HADES/services/.venv/bin/python"
+        },
+        "installed_distribution_metadata": {
+          "docling": "2.126.0",
+          "safetensors": "0.8.0",
+          "fastapi": "0.141.1",
+          "transformers": "4.57.6",
+          "protobuf": "7.36.1",
+          "grpcio": "1.83.1",
+          "uvicorn": "0.52.4",
+          "numpy": "2.5.3",
+          "torch": "2.14.0"
+        },
+        "limitations": [
+          "On-disk distribution versions, not introspection of modules already imported by running processes",
+          "No third-party package, model or GPU runtime was imported"
+        ]
+      }
+    }
+  }
+}

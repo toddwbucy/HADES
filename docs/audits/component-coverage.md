@@ -1,5 +1,8 @@
 # Component and API audit coverage
 
+Later remediation and current remaining scope are reconciled in the
+[acceptance refresh](acceptance-refresh.md); this inventory remains historical.
+
 This map pins tracked source to `307892f94ae37b4b4e33e4bede7b8edec0e91717`.
 The [file inventory](component-inventory.json) lists the five Rust crates, four
 Python packages and protocol sources. File counts are navigation aids, not coverage

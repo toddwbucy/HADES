@@ -86,6 +86,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Reconcile epic #12 acceptance evidence after worker, document and analyzer
+  fixes, and retain sanitized deployment metadata with explicit provenance limits.
+
 - Refresh epic #12 evidence dispositions, revision-bound coverage and remaining
   independent retrieval, deployment and operational acceptance work.
 
