@@ -6,6 +6,10 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Transport authority and response contracts](api-boundaries.md): complete
+  static daemon-tier/MCP exposure inventory, envelope/status distinctions and
+  explicit remaining CLI/provider/viewer compatibility scope.
+
 - [Embedding worker lifetime](embedding-worker-lifetime.md): handler/idle baseline
   and real-framework CPU ownership, ASGI and lifespan contracts.
 

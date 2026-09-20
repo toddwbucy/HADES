@@ -1,0 +1,409 @@
+{
+  "source_revision": "66ebc4d6c6c88c41d5e5c5ba3371d3521b88aa10",
+  "scope": "Static exhaustive DaemonCommand tier mapping and curated MCP methods only; not the complete CLI or runtime parity certification",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "038d77bd3a72a8bcd0260b223284af6fbf364c661a0c968ae16c93535a02b88a",
+    "crates/hades-core/src/service.rs": "cdee71cb5e099acc7f2467d9091446cd6f9da42a7a45b0f9102f8349503e69a8",
+    "crates/hades-cli/src/commands/mcp_server.rs": "92a366f84c76328d3d1a4865b09ea09812dafdf57371974eda9e36de105b2bcc",
+    "crates/hades-cli/src/commands/daemon.rs": "2f2d81345498cd5a43e58a1a49500fc5a4c5578a231f95e68a035451c8aa0980",
+    "crates/hades-cli/src/commands/output.rs": "28469b8f0e81d4e0bdd03026d6ba52f492c76c675ef826f60c046bfeb65235c8",
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-frontend/src/assemble.rs": "ad3a1a88e9a5778c09ec9d1cc3cfef34a87214f9171b0764f7c951bc611cd195",
+    "crates/hades-frontend/src/backend_process.rs": "6440a8352417d589b42f7433168fffbbfdd7be0fbe36b9a784358032ce5660da",
+    "crates/hades-frontend/src/server.rs": "31f9e86d313a29c64a0462b83f64e64a068cf8cd1ccdf1fc94a56d1ce73ed44a"
+  },
+  "wire_command_count": 59,
+  "mcp_tool_count": 18,
+  "commands": [
+    {
+      "wire": "orient",
+      "variant": "Orient",
+      "tier": "Agent",
+      "mcp_tools": [
+        "orient"
+      ]
+    },
+    {
+      "wire": "status",
+      "variant": "Status",
+      "tier": "Internal",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.query",
+      "variant": "DbQuery",
+      "tier": "Agent",
+      "mcp_tools": [
+        "db_query"
+      ]
+    },
+    {
+      "wire": "db.aql",
+      "variant": "DbAql",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.get",
+      "variant": "DbGet",
+      "tier": "Agent",
+      "mcp_tools": [
+        "db_get"
+      ]
+    },
+    {
+      "wire": "db.list",
+      "variant": "DbList",
+      "tier": "Agent",
+      "mcp_tools": [
+        "db_list"
+      ]
+    },
+    {
+      "wire": "db.insert",
+      "variant": "DbInsert",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.update",
+      "variant": "DbUpdate",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.delete",
+      "variant": "DbDelete",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.purge",
+      "variant": "DbPurge",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.create_collection",
+      "variant": "DbCreateCollection",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.create_index",
+      "variant": "DbCreateIndex",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.count",
+      "variant": "DbCount",
+      "tier": "Agent",
+      "mcp_tools": [
+        "db_count"
+      ]
+    },
+    {
+      "wire": "db.collections",
+      "variant": "DbCollections",
+      "tier": "Agent",
+      "mcp_tools": [
+        "db_collections"
+      ]
+    },
+    {
+      "wire": "db.stats",
+      "variant": "DbStats",
+      "tier": "Internal",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.health",
+      "variant": "DbHealth",
+      "tier": "Internal",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.check",
+      "variant": "DbCheck",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.recent",
+      "variant": "DbRecent",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.graph.traverse",
+      "variant": "DbGraphTraverse",
+      "tier": "Agent",
+      "mcp_tools": [
+        "graph_traverse"
+      ]
+    },
+    {
+      "wire": "db.graph.shortest_path",
+      "variant": "DbGraphShortestPath",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.graph.neighbors",
+      "variant": "DbGraphNeighbors",
+      "tier": "Agent",
+      "mcp_tools": [
+        "graph_neighbors"
+      ]
+    },
+    {
+      "wire": "db.graph.list",
+      "variant": "DbGraphList",
+      "tier": "Agent",
+      "mcp_tools": [
+        "graph_list"
+      ]
+    },
+    {
+      "wire": "db.graph.create",
+      "variant": "DbGraphCreate",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.graph.drop",
+      "variant": "DbGraphDrop",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.graph.materialize",
+      "variant": "DbGraphMaterialize",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.schema.init",
+      "variant": "DbSchemaInit",
+      "tier": "Provisioning",
+      "mcp_tools": [
+        "db_schema_init"
+      ]
+    },
+    {
+      "wire": "db.schema.list",
+      "variant": "DbSchemaList",
+      "tier": "Internal",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.schema.show",
+      "variant": "DbSchemaShow",
+      "tier": "Internal",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.schema.version",
+      "variant": "DbSchemaVersion",
+      "tier": "Internal",
+      "mcp_tools": []
+    },
+    {
+      "wire": "embed.text",
+      "variant": "EmbedText",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "graph_embed.embed",
+      "variant": "GraphEmbedEmbed",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "graph_embed.neighbors",
+      "variant": "GraphEmbedNeighbors",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.list",
+      "variant": "TaskList",
+      "tier": "Agent",
+      "mcp_tools": [
+        "task_list"
+      ]
+    },
+    {
+      "wire": "task.show",
+      "variant": "TaskShow",
+      "tier": "Agent",
+      "mcp_tools": [
+        "task_show"
+      ]
+    },
+    {
+      "wire": "task.create",
+      "variant": "TaskCreate",
+      "tier": "Agent",
+      "mcp_tools": [
+        "task_create"
+      ]
+    },
+    {
+      "wire": "task.update",
+      "variant": "TaskUpdate",
+      "tier": "Agent",
+      "mcp_tools": [
+        "task_update"
+      ]
+    },
+    {
+      "wire": "task.close",
+      "variant": "TaskClose",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.start",
+      "variant": "TaskStart",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.context",
+      "variant": "TaskContext",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.review",
+      "variant": "TaskReview",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.approve",
+      "variant": "TaskApprove",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.block",
+      "variant": "TaskBlock",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.unblock",
+      "variant": "TaskUnblock",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.handoff",
+      "variant": "TaskHandoff",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.handoff_show",
+      "variant": "TaskHandoffShow",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.log",
+      "variant": "TaskLog",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.sessions",
+      "variant": "TaskSessions",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.dep",
+      "variant": "TaskDep",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.usage",
+      "variant": "TaskUsage",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "task.graph_integration",
+      "variant": "TaskGraphIntegration",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "smell.check",
+      "variant": "SmellCheck",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "smell.verify",
+      "variant": "SmellVerify",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "smell.report",
+      "variant": "SmellReport",
+      "tier": "Admin",
+      "mcp_tools": []
+    },
+    {
+      "wire": "smell.stored_report",
+      "variant": "SmellStoredReport",
+      "tier": "Agent",
+      "mcp_tools": [
+        "smell_report"
+      ]
+    },
+    {
+      "wire": "link_code_smell",
+      "variant": "LinkCodeSmell",
+      "tier": "Agent",
+      "mcp_tools": []
+    },
+    {
+      "wire": "db.create_database",
+      "variant": "DbCreateDatabase",
+      "tier": "Provisioning",
+      "mcp_tools": [
+        "create_database"
+      ]
+    },
+    {
+      "wire": "ingest.start",
+      "variant": "IngestStart",
+      "tier": "Provisioning",
+      "mcp_tools": [
+        "ingest_start"
+      ]
+    },
+    {
+      "wire": "ingest.status",
+      "variant": "IngestStatus",
+      "tier": "Agent",
+      "mcp_tools": [
+        "ingest_status"
+      ]
+    },
+    {
+      "wire": "codebase.stats",
+      "variant": "CodebaseStats",
+      "tier": "Agent",
+      "mcp_tools": []
+    }
+  ]
+}
