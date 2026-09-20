@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import pickle
 import signal
 import stat
 import struct
@@ -99,7 +101,6 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
     # -- helpers ----------------------------------------------------------
     def _build_model(self, in_dim: int) -> int:
         mc = self.model_config
-        self.in_dim = in_dim
         arch = mc.architecture or "rgcn"
         try:
             model_cls = _ARCHITECTURES[arch]
@@ -111,7 +112,16 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         # HadesRGCN and HadesHeteroSAGE share an identical constructor surface
         # and encode()/score() contract, so the only thing that varies is the
         # class selected here.
-        self.model = model_cls(
+        if mc.num_relations == 0 or mc.num_collection_types == 0:
+            raise ValueError("num_relations and num_collection_types must be positive")
+        if not math.isfinite(mc.dropout) or not 0 <= mc.dropout < 1:
+            raise ValueError("dropout must be finite and in [0, 1)")
+        oc = self.opt_config
+        if not math.isfinite(oc.learning_rate) or oc.learning_rate < 0:
+            raise ValueError("learning_rate must be finite and non-negative")
+        if not math.isfinite(oc.weight_decay) or oc.weight_decay < 0:
+            raise ValueError("weight_decay must be finite and non-negative")
+        model = model_cls(
             num_relations=mc.num_relations,
             num_collection_types=mc.num_collection_types,
             in_dim=in_dim,
@@ -120,19 +130,70 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             num_bases=mc.num_bases or mc.num_relations,
             dropout=mc.dropout,
         ).to(self.device)
-        oc = self.opt_config
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
+        optimizer = torch.optim.Adam(
+            model.parameters(),
             lr=oc.learning_rate or 0.01,
             weight_decay=oc.weight_decay or 5e-4,
         )
-        return sum(p.numel() for p in self.model.parameters())
+        self.in_dim, self.model, self.optimizer = in_dim, model, optimizer
+        return sum(p.numel() for p in model.parameters())
 
-    def _require_loaded(self, context):
+    async def _require_model(self, context):
         if self.model is None:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "InitModel not called")
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "InitModel not called")
+
+    async def _require_loaded(self, context):
+        await self._require_model(context)
         if self.x is None:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "LoadGraph not called")
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "LoadGraph not called")
+
+    def _clear_graph(self):
+        self.x = self.node_collections = None
+        self.edge_src = self.edge_dst = self.edge_type = None
+
+    def _graph_tensors(self, tensors):
+        """Validate on CPU before transferring or replacing any active state."""
+        names = ("node_features", "node_collections", "edge_src", "edge_dst", "edge_type")
+        if any(name not in tensors for name in names):
+            raise ValueError("graph must contain " + ", ".join(names))
+        x = tensors["node_features"]
+        if x.ndim != 2 or min(x.shape) == 0 or not x.is_floating_point():
+            raise ValueError("node_features must be a nonempty floating-point matrix")
+        x = x.float()
+        if not torch.isfinite(x).all():
+            raise ValueError("node_features must contain finite float32 values")
+        indices = []
+        for name in names[1:]:
+            values = tensors[name]
+            if values.ndim != 1 or not str(values.dtype).startswith(("torch.int", "torch.uint")):
+                raise ValueError(f"{name} must be a one-dimensional integer tensor")
+            indices.append(values.long())
+        nc, src, dst, rel = indices
+        if nc.numel() != x.size(0) or not (src.numel() == dst.numel() == rel.numel()):
+            raise ValueError("graph tensor lengths do not match")
+        for name, values, upper in (
+            ("node_collections", nc, self.model_config.num_collection_types),
+            ("edge_src", src, x.size(0)), ("edge_dst", dst, x.size(0)),
+            ("edge_type", rel, self.model_config.num_relations),
+        ):
+            if ((values < 0) | (values >= upper)).any():
+                raise ValueError(f"{name} contains an out-of-range index")
+        return tuple(t.to(self.device) for t in (x, nc, src, dst, rel))
+
+    def _step_indices(self, edge_indices, neg_src, neg_dst):
+        """Reject invalid loss inputs before changing model mode or gradients."""
+        if not edge_indices or not neg_src:
+            raise ValueError("positive and negative samples must both be nonempty")
+        if len(neg_src) != len(neg_dst):
+            raise ValueError("neg_src and neg_dst must have equal lengths")
+        for name, values, upper in (
+            ("edge_indices", edge_indices, self.edge_src.numel()),
+            ("neg_src", neg_src, self.x.size(0)),
+            ("neg_dst", neg_dst, self.x.size(0)),
+        ):
+            if any(i < 0 or i >= upper for i in values):
+                raise ValueError(f"{name} contains an out-of-range index")
+        return self._idx(edge_indices), self._idx(neg_src), self._idx(neg_dst)
 
     def _idx(self, values) -> torch.Tensor:
         return torch.as_tensor(list(values), dtype=torch.long, device=self.device)
@@ -146,30 +207,42 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
                 "no device declared: training requires an explicit device per "
                 "run (hades --gpu N). There is no fallback device by design.",
             )
-        self.device = torch.device(device)
-        self.model_config = request.model
-        self.opt_config = request.optimizer
-        num_params = self._build_model(DEFAULT_FEATURE_DIM)
+        candidate = TrainingServicer(self.config)
+        try:
+            candidate.device = torch.device(device)
+            candidate.model_config = request.model
+            candidate.opt_config = request.optimizer
+            num_params = candidate._build_model(DEFAULT_FEATURE_DIM)
+        except (ValueError, RuntimeError) as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        self.device, self.model_config, self.opt_config = (
+            candidate.device, candidate.model_config, candidate.opt_config
+        )
+        self.in_dim, self.model, self.optimizer = candidate.in_dim, candidate.model, candidate.optimizer
+        self._clear_graph()
         logger.info("InitModel: %d params on %s", num_params, device)
         return training_pb2.InitModelResponse(num_parameters=num_params, device=device)
 
     async def LoadGraph(self, request, context):
-        if self.model is None:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "InitModel not called")
+        await self._require_model(context)
         from safetensors.torch import load_file
+        from safetensors import SafetensorError
 
-        t = load_file(request.safetensors_path)
-        x = t["node_features"].to(self.device).float()
+        try:
+            t = load_file(request.safetensors_path)
+            x, nc, src, dst, rel = self._graph_tensors(t)
+        except FileNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+        except (ValueError, KeyError, OSError, SafetensorError) as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         feature_dim = x.size(1)
         if feature_dim != self.in_dim:
             logger.info("rebuilding model for feature_dim=%d (was %d)", feature_dim, self.in_dim)
             self._build_model(feature_dim)
 
         self.x = x
-        self.node_collections = t["node_collections"].to(self.device).long()
-        self.edge_src = t["edge_src"].to(self.device).long()
-        self.edge_dst = t["edge_dst"].to(self.device).long()
-        self.edge_type = t["edge_type"].to(self.device).long()
+        self.node_collections = nc
+        self.edge_src, self.edge_dst, self.edge_type = src, dst, rel
 
         num_nodes = self.x.size(0)
         num_edges = self.edge_src.size(0)
@@ -189,14 +262,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             self.x, self.node_collections, self.edge_src, self.edge_dst, self.edge_type
         )
 
-    def _encode_subset(self, requested: list[int]) -> torch.Tensor:
-        """Embed targets on their bounded incoming-neighbourhood subgraph.
-
-        A two-layer SAGE target depends on its incoming neighbours and their
-        incoming neighbours. Expanding once per convolution layer and then
-        reindexing that induced subgraph avoids a full-graph forward while
-        producing the same target rows as full-batch inference.
-        """
+    def _validate_subset(self, requested: list[int]) -> None:
         if not isinstance(self.model, HadesHeteroSAGE):
             raise ValueError("node subset inference requires architecture 'hetero_sage'")
         num_nodes = self.x.size(0)
@@ -205,6 +271,10 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         if any(index < 0 or index >= num_nodes for index in requested):
             raise ValueError(f"node index out of range for graph with {num_nodes} nodes")
 
+    def _encode_subset(self, requested: list[int]) -> torch.Tensor:
+        """Embed targets using only the incoming neighbourhood each layer needs."""
+        self._validate_subset(requested)
+        num_nodes = self.x.size(0)
         targets = torch.tensor(requested, device=self.device, dtype=torch.long)
         active = torch.zeros(num_nodes, device=self.device, dtype=torch.bool)
         active[targets] = True
@@ -234,13 +304,17 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         return local_embeddings[global_to_local[targets]]
 
     async def TrainStep(self, request, context):
-        self._require_loaded(context)
+        await self._require_loaded(context)
+        try:
+            pos_idx, neg_src, neg_dst = self._step_indices(
+                request.train_edge_indices, request.neg_src, request.neg_dst
+            )
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         self.model.train()
         self.optimizer.zero_grad()
         emb = self._encode()
-        pos_idx = self._idx(request.train_edge_indices)
         pos_src, pos_dst = self.edge_src[pos_idx], self.edge_dst[pos_idx]
-        neg_src, neg_dst = self._idx(request.neg_src), self._idx(request.neg_dst)
         pos_score = self.model.score(emb, pos_src, pos_dst)
         neg_score = self.model.score(emb, neg_src, neg_dst)
         loss, acc = _bce_link_loss(pos_score, neg_score)
@@ -249,13 +323,17 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         return training_pb2.TrainStepResponse(loss=float(loss.detach()), accuracy=acc)
 
     async def Evaluate(self, request, context):
-        self._require_loaded(context)
+        await self._require_loaded(context)
+        try:
+            pos_idx, neg_src, neg_dst = self._step_indices(
+                request.edge_indices, request.neg_src, request.neg_dst
+            )
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         self.model.eval()
         with torch.no_grad():
             emb = self._encode()
-            pos_idx = self._idx(request.edge_indices)
             pos_src, pos_dst = self.edge_src[pos_idx], self.edge_dst[pos_idx]
-            neg_src, neg_dst = self._idx(request.neg_src), self._idx(request.neg_dst)
             pos_score = self.model.score(emb, pos_src, pos_dst)
             neg_score = self.model.score(emb, neg_src, neg_dst)
             loss, acc = _bce_link_loss(pos_score, neg_score)
@@ -263,7 +341,12 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         return training_pb2.EvaluateResponse(loss=float(loss), accuracy=acc, auc=auc)
 
     async def GetEmbeddings(self, request, context):
-        self._require_loaded(context)
+        await self._require_loaded(context)
+        try:
+            if request.node_indices:
+                self._validate_subset(list(request.node_indices))
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         self.model.eval()
         try:
             with torch.no_grad():
@@ -293,8 +376,9 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         )
 
     async def Checkpoint(self, request, context):
-        if self.model is None:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "InitModel not called")
+        await self._require_model(context)
+        if not request.path:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "checkpoint path is required")
         Path(request.path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
@@ -328,18 +412,29 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
                 "device per run (hades --gpu N). There is no fallback device "
                 "by design.",
             )
-        self.device = torch.device(device)
         # weights_only=True: the checkpoint holds only tensors + basic types,
         # and refusing arbitrary unpickling avoids code execution from a
         # tampered checkpoint file.
-        ckpt = torch.load(request.path, map_location=self.device, weights_only=True)
-        mc = ckpt["model_config"]
-        self.model_config = training_pb2.ModelConfig(**mc)
-        self.opt_config = self.opt_config or training_pb2.OptimizerConfig()
-        num_params = self._build_model(ckpt.get("in_dim", DEFAULT_FEATURE_DIM))
-        self.model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
+        candidate = TrainingServicer(self.config)
+        try:
+            candidate.device = torch.device(device)
+            ckpt = torch.load(request.path, map_location=candidate.device, weights_only=True)
+            candidate.model_config = training_pb2.ModelConfig(**ckpt["model_config"])
+            candidate.opt_config = self.opt_config or training_pb2.OptimizerConfig()
+            num_params = candidate._build_model(ckpt.get("in_dim", DEFAULT_FEATURE_DIM))
+            candidate.model.load_state_dict(ckpt["model"])
+            if "optimizer" in ckpt:
+                candidate.optimizer.load_state_dict(ckpt["optimizer"])
+        except FileNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError, EOFError, pickle.UnpicklingError) as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        if candidate.device != self.device or candidate.in_dim != self.in_dim:
+            self._clear_graph()
+        self.device, self.model_config, self.opt_config = (
+            candidate.device, candidate.model_config, candidate.opt_config
+        )
+        self.in_dim, self.model, self.optimizer = candidate.in_dim, candidate.model, candidate.optimizer
         return training_pb2.LoadCheckpointResponse(
             model_config=self.model_config, num_parameters=num_params, device=device
         )
