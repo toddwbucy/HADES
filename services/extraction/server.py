@@ -67,6 +67,11 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
         self._latex = LaTeXExtractor()
         self._last_request_time = time.time()
         self._active_requests = 0
+        self._operations: set[asyncio.Task] = set()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._closing = False
+        self._close_task: asyncio.Task | None = None
 
     def _get_docling(self) -> DoclingExtractor:
         """Lazy-load the Docling extractor (thread-safe)."""
@@ -96,6 +101,8 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
 
     async def Extract(self, request, context):
         """Extract structured content from a document."""
+        if self._closing:
+            await context.abort(grpc.StatusCode.UNAVAILABLE, "extraction service is closing")
         source_type = self._detect_source_type(request)
 
         try:
@@ -109,27 +116,14 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
             type_name,
         )
 
-        # If content bytes provided, write to temp file
-        tmp_path = None
-        if request.content:
-            # Use all suffixes to preserve multipart extensions like .tar.gz
-            suffix = "".join(Path(request.file_path).suffixes) if request.file_path else ""
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp.write(request.content)
-            tmp.close()
-            tmp_path = tmp.name
-        file_path = tmp_path or request.file_path
-
+        # Own the coroutine that awaits executor work independently of the RPC.
+        # Its resource cleanup runs only after the actual worker has drained.
         self._active_requests += 1
-        try:
-            result = await self._route_extraction(
-                file_path, source_type, request
-            )
-        finally:
-            self._active_requests -= 1
-            self._last_request_time = time.time()
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
+        self._idle.clear()
+        operation = asyncio.create_task(self._extract_owned(request, source_type))
+        self._operations.add(operation)
+        operation.add_done_callback(self._operations.discard)
+        result = await self._wait_owned(operation)
 
         if result.error:
             context.set_code(grpc.StatusCode.INTERNAL)
@@ -171,6 +165,60 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
             metadata=result.metadata,
             source_type=source_type,
         )
+
+    @staticmethod
+    async def _wait_owned(operation):
+        """Drain admitted work despite repeated caller cancellation."""
+        interrupted = False
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                interrupted = True
+            except BaseException:
+                break
+        if interrupted:
+            if not operation.cancelled():
+                operation.exception()
+            raise asyncio.CancelledError
+        return operation.result()
+
+    async def _extract_owned(self, request, source_type):
+        tmp_path = None
+        try:
+            if request.content:
+                suffix = "".join(Path(request.file_path).suffixes) if request.file_path else ""
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp_path = tmp.name
+                    tmp.write(request.content)
+                file_path = tmp_path
+            else:
+                file_path = request.file_path
+            return await self._route_extraction(file_path, source_type, request)
+        finally:
+            try:
+                if tmp_path:
+                    Path(tmp_path).unlink(missing_ok=True)
+            finally:
+                self._active_requests -= 1
+                self._last_request_time = time.time()
+                if self._active_requests == 0:
+                    self._idle.set()
+
+    def stop_admission(self):
+        """Reject new requests before beginning shutdown."""
+        self._closing = True
+
+    async def close(self):
+        """Drain admitted workers before unloading; this does not preempt threads."""
+        self.stop_admission()
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._drain_and_unload())
+        await self._wait_owned(self._close_task)
+
+    async def _drain_and_unload(self):
+        await self._idle.wait()
+        self.unload_models()
 
     async def _route_extraction(self, file_path, source_type, request):
         """Route to appropriate backend based on source type."""
@@ -240,6 +288,8 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
 
     def unload_models(self) -> None:
         """Unload ML models to free GPU memory."""
+        if self._active_requests:
+            raise RuntimeError("cannot unload models while extraction workers are active")
         if self._docling is not None:
             self._docling.cleanup()
             self._docling = None
@@ -364,8 +414,9 @@ async def serve() -> None:
         await monitor
     except asyncio.CancelledError:
         pass
+    servicer.stop_admission()
     await server.stop(grace=5)
-    servicer.unload_models()
+    await servicer.close()
 
     # Clean up socket
     if sock.exists() and stat.S_ISSOCK(sock.stat().st_mode):

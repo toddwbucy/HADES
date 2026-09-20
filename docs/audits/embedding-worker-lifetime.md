@@ -23,8 +23,8 @@ control-flow defect, not actual GPU corruption or network-disconnect behavior.
 reproduction and intentionally asserts the baseline defect. It is not a passing
 regression that should require the defect after remediation. Ordinary and
 late-chunk worker ownership, idle/lifespan cleanup, closing admission, errors and
-repeated cancellation still require implementation and private tests. No fix or
-production deployment is claimed by this report.
+repeated cancellation still require implementation and private tests. The baseline alone is not a fix; remediation is described below. No production
+deployment occurred.
 
 ## Remediation and scope
 
