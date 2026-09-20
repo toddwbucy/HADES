@@ -25,8 +25,11 @@ made cancellable by this change. Python model-step cancellation remains open in
 
 Validation covers queued jobs behind a finite worker gate, shutdown with a full
 output buffer, dropped-prefetch graph release, cancellation at each exercised
-sampler checkpoint, unchanged seeded output, and cross-thread cancellation after
-a real sampler has entered its indexing work. All fixtures use synthetic graphs
+sampler checkpoint, unchanged seeded output, cross-thread cancellation after
+a real sampler has entered its indexing work, and cancellation after one child
+result has already been consumed while the other child remains running. The
+combined join future is retained across cancellation to avoid polling a completed
+child handle twice. All fixtures use synthetic graphs
 and no database, GPU or production provider.
 
 ```sh

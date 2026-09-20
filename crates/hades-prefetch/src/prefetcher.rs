@@ -278,21 +278,8 @@ impl Prefetcher {
                     val_cancel.is_cancelled()
                 })
             });
-            let train_abort = train.abort_handle();
-            let val_abort = val.abort_handle();
-            let samples = async move { tokio::join!(train, val) };
-            tokio::pin!(samples);
-            let (train_neg, val_neg) = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    // Abort queued jobs; running jobs observe the token. Join
-                    // both before dropping the producer's ownership of work.
-                    train_abort.abort();
-                    val_abort.abort();
-                    let _ = samples.await;
-                    return;
-                }
-                result = &mut samples => result,
+            let Some((train_neg, val_neg)) = join_samples(train, val, &cancel).await else {
+                return;
             };
             if cancel.is_cancelled() {
                 return;
@@ -359,6 +346,31 @@ impl Prefetcher {
     /// Check whether the background task is still running.
     pub fn is_running(&self) -> bool {
         !self.handle.is_finished()
+    }
+}
+
+type JoinedSample<T> = Result<T, tokio::task::JoinError>;
+
+/// Keep the same combined future after cancellation: one child may already have
+/// yielded its result, and polling that child's JoinHandle again would panic.
+async fn join_samples<T>(
+    train: JoinHandle<T>,
+    val: JoinHandle<T>,
+    cancel: &CancellationToken,
+) -> Option<(JoinedSample<T>, JoinedSample<T>)> {
+    let train_abort = train.abort_handle();
+    let val_abort = val.abort_handle();
+    let samples = async move { tokio::join!(train, val) };
+    tokio::pin!(samples);
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            train_abort.abort();
+            val_abort.abort();
+            let _ = samples.await;
+            None
+        }
+        result = &mut samples => Some(result),
     }
 }
 
@@ -492,6 +504,46 @@ mod tests {
         graph.set_node_features(7, &emb);
 
         graph
+    }
+
+    #[tokio::test]
+    async fn cancellation_preserves_already_consumed_child_result() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let retained = Arc::new(());
+        let worker_retained = retained.clone();
+        let first = tokio::task::spawn_blocking(|| ());
+        let second = tokio::task::spawn_blocking(move || {
+            entered_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            drop(worker_retained);
+        });
+        entered_rx.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !first.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let cancel = CancellationToken::new();
+        let joined = join_samples(first, second, &cancel);
+        tokio::pin!(joined);
+        // Poll once to consume the first result while the second is gated.
+        assert!(poll_fn(|cx| Poll::Ready(joined.as_mut().poll(cx).is_pending())).await);
+        cancel.cancel();
+        release_tx.send(()).unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), joined)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(Arc::strong_count(&retained), 1);
     }
 
     #[test]
