@@ -561,3 +561,35 @@ async fn explicitly_unparsed_provider_preserves_registered_language_targets() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn analyzer_failure_retains_summary_and_failure_envelope() {
+    use std::os::unix::fs::PermissionsExt;
+    with_temp_db("analyzer_failure", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tree.path().join("src")).unwrap();
+        std::fs::write(tree.path().join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n").unwrap();
+        std::fs::write(tree.path().join("src/lib.rs"), "pub fn target() -> u32 { 7 }\n").unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let analyzer = tools.path().join("failing-analyzer");
+        std::fs::write(&analyzer, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'rust-analyzer fixture'; exit 0; fi\nexit 1\n").unwrap();
+        std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for direct in [true, false] {
+            let root = tree.path().to_str().unwrap();
+            let args = if direct { vec!["codebase", "ingest", root] } else { vec!["ingest", root] };
+            let output = tokio::time::timeout(std::time::Duration::from_secs(30),
+                cli_command(&pool, &embedder, &args).env("HADES_RUST_ANALYZER_PATH", &analyzer).output())
+                .await.expect("failing analyzer did not terminate promptly").unwrap();
+            assert!(!output.status.success());
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| panic!("missing JSON summary: {error}; stderr={}", String::from_utf8_lossy(&output.stderr)));
+            assert_eq!(report["success"], false, "{report}");
+            let code = if direct { &report["data"] } else { &report["data"]["code"] };
+            assert_eq!(code["completed"], 1, "file commit must remain visible: {report}");
+            assert!(code["enrichment_error"].as_str().unwrap().contains("rust-analyzer"), "{report}");
+            assert_eq!(code["rust_analyzer"]["crates_analyzed"], 0);
+        }
+        assert!(hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap() > 0);
+        validate(&pool, &embedder).await;
+    }).await;
+}

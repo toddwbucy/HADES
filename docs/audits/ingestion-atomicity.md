@@ -123,8 +123,14 @@ edit retains the same call/import edges and the provider's semantic metadata.
 Missing or unsupported stored language fails explicitly instead of silently
 omitting its targets.
 
-Remaining review includes full-ingest process death during persistence and
-additional analyzer failure coverage. Source-hash checks detect observed drift but do not lock the
+Rust enrichment failures now travel with the completed phase summary, like Go
+failures, and direct `codebase ingest` uses the actual outcome for its envelope's
+success flag. Both entry points expose `enrichment_error`. A synthetic analyzer
+passes preflight then exits during startup; direct and unified CLI fixtures verify
+nonzero exit, `success: false`, visible file completion, and preserved chunks.
+
+Remaining review includes full-ingest process death during persistence, partial
+analyzer failures, and concurrency across the separate stages. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live

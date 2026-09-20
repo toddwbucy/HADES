@@ -341,7 +341,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   its exclusive lock through server expiry after writer process death. Load
   preserved higher-fidelity symbols as guarded resolution targets without
   replaying their outgoing calls, including explicitly unparsed files whose
-  stored language identifies the retained analysis. Further recovery and cancellation
+  stored language identifies the retained analysis. Preserve JSON summaries on
+  Rust enrichment failure and report direct codebase-ingest failure accurately.
+  Further recovery and cancellation
   coverage remains under audit (#40).
 
 - Build complete Python service wheels with generated RPC bindings, trainer

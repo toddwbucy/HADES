@@ -150,7 +150,12 @@ pub async fn run(
         allow_analysis_downgrade,
     )
     .await?;
-    output::print_output("codebase.ingest", outcome.data, &OutputFormat::Json);
+    output::print_output_with_success(
+        "codebase.ingest",
+        outcome.data,
+        &OutputFormat::Json,
+        outcome.failure.is_none(),
+    );
     match outcome.failure {
         Some(e) => Err(e),
         None => Ok(()),
@@ -494,6 +499,8 @@ pub async fn run_phase(
     let total_import_edges =
         py_import_edges.len() + rs_import_edges.len() + structural_edges.imports.len();
 
+    let mut enrichment_failure: Option<String> = None;
+
     // ── rust-analyzer deep analysis ────────────────────────────────────
     // When Rust files were ingested, optionally use rust-analyzer for richer
     // symbol extraction: qualified names, call hierarchy, impl-trait edges,
@@ -520,6 +527,9 @@ pub async fn run_phase(
                 // shows only the outermost context and swallows the underlying
                 // cause (#180).
                 warn!(error = %format!("{e:#}"), "rust-analyzer enrichment failed, syn-based data retained");
+                if !allow_analysis_downgrade {
+                    enrichment_failure = Some(format!("rust-analyzer enrichment failed: {e:#}"));
+                }
                 SemanticLspStats::default()
             }
         }
@@ -532,20 +542,23 @@ pub async fn run_phase(
     // is the exact state that previously reported success while the graph
     // silently lost its calls/implements layer. Only the downgrade flag makes
     // proceeding an explicit choice.
-    if !rust_abs_paths.is_empty()
+    if relationship_error.is_none()
+        && !rust_abs_paths.is_empty()
         && rust_analyzer_cmd.is_some()
         && ra_stats.workspaces == 0
         && !ra_stats.store_failed
         && !allow_analysis_downgrade
     {
-        anyhow::bail!(
-            "rust-analyzer enrichment produced nothing across {} Rust file(s) \
+        enrichment_failure.get_or_insert_with(|| {
+            format!(
+                "rust-analyzer enrichment produced nothing across {} Rust file(s) \
              (crates_analyzed = 0) despite a passing preflight. The graph would \
              keep syn symbols but lose calls/implements edges. Investigate the \
              analyzer session logs above, or pass --allow-analysis-downgrade to \
              accept the loss explicitly.",
-            rust_abs_paths.len()
-        );
+                rust_abs_paths.len()
+            )
+        });
     }
 
     // A store failure is a distinct stage from analysis failure (#180): the
@@ -553,14 +566,16 @@ pub async fn run_phase(
     // it correctly so operators don't chase analyzer session logs for a
     // database error.
     if ra_stats.store_failed && !allow_analysis_downgrade {
-        anyhow::bail!(
-            "rust-analyzer analyzed {} crate(s) but storing the enrichment to \
+        enrichment_failure.get_or_insert_with(|| {
+            format!(
+                "rust-analyzer analyzed {} crate(s) but storing the enrichment to \
              ArangoDB failed (see the store warnings above for the database \
              error). The graph keeps syn symbols but loses calls/implements \
              edges. Fix the store error and re-run, or pass \
              --allow-analysis-downgrade to accept the loss explicitly.",
-            ra_stats.workspaces
-        );
+                ra_stats.workspaces
+            )
+        });
     }
 
     let gopls_stats = if relationship_error.is_none()
@@ -579,6 +594,10 @@ pub async fn run_phase(
             }
             Err(error) => {
                 warn!(error = %format!("{error:#}"), "gopls enrichment failed; Tree-sitter Go data retained");
+                if !allow_analysis_downgrade {
+                    enrichment_failure
+                        .get_or_insert_with(|| format!("gopls enrichment failed: {error:#}"));
+                }
                 SemanticLspStats::default()
             }
         }
@@ -593,7 +612,6 @@ pub async fn run_phase(
     // nothing written" to anything parsing the output (#194 review). The
     // existing `CodebaseIngestFailure` at the end of this function already
     // follows print-then-fail; these now match it.
-    let mut enrichment_failure: Option<String> = None;
 
     // Same store-vs-analysis attribution as the rust-analyzer path (#180):
     // gopls analyzed its modules but the results never reached ArangoDB, so
@@ -643,7 +661,11 @@ pub async fn run_phase(
             .collect()
     };
 
-    if !go_abs_paths.is_empty() && gopls_cmd.is_some() && !allow_analysis_downgrade {
+    if relationship_error.is_none()
+        && !go_abs_paths.is_empty()
+        && gopls_cmd.is_some()
+        && !allow_analysis_downgrade
+    {
         if gopls_stats.workspaces == 0 {
             enrichment_failure.get_or_insert_with(|| {
                 format!(
@@ -764,6 +786,7 @@ pub async fn run_phase(
         // renamed (#9), as opposed to the ones above, which could not be.
         "repointed_inbound_edges": repointed,
         "relationship_error": relationship_error,
+        "enrichment_error": enrichment_failure,
         "import_edges": total_import_edges * stored_relationships,
         "python_import_edges": py_import_edges.len() * stored_relationships,
         "rust_import_edges": rs_import_edges.len() * stored_relationships,
