@@ -42,6 +42,11 @@ def test_valid_loss_retains_gradients():
     assert torch.isfinite(positive.grad).all() and torch.isfinite(negative.grad).all()
 
 
+def test_finite_logits_that_overflow_combined_loss_are_rejected():
+    with pytest.raises(ValueError, match="not finite"):
+        _bce_link_loss(torch.tensor([-3e38]), torch.tensor([3e38]))
+
+
 def test_checkpoint_restores_best_weights_after_later_training(tmp_path):
     service = loaded_service()
     request = pb.TrainStepRequest(train_edge_indices=[0], neg_src=[3], neg_dst=[0])
