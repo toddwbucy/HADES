@@ -12,7 +12,7 @@ P1 operational recovery gap in epic #12: the inspected legacy backup mechanism t
 - The legacy `backup_dbpool.sh` explicitly selects only `olympus`, `postgresql`, and `arangodb` datasets. It omits the active data's dataset.
 - Existing replicated ArangoDB snapshots under `bulk-store/backups/dbpool/arangodb` are dated October 22–25, 2025. These belong to the legacy dataset and are not proof of recoverability of the current per-user database.
 - Inspected system timers include configuration Git sync and pool scrubs; neither supplies evidence of a current database backup. No user timers were listed.
-- No maintained ArangoDB dump/restore procedure was found in the HADES deployment scripts inspected. Other backup mechanisms are being requested from the owner.
+- No maintained ArangoDB dump/restore procedure was found in the HADES deployment scripts inspected. The owner subsequently identified `/bulk-store`; see the artifact verification below.
 
 ## Impact
 
@@ -76,6 +76,95 @@ fields were inspected, not raw database documents or credentials.
 
 This inspection establishes that backup artifacts and manifests are present.
 It does not establish their validity or completeness, nor the current
-backup schedule, coverage of recent graphs/changes, or recoverability of the
-actual artifacts. The synthetic rehearsal above must not be represented as a
+backup schedule or coverage of recent graphs/changes. The subsequent restore
+below verifies one selected artifact; the other artifacts remain untested. The synthetic rehearsal above must not be represented as a
 restore test of these production backups.
+
+
+## Actual historical backup restore (2026-09-20)
+
+The owner's backup destination contained a small `WeaverTools_v3` logical dump
+inside `arangodump-20260808`: 42 files, 39,755 stored bytes, manifest creation
+`2026-08-09T00:11:57Z`. The complete parent backup set occupies approximately
+14 GiB; only this small database artifact was selected and restored.
+
+The [retained result](weavertools-backup-restore-result.json) and
+[replay probe](repros/restore_weavertools_backup.py) record:
+
+- 20 collections and 733 total rows restored, including 426 edges in 12 edge
+  collections. Every document field except the server-generated `_rev` matches
+  the dump, including original keys, endpoints and application fields.
+- Collection types and schemas match. There are zero secondary indexes in this
+  artifact; this run does not demonstrate secondary-index recovery. The separate
+  synthetic rehearsal above covers a unique index and enforced schema.
+- All restored edge endpoints resolve: zero dangling edges.
+- Source file hashes are unchanged after the run. Result hashes bind every dump
+  file, both binaries, runtime ICU/timezone data, probe and isolation helper. No document text is published.
+- ArangoDB 3.12.11 performed the restore in approximately 0.22 seconds, excluding
+  server startup, validation and recovery of the rest of the application. This
+  is not a production recovery-time estimate.
+
+Repeat from an isolated checkout with matching existing binaries and their adjacent
+`icudtl.dat`, `icudtl_legacy.dat` and `tzdata/` runtime files:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 timeout 210 python3 docs/audits/repros/restore_weavertools_backup.py \
+  --dump-dir /bulk-store/backups/dbpool/arangodump-20260808/WeaverTools_v3 \
+  --bin-dir /path/to/existing/arangodb/bin
+```
+
+The probe accepts only the selected adapter collection layout (20 collections,
+`wt_*` plus `hades_schema`), with bounded file counts, file sizes, expanded gzip
+bytes and row counts. It reads backup inputs, copies them into a new private
+`/tmp/hades-backup-restore-*` directory, and restores into a newly created database
+on its own Unix-socket-only server. Parent and children use one CPU with lowered
+priority; children have 8 GiB address-space limits, one restore thread and bounded
+timeouts. Logs, copied contents and restored data remain private under mode 0700.
+Both owned process groups stopped before the successful result was written.
+The first exploratory preflight stopped before launching a server because the
+allowlist initially omitted `hades_schema`; correcting that verified metadata
+assumption allowed both exploratory and retained runs to complete.
+
+**Remaining limits:** this proves this historical artifact can restore its
+recorded contents. It does not establish current source coverage, scheduled
+backup success, retention/monitoring, recent-data recovery, live consistency,
+users/ACLs, named graphs, model checkpoints, all-database recovery or recovery
+after loss of this host. Issue #63 stays open. The owner maintenance policy below now governs pre-change protection; deploying
+a production backup job still requires its own reviewed plan.
+
+
+### Replay evidence hardening
+
+The retained run uses explicit validation failures, which remain active under
+`python -O` / `PYTHONOPTIMIZE`; subprocess waits are separate from validation
+expressions. It copies and hashes the probe, isolation helper, binaries and
+required ICU/timezone data before execution, re-executes the private probe copy,
+and imports/runs only those copies. Execution files have no write permission and
+their hashes are checked again after verification. This isolates the run from
+later changes to the original paths. It is not a hermetic operating-system or
+shared-library snapshot and does not defend against a hostile process with the
+same account's authority.
+
+The final retained run passed with Python optimization enabled. A separate private
+copy with a duplicated dump key was rejected under `-O` during preflight, before
+starting a server; it produced no passing result. Earlier staging attempts exposed
+missing adjacent ICU and timezone resources and exited during server startup;
+owned-process cleanup ran and neither attempt produced a passing result. The
+recorded successful result belongs to the complete staged implementation.
+
+
+## Owner recovery policy (2026-09-20)
+
+The owner permits planned downtime to be arranged for a specific maintenance
+operation and requires a snapshot before execution whenever data loss is a risk.
+The maintenance plan must identify the downtime window, snapshot the effective
+active data dataset (`dbpool/home/todd` for the current ArangoDB directory), verify
+the snapshot identifier and coverage, and specify database consistency and
+rollback steps before a risky change. A snapshot of the legacy `dbpool/arangodb`
+dataset alone does not satisfy this requirement.
+
+This supplies the pre-change preservation policy and a process for agreeing
+planned downtime. It does not specify a numeric incident RPO/RTO or establish
+routine backup freshness, retention or failure monitoring. The audit remains
+read-only against production; no production snapshot or maintenance change was
+performed in response to this clarification.
