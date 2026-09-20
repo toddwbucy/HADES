@@ -33,4 +33,29 @@ make a maintained regression require that behavior after remediation.
 
 Issue #90 tracks preserving uploaded content and worker ownership through
 cancellation/deadline, draining before idle/shutdown cleanup, and private error,
-repeat-cancellation and shutdown contracts. No fix or deployment is claimed here.
+repeat-cancellation and shutdown contracts. The remediation below changes repository behavior; no deployment occurred.
+
+## Remediation and verified boundaries
+
+Each admitted extraction owns a task whose lifetime includes uploaded-file
+creation, the executor await and cleanup. The request awaits it through a shield
+and drains it despite repeated cancellation before propagating cancellation.
+Temporary files and the active-worker count remain owned until that task finishes.
+Even failed temporary-file writes clean their partial file and restore accounting.
+The idle monitor therefore cannot mistake abandoned running work for inactivity;
+`unload_models` also rejects cleanup while workers remain active.
+
+Shutdown first rejects new extraction requests with UNAVAILABLE, stops the RPC
+server and awaits `close`. Close drains admitted operations before unloading and
+is idempotent; repeated cancellation of its caller does not skip the drain.
+Normal extraction/backend-error response behavior is retained. This does not
+preempt executor threads or GPUs, impose a new queue/concurrency bound, or promise
+a hard shutdown deadline. A wedged backend can delay graceful shutdown; forced
+process termination may interrupt work and leave temporary files.
+
+Ten ownership cases pass, together with thirteen existing LaTeX limit cases
+(23 total): normal/error workers, repeated caller cancellation, shutdown drain
+and admission, private Unix gRPC cancel/deadline, failed upload writes, returned
+backend errors and a real idle-monitor cycle. Gates bound the synthetic worker
+waits; the tests load no model and touch no live services. These are worker
+lifetime contracts, not performance or full Docling compatibility tests.

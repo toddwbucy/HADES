@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep extraction input files and worker ownership until executor work drains
+  after cancellation; reject shutdown admission and defer model cleanup (#90).
+
 - Reject malformed stored structural vectors in lookup and neighbor requests;
   exclude invalid candidates before neighbor scoring (#85).
 
