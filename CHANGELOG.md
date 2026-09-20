@@ -120,6 +120,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain private CLI reproductions of malformed database-list and export responses
+  being reported as successful, with separate remediation evidence (#118).
 - Verify actual CLI CPU training/checkpoint/export and the distinct training-edge
   versus full-graph update contexts with isolated fixtures (epic #12).
 
@@ -414,6 +416,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Reject malformed CLI database-list/export responses and invalid cursor state;
+  preserve cursor cleanup and signal incomplete streamed exports (#118).
 
 - Await bounded training-session release on graph embedding CLI success and error
   paths before runtime shutdown, preserving primary operation failures (#115).

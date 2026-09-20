@@ -1,0 +1,117 @@
+{
+  "binary_sha256": "78e1a2c4e8bb80305dc34ca1de9d765d53dc7a34f40a24830514a23e6ed93ca4",
+  "scope": "private synthetic Unix peer, unshared network, no live DB",
+  "cases": [
+    {
+      "command": [
+        "databases"
+      ],
+      "response": {},
+      "exit": 1,
+      "stdout": "",
+      "stderr": "Error: database-list response missing result\n",
+      "requests": [
+        [
+          "GET",
+          "/_db/audit_shapes/_api/database/user"
+        ]
+      ]
+    },
+    {
+      "command": [
+        "databases"
+      ],
+      "response": {
+        "result": []
+      },
+      "exit": 0,
+      "stdout": "{\n  \"command\": \"db.databases\",\n  \"data\": {\n    \"count\": 0,\n    \"databases\": []\n  },\n  \"success\": true,\n  \"timestamp\": \"2026-09-20T22:27:31.777465327+00:00\"\n}\n",
+      "stderr": "",
+      "requests": [
+        [
+          "GET",
+          "/_db/audit_shapes/_api/database/user"
+        ]
+      ]
+    },
+    {
+      "command": [
+        "export",
+        "fixture"
+      ],
+      "response": {},
+      "exit": 1,
+      "stdout": "",
+      "stderr": "Error: export cursor response missing boolean hasMore\n",
+      "requests": [
+        [
+          "POST",
+          "/_db/audit_shapes/_api/cursor"
+        ]
+      ]
+    },
+    {
+      "command": [
+        "export",
+        "fixture"
+      ],
+      "response": {
+        "result": [],
+        "hasMore": false
+      },
+      "exit": 0,
+      "stdout": "",
+      "stderr": "exported 0 documents from 'fixture'\n",
+      "requests": [
+        [
+          "POST",
+          "/_db/audit_shapes/_api/cursor"
+        ]
+      ]
+    },
+    {
+      "command": [
+        "export",
+        "fixture"
+      ],
+      "response": {
+        "result": [
+          {
+            "_key": "a"
+          }
+        ],
+        "hasMore": "true",
+        "id": "fixture-cursor"
+      },
+      "exit": 1,
+      "stdout": "",
+      "stderr": "Error: export cursor response missing boolean hasMore\n",
+      "requests": [
+        [
+          "POST",
+          "/_db/audit_shapes/_api/cursor"
+        ],
+        [
+          "DELETE",
+          "/_db/audit_shapes/_api/cursor/fixture-cursor"
+        ]
+      ]
+    }
+  ],
+  "baseline_revision": "fb30292",
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/db_read.rs": "25e49490590ce2963b3afc36692d7ed33191530871b14e422e2600ef8ba00b30",
+    "crates/hades-cli/src/commands/output.rs": "28469b8f0e81d4e0bdd03026d6ba52f492c76c675ef826f60c046bfeb65235c8",
+    "crates/hades-cli/tests/db_response_shapes.rs": "cb03107896a60fe59644d9e7bed69425a7625f66f1678f7de00bbf48fe933006",
+    ".github/workflows/ci.yml": "56be6c90bce76edbc63f1f1dfd53f5722158c16d58a0674fb55718416e942128",
+    "docs/audits/repros/cli_db_response_shapes.py": "ca22e166405a5afb0c32b7e494ba9f8f30e5c3c9ee2370c63e77b8d598efa12f"
+  },
+  "contracts": {
+    "target": "hades-cli/tests/db_response_shapes.rs",
+    "passed": 4,
+    "failed": 0,
+    "seconds": 0.17,
+    "clippy": "hades-cli all-targets; warnings denied; passed"
+  }
+}
