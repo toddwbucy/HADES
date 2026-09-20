@@ -1,6 +1,6 @@
-# Repository retrieval evaluation, version 1
+# Repository retrieval evaluation, version 2
 
-`repository-v1.json` freezes 24 code-navigation questions and 24 function excerpts
+`repository-v2.json` freezes 24 code-navigation questions and 24 function excerpts
 from HADES before inference. Each excerpt records its source path, revision,
 line range, content hash, and truncation status. These are author-created seed
 judgments: grade 3 names the function directly implementing the requested behavior;
@@ -17,7 +17,7 @@ custom Python code: inspect that code before evaluating another model directory.
 ```bash
 PYTHONDONTWRITEBYTECODE=1 timeout 1200 /path/to/test/python \
   scripts/evaluate_retrieval_quality.py --model /path/to/local/jina-v4 \
-  --output /tmp/hades-quality-v1
+  --output /tmp/hades-quality-v2
 ```
 
 The evaluator sets one CPU affinity, lower priority, a 32 GiB address-space limit,
@@ -40,8 +40,8 @@ names. Preserve provenance and dataset hashes with any retained vectors.
 
 ## Captured baseline
 
-The offline run completed in 224 seconds with peak process RSS of about 8.0 GiB.
-Its 48 vectors and provenance are retained in `results-v1/`.
+The offline run completed in 223 seconds with peak process RSS of about 8.1 GiB.
+Its 48 vectors and provenance are retained in `results-v2/`.
 
 | Method | Recall@5 | MRR@10 | nDCG@10 |
 |---|---:|---:|---:|
@@ -57,7 +57,7 @@ Rescore without a model, GPU, network, or running database:
 
 ```bash
 python scripts/evaluate_retrieval_quality.py \
-  --vectors evaluation/retrieval/results-v1/vectors.f32 \
+  --vectors evaluation/retrieval/results-v2/vectors.f32 \
   --output /tmp/hades-quality-rescore
 ```
 
@@ -66,3 +66,15 @@ Ranking implementations must retain recall and should not lose more than 0.01
 absolute MRR/nDCG on this fixed seed without an explicit reviewed explanation.
 These are seed regression thresholds, not statistical guarantees or deployment
 acceptance thresholds for private production corpora.
+
+## Dataset correction history
+
+Version 2 corrects the grade-3 excerpt for `q-train-adjacency`: it now contains
+`_adjacency`, `_encode`, and `TrainStep`, which implement adjacency filtering,
+rather than `_training_split`, which validates split indices. Its separately
+hashed segments retain their exact lines from the pinned source revision. Queries
+and relevance grades are unchanged. All vectors were regenerated offline; the
+aggregate scores above happen to be unchanged, though vector hashes differ.
+`repository-v1.json` and `results-v1/` remain historical evidence with that known
+judgment error. Use version 2 for regressions. Provenance now records evaluator-
+generated SHA256 hashes for the dataset, float32 vectors, and metrics.

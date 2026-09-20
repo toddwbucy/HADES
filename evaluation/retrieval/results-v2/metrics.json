@@ -1,0 +1,928 @@
+{
+  "aggregate": {
+    "vector": {
+      "recall_at_5": 0.9583333333333334,
+      "mrr_at_10": 0.7851190476190476,
+      "ndcg_at_10": 0.8380406417200937
+    },
+    "file_membership_graph": {
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.7909722222222223,
+      "ndcg_at_10": 0.8428375494511795
+    }
+  },
+  "per_query": [
+    {
+      "query": "q-root-key",
+      "method": "vector",
+      "ranking": [
+        "root-key",
+        "version-id",
+        "split-group",
+        "service-errors",
+        "chunk-id",
+        "embedding-id",
+        "session-tier",
+        "index-list",
+        "delete-fields",
+        "query-limit"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-root-key",
+      "method": "file_membership_graph",
+      "ranking": [
+        "root-key",
+        "version-id",
+        "chunk-id",
+        "embedding-id",
+        "split-group",
+        "service-errors",
+        "session-tier",
+        "index-list",
+        "delete-fields",
+        "query-limit"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-version-id",
+      "method": "vector",
+      "ranking": [
+        "version-id",
+        "root-key",
+        "chunk-id",
+        "embedding-id",
+        "service-errors",
+        "query-limit",
+        "session-tier",
+        "split-group",
+        "delete-fields",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-version-id",
+      "method": "file_membership_graph",
+      "ranking": [
+        "version-id",
+        "root-key",
+        "chunk-id",
+        "embedding-id",
+        "service-errors",
+        "query-limit",
+        "session-tier",
+        "split-group",
+        "delete-fields",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-chunk-id",
+      "method": "vector",
+      "ranking": [
+        "chunk-id",
+        "root-key",
+        "version-id",
+        "embedding-id",
+        "cursor-id",
+        "service-errors",
+        "index-list",
+        "vector-index",
+        "index-detect",
+        "split-group"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-chunk-id",
+      "method": "file_membership_graph",
+      "ranking": [
+        "chunk-id",
+        "root-key",
+        "version-id",
+        "embedding-id",
+        "cursor-id",
+        "service-errors",
+        "index-list",
+        "vector-index",
+        "index-detect",
+        "split-group"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-embedding-id",
+      "method": "vector",
+      "ranking": [
+        "chunk-id",
+        "embedding-id",
+        "root-key",
+        "version-id",
+        "index-detect",
+        "index-list",
+        "service-errors",
+        "cursor-id",
+        "vector-index",
+        "split-group"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-embedding-id",
+      "method": "file_membership_graph",
+      "ranking": [
+        "chunk-id",
+        "embedding-id",
+        "root-key",
+        "version-id",
+        "index-detect",
+        "index-list",
+        "service-errors",
+        "cursor-id",
+        "vector-index",
+        "split-group"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-vector-index",
+      "method": "vector",
+      "ranking": [
+        "index-detect",
+        "vector-index",
+        "chunk-id",
+        "root-key",
+        "index-list",
+        "split-group",
+        "split-count",
+        "query-limit",
+        "embedding-id",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-vector-index",
+      "method": "file_membership_graph",
+      "ranking": [
+        "index-detect",
+        "vector-index",
+        "index-list",
+        "chunk-id",
+        "root-key",
+        "embedding-id",
+        "version-id",
+        "split-group",
+        "split-count",
+        "query-limit"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-index-detect",
+      "method": "vector",
+      "ranking": [
+        "index-detect",
+        "vector-index",
+        "index-list",
+        "keyword-blend",
+        "service-errors",
+        "query-limit",
+        "root-key",
+        "chunk-id",
+        "session-tier",
+        "delete-fields"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-index-detect",
+      "method": "file_membership_graph",
+      "ranking": [
+        "index-detect",
+        "vector-index",
+        "index-list",
+        "keyword-blend",
+        "service-errors",
+        "query-limit",
+        "root-key",
+        "chunk-id",
+        "session-tier",
+        "delete-fields"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-index-list",
+      "method": "vector",
+      "ranking": [
+        "index-list",
+        "index-detect",
+        "root-key",
+        "service-errors",
+        "query-limit",
+        "vector-index",
+        "chunk-id",
+        "cursor-id",
+        "version-id",
+        "split-group"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-index-list",
+      "method": "file_membership_graph",
+      "ranking": [
+        "index-list",
+        "index-detect",
+        "vector-index",
+        "root-key",
+        "chunk-id",
+        "version-id",
+        "service-errors",
+        "query-limit",
+        "cursor-id",
+        "split-group"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-cursor-fold",
+      "method": "vector",
+      "ranking": [
+        "session-tier",
+        "cursor-delete",
+        "query-limit",
+        "cursor-id",
+        "cursor-fold",
+        "root-key",
+        "service-errors",
+        "model-precondition",
+        "index-list",
+        "chunk-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.2,
+      "ndcg_at_10": 0.38685280723454163
+    },
+    {
+      "query": "q-cursor-fold",
+      "method": "file_membership_graph",
+      "ranking": [
+        "session-tier",
+        "cursor-delete",
+        "query-limit",
+        "cursor-id",
+        "cursor-fold",
+        "service-errors",
+        "root-key",
+        "model-precondition",
+        "index-list",
+        "chunk-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.2,
+      "ndcg_at_10": 0.38685280723454163
+    },
+    {
+      "query": "q-cursor-delete",
+      "method": "vector",
+      "ranking": [
+        "cursor-delete",
+        "cursor-id",
+        "query-limit",
+        "root-key",
+        "delete-fields",
+        "service-errors",
+        "cursor-fold",
+        "version-id",
+        "session-tier",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-cursor-delete",
+      "method": "file_membership_graph",
+      "ranking": [
+        "cursor-delete",
+        "cursor-id",
+        "delete-fields",
+        "cursor-fold",
+        "query-limit",
+        "root-key",
+        "service-errors",
+        "version-id",
+        "session-tier",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-cursor-id",
+      "method": "vector",
+      "ranking": [
+        "cursor-id",
+        "cursor-delete",
+        "query-limit",
+        "service-errors",
+        "root-key",
+        "session-tier",
+        "cursor-fold",
+        "index-detect",
+        "index-list",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-cursor-id",
+      "method": "file_membership_graph",
+      "ranking": [
+        "cursor-id",
+        "cursor-delete",
+        "cursor-fold",
+        "query-limit",
+        "service-errors",
+        "root-key",
+        "session-tier",
+        "index-detect",
+        "index-list",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-delete-fields",
+      "method": "vector",
+      "ranking": [
+        "delete-fields",
+        "version-id",
+        "service-errors",
+        "vector-index",
+        "index-list",
+        "cursor-delete",
+        "root-key",
+        "index-detect",
+        "chunk-id",
+        "query-limit"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-delete-fields",
+      "method": "file_membership_graph",
+      "ranking": [
+        "delete-fields",
+        "version-id",
+        "service-errors",
+        "cursor-delete",
+        "root-key",
+        "chunk-id",
+        "vector-index",
+        "index-list",
+        "index-detect",
+        "query-limit"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-session-tier",
+      "method": "vector",
+      "ranking": [
+        "session-tier",
+        "root-key",
+        "query-limit",
+        "service-errors",
+        "version-id",
+        "model-precondition",
+        "cursor-id",
+        "delete-fields",
+        "cursor-delete",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-session-tier",
+      "method": "file_membership_graph",
+      "ranking": [
+        "session-tier",
+        "root-key",
+        "query-limit",
+        "service-errors",
+        "version-id",
+        "model-precondition",
+        "cursor-id",
+        "delete-fields",
+        "cursor-delete",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-service-errors",
+      "method": "vector",
+      "ranking": [
+        "service-errors",
+        "session-tier",
+        "query-limit",
+        "root-key",
+        "index-list",
+        "index-detect",
+        "split-group",
+        "model-precondition",
+        "split-count",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-service-errors",
+      "method": "file_membership_graph",
+      "ranking": [
+        "service-errors",
+        "session-tier",
+        "query-limit",
+        "root-key",
+        "index-list",
+        "index-detect",
+        "split-group",
+        "model-precondition",
+        "split-count",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-query-limit",
+      "method": "vector",
+      "ranking": [
+        "query-limit",
+        "split-count",
+        "service-errors",
+        "session-tier",
+        "index-list",
+        "keyword-blend",
+        "vector-index",
+        "negative-links",
+        "cursor-delete",
+        "cursor-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-query-limit",
+      "method": "file_membership_graph",
+      "ranking": [
+        "query-limit",
+        "split-count",
+        "service-errors",
+        "session-tier",
+        "keyword-blend",
+        "negative-links",
+        "index-list",
+        "vector-index",
+        "cursor-delete",
+        "cursor-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-keyword-blend",
+      "method": "vector",
+      "ranking": [
+        "keyword-blend",
+        "graph-blend",
+        "query-limit",
+        "root-key",
+        "index-detect",
+        "service-errors",
+        "chunk-id",
+        "embedding-id",
+        "split-group",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-keyword-blend",
+      "method": "file_membership_graph",
+      "ranking": [
+        "keyword-blend",
+        "graph-blend",
+        "query-limit",
+        "root-key",
+        "index-detect",
+        "service-errors",
+        "chunk-id",
+        "embedding-id",
+        "split-group",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-graph-blend",
+      "method": "vector",
+      "ranking": [
+        "keyword-blend",
+        "split-group",
+        "graph-blend",
+        "embedding-id",
+        "root-key",
+        "train-adjacency",
+        "index-detect",
+        "service-errors",
+        "query-limit",
+        "session-tier"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.3333333333333333,
+      "ndcg_at_10": 0.5
+    },
+    {
+      "query": "q-graph-blend",
+      "method": "file_membership_graph",
+      "ranking": [
+        "keyword-blend",
+        "graph-blend",
+        "query-limit",
+        "split-group",
+        "embedding-id",
+        "root-key",
+        "train-adjacency",
+        "index-detect",
+        "service-errors",
+        "session-tier"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-split-count",
+      "method": "vector",
+      "ranking": [
+        "split-count",
+        "score-valid",
+        "negative-links",
+        "query-limit",
+        "split-group",
+        "train-adjacency",
+        "keyword-blend",
+        "index-detect",
+        "service-errors",
+        "chunk-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-split-count",
+      "method": "file_membership_graph",
+      "ranking": [
+        "split-count",
+        "negative-links",
+        "split-group",
+        "score-valid",
+        "train-adjacency",
+        "query-limit",
+        "keyword-blend",
+        "index-detect",
+        "service-errors",
+        "chunk-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-split-group",
+      "method": "vector",
+      "ranking": [
+        "split-group",
+        "root-key",
+        "version-id",
+        "train-adjacency",
+        "service-errors",
+        "chunk-id",
+        "negative-links",
+        "session-tier",
+        "index-list",
+        "embedding-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-split-group",
+      "method": "file_membership_graph",
+      "ranking": [
+        "split-group",
+        "root-key",
+        "version-id",
+        "chunk-id",
+        "embedding-id",
+        "negative-links",
+        "train-adjacency",
+        "service-errors",
+        "session-tier",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-negative-links",
+      "method": "vector",
+      "ranking": [
+        "split-count",
+        "split-group",
+        "negative-links",
+        "train-adjacency",
+        "service-errors",
+        "query-limit",
+        "root-key",
+        "score-valid",
+        "session-tier",
+        "index-detect"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.3333333333333333,
+      "ndcg_at_10": 0.5
+    },
+    {
+      "query": "q-negative-links",
+      "method": "file_membership_graph",
+      "ranking": [
+        "split-count",
+        "split-group",
+        "negative-links",
+        "train-adjacency",
+        "service-errors",
+        "query-limit",
+        "root-key",
+        "score-valid",
+        "session-tier",
+        "index-detect"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.3333333333333333,
+      "ndcg_at_10": 0.5
+    },
+    {
+      "query": "q-model-precondition",
+      "method": "vector",
+      "ranking": [
+        "model-precondition",
+        "train-adjacency",
+        "query-limit",
+        "session-tier",
+        "service-errors",
+        "checkpoint-restore",
+        "split-count",
+        "index-detect",
+        "cursor-id",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-model-precondition",
+      "method": "file_membership_graph",
+      "ranking": [
+        "model-precondition",
+        "train-adjacency",
+        "checkpoint-restore",
+        "query-limit",
+        "session-tier",
+        "service-errors",
+        "split-count",
+        "index-detect",
+        "cursor-id",
+        "index-list"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-train-adjacency",
+      "method": "vector",
+      "ranking": [
+        "split-group",
+        "train-adjacency",
+        "negative-links",
+        "graph-load",
+        "model-precondition",
+        "service-errors",
+        "split-count",
+        "score-valid",
+        "query-limit",
+        "root-key"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-train-adjacency",
+      "method": "file_membership_graph",
+      "ranking": [
+        "split-group",
+        "negative-links",
+        "split-count",
+        "train-adjacency",
+        "graph-load",
+        "model-precondition",
+        "score-valid",
+        "service-errors",
+        "query-limit",
+        "root-key"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.25,
+      "ndcg_at_10": 0.43067655807339306
+    },
+    {
+      "query": "q-checkpoint-restore",
+      "method": "vector",
+      "ranking": [
+        "root-key",
+        "model-precondition",
+        "checkpoint-restore",
+        "version-id",
+        "index-detect",
+        "session-tier",
+        "service-errors",
+        "chunk-id",
+        "embedding-id",
+        "graph-load"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.3333333333333333,
+      "ndcg_at_10": 0.5
+    },
+    {
+      "query": "q-checkpoint-restore",
+      "method": "file_membership_graph",
+      "ranking": [
+        "model-precondition",
+        "checkpoint-restore",
+        "graph-load",
+        "root-key",
+        "version-id",
+        "chunk-id",
+        "embedding-id",
+        "index-detect",
+        "session-tier",
+        "service-errors"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.5,
+      "ndcg_at_10": 0.6309297535714575
+    },
+    {
+      "query": "q-graph-load",
+      "method": "vector",
+      "ranking": [
+        "model-precondition",
+        "session-tier",
+        "query-limit",
+        "root-key",
+        "service-errors",
+        "split-group",
+        "graph-load",
+        "index-detect",
+        "checkpoint-restore",
+        "version-id"
+      ],
+      "recall_at_5": 0.0,
+      "mrr_at_10": 0.14285714285714285,
+      "ndcg_at_10": 0.33333333333333337
+    },
+    {
+      "query": "q-graph-load",
+      "method": "file_membership_graph",
+      "ranking": [
+        "model-precondition",
+        "session-tier",
+        "query-limit",
+        "service-errors",
+        "graph-load",
+        "checkpoint-restore",
+        "root-key",
+        "split-group",
+        "index-detect",
+        "version-id"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 0.2,
+      "ndcg_at_10": 0.38685280723454163
+    },
+    {
+      "query": "q-score-valid",
+      "method": "vector",
+      "ranking": [
+        "score-valid",
+        "split-count",
+        "query-limit",
+        "split-group",
+        "service-errors",
+        "keyword-blend",
+        "cursor-delete",
+        "index-detect",
+        "train-adjacency",
+        "session-tier"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    },
+    {
+      "query": "q-score-valid",
+      "method": "file_membership_graph",
+      "ranking": [
+        "score-valid",
+        "split-count",
+        "query-limit",
+        "split-group",
+        "keyword-blend",
+        "train-adjacency",
+        "service-errors",
+        "cursor-delete",
+        "index-detect",
+        "session-tier"
+      ],
+      "recall_at_5": 1.0,
+      "mrr_at_10": 1.0,
+      "ndcg_at_10": 1.0
+    }
+  ]
+}

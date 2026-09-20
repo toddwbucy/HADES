@@ -1,0 +1,44 @@
+{
+  "vectors_sha256": "1022ff7f4432eda25bc4dbab4ed7b2a4346f261b0aae2a2c6139a0deb4ea98c6",
+  "metrics_sha256": "704e957a9cd063ba31b727b7b7b120483e1184a8c5f460f60c60ae12243d6d65",
+  "dataset_sha256": "a18acc7109c911e4a2662aa16ccb3d561ee584948479bd33702b0e6200d6ca5c",
+  "model_files": {
+    "adapters/adapter_config.json": "15ab9afe0e1287708fc8598b1a51fb69fbacb171fd2cd99403e46bcc06da2cab",
+    "adapters/adapter_model.safetensors": "b6b7ab4a79daa3b4f3b5274500cc99d3dc89aa8c3419e9d79f89e366685e12e5",
+    "added_tokens.json": "58b54bbe36fc752f79a24a271ef66a0a0830054b4dfad94bde757d851968060b",
+    "chat_template.json": "94174d7176c52a7192f96fc34eb2cf23c7c2059d63cdbfadca1586ba89731fb7",
+    "config.json": "8bd26fbef1d930d8f968729480fd8ce1dbdd468d5f32079ef3eb0e3e2c59ba24",
+    "configuration_jina_embeddings_v4.py": "a2680c5e12de2052b69f385ed9ebe3ff3b5fcd9a4be2a6d1d5330730b6dfd70a",
+    "custom_lora_module.py": "7abdcfbbbc2106763dba8a739c6fddd70729c901ee13b4b072c14147191c7ebd",
+    "generation_config.json": "4be8e7b43a811255a415e39b11c9b78a3a267120e20dd198774b1a14dcc5ea86",
+    "model-00001-of-00002.safetensors": "abb244162956ec2f26d944b6c10cbb96afe211d2aff908b8b2f498ec27a9100b",
+    "model-00002-of-00002.safetensors": "5d5252a7ede6469220b0e7386af53fea9a45fa299a1d2af6fe68cb29897de3e3",
+    "model.safetensors.index.json": "360eb251d21193fe4a424dcc2f65ee1e9ca66dcbcb497b8141722f9f6ed56f8a",
+    "modeling_jina_embeddings_v4.py": "8f04b42d4882704446ebdd80fa0a1d4a35bd8adb15992a0f42085e5ac2ff48b3",
+    "preprocessor_config.json": "45e4720bcf1eac214b977199a08aae9e50b5797033987c389b46f601cb359a68",
+    "qwen2_5_vl.py": "d7bef41027301b8bf761589511fa58c83fe11417f5c2bb57a6349f46ffb6eaf9",
+    "special_tokens_map.json": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+    "tokenizer.json": "9c5ae00e602b8860cbd784ba82a8aa14e8feecec692e7076590d014d7b7fdafa",
+    "tokenizer_config.json": "13d28527663126ad9ab8a34aa6a4028b3f0b25f100defec89ee90b442d368dde",
+    "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+  },
+  "task": "code",
+  "prompt": "passage",
+  "device": "cpu",
+  "dtype": "bfloat16",
+  "max_tokens": 2048,
+  "dependencies": {
+    "torch": "2.14.0",
+    "transformers": "4.57.6",
+    "peft": "0.20.0",
+    "numpy": "2.5.3",
+    "tokenizers": "0.22.2"
+  },
+  "seconds": 223.30406614299864,
+  "peak_rss_kib": 8449648,
+  "limitations": [
+    "Author-created seed with unjudged documents, not a production quality certification.",
+    "CPU bfloat16 differs from the active GPU precision and runtime.",
+    "Graph baseline uses source-file membership, not learned graph weights."
+  ]
+}

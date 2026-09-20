@@ -5,10 +5,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn streamed_ranking_preserves_frozen_jina_and_legacy_rankings() {
-    let dataset_bytes = include_bytes!("../../../evaluation/retrieval/repository-v1.json");
-    let bytes = include_bytes!("../../../evaluation/retrieval/results-v1/vectors.f32");
+    let dataset_bytes = include_bytes!("../../../evaluation/retrieval/repository-v2.json");
+    let bytes = include_bytes!("../../../evaluation/retrieval/results-v2/vectors.f32");
     let provenance: Value = serde_json::from_slice(include_bytes!(
-        "../../../evaluation/retrieval/results-v1/provenance.json"
+        "../../../evaluation/retrieval/results-v2/provenance.json"
     ))
     .unwrap();
     assert_eq!(
@@ -26,10 +26,15 @@ fn streamed_ranking_preserves_frozen_jina_and_legacy_rankings() {
         provenance["vectors_sha256"].as_str().unwrap()
     );
     let dataset: Value = serde_json::from_slice(dataset_bytes).unwrap();
-    let metrics: Value = serde_json::from_slice(include_bytes!(
-        "../../../evaluation/retrieval/results-v1/metrics.json"
-    ))
-    .unwrap();
+    let metrics_bytes = include_bytes!("../../../evaluation/retrieval/results-v2/metrics.json");
+    assert_eq!(
+        Sha256::digest(metrics_bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        provenance["metrics_sha256"].as_str().unwrap()
+    );
+    let metrics: Value = serde_json::from_slice(metrics_bytes).unwrap();
     let docs = dataset["documents"].as_array().unwrap();
     let queries = dataset["queries"].as_array().unwrap();
     let vectors: Vec<Vec<f32>> = bytes
