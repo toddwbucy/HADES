@@ -51,8 +51,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
-- Record the active database authentication boundary and a private 11-case ACL
-  matrix; clarify that reader/writer routes share credentials and permissions (#74).
+- Verify one actual historical WeaverTools backup in a private bounded restore,
+  retaining aggregate results and replay instructions with current-coverage limits (#63).
 
 - Freeze reproducible, hash-bound passages for the private paper-research corpus;
   add a bounded preparation utility and source-offset/privacy contracts (#12).
@@ -69,6 +69,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Preserve the epic #12 baseline audit reports and reproductions, and add an
   evidence register distinguishing merged fixes, deployment state and remaining
   full-audit acceptance work.
+
+- Record the active database authentication boundary and a private 11-case ACL
+  matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
 
