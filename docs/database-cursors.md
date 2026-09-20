@@ -15,6 +15,9 @@ are never interpolated into a request path.
 
 - Query execution, including response bodies and all pages: 60 seconds.
 - Cleanup after success, failure, timeout, or cancellation: two seconds total.
+  Delivery waits for this bounded attempt so a one-shot CLI cannot normally
+  shut down its runtime before deletion. The tradeoff is up to two seconds of
+  additional latency if cleanup stalls.
 - Requests set `options.maxRuntime=60` and cursor `ttl=60` as server fallbacks.
   TTL applies to idle cursor retention and garbage collection is server-driven;
   it is not a precise wall-clock deletion guarantee. See the

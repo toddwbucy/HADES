@@ -139,6 +139,10 @@ async fn query_with_limits(
         )
         .await
         .unwrap_or_else(|_| Err(ArangoError::Request("AQL cursor lifetime exceeded".into())));
+        // Finish the bounded cleanup attempt before returning to a one-shot
+        // CLI, which may immediately shut down its Tokio runtime. Sending first
+        // would routinely abandon deletion at process exit. Cancelled callers
+        // still leave the owner running independently while the runtime lives.
         cursor.cleanup(limits.cleanup).await;
         let _ = send.send(result);
     });
