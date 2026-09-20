@@ -52,3 +52,11 @@ cancelled controlled read/retry, concurrent opens with independent-file progress
 queued close/reopen, and cancellation during a blocked didOpen send. The peer
 counts actual didOpen notifications and returns the received text. No fixtures
 or FIFO readers remained active after these tests.
+
+
+A focused operation-registry unit test passed, verifying queued cancellation,
+independent URI admission and removal of the final operation entry. After local
+integration of descendant candidate `3771631` (PR #101, not yet merged), all five
+session cases passed again in 0.05 seconds. Focused Clippy passed with warnings
+denied. Selected final hashes and the dependency boundary are recorded in
+[lsp-document-state-remediation-result.json](lsp-document-state-remediation-result.json).
