@@ -265,7 +265,7 @@ impl Prefetcher {
 
             let train_cancel = cancel.clone();
             let val_cancel = cancel.clone();
-            let mut train = tokio::task::spawn_blocking(move || {
+            let train = tokio::task::spawn_blocking(move || {
                 negative_sample_cancellable(
                     &g1,
                     num_train_neg,
@@ -273,22 +273,26 @@ impl Prefetcher {
                     || train_cancel.is_cancelled(),
                 )
             });
-            let mut val = tokio::task::spawn_blocking(move || {
+            let val = tokio::task::spawn_blocking(move || {
                 negative_sample_cancellable(&g2, num_val_neg, seed.wrapping_add(1), || {
                     val_cancel.is_cancelled()
                 })
             });
+            let train_abort = train.abort_handle();
+            let val_abort = val.abort_handle();
+            let samples = async move { tokio::join!(train, val) };
+            tokio::pin!(samples);
             let (train_neg, val_neg) = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
                     // Abort queued jobs; running jobs observe the token. Join
                     // both before dropping the producer's ownership of work.
-                    train.abort();
-                    val.abort();
-                    let _ = tokio::join!(train, val);
+                    train_abort.abort();
+                    val_abort.abort();
+                    let _ = samples.await;
                     return;
                 }
-                samples = async { tokio::join!(&mut train, &mut val) } => samples,
+                result = &mut samples => result,
             };
             if cancel.is_cancelled() {
                 return;
