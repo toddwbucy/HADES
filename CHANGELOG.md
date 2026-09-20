@@ -269,6 +269,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Training RPCs now await precondition failures and validate graph tensors, sample indices, model configuration, and checkpoint loads before replacing active state (#18). Invalid requests return explicit gRPC statuses; reinitializing a model clears the previous graph. CPU tests exercise these contracts over temporary Unix sockets.
+
 - **A partial re-ingest no longer dangles a dependent's edges** (#9). `symbol_key`
   hashes the definition line, so a comment inserted above a symbol changes its key
   while its name and meaning stay put. The edited file is rewritten under new
