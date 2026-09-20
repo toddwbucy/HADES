@@ -1,0 +1,237 @@
+{
+  "source_revision": "64f06860dc362dcdcfe1f5738d6259dd3879fd2e",
+  "scope": "Static execution wiring, not runtime or behavioral coverage certification",
+  "rust_targets": [
+    {
+      "path": "crates/hades-cli/tests/codebase_lifecycle.rs",
+      "execution": "disposable database CI",
+      "sha256": "dfd971dd11f507cc7a5e06f74f4cba1fc4e0dec84ade9bd11879b421038d6a34"
+    },
+    {
+      "path": "crates/hades-cli/tests/daemon_shutdown.rs",
+      "execution": "service-free CI",
+      "sha256": "e9471d5138346539dadebe6920ad19495a5831dde91a25eea78c3e2648c9a908"
+    },
+    {
+      "path": "crates/hades-cli/tests/file_identity.rs",
+      "execution": "disposable database CI",
+      "sha256": "fbc867ec3294ccd4b419308f2688be856549dcdbf1f97cf1f153968bf333c9f7"
+    },
+    {
+      "path": "crates/hades-cli/tests/training_alignment.rs",
+      "execution": "opt-in private fixture",
+      "sha256": "b6e6543631873173253a0858aeb4437ae11624927067fdd1c59cf340af785bdf"
+    },
+    {
+      "path": "crates/hades-core/tests/analyzer_preflight.rs",
+      "execution": "service-free CI",
+      "sha256": "01229ffdd36001bde22254d7598a7d728cbe82f9cb287be8e5d6cf83b6433fd6"
+    },
+    {
+      "path": "crates/hades-core/tests/arango_cache.rs",
+      "execution": "disposable database CI",
+      "sha256": "9448a404a71a32c8f371e58bdbeca6aafbb073a321e57cac009e066f39eaec3c"
+    },
+    {
+      "path": "crates/hades-core/tests/arango_crud.rs",
+      "execution": "disposable database CI",
+      "sha256": "eab3bb66e4626fd4aef93c7c2f1b85aeb25ca7e59ef335e1c5df7f82647937d7"
+    },
+    {
+      "path": "crates/hades-core/tests/arango_index.rs",
+      "execution": "disposable database CI",
+      "sha256": "efefe64e065877e6fc5bc995c8b8c23f416620908cd930ce98fc97abb3a1ef88"
+    },
+    {
+      "path": "crates/hades-core/tests/arango_query.rs",
+      "execution": "disposable database CI",
+      "sha256": "788f18da999e777d3a19906b30fca9db05822a572320c6c98f6580a6d0a3de56"
+    },
+    {
+      "path": "crates/hades-core/tests/arango_transport.rs",
+      "execution": "disposable database CI",
+      "sha256": "f42174ec0f6057637fec628d282f8df278acca89f7c216059fdbcfedd95b024e"
+    },
+    {
+      "path": "crates/hades-core/tests/clang_cuda_probe.rs",
+      "execution": "workstation prerequisite",
+      "sha256": "602395c76feed240deabdec88e82f96ed3045e616f89d01773f92ca5f55638c4"
+    },
+    {
+      "path": "crates/hades-core/tests/config_integration.rs",
+      "execution": "service-free CI",
+      "sha256": "5d0643a4d43e03a1e6bed4720f712979b5db88d77971af68614c7f22933d582a"
+    },
+    {
+      "path": "crates/hades-core/tests/cursor_lifecycle.rs",
+      "execution": "disposable database CI",
+      "sha256": "c8377adff54a8b84b116334ff05e5cdfe3e812ab0522c3e6dcea68a1a9bbda05"
+    },
+    {
+      "path": "crates/hades-core/tests/document_replacement_db.rs",
+      "execution": "disposable database CI",
+      "sha256": "0aa8d9a860f3c3af35c6e67d756567d66597a64b214f5caedcc29ba0fede1ddd"
+    },
+    {
+      "path": "crates/hades-core/tests/embedding_client.rs",
+      "execution": "service-free CI",
+      "sha256": "f9459ea22831618de7647567a8b70f55fc2287f3fe7e8c0a1e763ddc39c3b5a3"
+    },
+    {
+      "path": "crates/hades-core/tests/embedding_contract.rs",
+      "execution": "service-free CI",
+      "sha256": "350e52e1ab7db219a4aa0971daece609caa061a9332d824447442df1e1ab3b4e"
+    },
+    {
+      "path": "crates/hades-core/tests/extraction_client.rs",
+      "execution": "service-free CI",
+      "sha256": "581835e76eabb5de70263c40019048a92cfb49b7609005974530ef7f13d5e833"
+    },
+    {
+      "path": "crates/hades-core/tests/filesystem_policy.rs",
+      "execution": "service-free CI",
+      "sha256": "fe8616c816dd3a4bdcb9adeb0657c078fe024d8abcbf1990b425b3d238df6af4"
+    },
+    {
+      "path": "crates/hades-core/tests/gopls_semantic.rs",
+      "execution": "workstation prerequisite",
+      "sha256": "ace209713d9c35642f1f0e762ca60ec777b7095651c9973a2445f94328d493d3"
+    },
+    {
+      "path": "crates/hades-core/tests/graph_contract.rs",
+      "execution": "disposable database CI",
+      "sha256": "b5acca4a1f22e6ed853c62a78dc350f9f526db4208bae0751a5471d29ef62487"
+    },
+    {
+      "path": "crates/hades-core/tests/graph_loader.rs",
+      "execution": "disposable database CI",
+      "sha256": "b7969bfe16ce3a2d9828ae53f3144606f5e1154d962d6188dc8e2f1e17a14b22"
+    },
+    {
+      "path": "crates/hades-core/tests/lsp_deadline.rs",
+      "execution": "service-free CI",
+      "sha256": "d6ed6b9e5e8066920e4004b313f2af11d756b0a23496ce79c60d0cc0585f99a2"
+    },
+    {
+      "path": "crates/hades-core/tests/lsp_descendants.rs",
+      "execution": "service-free CI",
+      "sha256": "26f7c68837401f3053536aebe0d08b3b80e14049eb7cbaa3d95bf79a795f6ca0"
+    },
+    {
+      "path": "crates/hades-core/tests/lsp_document_state.rs",
+      "execution": "service-free CI",
+      "sha256": "1d8f195609bd94e6ebf455b9c31df46ac1855a4314f19294dc5d35c21ff6c535"
+    },
+    {
+      "path": "crates/hades-core/tests/lsp_memory.rs",
+      "execution": "service-free CI",
+      "sha256": "6e699edac19d408900b91e65873ba483c18c0db19b7776ad0a4a637611206a0a"
+    },
+    {
+      "path": "crates/hades-core/tests/pipeline.rs",
+      "execution": "service-free CI",
+      "sha256": "a82320ae8322e60a0795e3b11e15d21ecf29a400a3c13efb703d40b9fece0e4d"
+    },
+    {
+      "path": "crates/hades-core/tests/ra_span_agreement.rs",
+      "execution": "workstation prerequisite",
+      "sha256": "bffc23357394f01c6fc8903d168f04eb6defde86b660026fa6f3586e03b34c23"
+    },
+    {
+      "path": "crates/hades-core/tests/retrieval_benchmark.rs",
+      "execution": "opt-in private fixture",
+      "sha256": "2203a55ad7adf6faed73cf81fa2b416ad0885ad6396930d16619f8b10271a034"
+    },
+    {
+      "path": "crates/hades-core/tests/retrieval_quality.rs",
+      "execution": "service-free CI",
+      "sha256": "badaa38fb50b4171865b2a3bdca44d35f30016cb8531853a46b548ed0535ed2c"
+    },
+    {
+      "path": "crates/hades-core/tests/search_admission.rs",
+      "execution": "service-free CI",
+      "sha256": "9ad63f51e49c86c6085f4bf4609d3cb77086b58a12286e06d95dad2525966438"
+    },
+    {
+      "path": "crates/hades-core/tests/search_handler_benchmark.rs",
+      "execution": "opt-in private fixture",
+      "sha256": "4d56949a430db9e12b73424c6e29a6cd10bb98abb15b1057b1462efa78946306"
+    },
+    {
+      "path": "crates/hades-core/tests/structural_export.rs",
+      "execution": "service-free CI",
+      "sha256": "a9e19bde5d373f014929232cb77824330dd50f25e890ba5fd439bff8f76cb325"
+    },
+    {
+      "path": "crates/hades-core/tests/structural_export_db.rs",
+      "execution": "disposable database CI",
+      "sha256": "7cd654874f89e1d05f6824c435d06f383f1acb1febf8fbb4d35b3620a520a01f"
+    },
+    {
+      "path": "crates/hades-core/tests/structural_vectors.rs",
+      "execution": "service-free CI",
+      "sha256": "a81d3002c0a742f8a72f9475776c77c4b78deccdd0b0e97330baf587d4298265"
+    },
+    {
+      "path": "crates/hades-core/tests/structural_vectors_db.rs",
+      "execution": "disposable database CI",
+      "sha256": "3569397381f872b82358662921cd45802ed1b3cef2a0cab357b1b28048240b89"
+    },
+    {
+      "path": "crates/hades-core/tests/training_client.rs",
+      "execution": "service-free CI",
+      "sha256": "bcbd1c21d38854e0ef1a60b2812b6261cce14ea74f81b7b358c02891abc4ccbf"
+    },
+    {
+      "path": "crates/hades-core/tests/transaction.rs",
+      "execution": "disposable database CI",
+      "sha256": "4271aed9b70623c8222df116ceb2bf297a627e8ade2d6d132aa938491b9bdeb3"
+    },
+    {
+      "path": "crates/hades-frontend/tests/process_lifecycle.rs",
+      "execution": "service-free CI",
+      "sha256": "5c264a81928d9d7aa0851d2ce18333e89af80ee74a396685cea626d9179176e5"
+    },
+    {
+      "path": "crates/hades-proto/tests/proto_types.rs",
+      "execution": "service-free CI",
+      "sha256": "c93ba9d1b8100fd7791d9b98e3d57049ad4cd605dcbb64eef39fa437c4595636"
+    }
+  ],
+  "python_test_files": [
+    "services/tests/test_adapter_failures.py",
+    "services/tests/test_adapter_identity.py",
+    "services/tests/test_adapter_redirects.py",
+    "services/tests/test_checkpoint_contract.py",
+    "services/tests/test_embedding_ownership.py",
+    "services/tests/test_embedding_tensors.py",
+    "services/tests/test_extraction_ownership.py",
+    "services/tests/test_latex_limits.py",
+    "services/tests/test_model_selector.py",
+    "services/tests/test_retrieval_quality.py",
+    "services/tests/test_sage_model.py",
+    "services/tests/test_subset_embeddings.py",
+    "services/tests/test_training_artifact_cancellation.py",
+    "services/tests/test_training_artifacts.py",
+    "services/tests/test_training_metrics.py",
+    "services/tests/test_training_rpc_validation.py",
+    "services/tests/test_training_sessions.py",
+    "services/tests/test_training_topology.py",
+    "services/tests/test_training_worker.py",
+    "services/tests/test_weavertools_scope.py"
+  ],
+  "script_test_files": [
+    "scripts/tests/test_bootstrap_user.py",
+    "scripts/tests/test_code_retrieval.py",
+    "scripts/tests/test_daemon_ready.py",
+    "scripts/tests/test_database_acl_cleanup.py",
+    "scripts/tests/test_embedder_profile.py",
+    "scripts/tests/test_installer_signatures.py",
+    "scripts/tests/test_isolated_runner.py",
+    "scripts/tests/test_retrieval_passages.py"
+  ],
+  "execution_source_sha256": {
+    ".github/workflows/ci.yml": "aa45c9af39688c5935f68360d03f63d0a85a0da26eedc9c59fe287d6255f536b",
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131"
+  }
+}

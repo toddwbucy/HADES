@@ -120,8 +120,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
-- Retain a private real-CLI reproduction of training-session release racing
-  normal runtime shutdown (#115); remediation remains pending.
+- Retain a private real-CLI reproduction and remediation evidence for training
+  session release racing normal runtime shutdown (#115).
+- Refresh the audit fixture inventory with all 39 Rust integration targets and
+  explicit Python, script, opt-in and workstation execution boundaries (epic #12).
 
 - Verify structural-vector retention after changed parsed and parser-free source
   text using real CLI ingestion and private fixtures (epic #12).
