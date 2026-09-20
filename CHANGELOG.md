@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Inventory all visible native CLI help paths and trace embedding response-cap
+  call sites for epic #12 without executing operational commands.
+
 - Record revision-bound daemon command tiers, curated MCP exposure and transport
   response contracts for epic #12, with a reproducible static inventory, provider
   status/size-limit review and private CPU replay.
