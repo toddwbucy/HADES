@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Freeze a revision-bound code-search corpus and candidate questions, with private
+  Git snapshot contracts, lossless passages and token-budget preflight evidence (#12).
+
 - Freeze reproducible, hash-bound passages for the private paper-research corpus;
   add a bounded preparation utility and source-offset/privacy contracts (#12).
 
