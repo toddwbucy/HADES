@@ -340,7 +340,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   during persistence. Verify an abandoned transaction rolls back and releases
   its exclusive lock through server expiry after writer process death. Load
   preserved higher-fidelity symbols as guarded resolution targets without
-  replaying their outgoing calls. Further recovery and cancellation
+  replaying their outgoing calls, including explicitly unparsed files whose
+  stored language identifies the retained analysis. Further recovery and cancellation
   coverage remains under audit (#40).
 
 - Build complete Python service wheels with generated RPC bindings, trainer

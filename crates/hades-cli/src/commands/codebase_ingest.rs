@@ -348,18 +348,35 @@ pub async fn run_phase(
         }
 
         let result = if is_unparsed {
-            ingest_unparsed_file(
-                &db,
-                embedder.as_ref(),
-                config,
-                file_path,
-                &rel_path,
-                None,
-                "no registered language or grammar",
-                force,
-                allow_analysis_downgrade,
-                namespace,
-            )
+            async {
+                let key = keys::scoped_file_key(namespace, &rel_path);
+                let observed = super::codebase_persist::revision(db.writer(), &key).await?;
+                let result = ingest_unparsed_file(
+                    &db,
+                    embedder.as_ref(),
+                    config,
+                    file_path,
+                    &rel_path,
+                    None,
+                    "no registered language or grammar",
+                    force,
+                    allow_analysis_downgrade,
+                    namespace,
+                )
+                .await?;
+                if result.skipped == Some(true) && result.num_symbols.is_none() {
+                    collect_preserved_targets(
+                        &db,
+                        &key,
+                        observed.as_deref(),
+                        &rel_path,
+                        None,
+                        &mut imports,
+                    )
+                    .await?;
+                }
+                Ok::<_, anyhow::Error>(result)
+            }
             .await
         } else {
             ingest_file(
@@ -1597,7 +1614,7 @@ async fn ingest_file(
                         &fkey,
                         expected_revision.as_deref(),
                         rel_path,
-                        lang,
+                        Some(lang),
                         imports,
                     )
                     .await?;
@@ -1659,7 +1676,7 @@ async fn ingest_file(
             &fkey,
             expected_revision.as_deref(),
             rel_path,
-            lang,
+            Some(lang),
             imports,
         )
         .await?;
@@ -2208,7 +2225,7 @@ async fn collect_preserved_targets(
     key: &str,
     expected_revision: Option<&str>,
     rel_path: &str,
-    lang: Language,
+    lang: Option<Language>,
     imports: &mut ImportContext,
 ) -> Result<()> {
     let client = db.writer().clone().with_response_limit(32 * 1024 * 1024)?;
@@ -2233,6 +2250,21 @@ async fn collect_preserved_targets(
         Some(revision) == expected_revision,
         "preserved file changed during analysis; retry ingestion"
     );
+    let lang = match lang {
+        Some(language) => language,
+        None => match row["file"]["language"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "python" => Language::Python,
+            "rust" => Language::Rust,
+            "c++" | "cpp" | "c" | "cuda" => Language::Cpp,
+            "go" => Language::Go,
+            _ => bail!("preserved file has no supported stored language"),
+        },
+    };
     let mut symbols = Vec::new();
     for document in row["symbols"]
         .as_array()
@@ -4343,7 +4375,7 @@ mod tests {
                 &file_key,
                 revision.as_deref(),
                 "provider.py",
-                Language::Python,
+                Some(Language::Python),
                 &mut imports,
             )
             .await
@@ -4390,7 +4422,7 @@ mod tests {
                     &file_key,
                     revision.as_deref(),
                     "provider.py",
-                    Language::Python,
+                    Some(Language::Python),
                     &mut ImportContext::default()
                 )
                 .await

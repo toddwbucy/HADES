@@ -116,8 +116,14 @@ A private resolver fixture verifies target resolution, exclusion of outgoing
 calls, and stale-snapshot rejection; the existing Go preservation fixture also
 exercises this path.
 
-Remaining review includes explicitly unparsed files that preserve an older
-registered-language graph, full-ingest process death during persistence, and
+Explicitly unparsed files also load preserved targets using the stored file's
+language. A CLI fixture first ingests an unusual-extension provider under a Python
+language override, then preserves it through `--unparsed-ext`; a consumer-only
+edit retains the same call/import edges and the provider's semantic metadata.
+Missing or unsupported stored language fails explicitly instead of silently
+omitting its targets.
+
+Remaining review includes full-ingest process death during persistence and
 additional analyzer failure coverage. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database

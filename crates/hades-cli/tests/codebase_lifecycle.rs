@@ -482,3 +482,82 @@ async fn killed_cli_during_embedding_preserves_graph_and_retries() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn explicitly_unparsed_provider_preserves_registered_language_targets() {
+    with_temp_db("unparsed_target", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path().to_str().unwrap();
+        std::fs::write(
+            tree.path().join("provider.legacy"),
+            "def target():\n    return 'quartz'\n",
+        )
+        .unwrap();
+        let consumer = tree.path().join("consumer.py");
+        std::fs::write(
+            &consumer,
+            "from provider import target\n\ndef caller():\n    return target()\n",
+        )
+        .unwrap();
+        cli(
+            &pool,
+            &embedder,
+            &[
+                "codebase",
+                "ingest",
+                tree.path().join("provider.legacy").to_str().unwrap(),
+                "--language",
+                "python",
+            ],
+            true,
+        )
+        .await;
+        cli(
+            &pool,
+            &embedder,
+            &["codebase", "ingest", root, "--unparsed-ext", "legacy"],
+            true,
+        )
+        .await;
+        let before = snapshot_graph(&pool).await;
+        assert!(
+            !before["codebase_calls_edges"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::write(
+            &consumer,
+            "from provider import target\n\ndef caller():\n    # changed\n    return target()\n",
+        )
+        .unwrap();
+        let result = cli(
+            &pool,
+            &embedder,
+            &["codebase", "ingest", root, "--unparsed-ext", "legacy"],
+            true,
+        )
+        .await;
+        assert_eq!(result["skipped"], 1);
+        let after = snapshot_graph(&pool).await;
+        assert_eq!(
+            after["codebase_calls_edges"],
+            before["codebase_calls_edges"]
+        );
+        assert_eq!(
+            after["codebase_imports_edges"],
+            before["codebase_imports_edges"]
+        );
+        let key = keys::scoped_file_key(root, "provider.legacy");
+        let provider = pool
+            .reader()
+            .get(&format!("document/codebase_files/{key}"))
+            .await
+            .unwrap();
+        assert_eq!(provider["analysis_tier"], "semantic");
+        assert_eq!(provider["language"], "Python");
+        validate(&pool, &embedder).await;
+    })
+    .await;
+}
