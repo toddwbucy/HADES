@@ -52,3 +52,10 @@ read-back verifies its endpoints, total edge count one and source-document count
 three. CLI exit is one with empty stdout and retained report: one edge created,
 one of two import items failed. This proves reporting and preservation for this
 partial-import case, not atomic materialization or every backend failure mode.
+
+After integration of PR #124, the recorded pre-integration hashes remain pinned
+to a1e2bee; the materialization handler is unchanged. The service and CLI response
+suites are rerun on the integrated source to cover both fixes together.
+
+[Integration evidence](materialize-outcomes-integration.json) pins the combined
+source: 32 service tests and six CLI response tests pass.
