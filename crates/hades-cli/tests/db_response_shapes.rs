@@ -196,3 +196,23 @@ async fn export_output_failure_still_releases_cursor() {
     failed(&output);
     assert_eq!(calls.last().unwrap(), "DELETE /_db/fixture/_api/cursor/123");
 }
+
+#[tokio::test]
+async fn graph_list_rejects_malformed_success_responses() {
+    // Empty is valid, but absent or malformed graph metadata is not evidence
+    // that the selected database has no graphs.
+    for graphs in [json!([]), json!([{"_key":"fixture_graph", "edgeDefinitions":[]}])] {
+        let (output, calls) = run(&["graph", "list"], vec![json!({"graphs":graphs})]).await;
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(calls, ["GET /_db/fixture/_api/gharial"]);
+    }
+    for bad in [json!({}), json!({"graphs":null}), json!({"graphs":{}}),
+        json!({"graphs":[1]}), json!({"graphs":[{}]})] {
+        let (output, calls) = run(&["graph", "list"], vec![bad.clone()]).await;
+        println!("graph response probe: {}", json!({"response":bad,
+            "exit":output.status.code(), "stdout":String::from_utf8_lossy(&output.stdout),
+            "stderr":String::from_utf8_lossy(&output.stderr), "calls":calls}));
+        failed(&output);
+        assert!(output.stdout.is_empty());
+    }
+}
