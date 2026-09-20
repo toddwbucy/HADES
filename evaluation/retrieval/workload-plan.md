@@ -15,10 +15,12 @@ stability, not taken as an atomic snapshot of the whole directory. Preserve this
 snapshot for the run instead of mixing later edits into its judgments.
 
 The questions below remain proposed audit seeds, not user-supplied workload
-examples or frozen relevance judgments. The corpus location is resolved;
-passage boundaries, relevance judgments and measured retrieval results are still
-outstanding. Draft text and the detailed manifest remain private. No production
-database collection was queried or changed to capture the source documents.
+examples or frozen relevance judgments. The corpus location is resolved.
+The [private passage preparation](passage-preparation.md) freezes 34 evaluation
+passages across the nine drafts, with exact source offsets and hashes. Relevance
+judgments and measured retrieval results are still outstanding. Draft text and the
+detailed manifest remain private. No production database collection was queried
+or changed to capture the source documents.
 
 ## Candidate questions
 
