@@ -73,6 +73,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   evidence register distinguishing merged fixes, deployment state and remaining
   full-audit acceptance work.
 
+- Map all five crates and Python service/adapter packages to recorded audit
+  evidence and remaining API, cancellation and component review scope (#12).
+
 ### Changed
 
 - Refresh epic #12 evidence dispositions, revision-bound coverage and remaining
