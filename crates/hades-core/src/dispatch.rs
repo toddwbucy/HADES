@@ -5062,6 +5062,12 @@ mod handlers {
         }
 
         let _limit = super::validated_query_limit(Some(limit))?;
+        if text.len() > 64 * 1024 {
+            return Err(HandlerError::InvalidParameter {
+                name: "text".into(),
+                reason: "search text exceeds 64 KiB".into(),
+            });
+        }
         let admission = std::sync::Arc::new(
             super::SEARCH_BYTES
                 .try_acquire_many(super::SEARCH_RESERVATION_BYTES)

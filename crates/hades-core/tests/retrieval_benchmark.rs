@@ -10,8 +10,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-fn rss_kib() -> u64 {
-    std::fs::read_to_string("/proc/self/status")
+fn rss_kib_of(pid: &str) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
         .unwrap()
         .lines()
         .find_map(|line| {
@@ -106,13 +106,22 @@ async fn compare_streaming_and_indexed_retrieval() {
         assert!(plan["plan"]["rules"].as_array().unwrap().iter().any(|rule| rule == "use-vector-index"), "{plan}");
         for mode in ["stream", "index-4", "index-16"] {
             for concurrency in [1_usize,4,8] {
-                let baseline_rss = rss_kib();
+                let baseline_rss = rss_kib_of("self");
+                let server_pid = std::env::var("HADES_BENCH_SERVER_PID").ok();
+                let baseline_server_rss = server_pid.as_deref().map(rss_kib_of);
                 let stop = Arc::new(AtomicBool::new(false));
                 let flag = stop.clone();
                 let sampler = std::thread::spawn(move || {
-                    let mut peak = rss_kib();
-                    while !flag.load(Ordering::Relaxed) { peak=peak.max(rss_kib()); std::thread::sleep(Duration::from_millis(2)); }
-                    peak
+                    let mut peak = rss_kib_of("self");
+                    let mut server_peak = baseline_server_rss;
+                    while !flag.load(Ordering::Relaxed) {
+                        peak = peak.max(rss_kib_of("self"));
+                        if let Some(pid) = &server_pid {
+                            server_peak = Some(server_peak.unwrap_or(0).max(rss_kib_of(pid)));
+                        }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    (peak, server_peak)
                 });
                 let mut elapsed = Vec::new();
                 let mut recall = 0.0;
@@ -129,11 +138,12 @@ async fn compare_streaming_and_indexed_retrieval() {
                     }
                 }
                 stop.store(true,Ordering::Relaxed);
-                let peak = sampler.join().unwrap();
+                let (peak, server_peak) = sampler.join().unwrap();
                 elapsed.sort_by(f64::total_cmp);
                 println!("BENCH {}",json!({"rows":count,"dimension":dimension,"mode":mode,"concurrency":concurrency,"trials":trials,
                     "p50_ms":percentile(&elapsed,0.5),"p95_ms":percentile(&elapsed,0.95),"p99_ms":percentile(&elapsed,0.99),
-                    "baseline_rss_kib":baseline_rss,"sampled_peak_rss_kib":peak,"recall_at_10":recall/trials as f64,
+                    "baseline_rss_kib":baseline_rss,"sampled_peak_rss_kib":peak,
+                    "baseline_server_rss_kib":baseline_server_rss,"sampled_peak_server_rss_kib":server_peak,"recall_at_10":recall/trials as f64,
                     "wall_ms":wall.elapsed().as_secs_f64()*1000.0,"index_build_ms":index_build_ms,
                     "scope":"retrieval engine; synthetic vectors; admission not exercised"}));
             }

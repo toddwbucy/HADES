@@ -107,7 +107,7 @@ jobs:
           cargo test -p hades-proto --test proto_types --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
-          cargo test -p hades-core --test embedding_contract --test embedding_client --test extraction_client --test training_client --verbose
+          cargo test -p hades-core --test embedding_contract --test search_admission --test embedding_client --test extraction_client --test training_client --verbose
 
   python-contracts:
     name: Python CPU contracts

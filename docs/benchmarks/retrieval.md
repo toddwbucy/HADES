@@ -17,7 +17,7 @@ It compares bounded streaming with index search at 4 and 16 probes, at concurren
 an 8 GiB address-space ceiling, and a command deadline; it stops its own server.
 
 Each `BENCH` JSON line reports p50/p95/p99 latency, client RSS sampled every 2 ms,
-starting RSS, recall@10 against exact ranking, index-build time, and wall time.
+starting RSS, local-server RSS (when using `--arangod`), recall@10 against exact ranking, index-build time, and wall time.
 Logs and results remain in the printed private artifact directory.
 
 ## Interpretation and limitations
@@ -28,9 +28,14 @@ results, but clustered synthetic vectors are easy for the index. This is neither
 a representative language-model quality evaluation nor a production capacity claim.
 
 The benchmark directly measures retrieval engines; it does not exercise handler
-admission, embedding inference, result hydration, or graph reranking. It excludes
-server RSS and GPU memory. Cases share a process and allocator state, so compare
+admission, embedding inference, result hydration, or graph reranking. GPU memory is excluded. Docker server RSS is not sampled. Cases share a process and allocator state, so compare
 reported baseline RSS alongside sampled peaks. Sampling can miss short peaks.
 Further corpus sizes, production-width vectors, end-to-end admission tests, and
 versioned query/relevance evaluation are required before setting final budgets
 or recommending an indexed production path.
+
+The 1,024 × 2,048 pilot records 32 trials per case. Single-query median latency
+was 1,160 ms for streaming and 2.9 ms for four-probe indexed search. Both indexed
+settings matched exact top-10 results on this synthetic fixture. Sampled client
+RSS peaked below 16 MiB across these engine-only cases. These observations do
+not size the complete daemon or establish production-model relevance quality.

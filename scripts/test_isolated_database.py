@@ -188,6 +188,8 @@ def main():
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
             if args.benchmark:
+                if not args.docker:
+                    env["HADES_BENCH_SERVER_PID"] = str(child.pid)
                 env.update({"HADES_BENCH_ROWS": str(args.benchmark_rows),
                             "HADES_BENCH_DIMENSION": str(args.benchmark_dimension),
                             "HADES_BENCH_TRIALS": str(args.benchmark_trials)})
