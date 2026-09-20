@@ -323,7 +323,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   atomically, rejects stale preparations, and embedding preparation errors retain
   the prior graph. Remap moved symbols' inbound edges in the file transaction;
   remap failures roll back replacement and overlapping moves retain their targets.
-  Cross-file relationship atomicity audit remains in progress (#40).
+  Store cross-file relationship batches atomically, reject stale file revisions
+  and missing endpoints, and propagate stage failures. Automatic recovery after
+  a failed relationship stage remains under audit (#40).
 
 - Allow detail rows up to the aggregate search result budget by paging one row
   with bounded envelope headroom; regenerate vector/metric provenance hashes and

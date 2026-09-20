@@ -34,8 +34,14 @@ pub(super) struct Replacement {
     pub symbol_remap: Vec<(String, String)>,
 }
 
+#[derive(Debug)]
+pub(super) struct StoredFile {
+    pub moved_edges: u64,
+    pub revision: String,
+}
+
 impl Replacement {
-    pub async fn store(mut self, pool: &ArangoPool) -> Result<u64, ArangoError> {
+    pub async fn store(mut self, pool: &ArangoPool) -> Result<StoredFile, ArangoError> {
         let collections = CODEBASE
             .all_collections()
             .iter()
@@ -76,10 +82,90 @@ impl Replacement {
             let moved = remap_inbound(&client, &self.symbol_remap).await?;
             self.file["_key"] = json!(self.key);
             let mode = if self.merge_file { "update" } else { "replace" };
-            client.post(&format!("document/{}?overwriteMode={mode}", CODEBASE.files), &self.file).await?;
-            Ok(moved)
+            let response = client.post(&format!("document/{}?overwriteMode={mode}", CODEBASE.files), &self.file).await?;
+            let revision = response["_rev"].as_str()
+                .ok_or_else(|| ArangoError::Request("file write returned no revision".into()))?.to_owned();
+            Ok(StoredFile { moved_edges: moved, revision })
         }).await
     }
+}
+
+/// Commit the complete relationship stage only if every contributing file still
+/// has the exact revision returned by its acknowledged replacement transaction.
+/// Earlier file commits remain durable if this separate stage fails.
+pub(super) async fn store_relationships(
+    pool: &ArangoPool,
+    revisions: std::collections::HashMap<String, String>,
+    batches: Vec<(&'static str, Vec<Value>)>,
+) -> Result<(), ArangoError> {
+    if batches.iter().all(|(_, docs)| docs.is_empty()) {
+        return Ok(());
+    }
+    let collections = CODEBASE
+        .all_collections()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    transaction::run(pool, collections, move |client| async move {
+        for (key, expected) in revisions {
+            if revision(&client, &key).await?.as_deref() != Some(expected.as_str()) {
+                return Err(ArangoError::Request(
+                    "file changed during relationship preparation; retry ingestion".into(),
+                ));
+            }
+        }
+        for (collection, docs) in batches {
+            if ![CODEBASE.calls_edges, CODEBASE.imports_edges].contains(&collection) {
+                return Err(ArangoError::Request(
+                    "unsupported relationship collection".into(),
+                ));
+            }
+            for batch in docs.chunks(2_000) {
+                let mut ids = std::collections::HashSet::new();
+                for doc in batch {
+                    for field in ["_from", "_to"] {
+                        let id = doc[field].as_str().ok_or_else(|| {
+                            ArangoError::Request("missing relationship endpoint".into())
+                        })?;
+                        if !id.starts_with(&format!("{}/", CODEBASE.files))
+                            && !id.starts_with(&format!("{}/", CODEBASE.symbols))
+                        {
+                            return Err(ArangoError::Request(
+                                "invalid relationship endpoint".into(),
+                            ));
+                        }
+                        ids.insert(id);
+                    }
+                }
+                let found = client.post("cursor", &json!({
+                    "query":"RETURN LENGTH(FOR id IN @ids FILTER DOCUMENT(id) == null RETURN 1)",
+                    "bindVars":{"ids":ids},"batchSize":1,"ttl":30,"memoryLimit":33554432,
+                    "options":{"maxRuntime":30,"failOnWarning":true}
+                })).await?;
+                if found["hasMore"] == true || found["result"] != json!([0]) {
+                    return Err(ArangoError::Request(
+                        "relationship endpoint no longer exists; retry ingestion".into(),
+                    ));
+                }
+                let response = client
+                    .post(
+                        &format!("document/{collection}?overwriteMode=replace"),
+                        &json!(batch),
+                    )
+                    .await?;
+                let rows = response.as_array().ok_or_else(|| {
+                    ArangoError::Request("invalid relationship write response".into())
+                })?;
+                if rows.len() != batch.len() || rows.iter().any(|row| row["error"] == true) {
+                    return Err(ArangoError::Request(format!(
+                        "failed to store {collection} relationships"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Remap each collection from its original snapshot, including overlapping key
@@ -237,6 +323,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relationship_stage_rolls_back_retries_and_rejects_stale_inputs() {
+        with_temp_db("relationship_atomic", Fixtures::Codebase, |pool| async move {
+            let stored = prepared(None, "original").store(&pool).await.unwrap();
+            let revisions = std::collections::HashMap::from([("file".to_owned(), stored.revision)]);
+            pool.writer().post("document/codebase_files", &json!({"_key":"target"})).await.unwrap();
+            let edge = json!({"_key":"relationship", "_from":"codebase_files/file", "_to":"codebase_files/target"});
+            let batches = vec![(CODEBASE.imports_edges, vec![edge.clone()]), (CODEBASE.calls_edges, vec![edge.clone()])];
+            pool.writer().put("collection/codebase_calls_edges/properties", &json!({
+                "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+            })).await.unwrap();
+            let error = store_relationships(&pool, revisions.clone(), batches.clone()).await.unwrap_err();
+            assert!(error.to_string().contains("failed to store codebase_calls_edges"), "{error}");
+            for collection in [CODEBASE.calls_edges, CODEBASE.imports_edges] {
+                assert!(pool.reader().get(&format!("document/{collection}/relationship")).await.unwrap_err().is_not_found());
+            }
+            pool.writer().put("collection/codebase_calls_edges/properties", &json!({"schema":null})).await.unwrap();
+            store_relationships(&pool, revisions.clone(), batches.clone()).await.unwrap();
+            let before = pool.reader().get("document/codebase_imports_edges/relationship").await.unwrap();
+            prepared(revision(pool.writer(), "file").await.unwrap(), "newer").store(&pool).await.unwrap();
+            let error = store_relationships(&pool, revisions, batches).await.unwrap_err();
+            assert!(error.to_string().contains("changed during relationship preparation"));
+            assert_eq!(pool.reader().get("document/codebase_imports_edges/relationship").await.unwrap(), before);
+            let current = std::collections::HashMap::from([("file".to_owned(), revision(pool.writer(), "file").await.unwrap().unwrap())]);
+            pool.writer().delete("document/codebase_files/target").await.unwrap();
+            let error = store_relationships(&pool, current, vec![(CODEBASE.calls_edges, vec![edge])]).await.unwrap_err();
+            assert!(error.to_string().contains("endpoint no longer exists"));
+        }).await;
+    }
+
+    #[tokio::test]
     async fn rejected_inbound_remap_rolls_back_file_replacement() {
         with_temp_db("remap_rollback", Fixtures::Codebase, |pool| async move {
             prepared(None, "original").store(&pool).await.unwrap();
@@ -310,7 +426,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(replacement().store(&pool).await.unwrap(), 1);
+            assert_eq!(replacement().store(&pool).await.unwrap().moved_edges, 1);
             assert_eq!(
                 pool.reader().get(&new_path).await.unwrap()["_to"],
                 "codebase_symbols/new"

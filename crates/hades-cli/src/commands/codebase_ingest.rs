@@ -110,6 +110,7 @@ struct ImportContext {
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
     /// Inbound edges remapped inside acknowledged file transactions.
     repointed_edges: u64,
+    committed_revisions: HashMap<String, String>,
     remapped_symbols: usize,
 }
 
@@ -265,6 +266,7 @@ pub async fn run_phase(
         cpp_file_symbols: HashMap::new(),
         structural_file_symbols: HashMap::new(),
         repointed_edges: 0,
+        committed_revisions: HashMap::new(),
         remapped_symbols: 0,
     };
     // Collect absolute paths for Rust files — used for rust-analyzer post-loop phase.
@@ -418,17 +420,6 @@ pub async fn run_phase(
         &py_symbol_index,
         namespace,
     );
-    if !py_import_edges.is_empty() {
-        info!(
-            edge_count = py_import_edges.len(),
-            "resolved Python import edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.imports_edges, &py_import_edges, true).await
-        {
-            warn!(error = %e, "failed to store Python import edges");
-        }
-    }
 
     // Resolve Python call graph edges (symbol → symbol). Uses the calls + parent_symbol
     // metadata attached during AST extraction; reuses the bare-name index already built
@@ -441,47 +432,15 @@ pub async fn run_phase(
         &py_symbol_index,
         namespace,
     );
-    if !py_call_edges.is_empty() {
-        info!(
-            edge_count = py_call_edges.len(),
-            "resolved Python call edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.calls_edges, &py_call_edges, true).await
-        {
-            warn!(error = %e, "failed to store Python call edges");
-        }
-    }
 
     // Resolve compiler-grade C/C++/CUDA calls, including CUDA kernel launches.
     // libclang records target USRs and definition spans during each file parse;
     // this batch phase maps them onto HADES's cross-file span keys.
     let cpp_call_edges =
         cpp_edges::resolve_cpp_calls_scoped(&base, &imports.cpp_file_symbols, namespace);
-    if !cpp_call_edges.is_empty() {
-        info!(
-            edge_count = cpp_call_edges.len(),
-            "resolved C/C++/CUDA call edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.calls_edges, &cpp_call_edges, true).await
-        {
-            warn!(error = %e, "failed to store C/C++/CUDA call edges");
-        }
-    }
 
     let structural_edges =
         tree_sitter_edges::resolve_scoped(&imports.structural_file_symbols, namespace);
-    if !structural_edges.calls.is_empty() {
-        crud::insert_documents(&db, CODEBASE.calls_edges, &structural_edges.calls, true)
-            .await
-            .context("failed to store Tree-sitter call edges")?;
-    }
-    if !structural_edges.imports.is_empty() {
-        crud::insert_documents(&db, CODEBASE.imports_edges, &structural_edges.imports, true)
-            .await
-            .context("failed to store Tree-sitter import edges")?;
-    }
 
     // Resolve Rust import graph edges (file → symbol).
     let rust_symbol_index =
@@ -491,17 +450,21 @@ pub async fn run_phase(
         &rust_symbol_index,
         namespace,
     );
-    if !rs_import_edges.is_empty() {
-        info!(
-            edge_count = rs_import_edges.len(),
-            "resolved Rust import edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.imports_edges, &rs_import_edges, true).await
-        {
-            warn!(error = %e, "failed to store Rust import edges");
-        }
-    }
+
+    // This separate enrichment stage is all-or-nothing. File replacements
+    // preceding it remain committed, but failures cannot masquerade as success.
+    super::codebase_persist::store_relationships(
+        &db,
+        std::mem::take(&mut imports.committed_revisions),
+        vec![
+            (CODEBASE.imports_edges, py_import_edges.clone()),
+            (CODEBASE.calls_edges, py_call_edges.clone()),
+            (CODEBASE.calls_edges, cpp_call_edges.clone()),
+            (CODEBASE.calls_edges, structural_edges.calls.clone()),
+            (CODEBASE.imports_edges, structural_edges.imports.clone()),
+            (CODEBASE.imports_edges, rs_import_edges.clone()),
+        ],
+    ).await.context("failed to atomically store cross-file relationships; earlier file replacements remain committed")?;
 
     let total_import_edges =
         py_import_edges.len() + rs_import_edges.len() + structural_edges.imports.len();
@@ -740,7 +703,7 @@ pub async fn run_phase(
         .count();
     let total_embeddings: usize = results.iter().filter_map(|r| r.num_embeddings).sum();
 
-    // Files whose chunks were stored but whose embed call failed (e.g. embedder
+    // Files preserved because embedding preparation failed (e.g. embedder
     // GPU OOM, timeout). Their per-file `embedding_error` carries the message;
     // we surface a count + the affected paths here so a green-looking "completed"
     // doesn't hide silent vector loss.
@@ -2144,7 +2107,7 @@ async fn ingest_file(
     });
 
     let remapped_symbols = symbol_key_remap.len();
-    let repointed = super::codebase_persist::Replacement {
+    let stored = super::codebase_persist::Replacement {
         key: fkey.clone(),
         expected_revision,
         chunks: chunk_docs,
@@ -2159,7 +2122,10 @@ async fn ingest_file(
     .store(db)
     .await
     .context("failed to atomically replace file graph")?;
-    imports.repointed_edges += repointed;
+    imports.repointed_edges += stored.moved_edges;
+    imports
+        .committed_revisions
+        .insert(fkey.clone(), stored.revision);
     imports.remapped_symbols += remapped_symbols;
 
     // Collect Python import symbols for later edge resolution.

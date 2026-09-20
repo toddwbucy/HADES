@@ -61,8 +61,20 @@ canonical-collapse and overlapping-chain regressions pass, including a chain
 across the former 2,000-entry read boundary. The full maintained isolated suite
 and core/CLI all-target Clippy pass at this stage.
 
-This does **not** close #40. Remaining review includes the cross-file relationship
-storage phase, end-to-end cancellation, physical source changes during
+Cross-file Python/Rust/C++/Tree-sitter relationships now commit in one separate
+transaction. The file replacement returns its new revision from the transactional
+write response; relationship persistence verifies these exact revisions under
+exclusive locks, checks endpoint existence, and validates each Document API batch.
+Errors propagate instead of logging and reporting generated edge counts as stored.
+A rejected call-edge batch rolls back earlier import-edge writes; retry, stale
+preparation rejection and missing-endpoint rejection have isolated regression
+coverage. The full maintained suite passes after this change.
+
+This does **not** close #40. Earlier file replacements remain committed if the
+relationship stage fails. The current unchanged-file skip can prevent automatic
+relationship recovery on retry: an explicit incomplete-stage marker and recovery
+contract are still needed. Remaining review also includes end-to-end cancellation,
+physical source changes during
 external analysis, and additional fallback/analyzer failure coverage. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.
