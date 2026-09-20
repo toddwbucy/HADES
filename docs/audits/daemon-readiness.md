@@ -8,8 +8,8 @@ The harness now runs `scripts/check_daemon_ready.py` as the `hades` user against
 its actual socket and checks the expected configured database. The Unix protocol
 has no per-request database selector; the probe checks the returned identity.
 It sends a framed `db.health` request, requires a matching request ID, successful
-error-free envelope, and healthy reader/writer connection flags. Requests use the
-agent tier and do not write to the database.
+error-free envelope, and healthy reader/writer connection flags. The health command is Internal-tier, so the probe uses the local socket’s
+admin session under the service identity. It does not write to the database.
 
 The overall startup deadline defaults to 30 seconds, each attempt gets at most
 two seconds, and every read uses the remaining deadline rather than restarting
@@ -20,9 +20,10 @@ The container installs Python 3 for this standard-library-only probe.
 Six private Unix-peer tests cover successful framing, missing and stalled
 listeners, truncated/oversized/invalid frames, failed or mismatched responses,
 degraded connections and invalid timeout values. They run through existing CI
-script discovery. A real private daemon integration and a complete container
-installation remain separate verification steps; the mock tests alone do not
-prove either.
+script discovery. A freshly built private daemon was also tested against a synthetic Unix HTTP
+database peer: healthy passed, wrong database failed, and degraded backend failed.
+That integration caught and corrected the initial agent-session authorization
+error. A complete container installation remains a separate unperformed check.
 
 `db.health` checks the configured clients' version endpoints. Passing proves
 transport/service dispatch and those connection checks, not write authorization,

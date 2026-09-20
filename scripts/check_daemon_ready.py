@@ -31,7 +31,7 @@ def check_once(path, database, deadline):
     # The local protocol uses the daemon's configured database, not a request
     # override. Compare the returned identity with the caller's expectation.
     payload = json.dumps({'command': 'db.health', 'params': {'verbose': False},
-                          'request_id': 'install-readiness', 'session': 'agent'}).encode()
+                          'request_id': 'install-readiness', 'session': 'admin'}).encode()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
         budget(peer)
         peer.connect(path)

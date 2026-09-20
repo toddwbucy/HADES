@@ -41,7 +41,7 @@ class Readiness(unittest.TestCase):
                             length = struct.unpack('!I', receive(4))[0]
                             request = json.loads(receive(length))
                             assert request['command'] == 'db.health'
-                            assert request['session'] == 'agent'
+                            assert request['session'] == 'admin'
                             if stall:
                                 time.sleep(.3)
                             else:
