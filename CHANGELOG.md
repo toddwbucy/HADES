@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Verify actual CLI CPU training/checkpoint/export and the distinct training-edge
+  versus full-graph update contexts with isolated fixtures (epic #12).
+
 - Retain a private real-CLI reproduction and remediation evidence for training
   session release racing normal runtime shutdown (#115).
 - Refresh the audit fixture inventory with all 39 Rust integration targets and
