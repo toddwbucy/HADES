@@ -6,6 +6,9 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Component/API coverage map](component-coverage.md): revision-bound five-crate
+  and Python-package inventory, tested boundaries and explicit remaining review.
+
 - [Deployment provenance follow-up](2026-09-20-deployment-provenance.md): live
   executable hash, ELF build ID/compiler evidence and limits of source mapping.
 
