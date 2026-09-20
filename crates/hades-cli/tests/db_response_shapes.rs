@@ -339,6 +339,12 @@ async fn orientation_does_not_hide_metadata_read_failures() {
         );
         if output.status.success() {
             incorrect_successes += 1;
+        } else {
+            assert!(output.stdout.is_empty());
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(diagnostic.contains("orientation"), "{diagnostic}");
+            assert!(diagnostic.contains(stage), "{diagnostic}");
+            assert_eq!(calls.len(), index + 1, "stop after failed metadata stage");
         }
     }
     assert_eq!(

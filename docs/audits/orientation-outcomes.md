@@ -24,3 +24,23 @@ transport, authorization and malformed-response failures. Preserve valid output,
 propagate stage-specific diagnostics and nonzero CLI/daemon failure status, and
 cover both single-collection and profile-overview paths. This is a private
 failure-status reproduction, not a production incident or write-integrity claim.
+
+## Remediation
+
+Collection sampling, recent-document reads and index listing now tolerate only
+not-found as empty. Other errors propagate with collection/stage context through
+shared dispatch. The recent helper returns Result, so profile overview also
+fails when a recent-document read fails. CLI errors exit nonzero with no success
+output; daemon replies preserve request IDs and report QUERY_FAILED with no data.
+Successful output and existing missing-collection semantics remain unchanged.
+
+Private daemon tests cover malformed replies and HTTP 403/503 at each detail
+stage, the same faults in overview recent reads, and valid empty/404 controls
+for detail and every registered profile. Actual CLI tests cover all three
+malformed detail stages, populated controls, stage diagnostics and stopping after
+the failed request. This is response handling evidence, not deployed readiness,
+full metadata-shape validation or a production incident. Snapshot-consistent
+orientation across concurrent database changes remains outside this fix.
+
+[Remediation evidence](orientation-outcomes-remediation.json) records five
+source/probe hashes, seven passing CLI tests and three passing service tests.

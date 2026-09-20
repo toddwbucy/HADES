@@ -432,6 +432,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Propagate orientation sample, recent-document and index read failures with
+  stage diagnostics while retaining valid empty/not-found results (#128).
+
 - Report accumulated graph materialization execution errors as failure while
   retaining partial-run diagnostics and committed-write semantics (#125).
 

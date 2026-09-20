@@ -1132,3 +1132,123 @@ mod graph_response_tests {
         assert!(mock.events.try_recv().is_err());
     }
 }
+
+#[cfg(test)]
+mod orientation_outcome_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn page(value: Value) -> cursor_mock::Reply {
+        cursor_mock::Reply::page(value)
+    }
+    fn error(status: u16) -> cursor_mock::Reply {
+        cursor_mock::Reply {
+            status,
+            body: json!({"error":true,"errorNum":if status==404 {1203} else {status as u32},"errorMessage":"injected metadata failure"}),
+            gate: None,
+        }
+    }
+    fn empty_rows() -> cursor_mock::Reply {
+        page(json!({"hasMore":false,"result":[]}))
+    }
+    async fn orient(collection: Option<&str>, replies: Vec<cursor_mock::Reply>) -> DaemonResponse {
+        let mock = cursor_mock::Mock::new(replies).await;
+        let payload=serde_json::to_vec(&json!({"command":"orient","request_id":"orient-test","params":{"collection":collection}})).unwrap();
+        let response = handle_request(
+            &mock.pool,
+            &HadesConfig::default(),
+            ConnectionPolicy::local_admin(),
+            &payload,
+            Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(response.request_id.as_deref(), Some("orient-test"));
+        response
+    }
+    fn failed(response: DaemonResponse, stage: &str) {
+        assert!(!response.success, "{response:?}");
+        assert!(response.data.is_none());
+        assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
+        let message = response.error.unwrap();
+        assert!(message.contains(stage), "{message}");
+    }
+    #[tokio::test]
+    async fn detail_propagates_malformed_authorization_and_backend_errors() {
+        for stage in 0..3 {
+            for status in [200, 403, 503] {
+                let mut replies = vec![page(json!({"count":2}))];
+                for _ in 0..stage {
+                    replies.push(empty_rows());
+                }
+                replies.push(if status == 200 {
+                    page(json!({}))
+                } else {
+                    error(status)
+                });
+                failed(
+                    orient(Some("docs"), replies).await,
+                    [
+                        "orientation sample",
+                        "orientation recent documents",
+                        "orientation indexes",
+                    ][stage],
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn detail_preserves_empty_and_missing_collection_results() {
+        for missing in [false, true] {
+            let replies = if missing {
+                (0..4).map(|_| error(404)).collect()
+            } else {
+                vec![
+                    page(json!({"count":0})),
+                    empty_rows(),
+                    empty_rows(),
+                    page(json!({"indexes":[]})),
+                ]
+            };
+            let response = orient(Some("docs"), replies).await;
+            assert!(response.success, "{response:?}");
+            assert_eq!(
+                response.data.unwrap(),
+                json!({"database":"fixture","collection":"docs","count":0,"schema_fields":[],"recent":[],"indexes":[]})
+            );
+        }
+    }
+    #[tokio::test]
+    async fn overview_recent_failure_is_not_absence() {
+        for status in [200, 403, 503] {
+            let mut replies = (0..3).map(|_| page(json!({"count":0}))).collect::<Vec<_>>();
+            replies.push(if status == 200 {
+                page(json!({}))
+            } else {
+                error(status)
+            });
+            failed(orient(None, replies).await, "orientation recent documents");
+        }
+        for missing in [false, true] {
+            let mut replies = Vec::new();
+            for _ in crate::db::collections::CollectionProfile::all() {
+                if missing {
+                    replies.extend((0..4).map(|_| error(404)));
+                } else {
+                    replies.extend((0..3).map(|_| page(json!({"count":0}))));
+                    replies.push(empty_rows());
+                }
+            }
+            let response = orient(None, replies).await;
+            assert!(response.success, "{response:?}");
+            let data = response.data.unwrap();
+            assert_eq!(
+                data["profiles"].as_array().unwrap().len(),
+                crate::db::collections::CollectionProfile::all().len()
+            );
+            assert_eq!(
+                data["totals"],
+                json!({"documents":0,"chunks":0,"embeddings":0})
+            );
+        }
+    }
+}
