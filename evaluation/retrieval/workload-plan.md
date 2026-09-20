@@ -58,8 +58,15 @@ The existing evaluator hardcodes the code task and passage prompt on both sides;
 it must be adapted and validated before claiming document-research results.
 
 Report recall@5, MRR@10 and nDCG@10 per workload, per query and as an equal-weight
-workload average. For incomplete judgments, label recall as judged-pool recall
-and report judgment coverage. Track citation correctness, draft-version accuracy,
+workload average. Require judgments for every top-ten result from every compared
+method before publishing MRR@10 or nDCG@10. Compute nDCG's ideal ranking from the
+frozen judged pool and label it pooled nDCG, since relevant passages may remain
+outside that pool. Label recall as judged-pool recall for the same reason. If any
+top-ten result is unjudged, withhold that query's ranking metrics and report the
+missing judgments; do not drop unjudged results and compress ranks. Report both
+top-ten judgment coverage and the count of fully judged queries. Withhold the
+workload aggregate until all included queries meet this rule, preventing selective
+reporting of easier queries. Track citation correctness, draft-version accuracy,
 claim support and confusion between intended and implemented behavior separately
 from retrieval ranking. Use explicit no-evidence cases for abstention assessment;
 the current positive-relevance scorer cannot score those cases unchanged.
