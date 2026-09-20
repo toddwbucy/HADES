@@ -389,6 +389,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Bound LSP headers, frame serialization, notification retention and pending
+  admission; fail closed on inbound overflow and reject oversized sends before
+  writing protocol bytes (#98).
+
 - Apply LSP request deadlines across writer admission, transmission and response;
   clean pending requests on cancellation and close interrupted frames before reuse (#94).
 

@@ -26,6 +26,58 @@ use super::LspError;
 type ResponseSender = oneshot::Sender<Result<Value, LspError>>;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_HEADER_BYTES: usize = 8 * 1024;
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PENDING: usize = 128;
+const MAX_NOTIFICATIONS: usize = 1024;
+const MAX_NOTIFICATION_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+struct Notifications {
+    // Wire byte accounting is a bound on input size, not exact parsed heap usage.
+    entries: Vec<(usize, Value)>,
+    bytes: usize,
+}
+impl Notifications {
+    fn push(&mut self, bytes: usize, message: Value) -> bool {
+        if self.entries.len() >= MAX_NOTIFICATIONS
+            || bytes > MAX_NOTIFICATION_BYTES.saturating_sub(self.bytes)
+        {
+            return false;
+        }
+        self.bytes += bytes;
+        self.entries.push((bytes, message));
+        true
+    }
+    fn drain(&mut self, method: Option<&str>) -> Vec<Value> {
+        let mut matched = Vec::new();
+        let mut retained = Vec::new();
+        for (bytes, message) in self.entries.drain(..) {
+            if method.is_none_or(|m| message.get("method").and_then(Value::as_str) == Some(m)) {
+                self.bytes -= bytes;
+                matched.push(message);
+            } else {
+                retained.push((bytes, message));
+            }
+        }
+        self.entries = retained;
+        matched
+    }
+}
+
+struct FrameBuffer(Vec<u8>);
+impl std::io::Write for FrameBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_FRAME_BYTES.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other("outgoing LSP frame exceeds 16 MiB"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct Pending {
@@ -90,7 +142,7 @@ pub struct LspClient {
     /// Pending request map: id → oneshot sender.
     transport: Arc<Transport>,
     /// Buffered server notifications.
-    notifications: Arc<Mutex<Vec<Value>>>,
+    notifications: Arc<Mutex<Notifications>>,
     /// Signalled when any notification arrives.
     notification_signal: Arc<Notify>,
     /// Reader task handle.
@@ -130,7 +182,7 @@ impl LspClient {
             .ok_or_else(|| LspError::Process("no stdout handle".into()))?;
 
         let transport = Arc::new(Transport::default());
-        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let notifications = Arc::new(Mutex::new(Notifications::default()));
         let notification_signal = Arc::new(Notify::new());
         let reader_stdin = Arc::new(Mutex::new(stdin));
         let reader_transport = transport.clone();
@@ -190,6 +242,11 @@ impl LspClient {
             if pending.closed {
                 return Err(LspError::Process("LSP transport is closed".into()));
             }
+            if pending.senders.len() >= MAX_PENDING {
+                return Err(LspError::Process(
+                    "LSP pending request limit (128) reached".into(),
+                ));
+            }
             pending.senders.insert(id, tx);
         }
         let _pending = PendingGuard {
@@ -219,16 +276,7 @@ impl LspClient {
 
     /// Drain all buffered notifications, optionally filtered by method.
     pub async fn drain_notifications(&self, method: Option<&str>) -> Vec<Value> {
-        let mut notifs = self.notifications.lock().await;
-        if let Some(m) = method {
-            let (matching, remaining): (Vec<_>, Vec<_>) = notifs
-                .drain(..)
-                .partition(|n| n.get("method").and_then(Value::as_str) == Some(m));
-            *notifs = remaining;
-            matching
-        } else {
-            std::mem::take(&mut *notifs)
-        }
+        self.notifications.lock().await.drain(method)
     }
 
     /// Wait for a notification to arrive (with timeout).
@@ -289,13 +337,16 @@ async fn send_frame(
     transport: &Arc<Transport>,
     message: &Value,
 ) -> Result<(), LspError> {
-    let body = serde_json::to_vec(message)?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
     let mut writer = tokio::select! {
         biased;
         _ = transport.stop.cancelled() => return Err(LspError::Process("LSP transport is closed".into())),
         writer = stdin.lock() => writer,
     };
+    // Only the admitted writer allocates a serialized frame. Oversize rejection
+    // occurs before any bytes are sent and does not poison the transport.
+    let mut body = FrameBuffer(Vec::new());
+    serde_json::to_writer(&mut body, message)?;
+    let header = format!("Content-Length: {}\r\n\r\n", body.0.len());
     // No guard while queued: cancelling before transmission leaves framing intact.
     let mut frame = FailureGuard {
         transport: transport.clone(),
@@ -307,7 +358,7 @@ async fn send_frame(
         _ = transport.stop.cancelled() => return Err(LspError::Process("LSP transport is closed".into())),
         result = async {
             writer.write_all(header.as_bytes()).await?;
-            writer.write_all(&body).await?;
+            writer.write_all(&body.0).await?;
             writer.flush().await
         } => { result?; }
     }
@@ -320,7 +371,7 @@ async fn send_frame(
 async fn reader_loop(
     stdout: tokio::process::ChildStdout,
     transport: Arc<Transport>,
-    notifications: Arc<Mutex<Vec<Value>>>,
+    notifications: Arc<Mutex<Notifications>>,
     notification_signal: Arc<Notify>,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
 ) {
@@ -329,8 +380,11 @@ async fn reader_loop(
     loop {
         // Read headers.
         let content_length = match read_headers(&mut reader).await {
-            Some(len) => len,
-            None => break, // EOF
+            Ok(len) => len,
+            Err(error) => {
+                transport.close(&error.to_string());
+                break;
+            }
         };
 
         // Read body.
@@ -378,36 +432,63 @@ async fn reader_loop(
             }
         } else {
             // Notification from server.
-            notifications.lock().await.push(message);
+            if !notifications.lock().await.push(content_length, message) {
+                transport.close("LSP notification retention limit exceeded");
+                break;
+            }
             notification_signal.notify_waiters();
         }
     }
 }
 
 /// Read LSP headers from the stream, return Content-Length.
-async fn read_headers<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Option<usize> {
-    let mut content_length: Option<usize> = None;
-    let mut line_buf = String::new();
-
+async fn read_headers<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<usize, LspError> {
+    let mut content_length = None;
+    let mut used = 0;
+    let mut line = Vec::new();
     loop {
-        line_buf.clear();
-        match reader.read_line(&mut line_buf).await {
-            Ok(0) => return None, // EOF
-            Ok(_) => {}
-            Err(_) => return None,
+        let remaining = MAX_HEADER_BYTES - used;
+        if remaining == 0 {
+            return Err(LspError::Process("LSP headers exceed 8 KiB".into()));
         }
-
-        let trimmed = line_buf.trim();
-        if trimmed.is_empty() {
-            break; // End of headers.
+        line.clear();
+        let n = (&mut *reader)
+            .take(remaining as u64)
+            .read_until(b'\n', &mut line)
+            .await?;
+        used += n;
+        if n == 0 || !line.ends_with(b"\n") {
+            return Err(LspError::Process(
+                "incomplete or oversized LSP header".into(),
+            ));
         }
-
-        if let Some(val) = trimmed.strip_prefix("Content-Length:") {
-            content_length = val.trim().parse().ok();
+        let text = std::str::from_utf8(&line)
+            .map_err(|_| LspError::Process("invalid LSP header encoding".into()))?
+            .trim();
+        if text.is_empty() {
+            return content_length
+                .ok_or_else(|| LspError::Process("missing LSP Content-Length".into()));
+        }
+        let (name, value) = text
+            .split_once(':')
+            .ok_or_else(|| LspError::Process("malformed LSP header".into()))?;
+        if name.eq_ignore_ascii_case("Content-Length") {
+            if content_length.is_some() {
+                return Err(LspError::Process("duplicate LSP Content-Length".into()));
+            }
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(LspError::Process("invalid LSP Content-Length".into()));
+            }
+            let length = value
+                .parse::<usize>()
+                .map_err(|_| LspError::Process("invalid LSP Content-Length".into()))?;
+            if length > MAX_FRAME_BYTES {
+                return Err(LspError::Process("LSP frame exceeds 16 MiB".into()));
+            }
+            content_length = Some(length);
         }
     }
-
-    content_length
 }
 
 #[cfg(test)]
@@ -426,7 +507,7 @@ mod tests {
             let mut reader = BufReader::new(&header[..]);
             read_headers(&mut reader).await
         });
-        assert_eq!(result, Some(42));
+        assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
@@ -440,7 +521,7 @@ mod tests {
             let mut reader = BufReader::new(&header[..]);
             read_headers(&mut reader).await
         });
-        assert_eq!(result, None);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -521,6 +602,103 @@ mod tests {
         ));
         drop(waiting);
         assert!(client.notify("must not reuse", Value::Null).await.is_err());
+        tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn header_limits_apply_before_body_allocation() {
+        let cases: &[&[u8]] = &[
+            b"Content-Length: 16777217\r\n\r\n",
+            b"Content-Length: 184467440737095516160\r\n\r\n",
+            b"Content-Length: -1\r\n\r\n",
+            b"Content-Length: +1\r\n\r\n",
+            b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n",
+            b"X: missing length\r\n\r\n",
+            b"Content-Length: 1",
+        ];
+        for bytes in cases {
+            assert!(read_headers(&mut BufReader::new(*bytes)).await.is_err());
+        }
+        let prefix = b"content-length: 16777216\r\nX: ";
+        let mut exact = prefix.to_vec();
+        exact.extend(vec![b'x'; MAX_HEADER_BYTES - prefix.len() - 4]);
+        exact.extend(b"\r\n\r\n");
+        assert_eq!(
+            read_headers(&mut BufReader::new(&exact[..])).await.unwrap(),
+            MAX_FRAME_BYTES
+        );
+        exact.insert(prefix.len(), b'x');
+        assert!(read_headers(&mut BufReader::new(&exact[..])).await.is_err());
+    }
+
+    #[test]
+    fn notification_drains_release_both_count_and_wire_budget() {
+        let mut queue = Notifications::default();
+        let message = |method| serde_json::json!({"method": method});
+        assert!(queue.push(MAX_NOTIFICATION_BYTES - 1, message("keep")));
+        assert!(queue.push(1, message("release")));
+        assert!(!queue.push(1, message("overflow")));
+        assert_eq!(queue.drain(Some("release")).len(), 1);
+        assert_eq!(queue.bytes, MAX_NOTIFICATION_BYTES - 1);
+        assert!(queue.push(1, message("refill")));
+        assert_eq!(queue.drain(None).len(), 2);
+        assert_eq!(queue.bytes, 0);
+        for _ in 0..MAX_NOTIFICATIONS {
+            assert!(queue.push(1, message("count")));
+        }
+        assert!(!queue.push(1, message("overflow")));
+        assert_eq!(queue.drain(Some("count")).len(), MAX_NOTIFICATIONS);
+        assert!(queue.push(1, message("refill")));
+    }
+
+    #[tokio::test]
+    async fn pending_admission_is_bounded_and_cancelled_slots_are_reusable() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = LspClient::start(
+            "/usr/bin/python3",
+            &["-c", "import time; time.sleep(30)"],
+            directory.path(),
+        )
+        .await
+        .unwrap();
+        let writer = client.stdin.lock().await;
+        let mut requests = Vec::new();
+        for _ in 0..MAX_PENDING {
+            let mut request =
+                Box::pin(client.request("queued", Value::Null, Duration::from_secs(30)));
+            assert!(futures::poll!(request.as_mut()).is_pending());
+            requests.push(request);
+        }
+        assert_eq!(
+            client.transport.pending.lock().unwrap().senders.len(),
+            MAX_PENDING
+        );
+        let rejected = client
+            .request("rejected", Value::Null, Duration::from_secs(30))
+            .await;
+        assert!(
+            rejected
+                .unwrap_err()
+                .to_string()
+                .contains("pending request limit")
+        );
+        requests.pop();
+        let mut replacement =
+            Box::pin(client.request("replacement", Value::Null, Duration::from_secs(30)));
+        assert!(futures::poll!(replacement.as_mut()).is_pending());
+        assert_eq!(
+            client.transport.pending.lock().unwrap().senders.len(),
+            MAX_PENDING
+        );
+        drop(replacement);
+        drop(requests);
+        drop(writer);
+        assert!(client.transport.pending.lock().unwrap().senders.is_empty());
+        assert!(!client.transport.stop.is_cancelled());
+        client.transport.close("fixture complete");
         tokio::time::timeout(Duration::from_secs(2), client.shutdown())
             .await
             .unwrap()

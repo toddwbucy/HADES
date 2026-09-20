@@ -208,3 +208,8 @@ explicit limits are recorded in that review.
 [LSP transport deadlines](lsp-transport-review.md) retains the historical blocked
 write reproduction and the #94 private-peer remediation tests. Analyzer memory,
 preflight and descendant boundaries remain outside that verification.
+
+
+[LSP memory boundaries](lsp-memory-review.md) retains #98's bounded baseline and
+per-transport framing, notification and pending-admission remediation. This is
+not a global daemon memory budget or subprocess sandbox claim.
