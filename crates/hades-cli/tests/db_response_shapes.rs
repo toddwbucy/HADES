@@ -254,3 +254,52 @@ async fn materialize_scan_failure_is_not_success() {
         "failed source scans must not report successful materialization"
     );
 }
+
+#[tokio::test]
+async fn graph_list_rejects_malformed_success_responses() {
+    // Empty is valid, but absent or malformed graph metadata is not evidence
+    // that the selected database has no graphs.
+    for graphs in [
+        json!([]),
+        json!([{"_key":"fixture_graph", "edgeDefinitions":[]}]),
+        json!([{"name":"legacy", "edgeDefinitions":[{"collection":"edges","from":["docs"],"to":["docs"]}]}]),
+    ] {
+        let (output, calls) = run(&["graph", "list"], vec![json!({"graphs":graphs})]).await;
+        assert!(output.status.success(), "{output:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let expected: Vec<Value> = graphs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|graph| {
+                json!({"name":graph.get("_key").or_else(|| graph.get("name")).unwrap(),
+                "edge_definitions":graph["edgeDefinitions"]})
+            })
+            .collect();
+        assert_eq!(envelope["data"]["graphs"], json!(expected));
+        assert_eq!(envelope["success"], true);
+        assert_eq!(calls, ["GET /_db/fixture/_api/gharial"]);
+    }
+    for bad in [
+        json!({}),
+        json!({"graphs":null}),
+        json!({"graphs":{}}),
+        json!({"graphs":[1]}),
+        json!({"graphs":[{}]}),
+        json!({"graphs":[{"_key":"", "edgeDefinitions":[]}]}),
+        json!({"graphs":[{"_key":"g"}]}),
+        json!({"graphs":[{"_key":"g", "edgeDefinitions":{}}]}),
+        json!({"graphs":[{"_key":"g", "edgeDefinitions":[{}]}]}),
+        json!({"graphs":[{"_key":"g", "edgeDefinitions":[{"collection":"e","from":[1],"to":[]}]}]}),
+    ] {
+        let (output, calls) = run(&["graph", "list"], vec![bad.clone()]).await;
+        println!(
+            "graph response probe: {}",
+            json!({"response":bad,
+            "exit":output.status.code(), "stdout":String::from_utf8_lossy(&output.stdout),
+            "stderr":String::from_utf8_lossy(&output.stderr), "calls":calls})
+        );
+        failed(&output);
+        assert!(output.stdout.is_empty());
+    }
+}
