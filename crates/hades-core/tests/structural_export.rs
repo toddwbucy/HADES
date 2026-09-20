@@ -165,3 +165,29 @@ async fn compact_rows_and_collection_bindings_are_preserved() {
             < 1e-6
     );
 }
+
+#[tokio::test]
+async fn compact_subset_validation_never_sends_invalid_rows() {
+    use hades_core::graph::export::export_embeddings_subset;
+    for (indices, values, dim, chunk) in [
+        (vec![1], vec![f32::NAN], 1, 1),
+        (vec![0, 1], vec![], usize::MAX, 1),
+        (vec![1], vec![], 0, 1),
+        (vec![1], vec![0.5], 1, 0),
+        (vec![2], vec![0.5], 1, 1),
+        (vec![1, 1], vec![0.5, 0.5], 1, 1),
+    ] {
+        let mut mock = Mock::new(vec![]).await;
+        let result = export_embeddings_subset(
+            &mock.pool,
+            &ids(),
+            &indices,
+            &values,
+            dim,
+            &ExportConfig { chunk_size: chunk },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(mock.events.try_recv().is_err());
+    }
+}

@@ -47,10 +47,11 @@ pub enum ExportError {
     },
 
     #[error(
-        "export batch for {collection} returned an invalid acknowledgment ({received} rows for {expected} updates) after {acknowledged} previously acknowledged updates; partial persistence is possible"
+        "export batch for {collection} returned an invalid acknowledgment: {reason} ({received} rows for {expected} updates) after {acknowledged} previously acknowledged updates; partial persistence is possible"
     )]
     InvalidAcknowledgment {
         collection: String,
+        reason: &'static str,
         acknowledged: usize,
         expected: usize,
         received: usize,
@@ -318,16 +319,23 @@ async fn export_grouped_embeddings(
                 attempted: num_updates,
                 source,
             })?;
-            let ignored = result
+            let no_ignored_writes = result
                 .extra
                 .as_ref()
                 .and_then(|extra| extra.pointer("/stats/writesIgnored"))
                 .is_none_or(|value| value.as_u64() == Some(0));
-            if result.results.len() != num_updates
-                || result.results.iter().any(|value| value.as_u64() != Some(1))
-                || !ignored
-            {
+            let invalid_reason = if result.results.len() != num_updates {
+                Some("row count mismatch")
+            } else if result.results.iter().any(|value| value.as_u64() != Some(1)) {
+                Some("unexpected result value")
+            } else if !no_ignored_writes {
+                Some("nonzero or invalid writesIgnored statistic")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid_reason {
                 return Err(ExportError::InvalidAcknowledgment {
+                    reason,
                     collection: (*col_name).to_owned(),
                     acknowledged: total_exported + col_count,
                     expected: num_updates,

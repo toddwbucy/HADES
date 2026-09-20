@@ -21,9 +21,11 @@ and ignoreErrors is removed. Successful acknowledgments must contain one numeric
 1 per update; a present writesIgnored statistic must be numeric zero. Counts
 for malformed/short replies are not promoted to verified progress.
 
-Seven private transport tests cover rejected/short/malformed replies, invalid
+Eight private transport tests cover rejected/short/malformed replies, invalid
 inputs without traffic, a failure following acknowledged progress, and compact
-subset row/value order plus collection binding. The existing graph-export unit
+subset row/value order plus collection binding. Invalid compact subsets are
+rejected without requests, including duplicate and out-of-range indices.
+Acknowledgment errors distinguish row counts, values and ignored-write stats. The existing graph-export unit
 contracts remain applicable. A separate `structural_export_db` test is wired
 into the strict disposable-server CI runner: it verifies full and subset writes,
 then a missing target after an acknowledged batch, checking earlier persistence
