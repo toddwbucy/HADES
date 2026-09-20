@@ -58,7 +58,7 @@ pub async fn run(
     // Preserve the full-update fast-fail path: unlike `--new-nodes`, it has
     // no possible no-op result that would justify loading the graph first.
     let checkpoint_path = PathBuf::from(checkpoint_dir).join("best.pt");
-    let preflight_training_client = if new_nodes {
+    let mut session_client = if new_nodes {
         None
     } else {
         validate_checkpoint(&checkpoint_path)?;
@@ -69,6 +69,7 @@ pub async fn run(
         )
     };
 
+    let operation: Result<serde_json::Value> = async {
     // ── Load graph from ArangoDB ────────────────────────────────────
     info!("loading runtime schema");
     let schema = hades_core::graph::RuntimeSchema::load(&source_pool)
@@ -150,19 +151,17 @@ pub async fn run(
             },
             "message": message,
         });
-        output::print_output("graph-embed.update", result_data, &OutputFormat::Json);
-        return Ok(());
+        return Ok(result_data);
     }
 
     // ── Validate checkpoint and connect to training service ─────────
-    let training_client = if let Some(client) = preflight_training_client {
-        client
-    } else {
+    if session_client.is_none() {
         validate_checkpoint(&checkpoint_path)?;
-        TrainingClient::connect(TrainingClientConfig::default())
+        session_client = Some(TrainingClient::connect(TrainingClientConfig::default())
             .await
-            .context("failed to connect to HADES training service")?
-    };
+            .context("failed to connect to HADES training service")?);
+    }
+    let training_client = session_client.as_ref().expect("session acquired above");
 
     // ── Serialize graph for inference ───────────────────────────────
     let safetensors_dir = PathBuf::from(checkpoint_dir);
@@ -304,6 +303,13 @@ pub async fn run(
         },
     });
 
+    Ok(result_data)
+    }.await;
+    let result_data = if let Some(client) = session_client.as_ref() {
+        super::graph_embed::finish_session(client, operation).await?
+    } else {
+        operation?
+    };
     output::print_output("graph-embed.update", result_data, &OutputFormat::Json);
     Ok(())
 }

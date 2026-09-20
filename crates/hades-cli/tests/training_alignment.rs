@@ -150,6 +150,8 @@ async fn training_rows_remain_attached_to_qualified_node_ids() {
                 root.path().join("manifest.json"),
                 serde_json::to_vec(&json!({
                     "ids":names, "features":features, "collections":collections, "edges":edge_ids,
+                    "database":pool.database(), "database_socket":std::env::var("ARANGO_SOCKET").unwrap(),
+                    "cli_binary":env!("CARGO_BIN_EXE_hades"),
                 }))
                 .unwrap(),
             )

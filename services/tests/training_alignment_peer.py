@@ -1,5 +1,6 @@
 """CPU peer for the opt-in Rust/database alignment contract (not a pytest test)."""
 import json
+import asyncio
 from pathlib import Path
 import sys
 
@@ -75,6 +76,8 @@ def main(directory):
         changes[variant] = changed_ids
     print(json.dumps({"compatible_checkpoints_with_distinct_weights": True,
                       "exact_checkpoint_replay": True, "changed_output_ids": changes}), flush=True)
+    from cli_training_peer import exercise
+    asyncio.run(exercise(root, manifest, after))
     (root / "expected.json").write_text(json.dumps({
         "before": dict(zip(manifest["ids"], before.tolist())),
         "after": dict(zip(manifest["ids"], after.tolist())),

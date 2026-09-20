@@ -202,12 +202,17 @@ struct TrainingSession {
     token: tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
     lost: Arc<AtomicBool>,
     heartbeat: tokio::task::JoinHandle<()>,
+    release_lock: tokio::sync::Mutex<()>,
+    released: AtomicBool,
     inner: TrainingServiceClient<Channel>,
 }
 
 impl Drop for TrainingSession {
     fn drop(&mut self) {
         self.heartbeat.abort();
+        if self.released.load(Ordering::Acquire) {
+            return;
+        }
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let mut inner = self.inner.clone();
             let token = self.token.clone();
@@ -279,6 +284,8 @@ impl TrainingClient {
             token,
             lost,
             heartbeat,
+            release_lock: tokio::sync::Mutex::new(()),
+            released: AtomicBool::new(false),
             inner: inner.clone(),
         });
         info!("acquired exclusive training session");
@@ -287,6 +294,33 @@ impl TrainingClient {
             config,
             session,
         })
+    }
+
+    /// Close this lifecycle for all clones and await provider acknowledgement.
+    ///
+    /// Call after quiescing operations, before shutting down the runtime. The
+    /// entire release attempt is bounded to five seconds, including concurrent
+    /// release callers. Failed or cancelled attempts may be retried; last-drop
+    /// cleanup and server expiry remain fallbacks for abnormal shutdown.
+    pub async fn release(&self) -> Result<(), TrainingError> {
+        self.session.lost.store(true, Ordering::Release);
+        self.session.heartbeat.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let _guard = self.session.release_lock.lock().await;
+            if self.session.released.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let mut request = tonic::Request::new(SessionRequest {});
+            request
+                .metadata_mut()
+                .insert(SESSION_HEADER, self.session.token.clone());
+            request.set_timeout(Duration::from_secs(5));
+            self.inner.clone().release_session(request).await?;
+            self.session.released.store(true, Ordering::Release);
+            Ok(())
+        })
+        .await
+        .map_err(|_| tonic::Status::deadline_exceeded("training session release timed out"))?
     }
 
     /// Connect with default configuration.
@@ -562,7 +596,7 @@ impl TrainingClient {
     ) -> Result<tonic::Request<T>, TrainingError> {
         if self.session.lost.load(Ordering::Acquire) {
             return Err(tonic::Status::failed_precondition(
-                "training session renewal failed; start a new lifecycle",
+                "training session closed or renewal failed; start a new lifecycle",
             )
             .into());
         }
