@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::db::query::{self, ExecutionTarget};
 use crate::db::{ArangoError, ArangoPool};
@@ -32,6 +32,31 @@ use super::types::IDMap;
 /// Errors from embedding export.
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
+    #[error("invalid export input: {0}")]
+    InvalidInput(String),
+
+    #[error(
+        "export batch for {collection} failed after {acknowledged} acknowledged updates; {attempted} updates in the failing batch may have an unknown outcome: {source}"
+    )]
+    BatchFailed {
+        collection: String,
+        acknowledged: usize,
+        attempted: usize,
+        #[source]
+        source: ArangoError,
+    },
+
+    #[error(
+        "export batch for {collection} returned an invalid acknowledgment: {reason} ({received} rows for {expected} updates) after {acknowledged} previously acknowledged updates; partial persistence is possible"
+    )]
+    InvalidAcknowledgment {
+        collection: String,
+        reason: &'static str,
+        acknowledged: usize,
+        expected: usize,
+        received: usize,
+    },
+
     /// ArangoDB query or connection error.
     #[error("ArangoDB error: {0}")]
     Arango(#[from] ArangoError),
@@ -136,9 +161,8 @@ pub fn decode_f32_embeddings(bytes: &[u8]) -> Result<Vec<f32>, ExportError> {
 /// # Errors
 ///
 /// Returns [`ExportError::DimensionMismatch`] if `embeddings.len()`
-/// doesn't equal `id_map.len() × embed_dim`.  Individual collection
-/// errors are logged as warnings but don't abort the export — the
-/// function continues with remaining collections.
+/// doesn't equal `id_map.len() × embed_dim`. Batch failures stop export and
+/// report previously acknowledged progress. Earlier batches are not rolled back.
 pub async fn export_embeddings(
     pool: &ArangoPool,
     id_map: &IDMap,
@@ -206,7 +230,19 @@ fn validate_embedding_dimensions(
     embeddings: &[f32],
     embed_dim: usize,
 ) -> Result<(), ExportError> {
-    let expected = num_nodes * embed_dim;
+    if embed_dim == 0 {
+        return Err(ExportError::InvalidInput(
+            "embedding dimension must be positive".into(),
+        ));
+    }
+    let expected = num_nodes
+        .checked_mul(embed_dim)
+        .ok_or_else(|| ExportError::InvalidInput("embedding dimensions overflow".into()))?;
+    if embeddings.iter().any(|value| !value.is_finite()) {
+        return Err(ExportError::InvalidInput(
+            "embedding values must be finite".into(),
+        ));
+    }
     if embeddings.len() != expected {
         return Err(ExportError::DimensionMismatch {
             actual: embeddings.len(),
@@ -225,6 +261,11 @@ async fn export_grouped_embeddings(
     embed_dim: usize,
     config: &ExportConfig,
 ) -> Result<ExportResult, ExportError> {
+    if config.chunk_size == 0 {
+        return Err(ExportError::InvalidInput(
+            "chunk_size must be positive".into(),
+        ));
+    }
     let num_nodes: usize = groups.values().map(Vec::len).sum();
 
     let mut total_exported: usize = 0;
@@ -260,38 +301,48 @@ async fn export_grouped_embeddings(
 
             let num_updates = updates.len();
 
-            // Backtick-quote the collection name to prevent AQL injection
-            let aql = format!(
-                "FOR u IN @updates \
-                 UPDATE u._key WITH {{ structural_embedding: u.structural_embedding }} \
-                 IN `{}` \
-                 OPTIONS {{ ignoreErrors: true }} \
-                 RETURN 1",
-                col_name,
-            );
-
-            match query::query(
+            let aql = "FOR u IN @updates \
+                 UPDATE u._key WITH { structural_embedding: u.structural_embedding } \
+                 IN @@collection RETURN 1";
+            let result = query::query(
                 pool,
-                &aql,
-                Some(&json!({ "updates": updates })),
+                aql,
+                Some(&json!({ "updates": updates, "@collection": col_name })),
                 None,
                 false,
                 ExecutionTarget::Writer,
             )
             .await
-            {
-                Ok(result) => {
-                    col_count += result.results.len();
-                }
-                Err(e) => {
-                    warn!(
-                        collection = col_name,
-                        attempted = num_updates,
-                        error = %e,
-                        "batch update failed, continuing"
-                    );
-                }
+            .map_err(|source| ExportError::BatchFailed {
+                collection: (*col_name).to_owned(),
+                acknowledged: total_exported + col_count,
+                attempted: num_updates,
+                source,
+            })?;
+            let no_ignored_writes = result
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.pointer("/stats/writesIgnored"))
+                .is_none_or(|value| value.as_u64() == Some(0));
+            let invalid_reason = if result.results.len() != num_updates {
+                Some("row count mismatch")
+            } else if result.results.iter().any(|value| value.as_u64() != Some(1)) {
+                Some("unexpected result value")
+            } else if !no_ignored_writes {
+                Some("nonzero or invalid writesIgnored statistic")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid_reason {
+                return Err(ExportError::InvalidAcknowledgment {
+                    reason,
+                    collection: (*col_name).to_owned(),
+                    acknowledged: total_exported + col_count,
+                    expected: num_updates,
+                    received: result.results.len(),
+                });
             }
+            col_count += result.results.len();
         }
 
         if col_count > 0 {

@@ -386,8 +386,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Fail structural embedding export on rejected or incomplete batches, report
+  acknowledged progress and reject invalid export inputs before writes (#83).
+
 - Publish checkpoints and embedding files atomically so failed serialization or
   pre-publication I/O preserves the previous complete artifact (#81).
+
 - Keep training RPC computation off the provider loop and drain interrupted
   operations before discarding their session or admitting a successor (#77).
 
