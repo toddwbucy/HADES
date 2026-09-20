@@ -24,13 +24,12 @@ async fn request(pool: &ArangoPool, config: &HadesConfig) -> hades_core::dispatc
     .await
 }
 
-#[tokio::test]
-async fn overload_is_explicit_and_timeout_retains_budget_until_cursor_cleanup() {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("embedder.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let embedder = tokio::spawn(async move {
-        for _ in 0..4 {
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn start_embedder(socket: &std::path::Path, count: usize) -> tokio::task::JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    tokio::spawn(async move {
+        for _ in 0..count {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut headers = Vec::new();
             while !headers.ends_with(b"\r\n\r\n") {
@@ -58,7 +57,15 @@ async fn overload_is_explicit_and_timeout_retains_budget_until_cursor_cleanup() 
             );
             stream.write_all(response.as_bytes()).await.unwrap();
         }
-    });
+    })
+}
+
+#[tokio::test]
+async fn overload_is_explicit_and_timeout_retains_budget_until_cursor_cleanup() {
+    let _serial = SERIAL.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("embedder.sock");
+    let embedder = start_embedder(&socket, 4).await;
     let gates: Vec<_> = (0..4).map(|_| Arc::new(Notify::new())).collect();
     let cleanup = Arc::new(Notify::new());
     let mut replies: Vec<_> = gates
@@ -157,4 +164,97 @@ async fn oversized_query_text_is_rejected_before_service_io() {
     .await;
     assert_eq!(response.error_code.as_deref(), Some("INVALID_PARAMS"));
     assert!(response.error.unwrap().contains("64 KiB"));
+}
+
+fn stored_vector(index: usize) -> serde_json::Value {
+    let mut vector = vec![0.0; 2048];
+    vector[0] = 1.0;
+    json!({"chunk_key":format!("c{index}"),"parent_key":"p", "model":"jinaai/jina-embeddings-v4", "dimension":2048,"embedding":vector})
+}
+
+#[tokio::test]
+async fn invalid_stored_vectors_fail_without_partial_results() {
+    let _serial = SERIAL.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("embedder.sock");
+    let embedder = start_embedder(&socket, 3).await;
+    let mut config = HadesConfig::default();
+    config.embedding.service.socket = socket.to_string_lossy().into_owned();
+    for field in ["model", "dimension", "embedding"] {
+        let mut invalid = stored_vector(1);
+        invalid[field] = match field {
+            "model" => json!("different-model"),
+            "dimension" => json!(128),
+            _ => json!([1, "bad"]),
+        };
+        let mut mock = Mock::new(vec![Reply::page(
+            json!({"id":"123","hasMore":true,"result":[stored_vector(0),invalid]}),
+        )])
+        .await;
+        let response = request(&mock.pool, &config).await;
+        assert!(!response.success);
+        assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
+        assert!(response.error.unwrap().contains("reingest the corpus"));
+        assert!(response.data.is_none());
+        mock.event("POST cursor").await;
+        mock.released().await;
+    }
+    embedder.await.unwrap();
+}
+
+#[tokio::test]
+async fn oversized_response_and_aggregate_details_fail_without_partial_results() {
+    let _serial = SERIAL.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("embedder.sock");
+    let embedder = start_embedder(&socket, 2).await;
+    let mut config = HadesConfig::default();
+    config.embedding.service.socket = socket.to_string_lossy().into_owned();
+    let mut mock = Mock::new(vec![
+        Reply::page(json!({"hasMore":false,"result":[stored_vector(0)]})),
+        Reply::page(
+            json!({"hasMore":false,"result":[{"parent_key":"p","text":"x".repeat(300_000)}]}),
+        ),
+    ])
+    .await;
+    let response = request(&mock.pool, &config).await;
+    assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
+    assert!(response.error.unwrap().contains("length limit exceeded"));
+    assert!(response.data.is_none());
+    mock.event("POST cursor").await;
+    mock.event("POST cursor").await;
+
+    let mut replies = vec![Reply::page(
+        json!({"hasMore":false,"result":(0..20).map(stored_vector).collect::<Vec<_>>()}),
+    )];
+    for page in 0..5 {
+        replies.push(Reply::page(json!({"id":"123","hasMore":page<4,"result":(0..4).map(|_|json!({"parent_key":"p","text":"x".repeat(60_000)})).collect::<Vec<_>>()})));
+    }
+    let mut mock = Mock::new(replies).await;
+    let payload =
+        serde_json::to_vec(&json!({"command":"db.query","params":{"text":"fixture","limit":20}}))
+            .unwrap();
+    let response = handle_request(
+        &mock.pool,
+        &config,
+        ConnectionPolicy::agent_only(),
+        &payload,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
+    assert!(
+        response
+            .error
+            .unwrap()
+            .contains("result byte budget exceeded")
+    );
+    assert!(response.data.is_none());
+    mock.event("POST cursor").await;
+    mock.event("POST cursor").await;
+    for _ in 0..4 {
+        mock.event("POST cursor/123").await;
+    }
+    mock.released().await;
+    embedder.await.unwrap();
 }
