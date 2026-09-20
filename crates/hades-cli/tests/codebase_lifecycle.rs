@@ -208,7 +208,9 @@ async fn failed_chunk_replacement_preserves_previous_file_graph() {
         let tree = tempfile::tempdir().unwrap();
         let file = tree.path().join("provider.py");
         std::fs::write(&file, "def target():\n    return 'quartz_original'\n").unwrap();
+        std::fs::write(tree.path().join("consumer.py"), "from provider import target\n\ndef caller():\n    return target()\n").unwrap();
         ingest(&pool, &embedder, tree.path()).await;
+        let before = snapshot_graph(&pool).await;
         let before_chunks = hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap();
         let before_symbols = hades_core::db::crud::count_collection(&pool, "codebase_symbols").await.unwrap();
         assert!(before_chunks > 0 && before_symbols > 0);
@@ -217,12 +219,36 @@ async fn failed_chunk_replacement_preserves_previous_file_graph() {
                 "type":"object", "required":["audit_required_marker"]
             }}
         })).await.unwrap();
-        std::fs::write(&file, "def replacement():\n    return 'sapphire_revised'\n").unwrap();
+        std::fs::write(&file, "# shifted\n\ndef target():\n    return 'sapphire_revised'\n").unwrap();
         let failed = cli(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()], false).await;
         let after_chunks = hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap();
         let after_symbols = hades_core::db::crud::count_collection(&pool, "codebase_symbols").await.unwrap();
         println!("FAILED_REPLACEMENT_EVIDENCE {}", json!({"before_chunks":before_chunks,"before_symbols":before_symbols,"after_chunks":after_chunks,"after_symbols":after_symbols,"report":failed}));
         assert_eq!(after_chunks, before_chunks, "failed replacement must preserve committed chunks");
         assert_eq!(after_symbols, before_symbols, "failed replacement must preserve committed symbols");
+        assert_eq!(snapshot_graph(&pool).await, before, "failed replacement must preserve full graph contents");
+        pool.writer().put("collection/codebase_chunks/properties", &json!({"schema": null})).await.unwrap();
+        ingest(&pool, &embedder, tree.path()).await;
+        validate(&pool, &embedder).await;
+        let key = keys::scoped_file_key(tree.path().to_str().unwrap(), "provider.py");
+        assert_hit(&search(&pool, &embedder, "sapphire").await, &key, "sapphire_revised");
     }).await;
+}
+
+async fn snapshot_graph(pool: &ArangoPool) -> Value {
+    let mut snapshot = serde_json::Map::new();
+    for (collection, _) in hades_core::db::collections::CODEBASE.all_collections() {
+        let result = hades_core::db::query::query(
+            pool,
+            "FOR d IN @@collection SORT d._key RETURN UNSET(d, '_rev')",
+            Some(&json!({"@collection":collection})),
+            None,
+            false,
+            hades_core::db::query::ExecutionTarget::Writer,
+        )
+        .await
+        .unwrap();
+        snapshot.insert(collection.into(), json!(result.results));
+    }
+    Value::Object(snapshot)
 }

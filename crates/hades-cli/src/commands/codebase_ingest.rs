@@ -1581,6 +1581,8 @@ async fn ingest_file(
     namespace: &str,
 ) -> Result<FileResult> {
     // Read source.
+    let fkey = keys::scoped_file_key(namespace, rel_path);
+    let expected_revision = super::codebase_persist::revision(db.writer(), &fkey).await?;
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
 
@@ -1661,7 +1663,6 @@ async fn ingest_file(
     // this entirely, re-ingesting in place (#145) — the per-file purge below
     // touches only this file's own symbols and outbound edges, so inbound
     // authored bridge edges are preserved (unlike a cascading `db purge`).
-    let fkey = keys::scoped_file_key(namespace, rel_path);
     verify_file_identity(db, namespace, rel_path, &fkey).await?;
     if preserve_higher_fidelity(
         db,
@@ -1711,7 +1712,8 @@ async fn ingest_file(
         });
     }
 
-    // Purge this file's existing symbols and incident edges before re-writing.
+    // Snapshot prior identities before preparing a replacement. Purging happens
+    // only inside the later atomic store, after analysis/embedding succeeds.
     // Symbol/edge inserts are overwrite-by-key only, so without this a renamed
     // or deleted symbol would leave an orphaned row that later inflates
     // `symbol_count` and dangles in the graph (#126). We only reach here when
@@ -1721,33 +1723,7 @@ async fn ingest_file(
     // Read the symbols about to be destroyed, so the rewrite can be paired with
     // its predecessor (#9). After the purge a key cannot be reversed into a
     // name, so this is the only moment both sides are knowable.
-    let previous_symbols = existing_symbol_identities(db, &fkey).await;
-
-    purge_file_symbols_and_edges(db, &fkey).await;
-
-    // Collect Python import symbols for later edge resolution.
-    if lang == Language::Python {
-        let py_import_syms: Vec<Symbol> = analysis
-            .symbols
-            .iter()
-            .filter(|s| s.kind == hades_core::code::SymbolKind::Import)
-            .cloned()
-            .collect();
-        if !py_import_syms.is_empty() {
-            imports
-                .python_imports
-                .insert(rel_path.to_string(), py_import_syms);
-        }
-    }
-
-    // Collect Rust use-paths for later import edge resolution.
-    // Symbol transfer into the index is deferred until after all uses of analysis.symbols.
-    if lang == Language::Rust {
-        let use_paths = rust_imports::collect_use_paths(&analysis.symbols);
-        if !use_paths.is_empty() {
-            imports.rust_imports.insert(rel_path.to_string(), use_paths);
-        }
-    }
+    let previous_symbols = existing_symbol_identities(db, &fkey).await?;
 
     // Chunk with AST-aligned chunking.
     let chunker = AstChunking::new(analysis.top_level_defs.clone());
@@ -1847,11 +1823,6 @@ async fn ingest_file(
             })
         })
         .collect();
-
-    // Remove stale embeddings for this file before (re-)embedding.
-    // This ensures that if embedding is skipped or fails, old vectors
-    // from a previous run (which embed outdated text) don't linger.
-    delete_file_embeddings(db, &fkey).await;
 
     // Embed with LATE CHUNKING: encode each window of the file in one pass and
     // pool per AST boundary, so every chunk vector is conditioned on the code
@@ -2133,9 +2104,7 @@ async fn ingest_file(
     // Pair the old keys with the new ones, for symbols that moved without being
     // renamed. Recorded on the shared context and applied after every file has
     // been written, because a dependent may itself be rewritten later in the run.
-    imports
-        .symbol_key_remap
-        .extend(pair_moved_symbol_keys(&previous_symbols, &symbol_docs));
+    let symbol_key_remap = pair_moved_symbol_keys(&previous_symbols, &symbol_docs);
 
     let primitive_count = symbol_docs
         .iter()
@@ -2171,57 +2140,45 @@ async fn ingest_file(
         "ingested_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    // Store to ArangoDB. Embeddings are persisted BEFORE the file document
-    // so that embedding_count is only recorded once the vectors are durable.
-    // This prevents check_unchanged() from skipping future backfills if
-    // embedding persistence fails partway through.
+    super::codebase_persist::Replacement {
+        key: fkey.clone(),
+        expected_revision,
+        chunks: chunk_docs,
+        symbols: symbol_docs,
+        embeddings: embedding_docs,
+        defines: define_edges,
+        file: file_doc,
+        purge_symbols: true,
+        merge_file: false,
+    }
+    .store(db)
+    .await
+    .context("failed to atomically replace file graph")?;
+    imports.symbol_key_remap.extend(symbol_key_remap);
 
-    // Remove stale chunks immediately before re-writing them. Chunk inserts are
-    // overwrite-by-key, so a re-ingest producing *fewer* chunks than the previous
-    // run would otherwise leave the old high-index docs behind — inflating
-    // `chunk_count` and stranding chunks that reference symbols the purge above
-    // already removed (#159). The unparsed path always did this; the parsed path
-    // did not, so shrinking source files accumulated orphans `--force` could not
-    // clear.
-    //
-    // This sits here rather than before the embedder call so the delete→insert
-    // window contains no network round-trip: delete→write is not atomic, and a
-    // failure between them leaves `chunk_count > 0` with zero stored chunks (the
-    // mirror of #159). The window cannot be closed without a transaction, so it
-    // is kept as small as possible. The next successful ingest self-heals.
-    // Runs unconditionally — a file that drops to zero chunks must still have
-    // its old ones removed.
-    delete_file_chunks(db, &fkey).await;
-
-    if !chunk_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.chunks, &chunk_docs, true)
-            .await
-            .context("failed to store chunk documents")?;
+    // Collect Python import symbols for later edge resolution.
+    if lang == Language::Python {
+        let py_import_syms: Vec<Symbol> = analysis
+            .symbols
+            .iter()
+            .filter(|s| s.kind == hades_core::code::SymbolKind::Import)
+            .cloned()
+            .collect();
+        if !py_import_syms.is_empty() {
+            imports
+                .python_imports
+                .insert(rel_path.to_string(), py_import_syms);
+        }
     }
 
-    if !symbol_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.symbols, &symbol_docs, true)
-            .await
-            .context("failed to store symbol documents")?;
+    // Collect Rust use-paths for later import edge resolution.
+    // Symbol transfer into the index is deferred until after all uses of analysis.symbols.
+    if lang == Language::Rust {
+        let use_paths = rust_imports::collect_use_paths(&analysis.symbols);
+        if !use_paths.is_empty() {
+            imports.rust_imports.insert(rel_path.to_string(), use_paths);
+        }
     }
-
-    if !embedding_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.embeddings, &embedding_docs, true)
-            .await
-            .context("failed to store embedding documents")?;
-    }
-
-    if !define_edges.is_empty() {
-        crud::insert_documents(db, CODEBASE.defines_edges, &define_edges, true)
-            .await
-            .context("failed to store define edges")?;
-    }
-
-    // File document stored last — embedding_count is only recorded after
-    // vectors are durable, so check_unchanged() won't wrongly skip backfills.
-    crud::insert_documents(db, CODEBASE.files, &[file_doc], true)
-        .await
-        .context("failed to store file document")?;
 
     // Transfer symbols into relationship indexes.
     if analysis.analysis_tier == AnalysisTier::Structural {
@@ -2316,9 +2273,10 @@ async fn ingest_unparsed_file(
     allow_analysis_downgrade: bool,
     namespace: &str,
 ) -> Result<FileResult> {
+    let fkey = keys::scoped_file_key(namespace, rel_path);
+    let expected_revision = super::codebase_persist::revision(db.writer(), &fkey).await?;
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
-    let fkey = keys::scoped_file_key(namespace, rel_path);
     verify_file_identity(db, namespace, rel_path, &fkey).await?;
     let lang_label = language_label.unwrap_or_else(|| unparsed_language_label(rel_path));
 
@@ -2365,9 +2323,6 @@ async fn ingest_unparsed_file(
             duration_ms: 0,
         });
     }
-    if allow_analysis_downgrade {
-        purge_file_symbols_and_edges(db, &fkey).await;
-    }
 
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
@@ -2394,11 +2349,6 @@ async fn ingest_unparsed_file(
             })
         })
         .collect();
-
-    // Clear stale chunks AND embeddings before re-writing, so a re-ingest that
-    // produces fewer chunks leaves no orphaned high-index chunk/vector docs.
-    delete_file_chunks(db, &fkey).await;
-    delete_file_embeddings(db, &fkey).await;
 
     // Embed chunks (skipped if embedder unavailable).
     //
@@ -2450,18 +2400,6 @@ async fn ingest_unparsed_file(
     };
     let num_embeddings_written = embedding_docs.len();
 
-    // Persist chunks + embeddings (ours — overwrite-by-key is fine).
-    if !chunk_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.chunks, &chunk_docs, true)
-            .await
-            .context("failed to store chunk documents")?;
-    }
-    if !embedding_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.embeddings, &embedding_docs, true)
-            .await
-            .context("failed to store embedding documents")?;
-    }
-
     // Merge the file node — preserve any pre-existing fields, set only ours,
     // create if absent.
     let total_lines = source.lines().count();
@@ -2487,7 +2425,20 @@ async fn ingest_unparsed_file(
         "fallback_reason": fallback_reason,
         "ingested_at": chrono::Utc::now().to_rfc3339(),
     });
-    upsert_merge_file_node(db, &fkey, fields).await?;
+    super::codebase_persist::Replacement {
+        key: fkey.clone(),
+        expected_revision,
+        chunks: chunk_docs,
+        symbols: Vec::new(),
+        embeddings: embedding_docs,
+        defines: Vec::new(),
+        file: fields,
+        purge_symbols: allow_analysis_downgrade,
+        merge_file: true,
+    }
+    .store(db)
+    .await
+    .context("failed to atomically replace fallback file graph")?;
 
     info!(
         path = rel_path,
@@ -2514,6 +2465,7 @@ async fn ingest_unparsed_file(
 /// Merge-write a `codebase_files` node: PATCH (preserving existing fields) when
 /// it exists, otherwise insert. Lets the unparsed fallback attach to a
 /// pre-existing file node without clobbering its metadata (#121).
+#[cfg(test)]
 async fn upsert_merge_file_node(db: &ArangoPool, fkey: &str, fields: Value) -> Result<()> {
     match crud::update_document(db, CODEBASE.files, fkey, &fields).await {
         Ok(_) => Ok(()),
@@ -2554,6 +2506,7 @@ fn build_line_offsets(source: &str) -> Vec<usize> {
 ///
 /// Called before (re-)embedding to ensure stale vectors from a previous
 /// run don't linger when the embedder is unavailable or fails.
+#[cfg(test)]
 async fn delete_file_embeddings(db: &ArangoPool, file_key: &str) {
     if let Err(e) = hades_core::db::query::remove_docs_by_fields(
         db,
@@ -2573,6 +2526,7 @@ async fn delete_file_embeddings(db: &ArangoPool, file_key: &str) {
 /// re-ingest which produces fewer chunks leaves no orphaned high-index chunk docs
 /// behind (overwrite-by-key only updates the chunks that still exist). The parsed
 /// path was missing this call until #159.
+#[cfg(test)]
 async fn delete_file_chunks(db: &ArangoPool, file_key: &str) {
     if let Err(e) =
         hades_core::db::query::remove_docs_by_fields(db, CODEBASE.chunks, &["file_key"], file_key)
@@ -2658,31 +2612,40 @@ async fn count_dangling_inbound(db: &ArangoPool, file_keys: &[String]) -> u64 {
 /// Read immediately before a purge so the rewrite can be paired with what it
 /// replaced (#9). Ordered by line, because the pairing is positional among
 /// symbols that share a qualified name.
-async fn existing_symbol_identities(db: &ArangoPool, file_key: &str) -> Vec<(String, u64, String)> {
+async fn existing_symbol_identities(
+    db: &ArangoPool,
+    file_key: &str,
+) -> Result<Vec<(String, u64, String)>> {
     let aql = "FOR s IN @@symbols FILTER s.file_key == @key \
                SORT s.start_line, s._key \
                RETURN [s.qualified_name, s.start_line, s._key]";
     let bind = json!({ "@symbols": CODEBASE.symbols, "key": file_key });
-    match hades_core::db::query::query(db, aql, Some(&bind), None, false, ExecutionTarget::Reader)
-        .await
-    {
-        Ok(r) => r
-            .results
-            .iter()
-            .filter_map(|row| {
-                let a = row.as_array()?;
-                Some((
-                    a.first()?.as_str()?.to_string(),
-                    a.get(1)?.as_u64().unwrap_or(0),
-                    a.get(2)?.as_str()?.to_string(),
-                ))
-            })
-            .collect(),
-        Err(e) => {
-            debug!(file_key, error = %e, "could not read prior symbols; no remap for this file");
-            Vec::new()
-        }
-    }
+    let result =
+        hades_core::db::query::query(db, aql, Some(&bind), None, false, ExecutionTarget::Writer)
+            .await?;
+    result
+        .results
+        .iter()
+        .map(|row| {
+            let values = row.as_array().context("invalid prior symbol identity")?;
+            Ok((
+                values
+                    .first()
+                    .and_then(Value::as_str)
+                    .context("missing prior symbol name")?
+                    .to_owned(),
+                values
+                    .get(1)
+                    .and_then(Value::as_u64)
+                    .context("missing prior symbol line")?,
+                values
+                    .get(2)
+                    .and_then(Value::as_str)
+                    .context("missing prior symbol key")?
+                    .to_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// Pair each old symbol key with the key that replaced it.
@@ -2921,6 +2884,7 @@ async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u
 ///
 /// The `ids` list is snapshotted in-query from the current symbols plus the
 /// file `_id`, so the edge filter is consistent even under concurrent inserts.
+#[cfg(test)]
 async fn purge_file_symbols_and_edges(db: &ArangoPool, file_key: &str) {
     let aql = "\
         LET ids = APPEND( \

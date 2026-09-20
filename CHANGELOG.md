@@ -316,6 +316,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Stage parsed and fallback file replacements before a serial database
+  transaction; retain previous graph state on persistence failure and reject
+  stale prepared writes. Independent transaction ownership aborts cancellation
+  and callback failures. Ingestion atomicity audit and enrichment coverage remain
+  in progress (#40).
+
 - Allow detail rows up to the aggregate search result budget by paging one row
   with bounded envelope headroom; regenerate vector/metric provenance hashes and
   correct the retrieval seed's training-adjacency excerpt in version 2 (#22).
