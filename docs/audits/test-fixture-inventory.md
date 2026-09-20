@@ -1,6 +1,7 @@
 # Rust test fixture inventory (#12, #20, #47)
 
 Scope: all 25 top-level `crates/*/tests/*.rs` targets at `979fe97`, plus
+the service-free `filesystem_policy` target added in PR #50 (26 total), and
 source-unit modules containing database client/pool construction. This inventory
 records resource boundaries and maintained execution, not exhaustive behavioral
 coverage of every production component.
@@ -14,7 +15,7 @@ coverage of every production component.
 | `retrieval_benchmark`, `search_handler_benchmark` (core) | Ignored opt-in benchmarks using disposable databases, synthetic vectors and explicit strict mode. | Runner `--benchmark` / `--handler-benchmark`; not ordinary CI performance gates |
 | `proto_types` (proto); `pipeline`, `config_integration` (core) | Serialization/configuration and service-free contracts; temporary configuration files. | Rust CI service-free targets |
 | `embedding_client`, `extraction_client`, `training_client` (core) | Types/configuration and explicitly nonexistent temporary sockets. PR #43 adds private training RPC mocks. | Rust CI service-free targets |
-| `embedding_contract`, `search_admission`, `retrieval_quality` (core) | Private mocks, synthetic responses/vectors or frozen local evaluation artifacts. | Rust CI service-free targets |
+| `embedding_contract`, `search_admission`, `retrieval_quality`, `filesystem_policy` (core) | Private mocks, synthetic responses/vectors or frozen local evaluation artifacts. | Rust CI service-free targets |
 | `ra_span_agreement`, `gopls_semantic`, `clang_cuda_probe` (core) | Temporary source fixtures; installed analyzer/toolchain prerequisites. CUDA parsing is not GPU inference. Missing prerequisites can skip; a known CUDA call-expression gap is explicitly ignored. | Workstation opt-in; not evidence of complete language coverage |
 
 The first two rows comprise all eleven database-dependent integration targets in
@@ -40,7 +41,8 @@ isolation.
   do not issue requests. Transport body-limit tests use private sockets.
 - MCP tests cover in-process HTTP/auth/body handling and database allowlist pool
   selection. The reviewed allowlist paths construct cached pools; the HTTP
-  fixtures initialize MCP rather than dispatching a database tool.
+  fixtures initialize MCP. PR #50 also exercises the actual smell-report tool
+  through a cached private cursor mock.
 
 Remaining limits: source scanning is a reviewed snapshot, not an automated proof
 that future fixtures are isolated. Analyzer prerequisite skips and ignored probes

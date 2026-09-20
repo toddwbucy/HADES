@@ -22,7 +22,9 @@ local CLI behavior remains available. The MCP `smell_report` tool now dispatches
 No canonicalization, stat, file read or embedder connection occurs in that handler.
 
 The new command matches exact stored `codebase_files.path` or a full file `_id`,
-then follows recorded `compliance_edges` to `smell_specs`. Repeated relative paths
+then follows recorded `compliance_edges` to `smell_specs`. An existing full file
+ID takes precedence over identical relative paths; absent IDs fall back to exact
+stored-path matching. Repeated relative paths
 across roots retain distinct file IDs. Missing associations yield an empty result,
 which does not certify that source is free of smells. Symbol-level associations
 and fresh disk analysis are outside this file-report contract.
@@ -42,7 +44,8 @@ cancellation cleanup. Database ACLs and the MCP database allowlist still apply.
 - MCP unit contract: invoke the actual tool under Agent policy with a private
   cached pool and assert its stored-graph response and bound database request.
 - `graph_contract`: execute the real AQL against disposable collections with
-  identical paths across roots, full file IDs, absent paths and quoted input.
+  identical paths across roots, full file IDs, ID/path collisions, absent IDs
+  falling back to paths, absent paths and quoted input.
 
 The service-free and real database fixtures run in their existing isolated CI
 jobs. These checks do not certify other path-taking commands or replace the

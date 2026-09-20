@@ -142,6 +142,14 @@ async fn recorded_smells_match_exact_files_across_roots_without_scanning() {
             .await
             .unwrap();
         }
+        for (key, path) in [
+            ("collision", "codebase_files/root_a"),
+            ("fallback", "codebase_files/not-an-existing-id"),
+        ] {
+            crud::insert_document(&pool, "codebase_files", &json!({"_key":key,"path":path}))
+                .await
+                .unwrap();
+        }
         crud::insert_document(
             &pool,
             "smell_specs",
@@ -151,7 +159,7 @@ async fn recorded_smells_match_exact_files_across_roots_without_scanning() {
         )
         .await
         .unwrap();
-        for key in ["root_a", "root_b"] {
+        for key in ["root_a", "root_b", "collision", "fallback"] {
             crud::insert_document(
                 &pool,
                 "compliance_edges",
@@ -167,6 +175,7 @@ async fn recorded_smells_match_exact_files_across_roots_without_scanning() {
         for (path, count) in [
             ("synthetic/not-on-disk.rs", 2),
             ("codebase_files/root_a", 1),
+            ("codebase_files/not-an-existing-id", 1),
             ("absent.rs", 0),
             ("' RETURN 1", 0),
         ] {
@@ -194,6 +203,12 @@ async fn recorded_smells_match_exact_files_across_roots_without_scanning() {
             }
             if count == 2 {
                 assert_ne!(rows[0]["file_id"], rows[1]["file_id"]);
+            }
+            if path == "codebase_files/root_a" {
+                assert_eq!(rows[0]["file_id"], "codebase_files/root_a");
+            }
+            if path == "codebase_files/not-an-existing-id" {
+                assert_eq!(rows[0]["file_id"], "codebase_files/fallback");
             }
         }
     })

@@ -6034,8 +6034,14 @@ mod handlers {
         // Exact database identity only: never canonicalize, stat, or read this input.
         // Include file IDs so identical relative paths across roots remain distinct.
         let aql = r#"
+            LET exact_id = FIRST(
+                FOR candidate IN codebase_files
+                    FILTER candidate._id == @path
+                    LIMIT 1
+                    RETURN candidate._id
+            )
             FOR f IN codebase_files
-                FILTER f.path == @path OR f._id == @path
+                FILTER exact_id != null ? f._id == exact_id : f.path == @path
                 FOR e IN compliance_edges
                     FILTER e._from == f._id
                     FOR s IN smell_specs

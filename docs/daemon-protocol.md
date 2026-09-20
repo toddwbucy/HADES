@@ -648,7 +648,9 @@ Generate a compliance report.
 
 Read recorded file-to-smell associations from the selected database. `path` is
 an exact stored relative path or `codebase_files/<key>` ID (1–4096 bytes), never
-a local filesystem path to resolve. Repeated paths across roots return distinct
+a local filesystem path to resolve. An existing full file ID takes precedence
+over an identical stored relative path; otherwise matching uses the stored path.
+Repeated paths across roots return distinct
 file IDs. Returns `source: "stored_graph"`, `recorded_smells`, and `truncated`;
 at most 100 associations are returned, with bounded name/enforcement fields.
 No matching associations returns an empty list, not proof that a file is clean.
