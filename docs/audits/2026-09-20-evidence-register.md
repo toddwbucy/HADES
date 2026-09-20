@@ -6,6 +6,10 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Provider contracts](provider-contracts.md): extraction/training gRPC versus
+  embedding HTTP, status and source-level size/admission limits, and 78 private
+  CPU cases; effective oversized-message boundaries remain to measure.
+
 - [Transport authority and response contracts](api-boundaries.md): complete
   static daemon-tier/MCP exposure inventory, envelope/status distinctions and
   explicit remaining CLI/provider/viewer compatibility scope.

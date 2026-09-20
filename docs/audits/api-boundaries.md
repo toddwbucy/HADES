@@ -91,7 +91,9 @@ claiming an observed false-success defect. The snapshot contract has partial/cou
 metadata, but no negotiated version field. Existing viewer lifecycle tests do not
 certify browser asset behavior or every payload shape.
 
-Outstanding: exhaustive native CLI mapping/defaults, all provider gRPC/HTTP status
-and size limits, viewer malformed-envelope compatibility, and provisioning races
+The [provider review](provider-contracts.md) adds gRPC/HTTP status and declared
+size/admission limits with a 78-test CPU replay. Outstanding: exhaustive native
+CLI mapping/defaults, effective provider size/admission fixtures, viewer
+malformed-envelope compatibility, and provisioning races
 against mutable trees. This report completes the static daemon-tier/MCP exposure
 inventory and shared envelope trace, not the whole architecture/security workstream.
