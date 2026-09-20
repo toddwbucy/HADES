@@ -24,6 +24,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Record the live daemon artifact/compiler provenance and explicit source-mapping
+  limitation; refresh packaging and additional audit-remediation status (#12).
+
 - Preserve the epic #12 baseline audit reports and reproductions, and add an
   evidence register distinguishing merged fixes, deployment state and remaining
   full-audit acceptance work.

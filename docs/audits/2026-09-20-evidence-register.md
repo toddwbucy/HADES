@@ -6,6 +6,9 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Deployment provenance follow-up](2026-09-20-deployment-provenance.md): live
+  executable hash, ELF build ID/compiler evidence and limits of source mapping.
+
 - [Initial review and deployment baseline](2026-09-19-initial-audit.md):
   read-only service inventory, binary hash, selected static findings and gaps.
 - [Isolated audit](2026-09-19-isolated-audit.md): reproducible defects,
@@ -37,8 +40,12 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Search/transport retention | #22, PR #32, merge `16c4f7d`; final CI gates passed | Not deployed |
 | bfloat16 NumPy conversion | #33, PR #34, merge `d464c9d`; ten CPU contracts | Not deployed |
 | LaTeX/archive expansion | #35, PR #36, merge `74ff141`; 13 byte/header/count regressions | Not deployed |
-| Incomplete Python distributions | #38, PR #39; installed wheel/sdist and isolated build contracts | Review pending; live environment unchanged |
-| Failed file replacement loses committed graph | P1 #40; schema-rejection fixture changes chunk/symbol counts from 1/1 to 0/0 | Remediation pending; isolated discovery only |
+| Incomplete Python distributions | #38, PR #39 merged `5c82e95`; installed wheel/sdist and isolated build contracts | Not deployed |
+| Failed file replacement loses committed graph | #40, PR #41 merged `26e71ea`; all five requirements mapped to rollback, revision, timeout/cancellation and retry fixtures | Not deployed |
+| Shared trainer state crosses client lifecycles | P1 #42, PR #43 merged `4fdad18`; two-channel CPU reproduction, 16 CPU session and 10 Rust client contracts; final CI `35506989556` passed | Not deployed; lease expiry is not compute preemption |
+| Unsafe installer credential/response handling | #44, PR #45 merged `979fe97`; malformed-password reproduction and six private Unix HTTP contracts | Not deployed |
+| Ambient database endpoints in unit fixtures | #47, PR #48; accepted-AQL unit tests used normal endpoint discovery and accepted backend errors | Private-mock remediation and fixture inventory awaiting integrated-head CI; no live reproduction |
+| Agent filesystem access through smell reports | #49; private service fixture returned a matching synthetic line without permitted roots | Admin scan / database-only report separation in isolated development; not deployed |
 
 ## Workstream coverage and explicit gaps
 
@@ -47,14 +54,14 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Deployment inventory/provenance | Units, endpoints, executable hash and restart baseline | Exact running binary commit mapping or documented inability; backup inventory and restore evidence |
 | Architecture/API | Shared dispatch, authorization and service contracts reviewed in affected paths | Complete component inventory and review of frontend, analyzers, adapters and remaining API boundaries |
 | Security/isolation | Authentication rejection baseline; isolated tests; body, cursor, archive limits under review | Database ACL matrix, provisioning/path handling, subprocess/parser limits and dependency review |
-| Ingestion/graph integrity | Collision and modify/move/delete regression coverage | Concurrent writers, partial failures, transaction/retry semantics and document/adaptor pipelines |
+| Ingestion/graph integrity | Collision/lifecycle fixtures; PR #41 file/stage transactions, races, timeout/cancellation and retry contracts | Remaining document/adapter pipeline review and failure boundaries |
 | Retrieval/embedding | Model/dimension validation; versioned exact-ranking parity | Stale model/task provenance, broader independently reviewed quality set |
 | Training | Leakage, split metrics, aborts and checkpoint schema fixes | Concurrent sessions, cancellation, graph alignment and trained structural baseline |
 | Performance/reliability | Isolated engine, handler and transport pilots | Remaining non-search queue/time-out paths |
 | Tests/CI | Rust, Python CPU and disposable ArangoDB gates | Full write-fixture inventory; broader failure injection beyond the selected end-to-end contract |
 | Retrieval evaluation | 24 author-judged queries, frozen CPU Jina vectors, file-membership comparator | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
-| Packaging/operations | Manifest and launch scripts inspected | Fresh installation/protobuf packaging, health/readiness, upgrade/rollback and isolated restore rehearsal |
-| Findings/remediation | Ten approved issues plus four additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
+| Packaging/operations | Manifest and launch scripts inspected | Fresh installation beyond verified wheel/sdist contracts, health/readiness, upgrade/rollback and isolated restore rehearsal |
+| Findings/remediation | Ten approved issues plus eight additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
 
 ## Deployment boundary
 
@@ -98,3 +105,33 @@ chunk and symbol counts fell from one to zero. The private server exited cleanly
 P1 #40 tracks transactional replacement, purge-error propagation, concurrency,
 cancellation and equivalent guarantees for fallback/enrichment paths. Production
 was not used to reproduce this failure.
+
+
+## Subsequent ingestion and installer evidence
+
+PR #41 merged as `26e71ea` after all three gates passed at final head `fcefac7`
+in run 35505635214. [Its requirement review](ingestion-atomicity.md#issue-40-requirement-review)
+maps every #40 bullet to maintained tests and explicit stage boundaries. The
+issue is closed; no code or data migration was deployed.
+
+The installer probe used synthetic credentials, a private Unix socket and mock
+curl. An ordinary password generated valid JSON and completed three requests;
+a quote/backslash password generated invalid JSON and failed on the first request.
+Source also passed the root password in curl argv and used a fixed response file.
+#44 is closed through PR #45, merged as `979fe97` after final CI and review. It
+replaces this with in-memory standard-library HTTP/JSON handling.
+Six private contracts cover special passwords, existing grants, sanitized HTTP
+and transport failures, argv/interruption behavior and the real request deadline.
+This does not prove fresh-host installation or production ACL correctness.
+
+## Representative retrieval workload decision
+
+The user selected **both code search and document research**. Build balanced
+coverage and report quality separately for each workload as well as in aggregate.
+Code queries should include implementation lookup, behavior, debugging and change
+impact; document queries should include factual, conceptual and cross-document
+evidence retrieval. Freeze representative relevance judgments before scoring.
+Compare vector-only and graph-assisted retrieval with recall@k, MRR/nDCG, latency
+and memory, distinguishing learned structural embeddings from file membership.
+The existing 24-query seed remains preliminary. Representative judgments, measured
+results and baseline-derived regression thresholds are still outstanding.
