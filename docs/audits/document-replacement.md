@@ -49,8 +49,8 @@ rows, including revisions; unrelated rows survive; overwrite=false rejects an
 existing document and preserves its metadata revision. The source document may
 have changed during preparation: this is atomic last-committer replacement,
 not source-revision conflict detection. Exclusive collection locks serialize
-writes at storage time. Cancellation and concurrent-writer pipeline fixtures
-remain required before the issue can close.
+writes at storage time. The cancellation fixture described below passes; a concurrent-writer pipeline
+fixture remains required before the issue can close.
 
 The shared transaction owner bounds lock acquisition to five seconds, operations
 to 60 seconds and server transaction size to 32 MiB. Oversized replacements fail
@@ -58,3 +58,20 @@ instead of falling back to partial writes. Cancellation before commit requests
 abort; a lost commit response leaves an uncertain outcome that requires durable
 state reconciliation before retry. This is one-document atomicity, not a whole
 batch transaction, source snapshot or production deployment.
+
+## Executed pipeline cancellation
+
+A transparent private Unix HTTP proxy forwards the real transaction identifier
+and pauses the chunk-write response only after ArangoDB acknowledges the write.
+At that point metadata and chunk changes have occurred inside the transaction.
+Cancelling the real pipeline caller makes the independent transaction owner send
+abort. The fixture observes the server's positive abort acknowledgment, verifies
+exact old metadata/chunk/embedding JSON (including revisions), and admits a
+following exclusive writer to prove lock release. It does not claim rollback
+after commit or after a lost commit acknowledgment.
+
+The first test build revealed that transaction scoping is crate-private; the
+fixture was corrected to forward HTTP headers instead of widening the library
+API. The complete two-test replay passed on a new disposable ArangoDB 3.12.11
+instance and stopped its server with exit zero. Focused Clippy with warnings
+denied also passed. Concurrent replacement remains unverified by this fixture.

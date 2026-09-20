@@ -137,3 +137,113 @@ async fn document_overwrite_failure_boundary() {
         for task in peers.0.drain(..) { let _ = task.await; }
     }).await;
 }
+
+#[path = "common/document_gate.rs"]
+mod document_gate;
+
+#[tokio::test]
+async fn cancelled_pipeline_rolls_back_acknowledged_writes() {
+    with_temp_db("document_cancel", Fixtures::Empty, |pool| async move {
+        for collection in ["documents", "chunks", "embeddings"] {
+            crud::create_collection(&pool, collection, Some(2))
+                .await
+                .unwrap();
+        }
+        let before = [
+            (
+                "documents",
+                "cancel",
+                json!({"_key":"cancel","full_text":"old"}),
+            ),
+            (
+                "chunks",
+                "cancel_chunk_0",
+                json!({"_key":"cancel_chunk_0","doc_key":"cancel","text":"old"}),
+            ),
+            (
+                "embeddings",
+                "cancel_chunk_0_emb",
+                json!({"_key":"cancel_chunk_0_emb","doc_key":"cancel","embedding":[1,0]}),
+            ),
+        ];
+        let mut saved = Vec::new();
+        for (collection, key, doc) in before {
+            crud::insert_documents(&pool, collection, &[doc], false)
+                .await
+                .unwrap();
+            saved.push((
+                collection,
+                key,
+                crud::get_document(&pool, collection, key).await.unwrap(),
+            ));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let extract_path = dir.path().join("extract.sock");
+        let embed_path = dir.path().join("embed.sock");
+        let listener = tokio::net::UnixListener::bind(&extract_path).unwrap();
+        let incoming = futures::stream::unfold(listener, |listener| async {
+            let next = listener.accept().await.map(|(stream, _)| stream);
+            Some((next, listener))
+        });
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(ExtractionServiceServer::new(Extractor))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        let embedder = embedding_mock::start_embedder(&embed_path, 1).await;
+        let mut peers = Peers(vec![server, embedder]);
+        let gate = document_gate::Gate::new(pool.writer().clone()).await;
+        let pipeline = Pipeline::new(
+            ExtractionClient::connect_unix_at(&extract_path)
+                .await
+                .unwrap(),
+            EmbeddingClient::connect_unix_at(&embed_path).await.unwrap(),
+            gate.pool.clone(),
+            PipelineConfig::default(),
+        );
+        let path = dir.path().join("fixture.txt");
+        let caller =
+            tokio::spawn(
+                async move { pipeline.process_document(&path, "cancel", &OneChunk).await },
+            );
+        tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        // The private server has acknowledged metadata and chunk changes inside
+        // the transaction, but the caller has not received the chunk response.
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(5), gate.aborted.notified())
+            .await
+            .unwrap();
+        gate.release.notify_one();
+        for (collection, key, doc) in saved {
+            assert_eq!(
+                crud::get_document(&pool, collection, key).await.unwrap(),
+                doc
+            );
+        }
+        // A following exclusive writer proves cleanup released the locks.
+        hades_core::db::transaction::run(
+            &pool,
+            vec!["documents".into(), "chunks".into(), "embeddings".into()],
+            |client| async move {
+                client
+                    .post("document/documents", &json!({"_key":"after_cancel"}))
+                    .await?;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        for task in &peers.0 {
+            task.abort();
+        }
+        for task in peers.0.drain(..) {
+            let _ = task.await;
+        }
+    })
+    .await;
+}
