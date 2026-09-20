@@ -11,6 +11,9 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Changed-text vector retention](ingestion-vector-retention.md): actual CLI
+  re-ingestion verifies parsed replacement versus parser-free field retention.
+
 - [Training alignment](training-alignment.md): private Rust/Python/database feature
   and full/subset export identity contract; generation freshness remains separate.
 

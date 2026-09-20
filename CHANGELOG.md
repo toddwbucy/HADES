@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Verify structural-vector retention after changed parsed and parser-free source
+  text using real CLI ingestion and private fixtures (epic #12).
+
 - Add an opt-in private database/CPU training/export alignment contract with
   qualified node identities and reversed subset verification (epic #12).
 
