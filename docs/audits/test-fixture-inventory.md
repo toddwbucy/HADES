@@ -1,7 +1,8 @@
 # Rust test fixture inventory (#12, #20, #47)
 
 Scope: all 25 top-level `crates/*/tests/*.rs` targets at `979fe97`, plus
-the service-free `filesystem_policy` target added in PR #50 (26 total), and
+the service-free `filesystem_policy` target added in PR #50 and viewer
+`process_lifecycle` added for #52 (27 total), and
 source-unit modules containing database client/pool construction. This inventory
 records resource boundaries and maintained execution, not exhaustive behavioral
 coverage of every production component.
@@ -25,6 +26,11 @@ uses fresh data/configuration, sanitizes endpoint environment and cleans its own
 process groups. A caller manually setting `ARANGO_SOCKET` is still responsible
 for supplying a separate test server; a unique database name alone is not server
 isolation.
+
+The viewer `process_lifecycle` target runs in the service-free CI step. It starts
+only the just-built private viewer and synthetic child scripts, uses ephemeral
+loopback HTTP, signals only its owned viewer and verifies descendant cleanup.
+It never discovers an installed HADES executable or database endpoint.
 
 ## Source-unit fixtures
 
