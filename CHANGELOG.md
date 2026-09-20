@@ -17,6 +17,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Documentation
+
+- Preserve the epic #12 baseline audit reports and reproductions, and add an
+  evidence register distinguishing merged fixes, deployment state and remaining
+  full-audit acceptance work.
+
 ### Changed
 
 - Calibrate search admission against full-handler memory pilots; release normal
