@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Refresh the audit fixture inventory with all 39 Rust integration targets and
+  explicit Python, script, opt-in and workstation execution boundaries (epic #12).
+
 - Record private checkpoint/graph generation and partially persisted export
   experiments for the structural-vector audit (epic #12).
 
