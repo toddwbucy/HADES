@@ -17,7 +17,8 @@
 #     scripts/install/setup-arangodb-user.sh
 #
 # Status:
-#   Sketched, not yet tested on a clean machine. Test target is a VPS —
+#   Covered by private Unix-socket HTTP contracts; fresh-host install remains
+#   unverified. Test target is a VPS —
 #   do not rely on this script for first-time setup on the development
 #   workstation; do user creation manually there. See README "Manual
 #   ArangoDB user setup" for the equivalent curl calls.
@@ -35,47 +36,81 @@ if [[ ! -S "$SOCK" ]]; then
   exit 1
 fi
 
-api() {
-  curl -fsS --unix-socket "$SOCK" \
-    -u "root:${ARANGO_ROOT_PASSWORD}" \
-    -H 'Content-Type: application/json' "$@"
-}
+# Keep credentials and response bodies in memory: no command-line password,
+# shell-constructed JSON, or shared temporary response file.
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
+export ARANGO_SOCKET="$SOCK"
+exec python3 - <<'PYTHON'
+import base64
+import http.client
+import json
+import os
+import signal
+import socket
+import sys
 
-# 1. Create the user. 201 = created, 409 = already exists (both fine).
-http=$(api -o /tmp/hades-bootstrap.out -w '%{http_code}' \
-  -X POST http://localhost/_api/user \
-  -d "{\"user\":\"hades\",\"passwd\":\"${HADES_PASSWORD}\",\"active\":true}" \
-  || true)
+socket_path = os.environ["ARANGO_SOCKET"]
+root_password = os.environ.pop("ARANGO_ROOT_PASSWORD")
+user_password = os.environ.pop("HADES_PASSWORD")
+authorization = "Basic " + base64.b64encode(
+    ("root:" + root_password).encode("utf-8")
+).decode("ascii")
 
-case "$http" in
-  201)
-    echo "Created ArangoDB user 'hades'. Setting initial grants…"
 
-    # rw on _system so HADES can create/drop databases.
-    api -X PUT http://localhost/_api/user/hades/database/_system \
-      -d '{"grant":"rw"}' >/dev/null
+class UnixConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+        self.sock.connect(socket_path)
+        self.sock.settimeout(30)
 
-    # Default grant for newly-created databases. Wildcard '*' is URL-encoded.
-    # Operator tightens specific databases (e.g. read-only production data
-    # → 'ro') in arangosh after this runs.
-    api -X PUT "http://localhost/_api/user/hades/database/%2A" \
-      -d '{"grant":"rw"}' >/dev/null
 
-    echo "Initial grants applied:"
-    echo "  _system: rw"
-    echo "  * (default for new databases): rw"
-    echo
-    echo "Restrict specific databases via arangosh, e.g.:"
-    echo "  require('@arangodb/users').grantDatabase('hades', '<production-db-name>', 'ro')"
-    ;;
-  409)
-    echo "ArangoDB user 'hades' already exists. Leaving grants untouched."
-    echo "If you need to reset the password, do it in arangosh:"
-    echo "  require('@arangodb/users').replace('hades', '<new-password>')"
-    ;;
-  *)
-    echo "Unexpected HTTP $http from ArangoDB:" >&2
-    cat /tmp/hades-bootstrap.out >&2 || true
-    exit 1
-    ;;
-esac
+def expired(signum, frame):
+    raise TimeoutError("bootstrap request deadline exceeded")
+
+
+signal.signal(signal.SIGALRM, expired)
+
+
+def api(method, path, payload):
+    connection = UnixConnection("localhost", timeout=5)
+    # Bound the entire request, including a peer slowly delivering headers.
+    signal.setitimer(signal.ITIMER_REAL, 30)
+    try:
+        connection.request(method, path, json.dumps(payload).encode("utf-8"), {
+            "Authorization": authorization,
+            "Content-Type": "application/json",
+        })
+        # Status alone determines success. Do not echo or retain a server body
+        # which could reflect a submitted credential.
+        return connection.getresponse().status
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        connection.close()
+
+
+try:
+    status = api("POST", "/_api/user", {
+        "user": "hades", "passwd": user_password, "active": True,
+    })
+    if status == 409:
+        print("ArangoDB user 'hades' already exists. Leaving grants untouched.")
+    elif status == 201:
+        print("Created ArangoDB user 'hades'. Setting initial grants…")
+        for database in ("_system", "%2A"):
+            status = api("PUT", f"/_api/user/hades/database/{database}", {"grant": "rw"})
+            if not 200 <= status < 300:
+                print(f"Initial grant request failed with HTTP {status}; inspect grants manually.", file=sys.stderr)
+                sys.exit(1)
+        print("Initial grants applied: _system: rw; * (default): rw")
+        print("Restrict production database grants explicitly before use.")
+    else:
+        print(f"User creation failed with HTTP {status}.", file=sys.stderr)
+        sys.exit(1)
+except (OSError, http.client.HTTPException) as error:
+    print(f"ArangoDB bootstrap request failed ({type(error).__name__}).", file=sys.stderr)
+    sys.exit(1)
+except KeyboardInterrupt:
+    print("ArangoDB bootstrap interrupted.", file=sys.stderr)
+    sys.exit(130)
+PYTHON

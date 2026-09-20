@@ -322,6 +322,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Encode bootstrap credentials safely, keep passwords and responses in memory,
+  bound Unix HTTP requests, and preserve existing user grants (#44).
+
 - Build complete Python service wheels with generated RPC bindings, trainer
   modules and adapter resources; include canonical protos in source archives
   and verify installed-wheel imports outside the checkout in CI (#38).
