@@ -1521,14 +1521,14 @@ mod handlers {
         let exe = std::env::current_exe()
             .map_err(|e| HandlerError::ServiceError(format!("cannot locate own binary: {e}")))?;
 
-        // Refuse a second job for the same tree, and cap the total.
-        //
-        // Nothing here was bounded: a provisioned token could call `ingest.start`
-        // in a loop and get one full ingest process per call, each running
-        // analyzers and a language server over the same tree, writing the same
-        // keys. A row whose process is gone does not count, because a daemon
-        // restart leaves rows saying `running` forever and those would otherwise
-        // block every later job.
+        let reservation =
+            crate::ingest_jobs::reserve(&resolved).map_err(HandlerError::ServiceError)?;
+
+        // The reservation above covers concurrent handlers across all databases
+        // in this process. Retain the historical-row check for now; it is not
+        // the atomic admission mechanism and PID existence alone cannot prove
+        // ownership after restart. The #51 lifecycle work must replace that
+        // legacy restart heuristic with explicit owner identity/reconciliation.
         crud::create_collection(pool, INGEST_JOBS, Some(2))
             .await
             .ok();
@@ -1545,7 +1545,7 @@ mod handlers {
         )
         .await
         .map(|r| r.results)
-        .unwrap_or_default();
+        .map_err(|e| HandlerError::ServiceError(format!("cannot verify ingest admission: {e}")))?;
         let live: Vec<&Value> = running
             .iter()
             .filter(|row| match row.get("pid").and_then(|p| p.as_u64()) {
@@ -1631,7 +1631,8 @@ mod handlers {
             .arg(&resolved)
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(errlog))
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
         if force {
             cmd.arg("--force");
         }
@@ -1643,16 +1644,26 @@ mod handlers {
         // Watch the child and write the outcome back. If the daemon dies first
         // the row stays `running`, which `ingest_status` reports as orphaned
         // rather than as progress.
-        if let Some(pid) = pid {
-            let _ = crud::update_document(pool, INGEST_JOBS, &job_id, &json!({ "pid": pid })).await;
-        }
-
         let pool_for_task = pool.clone();
         let job_for_task = job_id.clone();
         let log_for_task = log_path.clone();
         let err_for_task = err_path.clone();
         tokio::spawn(async move {
+            // Transfer ownership before the handler can be cancelled at any
+            // await after spawn. Detached jobs outlive the requesting client.
+            let _reservation = reservation;
             let mut child = child;
+            if let Some(pid) = pid
+                && let Err(error) = crud::update_document(
+                    &pool_for_task,
+                    INGEST_JOBS,
+                    &job_for_task,
+                    &json!({ "pid": pid }),
+                )
+                .await
+            {
+                tracing::error!(job = %job_for_task, %error, "failed to record ingest pid");
+            }
             let outcome = child.wait().await;
             let envelope = std::fs::read_to_string(&log_for_task)
                 .ok()
@@ -6788,6 +6799,77 @@ mod tests {
         assert_eq!(result, serde_json::json!({"results":[7],"count":1}));
         assert_eq!(mock.event("POST cursor").await["query"], aql);
         assert!(mock.events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn ingest_admission_precedes_database_work_and_fails_closed() {
+        use cursor_mock::{Mock, Reply};
+        use serde_json::json;
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        let roots = tempfile::tempdir().unwrap();
+        let mut tasks = Vec::new();
+        let mut mocks = Vec::new();
+        for index in 0..2 {
+            let path = roots.path().join(format!("tree-{index}"));
+            std::fs::create_dir(&path).unwrap();
+            let mut mock =
+                Mock::new(vec![Reply::blocked(json!({}), Arc::new(Notify::new()))]).await;
+            let pool = mock.pool.clone();
+            tasks.push(tokio::spawn(async move {
+                handlers::ingest_start(
+                    &pool,
+                    &HadesConfig::with_database(&format!("database-{index}")),
+                    path.to_str().unwrap(),
+                    false,
+                )
+                .await
+            }));
+            mock.event("POST collection").await;
+            mocks.push(mock);
+        }
+        let mut rejected = Mock::new(vec![]).await;
+        let config = HadesConfig::with_database("database-three");
+        let fresh = roots.path().join("fresh");
+        std::fs::create_dir(&fresh).unwrap();
+        for path in [roots.path().join("tree-0"), fresh.clone()] {
+            let error =
+                handlers::ingest_start(&rejected.pool, &config, path.to_str().unwrap(), false)
+                    .await
+                    .unwrap_err();
+            assert!(error.to_string().contains("already"), "{error}");
+        }
+        assert!(rejected.events.try_recv().is_err());
+        for task in tasks {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        }
+        drop(mocks);
+
+        // Both cancellation and admission-query failure release the slot. Two
+        // sequential retries reach the database, but neither inserts or spawns.
+        for _ in 0..2 {
+            let mut mock = Mock::new(vec![
+                Reply::page(json!({})),
+                Reply {
+                    status: 503,
+                    body: json!({"error":true,"errorMessage":"private fixture unavailable"}),
+                    gate: None,
+                },
+            ])
+            .await;
+            let error = handlers::ingest_start(&mock.pool, &config, fresh.to_str().unwrap(), false)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("cannot verify ingest admission"),
+                "{error}"
+            );
+            mock.event("POST collection").await;
+            mock.event("POST cursor").await;
+            assert!(mock.events.try_recv().is_err());
+        }
     }
 
     /// The documented wire names must deserialize, since docs/daemon-protocol.md

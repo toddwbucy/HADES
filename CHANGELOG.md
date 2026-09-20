@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Reserve detached-ingest admission atomically across databases and overlapping
+  trees; fail closed on admission-query errors and transfer child ownership before
+  awaiting PID persistence. Full lifecycle/output remediation remains in #51.
+
 - Require Admin authority for filesystem smell scans; route the MCP smell report
   to bounded, database-only recorded associations (#49).
 
