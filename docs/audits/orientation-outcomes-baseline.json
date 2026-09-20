@@ -1,0 +1,50 @@
+{
+  "source_revision": "739ad99b5a39ffcbf5bebccdc82db6c69a508c0a",
+  "scope": "Actual CLI with private Unix HTTP fixture; normalized observations, no production use",
+  "source_sha256": {
+    "crates/hades-cli/tests/db_response_shapes.rs": "6665e98a4b1ba584c6fdb53b56cdf0ec2a8fed384186abc658e1748d169866c8",
+    "crates/hades-cli/src/commands/system.rs": "3db33ce2fe7cd0deb11336475e98f1ebb1d73422ed49360b099773c663ea9931",
+    "crates/hades-core/src/dispatch.rs": "54ac941a7c6c99af9628371231d9eaad013a96b5b6007087eb1b46b0e423ec07",
+    "crates/hades-core/src/db/query.rs": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
+    "crates/hades-core/src/db/index.rs": "70e439b83395e1c1b8f00389b003afa267aae824933f6ad5fc6a5ab0a0108794"
+  },
+  "observed": [
+    {
+      "stage": "sample",
+      "exit_code": 0,
+      "outer_success": true,
+      "count": 2,
+      "silently_empty_field": "schema_fields",
+      "stderr": ""
+    },
+    {
+      "stage": "recent",
+      "exit_code": 0,
+      "outer_success": true,
+      "count": 2,
+      "silently_empty_field": "recent",
+      "stderr": ""
+    },
+    {
+      "stage": "indexes",
+      "exit_code": 0,
+      "outer_success": true,
+      "count": 2,
+      "silently_empty_field": "indexes",
+      "stderr": ""
+    }
+  ],
+  "injected_responses": {
+    "sample": {
+      "hasMore": false,
+      "result": null
+    },
+    "recent": {
+      "hasMore": false,
+      "result": null
+    },
+    "indexes": {}
+  },
+  "control": "Valid sample/recent/index metadata succeeds with count 2 and one recent document.",
+  "test_result": "Expected failure: 3 incorrect successes, expected 0; 0 passed, 1 failed, 6 filtered, 0.03s; cargo exit 101"
+}

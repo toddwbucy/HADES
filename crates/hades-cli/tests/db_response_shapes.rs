@@ -8,6 +8,12 @@ use std::{
 };
 
 async fn run(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Vec<String>) {
+    let mut command = vec!["db"];
+    command.extend_from_slice(args);
+    run_root(&command, pages).await
+}
+
+async fn run_root(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Vec<String>) {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("db.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
@@ -57,7 +63,7 @@ async fn run(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Vec<Str
         .env("ARANGO_PASSWORD", "fixture-only")
         .env("TOKIO_WORKER_THREADS", "2")
         .current_dir(root.path())
-        .args(["--db", "fixture", "db"])
+        .args(["--db", "fixture"])
         .args(args)
         .kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await;
@@ -302,4 +308,47 @@ async fn graph_list_rejects_malformed_success_responses() {
         failed(&output);
         assert!(output.stdout.is_empty());
     }
+}
+
+#[tokio::test]
+async fn orientation_does_not_hide_metadata_read_failures() {
+    let good = vec![
+        json!({"count":2}),
+        json!({"hasMore":false,"result":[{"_key":"one","title":"Fixture"}]}),
+        json!({"hasMore":false,"result":[{"_key":"one","title":"Fixture"}]}),
+        json!({"indexes":[]}),
+    ];
+    let (control, _) = run_root(&["orient", "--collection", "docs"], good.clone()).await;
+    assert!(control.status.success(), "{control:?}");
+    let data: Value = serde_json::from_slice(&control.stdout).unwrap();
+    assert_eq!(data["data"]["count"], 2);
+    assert_eq!(data["data"]["recent"].as_array().unwrap().len(), 1);
+    let mut incorrect_successes = 0;
+    for (stage, index, bad) in [
+        ("sample", 1, json!({"hasMore":false,"result":null})),
+        ("recent", 2, json!({"hasMore":false,"result":null})),
+        ("indexes", 3, json!({})),
+    ] {
+        let mut replies = good.clone();
+        replies[index] = bad;
+        let (output, calls) = run_root(&["orient", "--collection", "docs"], replies).await;
+        println!(
+            "Orientation failure probe: {}",
+            json!({"stage":stage,"exit":output.status.code(),
+            "stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"calls":calls})
+        );
+        if output.status.success() {
+            incorrect_successes += 1;
+        } else {
+            assert!(output.stdout.is_empty());
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(diagnostic.contains("orientation"), "{diagnostic}");
+            assert!(diagnostic.contains(stage), "{diagnostic}");
+            assert_eq!(calls.len(), index + 1, "stop after failed metadata stage");
+        }
+    }
+    assert_eq!(
+        incorrect_successes, 0,
+        "metadata read failures must not become successful empty data"
+    );
 }
