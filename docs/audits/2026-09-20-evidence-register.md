@@ -11,6 +11,10 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Native CLI inventory](cli-contracts.md): isolated help-only walk of 80 visible
+  leaf commands and embedding response-cap call-site trace; operational parity
+  remains separate review.
+
 - [Viewer envelope validation](viewer-envelope-review.md): private false-success
   route reproduction and seven-parser status validation for #107.
 

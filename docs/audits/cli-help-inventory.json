@@ -1,0 +1,857 @@
+{
+  "source_revision": "7480530e0a0bba91286285a478701a321a090c14",
+  "binary_sha256": "cd53bdd02a11a216bea30f563ba0c4460f33f79fdd6c56d55fd1e9c8bab5f396",
+  "scope": "Declared visible CLI help tree only; no operational commands, no config/database/service requests. Hidden commands/aliases and execution behavior are outside enumeration.",
+  "nodes": 93,
+  "leaf_commands": 80,
+  "commands": [
+    {
+      "path": [],
+      "children": [
+        "status",
+        "orient",
+        "extract",
+        "ingest",
+        "link",
+        "db",
+        "embed",
+        "codebase",
+        "task",
+        "smell",
+        "graph-embed",
+        "schema",
+        "tools",
+        "daemon"
+      ],
+      "help": "CLI entry point for HADES\n\nUsage: hades [OPTIONS] <COMMAND>\n\nCommands:\n  status       System status for workspace discovery\n  orient       Metadata-first context orientation for a database\n  extract      Extract text from documents (PDF, LaTeX, etc)\n  ingest       Ingest documents into the knowledge base\n  link         Create a compliance edge linking a document to a smell node\n  db           Database operations \u2014 query, CRUD, indexes, and graph traversal\n  embed        Embedding generation and service management\n  codebase     Code ingestion and graph operations\n  task         Persephone task management \u2014 create, track, review, and hand off tasks\n  smell        Code smell and compliance checking\n  graph-embed  Graph embedding operations \u2014 train and query structural embeddings\n  schema       Declarative schema operations \u2014 apply YAML schema files at bootstrap\n  tools        External analyzer inventory and health (rust-analyzer, gopls)\n  daemon       Start the HADES daemon (Unix socket query server, optional LAN MCP endpoint)\n  help         Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n  -V, --version              Print version\n"
+    },
+    {
+      "path": [
+        "status"
+      ],
+      "children": [],
+      "help": "System status for workspace discovery\n\nUsage: hades status [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -V, --verbose              Verbose output\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "orient"
+      ],
+      "children": [],
+      "help": "Metadata-first context orientation for a database\n\nUsage: hades orient [OPTIONS]\n\nOptions:\n  -c, --collection <COLLECTION>  Collection to orient on\n      --database <DATABASE>      Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>          Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>                GPU device index for embedding commands\n  -h, --help                     Print help\n"
+    },
+    {
+      "path": [
+        "extract"
+      ],
+      "children": [],
+      "help": "Extract text from documents (PDF, LaTeX, etc)\n\nUsage: hades extract [OPTIONS] <FILE>\n\nArguments:\n  <FILE>  File path to extract from\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -o, --output <OUTPUT>      Output file path\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "ingest"
+      ],
+      "children": [],
+      "help": "Ingest documents into the knowledge base\n\nUsage: hades ingest [OPTIONS] [INPUTS]...\n\nArguments:\n  [INPUTS]...\n          Input file paths to ingest\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n      --id <ID>\n          Custom document ID (single input only)\n\n  -b, --batch\n          Run in batch mode\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n  -r, --resume\n          Resume a previously interrupted batch\n\n  -m, --metadata <METADATA>\n          Custom metadata as JSON\n\n  -t, --task <TASK>\n          Embedding task type (e.g. \"code\" for Jina Code LoRA)\n\n      --claims <CLAIMS>\n          Compliance claims (CS-NN format)\n\n  -c, --collection <COLLECTION>\n          Collection profile name (must be defined in the runtime schema)\n\n  -f, --force\n          Force re-processing of existing documents\n\n      --reset\n          Reset batch state (clear previous checkpoint)\n\n      --concurrency <CONCURRENCY>\n          Maximum concurrent items (overrides config, must be >= 1)\n\n      --unparsed-ext <UNPARSED_EXT>\n          Comma-separated extensions to embed without a parser, e.g. `toml,wgsl`. Chunked by size and embedded as features, with no symbol or edge extraction.\n          \n          Use it for files that carry meaning but have no analyzer. Manifests are the case that prompted this on the unified command: three conformance citations in this workspace live only in a `Cargo.toml`, so a graph without them is missing edges the census counts.\n\n      --root <ROOT>\n          Derive document keys from each input's path relative to this directory, instead of from its file stem.\n          \n          Use this for any tree: stems are not unique across directories, so eleven files named `README.md` all key as `README`, the first wins, and the rest are reported as skipped. With `--root` they key as `docs_a_README`, `docs_b_README` and so on, which is how `codebase ingest` has always keyed files. Inputs outside the root fall back to the stem with a warning.\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "link"
+      ],
+      "children": [],
+      "help": "Create a compliance edge linking a document to a smell node\n\nUsage: hades link [OPTIONS] <SOURCE_ID>\n\nArguments:\n  <SOURCE_ID>  Source document ID\n\nOptions:\n      --claims <CLAIMS>      Compliance claims (CS-NN format)\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -y, --force                Skip confirmation\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db"
+      ],
+      "children": [
+        "query",
+        "aql",
+        "list",
+        "stats",
+        "recent",
+        "health",
+        "check",
+        "purge",
+        "create",
+        "delete",
+        "collections",
+        "databases",
+        "create-database",
+        "truncate",
+        "drop-collection",
+        "count",
+        "get",
+        "insert",
+        "update",
+        "export",
+        "create-index",
+        "index-status",
+        "graph",
+        "schema"
+      ],
+      "help": "Database operations \u2014 query, CRUD, indexes, and graph traversal\n\nUsage: hades db [OPTIONS] <COMMAND>\n\nCommands:\n  query            Semantic search across the knowledge base\n  aql              Execute a raw AQL query\n  list             List documents in a collection\n  stats            Show database statistics\n  recent           Show recently ingested papers\n  health           Check data integrity and health\n  check            Check if a document exists\n  purge            Remove a document and its related data\n  create           Create a new collection\n  delete           Delete a document from a collection\n  collections      List all collections in the database\n  databases        List all databases\n  create-database  Create a new database\n  truncate         Empty a collection in place (keeps the collection and its indexes)\n  drop-collection  Drop a single collection (documents, indexes, and the collection itself)\n  count            Count documents in a collection\n  get              Get a single document by key\n  insert           Insert documents into a collection\n  update           Update a document in a collection\n  export           Export a collection to file\n  create-index     Create a vector index on a collection\n  index-status     Show vector index status\n  graph            Graph operations\n  schema           Schema management \u2014 define and inspect database ontologies\n  help             Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed"
+      ],
+      "children": [
+        "text",
+        "service",
+        "gpu"
+      ],
+      "help": "Embedding generation and service management\n\nUsage: hades embed [OPTIONS] <COMMAND>\n\nCommands:\n  text     Generate an embedding for the given text\n  service  Embedding service management\n  gpu      GPU device management\n  help     Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "codebase"
+      ],
+      "children": [
+        "ingest",
+        "update",
+        "stats",
+        "validate",
+        "prune-orphans",
+        "drift",
+        "retire"
+      ],
+      "help": "Code ingestion and graph operations\n\nUsage: hades codebase [OPTIONS] <COMMAND>\n\nCommands:\n  ingest         Ingest source code into the knowledge graph\n  update         Update an existing code graph node\n  stats          Show code ingestion statistics\n  validate       Validate codebase graph invariants (ontology spec \u00a710)\n  prune-orphans  Remove orphaned symbols, chunks, embeddings, and dangling edges\n  drift          Compare the graph against the source tree it describes (read-only)\n  retire         Retire graph nodes whose source files are gone (complement of --force)\n  help           Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task"
+      ],
+      "children": [
+        "create",
+        "list",
+        "show",
+        "update",
+        "close",
+        "start",
+        "review",
+        "approve",
+        "block",
+        "unblock",
+        "handoff",
+        "handoff-show",
+        "context",
+        "log",
+        "sessions",
+        "dep",
+        "usage",
+        "graph-integration"
+      ],
+      "help": "Persephone task management \u2014 create, track, review, and hand off tasks\n\nUsage: hades task [OPTIONS] <COMMAND>\n\nCommands:\n  create             Create a new task\n  list               List tasks with optional filters\n  show               Show task details\n  update             Update a task's fields\n  close              Close a task (mark as completed)\n  start              Start working on a task (transition to in_progress)\n  review             Submit a task for review\n  approve            Approve a reviewed task\n  block              Block a task with a reason\n  unblock            Unblock a task\n  handoff            Create a handoff context snapshot\n  handoff-show       Show the latest handoff for a task\n  context            Get rich context for a task (description + history + handoffs)\n  log                Show task activity log\n  sessions           List sessions associated with a task\n  dep                Manage task dependencies\n  usage              Show task system usage statistics\n  graph-integration  Integrate task with the knowledge graph\n  help               Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "smell"
+      ],
+      "children": [
+        "check",
+        "verify",
+        "report"
+      ],
+      "help": "Code smell and compliance checking\n\nUsage: hades smell [OPTIONS] <COMMAND>\n\nCommands:\n  check   Check code for compliance smells\n  verify  Verify compliance status of a path\n  report  Generate a compliance report\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "graph-embed"
+      ],
+      "children": [
+        "train",
+        "embed",
+        "neighbors",
+        "update"
+      ],
+      "help": "Graph embedding operations \u2014 train and query structural embeddings\n\nUsage: hades graph-embed [OPTIONS] <COMMAND>\n\nCommands:\n  train      Train structural graph embeddings via the HADES training service. The architecture (transductive RGCN or inductive relational GraphSAGE) is chosen by the database schema's `model_type`, not a flag\n  embed      Generate embedding for a specific node\n  neighbors  Find nearest neighbors of a node in embedding space\n  update     Update graph embeddings incrementally (forward pass only, no retraining)\n  help       Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "schema"
+      ],
+      "children": [
+        "apply"
+      ],
+      "help": "Declarative schema operations \u2014 apply YAML schema files at bootstrap.\n\nDistinct from `db schema {init,list,show,version}` which inspects the live `hades_schema` collection. See `docs/declarative-schema.md`.\n\nUsage: hades schema [OPTIONS] <COMMAND>\n\nCommands:\n  apply  Apply a YAML schema file to the database\n  help   Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "tools"
+      ],
+      "children": [
+        "status",
+        "install"
+      ],
+      "help": "External analyzer inventory and health (rust-analyzer, gopls)\n\nUsage: hades tools [OPTIONS] <COMMAND>\n\nCommands:\n  status   Report each analyzer's resolution and a live probe from a workspace\n  install  Install a HADES-managed analyzer binary into the tools directory\n  help     Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "daemon"
+      ],
+      "children": [],
+      "help": "Start the HADES daemon (Unix socket query server, optional LAN MCP endpoint)\n\nUsage: hades daemon [OPTIONS]\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n      --socket <SOCKET>\n          Socket path (default: /run/hades/hades.sock)\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n      --mcp-bind <MCP_BIND>\n          Serve the MCP endpoint on this address (loopback or RFC1918 only, e.g. 192.168.0.10:8088). Requires --mcp-token-file\n          \n          [env: HADES_MCP_BIND=]\n\n      --mcp-token-file <MCP_TOKEN_FILE>\n          Bearer-token file for the MCP endpoint (one token per line)\n          \n          [env: HADES_MCP_TOKEN_FILE=]\n\n      --mcp-dbs <MCP_DBS>\n          Databases the MCP endpoint serves in addition to the configured default (comma-separated). Anything not listed is refused \u2014 remote reads are scoped, writes stay ACL-gated\n          \n          [env: HADES_MCP_DBS=]\n\n      --mcp-db-prefix <MCP_DB_PREFIXES>\n          Database-name prefixes the MCP endpoint may CREATE, e.g. `bident_`.\n          \n          Provisioning is off unless this and `--mcp-ingest-root` are both given. Granting it lets a bearer token create databases, which is deliberately not the default for a plaintext LAN endpoint.\n          \n          [env: HADES_MCP_DB_PREFIXES=]\n\n      --mcp-ingest-root <MCP_INGEST_ROOTS>\n          Directories the MCP endpoint may INGEST FROM.\n          \n          Ingest makes the daemon read paths off its own filesystem, so without this a client could have it embed anything the daemon's user can read and then query it back out. Paths are canonicalized before the check, so `..` and symlinks cannot escape a listed root.\n          \n          [env: HADES_MCP_INGEST_ROOTS=]\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "db",
+        "query"
+      ],
+      "children": [],
+      "help": "Semantic search across the knowledge base\n\nUsage: hades db query [OPTIONS] [SEARCH_TEXT]\n\nArguments:\n  [SEARCH_TEXT]  Search text. Required \u2014 there is no interactive mode, and omitting it exits non-zero without searching\n\nOptions:\n      --database <DATABASE>      Target ArangoDB database name (overrides config/env)\n  -n, --limit <LIMIT>            Maximum results to return [default: 10]\n  -c, --collection <COLLECTION>  Collection profile to search\n  -g, --gpu <GPU>                GPU device index for embedding commands\n  -H, --hybrid                   Enable hybrid search (vector + keyword)\n  -R, --rerank                   Enable re-ranking of results. NOT AVAILABLE: the cross-encoder this needs does not ship with the CLI, so passing it exits non-zero without searching. Use `--hybrid` and/or `--structural` instead\n  -S, --structural               Enable structural graph ranking\n  -f, --format <FORMAT>          Output format (json, jsonl, table) [default: json]\n  -V, --verbose                  Verbose output\n  -h, --help                     Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "aql"
+      ],
+      "children": [],
+      "help": "Execute a raw AQL query\n\nUsage: hades db aql [OPTIONS] <AQL>\n\nArguments:\n  <AQL>  AQL query string\n\nOptions:\n  -b, --bind <BIND>          Bind variables as JSON object\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -n, --limit <LIMIT>        Maximum results\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "list"
+      ],
+      "children": [],
+      "help": "List documents in a collection\n\nUsage: hades db list [OPTIONS]\n\nOptions:\n  -c, --collection <COLLECTION>  Collection profile\n      --database <DATABASE>      Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>                GPU device index for embedding commands\n  -n, --limit <LIMIT>            Maximum results [default: 20]\n  -f, --format <FORMAT>          Output format (json, jsonl, table) [default: json]\n  -p, --paper <PAPER>            Filter by paper ID\n  -h, --help                     Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "stats"
+      ],
+      "children": [],
+      "help": "Show database statistics\n\nUsage: hades db stats [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "recent"
+      ],
+      "children": [],
+      "help": "Show recently ingested papers\n\nUsage: hades db recent [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -n, --limit <LIMIT>        Maximum results [default: 10]\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "health"
+      ],
+      "children": [],
+      "help": "Check data integrity and health\n\nUsage: hades db health [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -V, --verbose              Verbose output\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "check"
+      ],
+      "children": [],
+      "help": "Check if a document exists\n\nUsage: hades db check [OPTIONS] <DOCUMENT_ID>\n\nArguments:\n  <DOCUMENT_ID>  Document ID to check\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "purge"
+      ],
+      "children": [],
+      "help": "Remove a document and its related data\n\nUsage: hades db purge [OPTIONS] <DOCUMENT_ID>\n\nArguments:\n  <DOCUMENT_ID>  Document ID to purge\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -y, --force                Skip confirmation prompt\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "create"
+      ],
+      "children": [],
+      "help": "Create a new collection\n\nUsage: hades db create [OPTIONS] <NAME>\n\nArguments:\n  <NAME>  Collection name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -t, --type <TYPE>          Collection type (document, edge) [default: document]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "delete"
+      ],
+      "children": [],
+      "help": "Delete a document from a collection\n\nUsage: hades db delete [OPTIONS] <COLLECTION> <KEY>\n\nArguments:\n  <COLLECTION>  Collection name\n  <KEY>         Document key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -y, --force                Skip confirmation prompt\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "collections"
+      ],
+      "children": [],
+      "help": "List all collections in the database\n\nUsage: hades db collections [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "databases"
+      ],
+      "children": [],
+      "help": "List all databases\n\nUsage: hades db databases [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "create-database"
+      ],
+      "children": [],
+      "help": "Create a new database\n\nUsage: hades db create-database [OPTIONS] <NAME>\n\nArguments:\n  <NAME>  Database name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "truncate"
+      ],
+      "children": [],
+      "help": "Empty a collection in place (keeps the collection and its indexes)\n\nUsage: hades db truncate [OPTIONS] <COLLECTION>\n\nArguments:\n  <COLLECTION>  Collection name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -y, --force                Confirm the operation. Required \u2014 this permanently deletes all documents in the collection\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "drop-collection"
+      ],
+      "children": [],
+      "help": "Drop a single collection (documents, indexes, and the collection itself)\n\nUsage: hades db drop-collection [OPTIONS] <COLLECTION>\n\nArguments:\n  <COLLECTION>  Collection name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -y, --force                Confirm the operation. Required \u2014 this permanently removes the collection\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "count"
+      ],
+      "children": [],
+      "help": "Count documents in a collection\n\nUsage: hades db count [OPTIONS] <COLLECTION>\n\nArguments:\n  <COLLECTION>  Collection name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "get"
+      ],
+      "children": [],
+      "help": "Get a single document by key\n\nUsage: hades db get [OPTIONS] <COLLECTION> <KEY>\n\nArguments:\n  <COLLECTION>  Collection name\n  <KEY>         Document key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "insert"
+      ],
+      "children": [],
+      "help": "Insert documents into a collection\n\nUsage: hades db insert [OPTIONS] <COLLECTION>\n\nArguments:\n  <COLLECTION>  Collection name\n\nOptions:\n      --data <DATA>          JSON document(s) to insert (reads from stdin if omitted)\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -i, --input <INPUT>        Input file path\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "update"
+      ],
+      "children": [],
+      "help": "Update a document in a collection\n\nUsage: hades db update [OPTIONS] <COLLECTION> <KEY>\n\nArguments:\n  <COLLECTION>  Collection name\n  <KEY>         Document key\n\nOptions:\n      --data <DATA>          JSON fields to update\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "export"
+      ],
+      "children": [],
+      "help": "Export a collection to file\n\nUsage: hades db export [OPTIONS] <COLLECTION>\n\nArguments:\n  <COLLECTION>  Collection name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -o, --output <OUTPUT>      Output file path\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: jsonl]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -n, --limit <LIMIT>        Maximum documents to export\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "create-index"
+      ],
+      "children": [],
+      "help": "Create a vector index on a collection\n\nUsage: hades db create-index [OPTIONS]\n\nOptions:\n  -c, --collection <COLLECTION>  Collection name\n      --database <DATABASE>      Target ArangoDB database name (overrides config/env)\n      --dimension <DIMENSION>    Vector dimension\n  -g, --gpu <GPU>                GPU device index for embedding commands\n      --metric <METRIC>          Distance metric (cosine, euclidean, dotproduct)\n  -h, --help                     Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "index-status"
+      ],
+      "children": [],
+      "help": "Show vector index status\n\nUsage: hades db index-status [OPTIONS]\n\nOptions:\n  -c, --collection <COLLECTION>  Collection name\n      --database <DATABASE>      Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>          Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>                GPU device index for embedding commands\n  -h, --help                     Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph"
+      ],
+      "children": [
+        "create",
+        "list",
+        "drop",
+        "traverse",
+        "shortest-path",
+        "neighbors",
+        "materialize"
+      ],
+      "help": "Graph operations\n\nUsage: hades db graph [OPTIONS] <COMMAND>\n\nCommands:\n  create         Create a named graph\n  list           List all named graphs\n  drop           Drop a named graph\n  traverse       Traverse the graph from a starting vertex\n  shortest-path  Find the shortest path between two vertices\n  neighbors      Find neighbors of a vertex\n  materialize    Materialize edges from implicit cross-reference fields\n  help           Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "schema"
+      ],
+      "children": [
+        "init",
+        "list",
+        "show",
+        "version"
+      ],
+      "help": "Schema management \u2014 define and inspect database ontologies\n\nUsage: hades db schema [OPTIONS] <COMMAND>\n\nCommands:\n  init     Initialize the hades_schema collection with a seed ontology\n  list     List all edge definitions and named graphs in the schema\n  show     Show a single edge definition or named graph by name\n  version  Show schema version, checksum, and metadata\n  help     Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "text"
+      ],
+      "children": [],
+      "help": "Generate an embedding for the given text\n\nUsage: hades embed text [OPTIONS] <TEXT>\n\nArguments:\n  <TEXT>  Text to embed\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, raw) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "service"
+      ],
+      "children": [
+        "status",
+        "start",
+        "stop"
+      ],
+      "help": "Embedding service management\n\nUsage: hades embed service [OPTIONS] <COMMAND>\n\nCommands:\n  status  Show embedding service status\n  start   Start the embedding service\n  stop    Stop the embedding service\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "gpu"
+      ],
+      "children": [
+        "status",
+        "list"
+      ],
+      "help": "GPU device management\n\nUsage: hades embed gpu [OPTIONS] <COMMAND>\n\nCommands:\n  status  Show GPU status and memory usage\n  list    List available GPU devices\n  help    Print this message or the help of the given subcommand(s)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "ingest"
+      ],
+      "children": [],
+      "help": "Ingest source code into the knowledge graph\n\nUsage: hades codebase ingest [OPTIONS] <PATH>\n\nArguments:\n  <PATH>\n          Path to file or directory to ingest\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n  -l, --language <LANGUAGE>\n          Programming language override (auto-detected if omitted)\n\n  -b, --batch\n          Run in batch mode\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n      --unparsed-ext <UNPARSED_EXT>\n          Comma-separated extensions to embed without a parser (e.g. `wgsl,vert`). Files with these extensions are chunked by size and embedded as features \u2014 no symbol/edge extraction. Their file nodes are merged (existing fields preserved), not overwritten\n\n      --compile-commands <COMPILE_COMMANDS>\n          Path to `compile_commands.json` (or its containing directory) for compiler-grade C/C++/CUDA include, define, standard, and target configuration. When omitted, source ancestors and `build/` are searched automatically\n\n  -f, --force\n          Re-ingest each file even if its change-detection digest is unchanged. This rebuilds the node's symbols, chunks, and embeddings in place \u2014 it does NOT drop the file node or its inbound edges, so authored bridge edges survive (unlike `db purge`). Use it to refresh a node whose stored view has drifted from the source \u2014 in particular after an edit that touched only bodies, signatures, or comments, which a name-keyed `symbol_hash` cannot see and which `codebase drift` reports as `changed`. What `symbol_hash` covers depends on the node's `analysis_tier` \u2014 see `codebase drift --help`; the name-only case is Python and Rust at tier `semantic`.\n          \n          Pass the ORIGINAL ingest root, not a narrower path. Keys are derived relative to the path given (a file bases at its parent), so re-ingesting a single file or subdirectory writes duplicate nodes under re-based keys, purges nothing, and repairs nothing.\n          \n          If a rebuild drops a symbol that another file points at, those inbound edges are reported as `dangling_inbound_edges` \u2014 not deleted, since each records a real dependency. Re-resolve them by re-running `codebase ingest --force <the same ingest root>` (plain re-ingest skips the dependents, whose own `symbol_hash` did not change), or run `hades codebase prune-orphans` to drop them; until then `codebase validate` will flag them.\n          \n          This never permits an analyzer-fidelity downgrade by itself, so a file whose stored analysis came from a richer analyzer than the one available now is still skipped \u2014 pass `--allow-analysis-downgrade` as well to refresh it.\n          \n          One exception, and it is the recovery path for #193: a `.go` node whose stored `semantic` tier came from the old gopls stamp IS rewritten to `structural`, without `--allow-analysis-downgrade`. Go has no per-file semantic analyzer, so that stamp described a fidelity the node's own digest never had, and the gopls phase re-supplies the semantic symbols and edges later in the same run.\n\n      --allow-analysis-downgrade\n          Permit a lower-fidelity analyzer to replace previously stored semantic artifacts. This is separate from `--force` so a temporary analyzer outage cannot silently degrade the graph\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "update"
+      ],
+      "children": [],
+      "help": "Update an existing code graph node\n\nUsage: hades codebase update [OPTIONS] <PATH>\n\nArguments:\n  <PATH>  Path to file or directory to update\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "stats"
+      ],
+      "children": [],
+      "help": "Show code ingestion statistics\n\nUsage: hades codebase stats [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "validate"
+      ],
+      "children": [],
+      "help": "Validate codebase graph invariants (ontology spec \u00a710)\n\nUsage: hades codebase validate [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "prune-orphans"
+      ],
+      "children": [],
+      "help": "Remove orphaned symbols, chunks, embeddings, and dangling edges.\n\nSweeps child records whose owning file node is already gone. To retire a file node whose *source file* was deleted, use `codebase retire`.\n\nUsage: hades codebase prune-orphans [OPTIONS]\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n      --dry-run\n          Report what would be deleted without modifying the graph\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "drift"
+      ],
+      "children": [],
+      "help": "Compare the graph against the source tree it describes (read-only).\n\n`codebase validate` checks only internal consistency and cannot see any of this.\n\nBuckets: `stale` (a file node with no counterpart under this root), `uningested` (a source file with no node), `changed` (a matched file whose content differs from what was ingested), and `unhandled` (files under the root ingest has no handler for, with a reason for each).\n\n`changed.unverifiable` counts matched files that could not be compared at all, because they were ingested before `content_hash` existed or are no longer readable as text.\n\n`clean` is true only when stale, uningested, changed and `changed.unverifiable` are all zero. `unhandled` does not gate it, since every repository contains files no analyzer handles.\n\n`changed` exists because drift compares full content while incremental ingest compares `symbol_hash`, whose meaning depends on the node's `analysis_tier`. At tier `semantic`, Python and Rust hash symbol *names* only, so an edited body, signature or comment leaves it identical and a plain `codebase ingest` skips the file while its stored chunks go stale. Refresh those with `codebase ingest --force`.\n\nThe other tiers are stricter and mostly self-correct: tier `structural` and C++ at tier `semantic` hash the serialized symbol list (line spans and metadata included), and tier `text` hashes full content. Check the tier rather than the extension. Go is in the `structural` group: it has no per-file semantic analyzer, and the semantic symbols and edges gopls contributes are recorded under their own keys rather than by restating the file's tier.\n\nOne exception on graphs built before that changed: `.go` nodes ingested by an older HADES still read `semantic` even though their digest is tree-sitter's, and a plain re-ingest will not clear the stamp because the unchanged-digest skip fires first. `codebase ingest --force <the original ingest root>` rewrites them; until then, treat a `.go` node reading `semantic` as `structural`.\n\n`stale` is NOT \"the source file was deleted\". It is every node with no counterpart under the root you passed. Nodes belonging to another ingest root are excluded and counted separately as `other_roots`, so a database holding several trees no longer reports one tree's nodes as stale for another (#192).\n\nThe exception is nodes ingested before HADES recorded `ingest_root`. Those cannot be attributed either way, so they are still compared and the stale ones are listed separately as `stale.unattributed_keys`, held out of `stale.keys` so a `--full` pipe into `codebase retire` cannot delete them unreviewed.\n\n`other_roots` reports the roots as well as the count, because a root *under* this one is usually a mis-rooted ingest of this same tree rather than a second graph: `codebase ingest` on a single file bases its keys at that file's parent.\n\nPass the same discovery flags used at ingest time, and the same root \u2014 keys are relative to the ingest root, so a wrong root reports near-total drift in both directions rather than a small honest number.\n\nUsage: hades codebase drift [OPTIONS] <PATH>\n\nArguments:\n  <PATH>\n          Ingest root the graph was built from\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n  -l, --language <LANGUAGE>\n          Programming language override (must match the ingest invocation)\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n      --unparsed-ext <UNPARSED_EXT>\n          Extensions ingested without a parser (must match the ingest invocation), e.g. `wgsl,vert`\n\n      --full\n          List every key instead of truncating. Use this to feed `codebase retire --from -`.\n          \n          `stale.keys` holds only nodes attributed to this ingest root, so it is what `retire` should be fed. Keys that could not be attributed are held out, in `stale.unattributed_keys`, for review \u2014 `retire` deletes each target's node, chunks, embeddings, symbols and incident edges, and those keys predate the attribution that would prove they belong to this tree.\n          \n          Re-ingesting a root attributes every node whose file still exists. A node whose file is already gone is never rediscovered, so no re-ingest can attribute it; that residue is pre-attribution backlog and only a reviewed retire clears it.\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "codebase",
+        "retire"
+      ],
+      "children": [],
+      "help": "Retire graph nodes whose source files are gone (complement of --force).\n\nRemoves each target's file node, chunks, embeddings, symbols, and every codebase edge incident on the file or its symbols. Edges in other collections (authored bridges such as conformance verdicts) are reported separately and need `--yes`, since they are irreplaceable if the target list is wrong.\n\nTargets are always explicit \u2014 use `codebase drift` to discover them.\n\nUsage: hades codebase retire [OPTIONS]\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n      --file <FILES>\n          File node key to retire. Repeatable\n\n      --from <FROM>\n          Read newline-separated keys from a file (`-` for stdin). Blank lines and `#` comments are ignored\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n      --dry-run\n          Report what would be removed without modifying the graph\n\n  -y, --yes\n          Confirm removal of edges outside the codebase collections\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "task",
+        "create"
+      ],
+      "children": [],
+      "help": "Create a new task\n\nUsage: hades task create [OPTIONS] <TITLE>\n\nArguments:\n  <TITLE>  Task title\n\nOptions:\n  -d, --description <DESCRIPTION>  Task description\n      --database <DATABASE>        Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>                  GPU device index for embedding commands\n  -t, --type <TYPE>                Task type (task, bug, epic) [default: task]\n  -p, --parent <PARENT>            Parent task key\n      --priority <PRIORITY>        Priority (critical, high, medium, low)\n      --tags <TAGS>                Tags\n  -h, --help                       Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "list"
+      ],
+      "children": [],
+      "help": "List tasks with optional filters\n\nUsage: hades task list [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -s, --status <STATUS>      Filter by status (open, in_progress, in_review, closed, blocked)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -t, --type <TYPE>          Filter by type (task, bug, epic)\n  -p, --parent <PARENT>      Filter by parent key\n  -n, --limit <LIMIT>        Maximum results [default: 50]\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "show"
+      ],
+      "children": [],
+      "help": "Show task details\n\nUsage: hades task show [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key (e.g. task_abc123)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "update"
+      ],
+      "children": [],
+      "help": "Update a task's fields\n\nUsage: hades task update [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>        Target ArangoDB database name (overrides config/env)\n      --title <TITLE>              New title\n  -d, --description <DESCRIPTION>  New description\n  -g, --gpu <GPU>                  GPU device index for embedding commands\n      --priority <PRIORITY>        New priority (critical, high, medium, low)\n      --add-tags <ADD_TAGS>        Add tags\n      --remove-tags <REMOVE_TAGS>  Remove tags\n  -h, --help                       Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "close"
+      ],
+      "children": [],
+      "help": "Close a task (mark as completed)\n\nUsage: hades task close [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -m, --message <MESSAGE>    Closing notes\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "start"
+      ],
+      "children": [],
+      "help": "Start working on a task (transition to in_progress)\n\nUsage: hades task start [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "review"
+      ],
+      "children": [],
+      "help": "Submit a task for review\n\nUsage: hades task review [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -m, --message <MESSAGE>    Review notes\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "approve"
+      ],
+      "children": [],
+      "help": "Approve a reviewed task\n\nUsage: hades task approve [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n      --human                Approve as human (override same-session restriction)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "block"
+      ],
+      "children": [],
+      "help": "Block a task with a reason\n\nUsage: hades task block [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -m, --message <MESSAGE>    Blocking reason\n      --blocker <BLOCKER>    Key of the blocking task\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "unblock"
+      ],
+      "children": [],
+      "help": "Unblock a task\n\nUsage: hades task unblock [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "handoff"
+      ],
+      "children": [],
+      "help": "Create a handoff context snapshot\n\nUsage: hades task handoff [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -m, --message <MESSAGE>    Handoff notes\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "handoff-show"
+      ],
+      "children": [],
+      "help": "Show the latest handoff for a task\n\nUsage: hades task handoff-show [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "context"
+      ],
+      "children": [],
+      "help": "Get rich context for a task (description + history + handoffs)\n\nUsage: hades task context [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "log"
+      ],
+      "children": [],
+      "help": "Show task activity log\n\nUsage: hades task log [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -n, --limit <LIMIT>        Maximum log entries [default: 20]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "sessions"
+      ],
+      "children": [],
+      "help": "List sessions associated with a task\n\nUsage: hades task sessions [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "dep"
+      ],
+      "children": [],
+      "help": "Manage task dependencies\n\nUsage: hades task dep [OPTIONS] <KEY>\n\nArguments:\n  <KEY>  Task key\n\nOptions:\n      --add <ADD>            Add dependency (key of task this depends on)\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n      --remove <REMOVE>      Remove dependency\n      --graph                Show dependency graph\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "usage"
+      ],
+      "children": [],
+      "help": "Show task system usage statistics\n\nUsage: hades task usage [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "task",
+        "graph-integration"
+      ],
+      "children": [],
+      "help": "Integrate task with the knowledge graph\n\nUsage: hades task graph-integration [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "smell",
+        "check"
+      ],
+      "children": [],
+      "help": "Check code for compliance smells\n\nUsage: hades smell check [OPTIONS] <PATH>\n\nArguments:\n  <PATH>  Path to file or directory\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -V, --verbose              Verbose output\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "smell",
+        "verify"
+      ],
+      "children": [],
+      "help": "Verify compliance status of a path\n\nUsage: hades smell verify [OPTIONS] <PATH>\n\nArguments:\n  <PATH>  Path to file or directory\n\nOptions:\n      --claims <CLAIMS>      Compliance claims to verify (CS-NN format)\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "smell",
+        "report"
+      ],
+      "children": [],
+      "help": "Generate a compliance report\n\nUsage: hades smell report [OPTIONS] <PATH>\n\nArguments:\n  <PATH>  Path to file or directory\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -o, --output <OUTPUT>      Output file path\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "graph-embed",
+        "train"
+      ],
+      "children": [],
+      "help": "Train structural graph embeddings via the HADES training service. The architecture (transductive RGCN or inductive relational GraphSAGE) is chosen by the database schema's `model_type`, not a flag\n\nUsage: hades graph-embed train [OPTIONS]\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n      --epochs <EPOCHS>\n          Maximum number of training epochs [default: 200]\n      --dimension <DIMENSION>\n          Output structural embedding dimension [default: 128]\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n      --hidden-dim <HIDDEN_DIM>\n          Hidden layer dimension [default: 256]\n      --num-bases <NUM_BASES>\n          Number of basis matrices for the relation-weight decomposition (used by both RGCN and the inductive GraphSAGE architectures) [default: 21]\n      --dropout <DROPOUT>\n          Dropout rate [default: 0.2]\n      --lr <LR>\n          Learning rate [default: 0.01]\n      --weight-decay <WEIGHT_DECAY>\n          L2 regularization weight decay [default: 0.0005]\n      --patience <PATIENCE>\n          Early stopping patience (epochs without val improvement) [default: 20]\n      --val-ratio <VAL_RATIO>\n          Validation split ratio [default: 0.1]\n      --test-ratio <TEST_RATIO>\n          Test split ratio [default: 0.1]\n      --seed <SEED>\n          Seed for repeatable edge partitions and negative sampling (not model initialization) [default: 0]\n      --neg-ratio <NEG_RATIO>\n          Negative-to-positive sampling ratio [default: 1]\n      --export-to <EXPORT_TO>\n          Export embeddings to a different database after training. If omitted, exports to the current database\n      --checkpoint-dir <CHECKPOINT_DIR>\n          Checkpoint directory for model snapshots and the graph IPC file. The training service runs as a separate user (`hades`) and both reads and writes files here, so this directory must be writable by BOTH you and that service \u2014 e.g. a directory owned by a shared group with the setgid bit, or any path both can write. Otherwise the service fails to write the checkpoint or read the graph file. The default /tmp/hades-train is ephemeral and cleared on reboot; for production, use a persistent shared path (e.g. /var/lib/hades/train) [default: /tmp/hades-train]\n      --val-every <VAL_EVERY>\n          Validate every N epochs (default: every epoch) [default: 1]\n      --prefetch-depth <PREFETCH_DEPTH>\n          Prefetch buffer depth for CPU\u2192GPU pipelining [default: 2]\n      --no-export\n          Skip embedding export after training\n  -h, --help\n          Print help\n"
+    },
+    {
+      "path": [
+        "graph-embed",
+        "embed"
+      ],
+      "children": [],
+      "help": "Generate embedding for a specific node\n\nUsage: hades graph-embed embed [OPTIONS] <NODE_ID>\n\nArguments:\n  <NODE_ID>  Node ID to embed\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "graph-embed",
+        "neighbors"
+      ],
+      "children": [],
+      "help": "Find nearest neighbors of a node in embedding space\n\nUsage: hades graph-embed neighbors [OPTIONS] <NODE_ID>\n\nArguments:\n  <NODE_ID>  Node ID to query\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -n, --limit <LIMIT>        Number of neighbors to return [default: 10]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "graph-embed",
+        "update"
+      ],
+      "children": [],
+      "help": "Update graph embeddings incrementally (forward pass only, no retraining)\n\nUsage: hades graph-embed update [OPTIONS]\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n      --export-to <EXPORT_TO>\n          Export embeddings to a different database after update. If omitted, exports to the current database\n      --checkpoint-dir <CHECKPOINT_DIR>\n          Checkpoint directory containing the trained model. Must be writable by both you and the `hades` training-service user (see `train`), since the service reads the graph IPC file written here [default: /tmp/hades-train]\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n      --new-nodes\n          Embed only graph nodes whose destination documents do not yet have `structural_embedding`. Requires an inductive `hetero_sage` schema and checkpoint; existing embeddings are left untouched\n  -h, --help\n          Print help\n"
+    },
+    {
+      "path": [
+        "schema",
+        "apply"
+      ],
+      "children": [],
+      "help": "Apply a YAML schema file to the database.\n\nBootstrap-only by default: refuses to run if the database already has user-data in any of the file's declared collections. Pass `--force` to override (dangerous).\n\nUsage: hades schema apply [OPTIONS] <FILE>\n\nArguments:\n  <FILE>\n          Path to the YAML schema file\n\nOptions:\n      --database <DATABASE>\n          Target ArangoDB database name (overrides config/env)\n\n      --dry-run\n          Build the plan and print it without executing any writes\n\n  -g, --gpu <GPU>\n          GPU device index for embedding commands\n\n  -y, --force\n          Skip the in-use guard. Allows applying to a database that already has data in declared collections; existing documents are overwritten by `_key`\n\n  -h, --help\n          Print help (see a summary with '-h')\n"
+    },
+    {
+      "path": [
+        "tools",
+        "status"
+      ],
+      "children": [],
+      "help": "Report each analyzer's resolution and a live probe from a workspace\n\nUsage: hades tools status [OPTIONS]\n\nOptions:\n      --database <DATABASE>    Target ArangoDB database name (overrides config/env)\n      --workspace <WORKSPACE>  Directory to probe FROM (the shim resolves per-directory). Defaults to the current directory \u2014 pass the ingest root you intend to use\n  -g, --gpu <GPU>              GPU device index for embedding commands\n  -h, --help                   Print help\n"
+    },
+    {
+      "path": [
+        "tools",
+        "install"
+      ],
+      "children": [],
+      "help": "Install a HADES-managed analyzer binary into the tools directory\n\nUsage: hades tools install [OPTIONS] <TOOL>\n\nArguments:\n  <TOOL>  Which analyzer: rust-analyzer (GitHub release download) or gopls (built via `go install`; requires a Go toolchain)\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n      --version <VERSION>    Release tag (rust-analyzer, e.g. 2026-07-14) or module version (gopls, e.g. v0.21.0). Defaults to latest\n      --allow-unverified     Install a rust-analyzer asset even when the release carries no sha256 digest (default: refuse \u2014 no integrity check at all)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "create"
+      ],
+      "children": [],
+      "help": "Create a named graph\n\nUsage: hades db graph create [OPTIONS] <NAME>\n\nArguments:\n  <NAME>  Graph name\n\nOptions:\n      --database <DATABASE>                  Target ArangoDB database name (overrides config/env)\n      --edge-definitions <EDGE_DEFINITIONS>  Edge definitions as JSON\n  -g, --gpu <GPU>                            GPU device index for embedding commands\n  -h, --help                                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "list"
+      ],
+      "children": [],
+      "help": "List all named graphs\n\nUsage: hades db graph list [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "drop"
+      ],
+      "children": [],
+      "help": "Drop a named graph\n\nUsage: hades db graph drop [OPTIONS] <NAME>\n\nArguments:\n  <NAME>  Graph name\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n      --drop-collections     Also drop associated collections\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -y, --force                Skip confirmation\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "traverse"
+      ],
+      "children": [],
+      "help": "Traverse the graph from a starting vertex\n\nUsage: hades db graph traverse [OPTIONS] <START>\n\nArguments:\n  <START>  Starting vertex ID\n\nOptions:\n  -d, --direction <DIRECTION>  Traversal direction (outbound, inbound, any) [default: outbound]\n      --database <DATABASE>    Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>              GPU device index for embedding commands\n      --min-depth <MIN_DEPTH>  Minimum depth [default: 1]\n      --max-depth <MAX_DEPTH>  Maximum depth [default: 3]\n      --graph <GRAPH>          Graph name\n  -f, --format <FORMAT>        Output format (json, jsonl, table) [default: json]\n  -h, --help                   Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "shortest-path"
+      ],
+      "children": [],
+      "help": "Find the shortest path between two vertices\n\nUsage: hades db graph shortest-path [OPTIONS] <SOURCE> <TARGET>\n\nArguments:\n  <SOURCE>  Source vertex ID\n  <TARGET>  Target vertex ID\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n      --graph <GRAPH>        Graph name\n  -f, --format <FORMAT>      Output format (json, jsonl, table) [default: json]\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "neighbors"
+      ],
+      "children": [],
+      "help": "Find neighbors of a vertex\n\nUsage: hades db graph neighbors [OPTIONS] <VERTEX>\n\nArguments:\n  <VERTEX>  Vertex ID\n\nOptions:\n  -d, --direction <DIRECTION>  Traversal direction (outbound, inbound, any) [default: any]\n      --database <DATABASE>    Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>              GPU device index for embedding commands\n  -n, --limit <LIMIT>          Maximum results [default: 20]\n      --graph <GRAPH>          Graph name\n  -f, --format <FORMAT>        Output format (json, jsonl, table) [default: json]\n  -h, --help                   Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "graph",
+        "materialize"
+      ],
+      "children": [],
+      "help": "Materialize edges from implicit cross-reference fields\n\nUsage: hades db graph materialize [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -e, --edge <EDGE>          Filter to a single edge definition name\n      --dry-run              Preview mode \u2014 count edges without inserting\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -r, --register             Also create named graphs via the Gharial API\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "schema",
+        "init"
+      ],
+      "children": [],
+      "help": "Initialize the hades_schema collection with a seed ontology\n\nUsage: hades db schema init [OPTIONS] --seed <SEED>\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -s, --seed <SEED>          Seed name. Only \"empty\" is currently accepted \u2014 initializes a `hades_schema` collection with metadata only and no edge definitions\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "schema",
+        "list"
+      ],
+      "children": [],
+      "help": "List all edge definitions and named graphs in the schema\n\nUsage: hades db schema list [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "schema",
+        "show"
+      ],
+      "children": [],
+      "help": "Show a single edge definition or named graph by name\n\nUsage: hades db schema show [OPTIONS] <NAME>\n\nArguments:\n  <NAME>  Name of the edge definition or named graph\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "db",
+        "schema",
+        "version"
+      ],
+      "children": [],
+      "help": "Show schema version, checksum, and metadata\n\nUsage: hades db schema version [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "service",
+        "status"
+      ],
+      "children": [],
+      "help": "Show embedding service status\n\nUsage: hades embed service status [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "service",
+        "start"
+      ],
+      "children": [],
+      "help": "Start the embedding service\n\nUsage: hades embed service start [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n      --foreground           Run in foreground (don't daemonize)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "service",
+        "stop"
+      ],
+      "children": [],
+      "help": "Stop the embedding service\n\nUsage: hades embed service stop [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "gpu",
+        "status"
+      ],
+      "children": [],
+      "help": "Show GPU status and memory usage\n\nUsage: hades embed gpu status [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    },
+    {
+      "path": [
+        "embed",
+        "gpu",
+        "list"
+      ],
+      "children": [],
+      "help": "List available GPU devices\n\nUsage: hades embed gpu list [OPTIONS]\n\nOptions:\n      --database <DATABASE>  Target ArangoDB database name (overrides config/env)\n  -g, --gpu <GPU>            GPU device index for embedding commands\n  -h, --help                 Print help\n"
+    }
+  ]
+}
