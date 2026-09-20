@@ -49,6 +49,7 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Detached ingest admission and process ownership | #51, PR #56 merged `5b329b8`; MCP race, output bounds, recovery, shutdown and descendant cleanup | Not deployed |
 | Viewer subprocess and response retention | #52, PR #53 merged `da61fd6`; process/router/shutdown contracts and slow-reader pilot | Not deployed |
 | Installer package authentication bypass | #60, PR #61 pending; remote source used `trusted=yes`, README keyring was unselected | No host installer run; remediation and APT verification pending |
+| Active database recovery coverage | P1 #63; legacy backup dataset differs from active data; no snapshots on inspected active dataset | Alternate backup evidence and owner recovery objectives pending; no backup deployment |
 
 ## Workstream coverage and explicit gaps
 
@@ -175,3 +176,7 @@ outstanding.
 Repository review and CI results do not establish successful deployment,
 production ACL correctness, restore readiness or representative retrieval
 quality. Those acceptance items remain open.
+
+[Active database recovery review](active-database-recovery.md) records the read-only
+source-to-backup mismatch and snapshot inventory. P1 #63 remains open pending
+alternate-backup evidence, recovery objectives and isolated restore verification.
