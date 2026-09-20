@@ -1,0 +1,27 @@
+{
+  "source_parent": "e1c8ba6",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/mcp_memory_benchmark.rs": "747962c48e974e0bfe770fbd7cfa86fa959714756923b752f44117b77ddd908d",
+    "scripts/benchmark_transport_memory.py": "be9dfffafd3079ccc5b2b12db18e77fb41a892b8ccc666e0d58b62fc1ec885ac",
+    "crates/hades-cli/src/commands/mcp_server.rs": "67c799c09ba2799bd329e49c3291dbc51cbe01a47cc01f66c60549265a39c559",
+    "crates/hades-cli/src/commands/mcp_sessions.rs": "0d9982262c5f38c70321920be1a10f196219694ed2ff055783772672447103a0"
+  },
+  "runner": "one CPU affinity; nice 10; 8 GiB address-space cap; 180-second command timeout; ephemeral loopback fixture",
+  "results": [
+    {
+      "baseline_rss_kib": 34780,
+      "concurrent_unread_responses": 64,
+      "held_rss_kib": 271368,
+      "sampled_peak_rss_kib": 279548,
+      "scope": "loopback MCP HTTP/SSE with production session and connection admission; synthetic tool; client and server share process; excludes database/search handler and inference",
+      "tool_text_bytes": 2096128,
+      "total_response_bytes": 134160867
+    }
+  ],
+  "limitations": [
+    "One pilot case; clients and server share process; 2ms RSS sampling",
+    "Synthetic tools only; no database handler or model inference",
+    "Unread bodies held for two seconds; connection timeout correctness tested separately",
+    "Does not saturate all per-session common notification caches or maximum request bodies; kernel socket buffers are outside process RSS"
+  ]
+}

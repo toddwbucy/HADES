@@ -151,6 +151,117 @@ async fn query_with_limits(
         .map_err(|_| ArangoError::Request("cursor owner stopped before completion".into()))?
 }
 
+/// Explicit limits for a streaming fold. The accumulator itself is owned and
+/// bounded by the caller; this API never accumulates pages into a result vector.
+#[derive(Clone, Copy, Debug)]
+pub struct FoldLimits {
+    pub batch_size: u32,
+    pub response_bytes: usize,
+    pub max_rows: u64,
+    pub server_memory_bytes: u64,
+}
+
+/// Fold rows one page at a time, retaining cursor ownership after cancellation.
+///
+/// `guard` is retained through cleanup, including when the caller disappears or
+/// the fold fails. Pass an admission permit here to keep abandoned requests
+/// charged to their resource budget until their owner has finished.
+/// Server streaming/memory options follow the AQL cursor HTTP API:
+/// <https://docs.arango.ai/arangodb/stable/develop/http-api/queries/aql-queries/>.
+pub async fn query_fold<T, F, G>(
+    pool: &ArangoPool,
+    aql: &str,
+    bind_vars: Value,
+    limits: FoldLimits,
+    mut state: T,
+    mut fold: F,
+    guard: G,
+) -> Result<T, ArangoError>
+where
+    T: Send + 'static,
+    F: FnMut(&mut T, Value) -> Result<(), ArangoError> + Send + 'static,
+    G: Send + 'static,
+{
+    if limits.batch_size == 0
+        || limits.response_bytes == 0
+        || limits.max_rows == 0
+        || limits.server_memory_bytes == 0
+    {
+        return Err(ArangoError::Request(
+            "streaming fold limits must be positive".into(),
+        ));
+    }
+    let lifetime = QueryLimits::default();
+    let body = serde_json::json!({
+        "query": aql, "bindVars": bind_vars, "batchSize": limits.batch_size,
+        "memoryLimit": limits.server_memory_bytes,
+        "ttl": lifetime.cursor_ttl.as_secs_f64(),
+        "options": {"stream": true, "maxRuntime": lifetime.lifetime.as_secs_f64()},
+    });
+    let client = if pool.is_shared() {
+        pool.reader()
+    } else {
+        pool.writer()
+    }
+    .clone()
+    .with_response_limit(limits.response_bytes)?;
+    let (mut send, receive) = oneshot::channel();
+    tokio::spawn(async move {
+        let mut cursor = CursorOwner {
+            client,
+            ids: Vec::new(),
+        };
+        let result = tokio::time::timeout(lifetime.lifetime, async {
+            if send.is_closed() {
+                return Err(ArangoError::Request("query caller cancelled".into()));
+            }
+            // Shield creation so an available cursor ID survives caller loss.
+            let mut response = cursor.client.post("cursor", &body).await?;
+            let mut count = 0_u64;
+            loop {
+                cursor.observe(&response)?;
+                if send.is_closed() {
+                    return Err(ArangoError::Request("query caller cancelled".into()));
+                }
+                let more = has_more(&response)?;
+                let rows = response.get_mut("result").and_then(Value::as_array_mut)
+                    .ok_or_else(|| ArangoError::Request("cursor response missing result array".into()))?;
+                count = count.checked_add(rows.len() as u64)
+                    .filter(|count| *count <= limits.max_rows)
+                    .ok_or_else(|| ArangoError::Request("streaming query row budget exceeded".into()))?;
+                for row in std::mem::take(rows) {
+                    if send.is_closed() {
+                        return Err(ArangoError::Request("query caller cancelled".into()));
+                    }
+                    fold(&mut state, row)?;
+                }
+                if !more { break; }
+                let id = cursor.ids.first().ok_or_else(||
+                    ArangoError::Request("hasMore=true but no cursor ID in response".into()))?;
+                let path = format!("cursor/{id}");
+                let empty = serde_json::json!({});
+                // Drop the old page before requesting another one.
+                drop(response);
+                response = tokio::select! {
+                    biased;
+                    _ = send.closed() => return Err(ArangoError::Request("query caller cancelled".into())),
+                    response = cursor.client.post(&path, &empty) => response?,
+                };
+                // Cooperative yield also bounds cancellation latency for cached
+                // responses and inexpensive folds on single-thread runtimes.
+                tokio::task::yield_now().await;
+            }
+            Ok(state)
+        }).await.unwrap_or_else(|_| Err(ArangoError::Request("AQL cursor lifetime exceeded".into())));
+        cursor.cleanup(lifetime.cleanup).await;
+        drop(guard);
+        let _ = send.send(result);
+    });
+    receive
+        .await
+        .map_err(|_| ArangoError::Request("cursor owner stopped before completion".into()))?
+}
+
 struct CursorOwner {
     client: ArangoClient,
     // Normally one ID; retain a second unexpected ID for cleanup before rejecting

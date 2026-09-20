@@ -40,20 +40,13 @@ fn validated_query_limit(limit: Option<u32>) -> Result<u32, HandlerError> {
     Ok(limit)
 }
 
-/// Largest embeddings collection `db.query` will scan.
-///
-/// The search has no vector index, so it loads every stored vector into memory
-/// to score it. As a CLI that was the operator's own machine and their own
-/// patience; the same handler now runs inside the daemon and the MCP server,
-/// where the allocation is charged to a shared long-lived process and two
-/// concurrent callers can exhaust it for everyone. Bounded here so an oversized
-/// collection is a clear, immediate error rather than a 60s `REQUEST_TIMEOUT`.
-/// Cursor ownership survives cancellation in `db::query`; aggregate memory
-/// admission remains a separate requirement (#22).
-///
-/// 100K vectors at ~2048 dimensions is roughly 4 GB materialized as JSON before
-/// the `Vec<f32>` copy, which is already generous for a shared process.
+/// Work bound for exact scanning; memory is bounded independently by pages and top-K.
 const MAX_SCANNED_EMBEDDINGS: u64 = 100_000;
+// Conservative handler accounting: full-handler pilots peaked at 31.3 MiB (one)
+// and 72.1 MiB (four). Keep headroom for allocator/input variance; see
+// docs/bounded-retrieval.md. Transport queues and database RSS are separate.
+const SEARCH_RESERVATION_BYTES: u32 = 128 * 1024 * 1024;
+static SEARCH_BYTES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(512 * 1024 * 1024);
 
 // ---------------------------------------------------------------------------
 // Error
@@ -113,6 +106,10 @@ pub enum HandlerError {
         #[source]
         source: ArangoError,
     },
+
+    /// Shared search resources are currently exhausted.
+    #[error("search capacity exhausted; retry after another search completes")]
+    SearchOverloaded,
 
     /// An external service call failed.
     #[error("service error: {0}")]
@@ -5042,24 +5039,8 @@ mod handlers {
     /// 4. Batch-fetch chunk text + metadata for the top-K only.
     /// 5. Optional hybrid keyword rerank, then optional structural fusion.
     ///
-    /// Step 2 is a full scan of the embeddings collection, fully materialized:
-    /// every vector becomes a `serde_json::Value::Array` before the `Vec<f32>`
-    /// copy, on the order of 40 KB per document. That was a defensible cost for
-    /// a one-shot CLI process the operator was watching. This handler now also
-    /// runs inside the daemon and the MCP server, where the same allocation is
-    /// charged to a long-lived process shared by every session and every
-    /// database in `--mcp-dbs`, and two concurrent callers against a large
-    /// collection can take the whole endpoint down rather than one command.
-    ///
-    /// So the scan is bounded by [`MAX_SCANNED_EMBEDDINGS`] and refuses past it
-    /// with a clear error instead of running into the daemon's 60s
-    /// `REQUEST_TIMEOUT`. Cursor ownership now survives caller cancellation,
-    /// but the row count is not an aggregate memory guarantee. Indexed retrieval
-    /// and shared admission budgets remain tracked in #22.
-    ///
-    /// Shared by `hades db query` and the MCP `db_query` tool so the two
-    /// surfaces cannot drift apart in scoring. Note they can still differ in
-    /// *reachability*: only the daemon and MCP paths impose `REQUEST_TIMEOUT`.
+    /// Stored vectors are folded one bounded page at a time into a top-K heap.
+    /// Shared admission remains charged through cursor cleanup on cancellation.
     #[allow(clippy::too_many_arguments)]
     pub async fn db_query(
         pool: &ArangoPool,
@@ -5081,6 +5062,19 @@ mod handlers {
                     .into(),
             });
         }
+
+        let _limit = super::validated_query_limit(Some(limit))?;
+        if text.len() > 64 * 1024 {
+            return Err(HandlerError::InvalidParameter {
+                name: "text".into(),
+                reason: "search text exceeds 64 KiB".into(),
+            });
+        }
+        let admission = std::sync::Arc::new(
+            super::SEARCH_BYTES
+                .try_acquire_many(super::SEARCH_RESERVATION_BYTES)
+                .map_err(|_| HandlerError::SearchOverloaded)?,
+        );
 
         // 1. Resolve the collection profile.
         //
@@ -5108,6 +5102,9 @@ mod handlers {
                     "failed to connect to embedding service — is it running? {e}"
                 ))
             })?;
+        let client = client
+            .with_response_limit(256 * 1024)
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
         let embed_result = client
             .embed(&[text.to_string()], profile.query_task, None)
             .await
@@ -5122,99 +5119,43 @@ mod handlers {
             "embedded query"
         );
 
-        // 3. Phase 1 — fetch embedding vectors with their keys.
+        // Exact streaming scan: the row cap is a work budget, not a memory estimate.
         let fk = profile.foreign_key;
-
-        // Refuse before scanning rather than after. Counting is a cheap indexed
-        // operation; the scan is not, and the daemon would otherwise pay the
-        // full allocation and then hit REQUEST_TIMEOUT. Cursor cleanup is owned
-        // independently, but admission still needs an aggregate byte budget (#22).
-        let count_aql = "RETURN LENGTH(@@embeddings)";
-        let count_bind = json!({ "@embeddings": profile.embeddings });
-        let embedding_count =
-            query::query_single(pool, count_aql, Some(&count_bind), ExecutionTarget::Reader)
-                .await
-                .map_err(|e| HandlerError::Query {
-                    context: format!(
-                        "failed to size embeddings collection '{}' before vector search",
-                        profile.embeddings
-                    ),
-                    source: e,
-                })?
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-        if embedding_count > MAX_SCANNED_EMBEDDINGS {
-            return Err(HandlerError::InvalidParameter {
-                name: "collection".into(),
-                reason: format!(
-                    "profile '{profile_name}' holds {embedding_count} embeddings, over the \
-                     {MAX_SCANNED_EMBEDDINGS} this search can scan. It has no vector index, \
-                     so every query would load the whole collection into memory. Narrow the \
-                     search with a smaller profile, or wait for APPROX_NEAR_COSINE support."
-                ),
-            });
-        }
-
         let fetch_aql = format!(
-            "FOR emb IN @@embeddings \
-                 FILTER emb.chunk_key != null AND emb.{fk} != null AND emb.{fk} != '' \
-                 RETURN {{ chunk_key: emb.chunk_key, {fk}: emb.{fk}, embedding: emb.embedding }}"
+            "FOR emb IN @@embeddings RETURN {{ chunk_key: emb.chunk_key, \
+             {fk}: emb.{fk}, model: emb.model, dimension: emb.dimension, embedding: emb.embedding }}"
         );
-        let fetch_bind = json!({ "@embeddings": profile.embeddings });
-
-        let emb_result = query::query(
+        let limits = query::FoldLimits {
+            batch_size: 4,
+            response_bytes: 256 * 1024,
+            max_rows: MAX_SCANNED_EMBEDDINGS,
+            server_memory_bytes: 32 * 1024 * 1024,
+        };
+        let top = crate::retrieval::TopK::new(
+            query_vec.clone(),
+            embed_result.model.clone(),
+            fk,
+            limit as usize,
+        )
+        .map_err(|source| HandlerError::Query {
+            context: "invalid query embedding".into(),
+            source,
+        })?;
+        let top = query::query_fold(
             pool,
             &fetch_aql,
-            Some(&fetch_bind),
-            None,
-            false,
-            ExecutionTarget::Reader,
+            json!({"@embeddings": profile.embeddings}),
+            limits,
+            top,
+            |top, row| top.insert(row),
+            admission.clone(),
         )
         .await
-        .map_err(|e| HandlerError::Query {
-            context: format!(
-                "failed to fetch embeddings from '{}' for vector search",
-                profile.embeddings
-            ),
-            source: e,
+        .map_err(|source| HandlerError::Query {
+            context: "bounded vector search failed".into(),
+            source,
         })?;
-        tracing::info!(
-            embedding_count = emb_result.results.len(),
-            "fetched embeddings"
-        );
-
-        // 4. Phase 2 — cosine similarity in Rust, take top-K.
-        let mut scored: Vec<(f64, &Value)> = emb_result
-            .results
-            .iter()
-            .filter_map(|doc| {
-                let emb = doc["embedding"].as_array()?;
-                let stored: Vec<f32> = emb
-                    .iter()
-                    .filter_map(|v| v.as_f64().map(|f| f as f32))
-                    .collect();
-                if stored.len() != query_vec.len() {
-                    return None;
-                }
-                Some((cosine_similarity(query_vec, &stored) as f64, doc))
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit as usize);
-
-        // 5. Phase 3 — batch-fetch chunk + metadata for the top-K only.
-        let items: Vec<Value> = scored
-            .iter()
-            .map(|(score, doc)| {
-                json!({
-                    "chunk_key": doc["chunk_key"].as_str().unwrap_or(""),
-                    "parent_key": doc[fk].as_str().unwrap_or(""),
-                    "score": score,
-                })
-            })
-            .collect();
+        let items = top.into_items();
 
         let mut results: Vec<Value> = if items.is_empty() {
             Vec::new()
@@ -5240,20 +5181,40 @@ mod handlers {
                 "items": items,
             });
 
-            query::query(
+            let (results, _) = query::query_fold(
                 pool,
                 &detail_aql,
-                Some(&detail_bind),
-                None,
-                false,
-                ExecutionTarget::Reader,
+                detail_bind,
+                query::FoldLimits {
+                    max_rows: u64::from(limit),
+                    // A valid detail row may use the full result budget.
+                    // One row per page leaves bounded cursor-envelope headroom.
+                    batch_size: 1,
+                    response_bytes: 1024 * 1024 + 64 * 1024,
+                    ..limits
+                },
+                (Vec::new(), 0_usize),
+                |(rows, bytes), row| {
+                    let size = serde_json::to_vec(&row)?.len();
+                    *bytes = bytes
+                        .checked_add(size)
+                        .filter(|n| *n <= 1024 * 1024)
+                        .ok_or_else(|| {
+                            crate::db::ArangoError::Request(
+                                "search result byte budget exceeded".into(),
+                            )
+                        })?;
+                    rows.push(row);
+                    Ok(())
+                },
+                admission.clone(),
             )
             .await
-            .map_err(|e| HandlerError::Query {
-                context: "failed to fetch result details".into(),
-                source: e,
-            })?
-            .results
+            .map_err(|source| HandlerError::Query {
+                context: "bounded result retrieval failed".into(),
+                source,
+            })?;
+            results
         };
 
         // 6. Optional reranking passes.
@@ -5261,7 +5222,19 @@ mod handlers {
             results = hybrid_rerank(text, results);
         }
         if structural && !results.is_empty() {
-            results = structural_rerank(pool, profile.metadata, &results).await?;
+            results =
+                structural_rerank(pool, profile.metadata, &results, admission.clone()).await?;
+        }
+
+        if serde_json::to_vec(&results)
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?
+            .len()
+            > 1024 * 1024
+        {
+            return Err(HandlerError::InvalidParameter {
+                name: "limit".into(),
+                reason: "search result byte budget exceeded; request fewer results".into(),
+            });
         }
 
         Ok(json!({
@@ -5368,6 +5341,7 @@ mod handlers {
         pool: &ArangoPool,
         metadata_col: &str,
         results: &[Value],
+        admission: std::sync::Arc<tokio::sync::SemaphorePermit<'static>>,
     ) -> Result<Vec<Value>, HandlerError> {
         use std::collections::HashMap;
 
@@ -5385,26 +5359,54 @@ mod handlers {
                    RETURN { _key: key, structural_embedding: doc.structural_embedding }";
         let bind = json!({ "keys": parent_keys, "col": metadata_col });
 
-        let emb_result = query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader)
-            .await
-            .map_err(|e| HandlerError::Query {
-                context: "failed to fetch structural embeddings".into(),
-                source: e,
-            })?;
-
-        let mut emb_map: HashMap<String, Vec<f32>> = HashMap::new();
-        for doc in &emb_result.results {
-            let key = doc["_key"].as_str().unwrap_or("");
-            if let Some(arr) = doc["structural_embedding"].as_array() {
-                let vec: Vec<f32> = arr
-                    .iter()
-                    .filter_map(|v| v.as_f64().map(|f| f as f32))
-                    .collect();
-                if !vec.is_empty() {
-                    emb_map.insert(key.to_string(), vec);
+        let emb_map: HashMap<String, Vec<f32>> = query::query_fold(
+            pool,
+            aql,
+            bind,
+            query::FoldLimits {
+                batch_size: 4,
+                response_bytes: 256 * 1024,
+                max_rows: results.len() as u64,
+                server_memory_bytes: 32 * 1024 * 1024,
+            },
+            HashMap::new(),
+            |map, doc| {
+                if doc["structural_embedding"].is_null() {
+                    return Ok(());
                 }
-            }
-        }
+                let invalid = || {
+                    crate::db::ArangoError::Request(
+                        "invalid structural embedding; retrain the corpus".into(),
+                    )
+                };
+                let key = doc["_key"]
+                    .as_str()
+                    .filter(|key| key.len() <= 254)
+                    .ok_or_else(invalid)?;
+                let arr = doc["structural_embedding"]
+                    .as_array()
+                    .filter(|arr| !arr.is_empty() && arr.len() <= 2048)
+                    .ok_or_else(invalid)?;
+                let vec = arr
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .filter(|value| value.is_finite() && (*value as f32).is_finite())
+                            .map(|value| value as f32)
+                            .ok_or_else(invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                map.insert(key.to_string(), vec);
+                Ok(())
+            },
+            admission,
+        )
+        .await
+        .map_err(|source| HandlerError::Query {
+            context: "bounded structural retrieval failed".into(),
+            source,
+        })?;
 
         if emb_map.is_empty() {
             tracing::info!("no structural embeddings found, skipping structural fusion");

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -30,9 +30,7 @@ use axum::routing::get;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-};
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -916,6 +914,47 @@ impl ServerHandler for HadesMcpServer {
 // Router / serve
 // ---------------------------------------------------------------------------
 
+/// The SDK collects the raw body itself, so Axum extractor-only limits do not apply.
+pub(super) async fn enforce_body_limit(request: Request, next: Next) -> Response {
+    enforce_body_limit_with_timeout(request, next, Duration::from_secs(15)).await
+}
+
+async fn enforce_body_limit_with_timeout(
+    request: Request,
+    next: Next,
+    budget: Duration,
+) -> Response {
+    static BODIES: std::sync::LazyLock<tokio::sync::Semaphore> =
+        std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(64));
+    let Ok(_permit) = BODIES.try_acquire() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MCP request capacity is full",
+        )
+            .into_response();
+    };
+    let (parts, body) = request.into_parts();
+    let bytes = match tokio::time::timeout(budget, axum::body::to_bytes(body, MAX_BODY)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            use std::error::Error;
+            if error
+                .source()
+                .is_some_and(|source| source.is::<http_body_util::LengthLimitError>())
+            {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "MCP request exceeds 16 MiB")
+                    .into_response();
+            }
+            return (StatusCode::BAD_REQUEST, "failed to read MCP request body").into_response();
+        }
+        Err(_) => {
+            return (StatusCode::REQUEST_TIMEOUT, "MCP request body timed out").into_response();
+        }
+    };
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await
+}
+
 /// Build the axum application: bearer-gated `/mcp`, open `/healthz`.
 ///
 /// `allowed_hosts` feeds the transport's Host-header validation (MCP
@@ -934,17 +973,19 @@ fn build_router(
         extra_dbs,
         policy.provisioning.database_prefixes.clone(),
     )?);
-    let mcp_service: StreamableHttpService<HadesMcpServer, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || Ok(HadesMcpServer::new(pools.clone(), policy.clone())),
-            Default::default(),
-            StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts),
-        );
+    let mcp_service: StreamableHttpService<
+        HadesMcpServer,
+        super::mcp_sessions::BoundedSessionManager,
+    > = StreamableHttpService::new(
+        move || Ok(HadesMcpServer::new(pools.clone(), policy.clone())),
+        Default::default(),
+        StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts),
+    );
 
     let mcp_router = Router::new()
         .nest_service("/mcp", mcp_service)
-        .layer(middleware::from_fn_with_state(tokens, require_bearer))
-        .layer(DefaultBodyLimit::max(MAX_BODY));
+        .layer(middleware::from_fn(enforce_body_limit))
+        .layer(middleware::from_fn_with_state(tokens, require_bearer));
 
     Ok(Router::new()
         .route(
@@ -984,7 +1025,7 @@ pub async fn serve_app(
 ) -> Result<()> {
     let addr = listener.local_addr().context("mcp listener local_addr")?;
     tracing::info!(%addr, "mcp endpoint listening");
-    axum::serve(listener, app)
+    axum::serve(super::transport_limits::AdmittedListener(listener), app)
         .with_graceful_shutdown(async move { shutdown.cancelled_owned().await })
         .await
         .context("mcp server error")?;
@@ -1163,6 +1204,54 @@ mod tests {
                 "task_update",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn stalled_body_times_out_before_handler_execution() {
+        async fn unexpected_handler() -> StatusCode {
+            panic!("stalled body must not reach the handler")
+        }
+        let app = Router::new()
+            .route("/mcp", axum::routing::post(unexpected_handler))
+            .layer(middleware::from_fn(|request, next| {
+                enforce_body_limit_with_timeout(request, next, Duration::from_millis(20))
+            }));
+        let body = Body::from_stream(futures::stream::pending::<Result<String, std::io::Error>>());
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            app.oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .body(body)
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn chunked_body_limit_applies_before_sdk_collection() {
+        let chunks = futures::stream::iter(
+            (0..17).map(|_| Ok::<_, std::io::Error>(" ".repeat(1024 * 1024))),
+        );
+        let response = test_router()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer tok")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from_stream(chunks))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     // --- http surface ------------------------------------------------------
