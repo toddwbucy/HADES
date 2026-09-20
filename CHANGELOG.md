@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add an opt-in private database/CPU training/export alignment contract with
+  qualified node identities and reversed subset verification (epic #12).
+
 - Inventory all visible native CLI help paths and trace embedding response-cap
   call sites for epic #12 without executing operational commands.
 

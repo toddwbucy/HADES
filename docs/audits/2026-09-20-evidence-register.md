@@ -11,6 +11,9 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Training alignment](training-alignment.md): private Rust/Python/database feature
+  and full/subset export identity contract; generation freshness remains separate.
+
 - [Native CLI inventory](cli-contracts.md): isolated help-only walk of 80 visible
   leaf commands and embedding response-cap call-site trace; operational parity
   remains separate review.

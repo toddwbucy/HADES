@@ -73,6 +73,8 @@ def main():
     benchmark = parser.add_mutually_exclusive_group()
     benchmark.add_argument("--benchmark", action="store_true", help="run the opt-in synthetic retrieval benchmark")
     benchmark.add_argument("--handler-benchmark", action="store_true", help="measure full search handlers on disposable fixtures")
+    benchmark.add_argument("--training-alignment-python", type=Path,
+                           help="run the cross-language training/export contract with this CPU interpreter")
     benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
                            help="run one database contract on the same strict private server")
     parser.add_argument("--benchmark-rows", type=int, default=1024)
@@ -83,6 +85,8 @@ def main():
         parser.error("command timeout must be positive")
     if args.arangod and not args.arangod.is_file():
         parser.error("arangod must name an existing binary")
+    if args.training_alignment_python and not args.training_alignment_python.is_file():
+        parser.error("training alignment requires an existing Python interpreter")
 
     root = Path(tempfile.mkdtemp(prefix="hades-tests-", dir="/tmp"))
     print(f"Isolated test artifacts: {root}", flush=True)
@@ -193,6 +197,12 @@ def main():
             else:
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
+            if args.training_alignment_python:
+                # Preserve a virtualenv interpreter symlink: resolving it can
+                # silently select the base interpreter without CPU dependencies.
+                env["HADES_ALIGNMENT_PYTHON"] = str(args.training_alignment_python.absolute())
+                command("training-alignment", ["-p", "hades-cli", "--test", "training_alignment"], ignored=True)
+                return
             if args.benchmark or args.handler_benchmark:
                 if not args.docker:
                     env["HADES_BENCH_SERVER_PID"] = str(child.pid)
