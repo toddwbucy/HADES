@@ -109,6 +109,16 @@ pub enum HandlerError {
         source: ArangoError,
     },
 
+    /// ArangoDB accepted the request but rejected one or more insert items.
+    #[error(
+        "insert incomplete: {succeeded} succeeded, {failed} failed; successful items remain committed; do not retry the entire batch blindly; outcomes: {outcomes}"
+    )]
+    InsertFailed {
+        succeeded: usize,
+        failed: usize,
+        outcomes: Value,
+    },
+
     /// Shared search resources are currently exhausted.
     #[error("search capacity exhausted; retry after another search completes")]
     SearchOverloaded,
@@ -1910,18 +1920,83 @@ mod handlers {
 
     // ── Database write handlers ──────────────────────────────────────
 
+    fn validate_insert_response(input: &Value, response: &Value) -> Result<(), HandlerError> {
+        let malformed = || {
+            HandlerError::Query {
+            context: "invalid insert response; write outcome is uncertain; inspect database state before retrying".into(),
+            source: crate::db::ArangoError::Request("expected one typed outcome per submitted document".into()),
+        }
+        };
+        let rows: &[Value] = if let Some(items) = input.as_array() {
+            let rows = response.as_array().ok_or_else(malformed)?;
+            if rows.len() != items.len() {
+                return Err(malformed());
+            }
+            rows
+        } else {
+            std::slice::from_ref(response)
+        };
+        let mut outcomes = Vec::with_capacity(rows.len());
+        let mut failed = 0;
+        for (index, row) in rows.iter().enumerate() {
+            if !row.is_object() {
+                return Err(malformed());
+            }
+            match row.get("error") {
+                Some(Value::Bool(true)) => {
+                    failed += 1;
+                    outcomes.push(json!({"index":index, "error":true,
+                        "errorNum":row.get("errorNum"), "errorMessage":row.get("errorMessage")}));
+                }
+                None | Some(Value::Bool(false)) => {
+                    for field in ["_id", "_key", "_rev"] {
+                        if !row
+                            .get(field)
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.is_empty())
+                        {
+                            return Err(malformed());
+                        }
+                    }
+                    outcomes.push(json!({"index":index, "error":false,
+                        "_id":row["_id"], "_key":row["_key"], "_rev":row["_rev"]}));
+                }
+                _ => return Err(malformed()),
+            }
+        }
+        if failed > 0 {
+            return Err(HandlerError::InsertFailed {
+                succeeded: rows.len() - failed,
+                failed,
+                outcomes: Value::Array(outcomes),
+            });
+        }
+        Ok(())
+    }
+
     /// Insert a single document (or array) into a collection.
     pub async fn db_insert(
         pool: &ArangoPool,
         collection: &str,
         data: &Value,
     ) -> Result<Value, HandlerError> {
+        if !data.is_object()
+            && !data
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_object))
+        {
+            return Err(HandlerError::InvalidParameter {
+                name: "data".into(),
+                reason: "insert requires a document object or array of document objects".into(),
+            });
+        }
         let resp = crud::insert_document(pool, collection, data)
             .await
             .map_err(|e| HandlerError::Query {
                 context: format!("failed to insert into '{collection}'"),
                 source: e,
             })?;
+        validate_insert_response(data, &resp)?;
         Ok(resp)
     }
 

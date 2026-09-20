@@ -30,3 +30,30 @@ useful failure and partial-completion diagnostics, and make CLI/daemon failure
 semantics explicit. Cover single/all-success, mixed/all-failed batches, real
 read-back and valid response-shape checks. Do not silently retry or promise
 rollback of successful items.
+
+
+## Remediation behavior
+
+The shared insert handler validates input before sending a request and requires
+one typed outcome per submitted document. Existing successful single-object and
+array response shapes are preserved. Per-item failures produce `InsertFailed`
+with confirmed success/failure counts, submitted-item indexes, successful keys,
+and server error details. The daemon maps this to `INSERT_FAILED` with
+`success:false`; the CLI returns nonzero and prints the diagnostic on stderr.
+It does not automatically retry or roll back committed items.
+
+Malformed shapes, cardinality or success metadata produce a separate uncertain
+outcome error instructing callers to inspect stored state before retrying. A
+submitted document's own `error` field is not an operation result and does not
+cause rejection. This classification is specific to `DbInsert`, not a blanket
+rule applied to arbitrary database documents or every CRUD transport call.
+
+Private shared-service tests cover mixed/all-failed envelopes, valid single/array
+results, malformed responses and invalid inputs rejected before any request.
+The real CLI fixture also checks an all-failed repeat preserves exact rows and
+revisions and that successful single/batch inserts commit the expected keys.
+Final passing evidence is retained separately from the original baseline.
+
+[Remediation evidence](cli-insert-outcomes-remediation.json) records 15 passing
+private database lifecycle tests, four passing shared-service contracts, actual
+partial-insert diagnostics, eight source/probe hashes and clean server shutdown.

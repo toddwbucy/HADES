@@ -418,6 +418,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Report per-document insert failures through shared CLI/daemon dispatch, with
+  partial-completion diagnostics and uncertain-response handling (#120).
+
 - Await bounded training-session release on graph embedding CLI success and error
   paths before runtime shutdown, preserving primary operation failures (#115).
 
