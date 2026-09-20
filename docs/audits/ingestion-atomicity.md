@@ -147,8 +147,15 @@ relationship stage wins, the original chunk and acknowledged edge remain, and
 the stale replacement is rejected. The existing enrichment fixture separately
 rejects stale prepared revisions without changing the committed result.
 
-Remaining review includes full-ingest process death during persistence and a
-final implementation review of the stage boundaries. Source-hash checks detect observed drift but do not lock the
+A full CLI persistence-interruption fixture uses a transparent private Unix-socket
+proxy that forwards transaction headers and pauses a response only after ArangoDB
+acknowledges replacement chunk writes. It kills and reaps the ingest CLI, waits
+for all collection locks to become available after expiry, and compares all eight
+collections with their pre-ingest contents. A subsequent ingest and graph/query
+validation verify recovery. This covers one confirmed mid-replacement checkpoint;
+it does not claim exhaustive interruption at every HTTP request or commit boundary.
+
+Final implementation review of the stage boundaries remains required. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live

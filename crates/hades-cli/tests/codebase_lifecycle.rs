@@ -721,3 +721,145 @@ async fn failed_workspace_is_not_hidden_by_another_successful_workspace() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn killed_cli_after_transactional_chunk_write_rolls_back_and_retries() {
+    with_temp_db(
+        "cli_transaction_death",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            let file = tree.path().join("provider.py");
+            std::fs::write(&file, "def target():\n    return 'quartz'\n").unwrap();
+            std::fs::write(
+                tree.path().join("consumer.py"),
+                "from provider import target\n\ndef caller():\n    return target()\n",
+            )
+            .unwrap();
+            ingest(&pool, &embedder, tree.path()).await;
+            let before = snapshot_graph(&pool).await;
+            std::fs::write(&file, "# moved\ndef target():\n    return 'sapphire'\n").unwrap();
+
+            // Transparent private UDS proxy: forward transaction headers unchanged,
+            // but withhold one response after ArangoDB acknowledges replacement chunks.
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("database.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .unix_socket(pool.writer().socket_path().unwrap().to_path_buf())
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let paused = Arc::new(AtomicBool::new(false));
+            let signal = entered.clone();
+            let gate = release.clone();
+            let app = Router::new().fallback(move |request: axum::extract::Request| {
+                let client = client.clone();
+                let signal = signal.clone();
+                let gate = gate.clone();
+                let paused = paused.clone();
+                async move {
+                    let (parts, body) = request.into_parts();
+                    let intercept = parts.method == axum::http::Method::POST
+                        && parts.uri.path().ends_with("/document/codebase_chunks")
+                        && parts.headers.contains_key("x-arango-trx-id");
+                    let body = axum::body::to_bytes(body, 32 * 1024 * 1024).await.unwrap();
+                    let response = client
+                        .request(
+                            parts.method,
+                            format!("http://localhost{}", parts.uri.path_and_query().unwrap()),
+                        )
+                        .headers(parts.headers)
+                        .body(body)
+                        .send()
+                        .await
+                        .unwrap();
+                    let status = response.status();
+                    let headers = response.headers().clone();
+                    let bytes = response.bytes().await.unwrap();
+                    if intercept && !paused.swap(true, Ordering::SeqCst) {
+                        assert!(status.is_success());
+                        let rows: Value = serde_json::from_slice(&bytes).unwrap();
+                        assert!(
+                            rows.as_array()
+                                .unwrap()
+                                .iter()
+                                .all(|row| row["error"] != true)
+                        );
+                        signal.notify_one();
+                        gate.notified().await;
+                    }
+                    let mut response = axum::http::Response::new(axum::body::Body::from(bytes));
+                    *response.status_mut() = status;
+                    *response.headers_mut() = headers;
+                    response
+                }
+            });
+            let proxy = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let mut child =
+                cli_command(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()])
+                    .env("ARANGO_RO_SOCKET", &socket)
+                    .env("ARANGO_RW_SOCKET", &socket)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(15), entered.notified())
+                .await
+                .expect("CLI never reached an acknowledged transactional chunk write");
+            child.start_kill().unwrap();
+            assert!(
+                !tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+            release.notify_one();
+            proxy.abort();
+            let _ = proxy.await;
+
+            // No ingestion cleanup task survives the process. Acquisition of all
+            // collection locks proves the abandoned transaction has released them.
+            tokio::time::timeout(std::time::Duration::from_secs(100), async {
+                loop {
+                    let collections = hades_core::db::collections::CODEBASE
+                        .all_collections()
+                        .iter()
+                        .map(|(name, _)| name.to_string())
+                        .collect();
+                    if hades_core::db::transaction::run(&pool, collections, |_| async { Ok(()) })
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .expect("abandoned CLI transaction did not release its locks");
+            assert_eq!(
+                snapshot_graph(&pool).await,
+                before,
+                "all collections must survive process death during replacement"
+            );
+            ingest(&pool, &embedder, tree.path()).await;
+            validate(&pool, &embedder).await;
+            let key = keys::scoped_file_key(tree.path().to_str().unwrap(), "provider.py");
+            assert_hit(
+                &search(&pool, &embedder, "sapphire").await,
+                &key,
+                "sapphire",
+            );
+        },
+    )
+    .await;
+}

@@ -346,6 +346,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   Distinguish failed extraction from empty success and report rewritten files
   affected by partial workspace or file-level enrichment failure. Verify that
   racing replacement and relationship stages cannot both commit from one revision.
+  Exercise full-CLI process death after acknowledged transactional chunk writes,
+  checking all graph collections after server expiry and successful retry.
   Further recovery and cancellation
   coverage remains under audit (#40).
 
