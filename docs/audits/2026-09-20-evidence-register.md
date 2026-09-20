@@ -44,24 +44,27 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Failed file replacement loses committed graph | #40, PR #41 merged `26e71ea`; all five requirements mapped to rollback, revision, timeout/cancellation and retry fixtures | Not deployed |
 | Shared trainer state crosses client lifecycles | P1 #42, PR #43 merged `4fdad18`; two-channel CPU reproduction, 16 CPU session and 10 Rust client contracts; final CI `35506989556` passed | Not deployed; lease expiry is not compute preemption |
 | Unsafe installer credential/response handling | #44, PR #45 merged `979fe97`; malformed-password reproduction and six private Unix HTTP contracts | Not deployed |
-| Ambient database endpoints in unit fixtures | #47, PR #48; accepted-AQL unit tests used normal endpoint discovery and accepted backend errors | Private-mock remediation and fixture inventory awaiting integrated-head CI; no live reproduction |
-| Agent filesystem access through smell reports | #49; private service fixture returned a matching synthetic line without permitted roots | Admin scan / database-only report separation in isolated development; not deployed |
+| Ambient database endpoints in unit fixtures | #47, PR #48 merged `312cde5`; private mocks and fixture inventory, final CI passed | Not deployed; no live reproduction |
+| Agent filesystem access through smell reports | #49, PR #50 merged `7571036`; Admin scans / stored-graph reports, private multi-root and collision fixtures | Not deployed |
+| Detached ingest admission and process ownership | #51, PR #56 merged `5b329b8`; MCP race, output bounds, recovery, shutdown and descendant cleanup | Not deployed |
+| Viewer subprocess and response retention | #52, PR #53 merged `da61fd6`; process/router/shutdown contracts and slow-reader pilot | Not deployed |
+| Installer package authentication bypass | #60, PR #61 pending; remote source used `trusted=yes`, README keyring was unselected | No host installer run; remediation and APT verification pending |
 
 ## Workstream coverage and explicit gaps
 
 | Epic workstream | Evidence established | Still required before closure |
 |---|---|---|
 | Deployment inventory/provenance | Units, endpoints, executable hash and restart baseline | Exact running binary commit mapping or documented inability; backup inventory and restore evidence |
-| Architecture/API | Shared dispatch, authorization and service contracts reviewed in affected paths | Complete component inventory and review of frontend, analyzers, adapters and remaining API boundaries |
+| Architecture/API | Shared dispatch, authorization and service contracts reviewed in affected paths | Complete component inventory; remaining analyzer, adapter and API review beyond the recorded viewer boundaries |
 | Security/isolation | Authentication rejection baseline; isolated tests; body, cursor, archive limits under review | Database ACL matrix, provisioning/path handling, subprocess/parser limits and dependency review |
 | Ingestion/graph integrity | Collision/lifecycle fixtures; PR #41 file/stage transactions, races, timeout/cancellation and retry contracts | Remaining document/adapter pipeline review and failure boundaries |
 | Retrieval/embedding | Model/dimension validation; versioned exact-ranking parity | Stale model/task provenance, broader independently reviewed quality set |
-| Training | Leakage, split metrics, aborts and checkpoint schema fixes | Concurrent sessions, cancellation, graph alignment and trained structural baseline |
-| Performance/reliability | Isolated engine, handler and transport pilots | Remaining non-search queue/time-out paths |
-| Tests/CI | Rust, Python CPU and disposable ArangoDB gates | Full write-fixture inventory; broader failure injection beyond the selected end-to-end contract |
-| Retrieval evaluation | 24 author-judged queries, frozen CPU Jina vectors, file-membership comparator | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
+| Training | Leakage, split metrics, aborts and checkpoint schema fixes | Active-compute cancellation, remaining graph alignment and trained structural baseline; ownership/lease contracts are covered by PR #43 |
+| Performance/reliability | Isolated engine, handler and transport pilots | Remaining queue/time-out paths beyond the detached-ingest and viewer ownership contracts |
+| Tests/CI | Rust, Python CPU and disposable ArangoDB gates | Refresh the revision-bound fixture inventory for later targets; broader failure injection beyond the selected end-to-end contract |
+| Retrieval evaluation | 24 author-judged seed queries; private Bastion snapshot/passages; strict incomplete-judgment score withholding | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
 | Packaging/operations | Manifest and launch scripts inspected | Fresh installation beyond verified wheel/sdist contracts, health/readiness, upgrade/rollback and isolated restore rehearsal |
-| Findings/remediation | Ten approved issues plus eight additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
+| Findings/remediation | Ten original issues and subsequent findings with individually linked dispositions | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
 
 ## Deployment boundary
 
@@ -139,5 +142,36 @@ results and baseline-derived regression thresholds are still outstanding.
 The research corpus consists of evolving public-facing paper drafts describing
 the intended completed project. The [workload plan](../../evaluation/retrieval/workload-plan.md)
 records candidate questions, a version-aware judgment protocol and a planned
-claim-to-code check. Draft claims alone do not establish implemented capabilities. The exact
-collection snapshot and independent judgments remain outstanding.
+claim-to-code check. Draft claims alone do not establish implemented capabilities.
+The user identified `Bastion/`; nine Markdown drafts (122,263 bytes) were frozen
+in a private per-file hash-verified snapshot. This was not an atomic directory
+snapshot. PR #55 records scope and PR #58 supplies 34 reproducible passages.
+Independent judgments, code-workload results and learned-graph comparisons remain
+outstanding.
+
+## Later component evidence and pending gates
+
+- [Fixture inventory](test-fixture-inventory.md) covers the 25 integration targets
+  at `979fe97` and selected unit modules. Subsequent CLI/frontend targets are
+  recorded in their requirement reviews; the old inventory is not a current
+  repository-wide coverage claim.
+- [Filesystem authority](smell-filesystem-authority.md),
+  [ingest ownership](ingest-job-ownership.md) and
+  [viewer boundaries](viewer-boundary-review.md) record the scope and limitations
+  of merged #49, #51 and #52 fixes.
+- [Training ownership](training-session-ownership.md) covers independent-client
+  leases, stale requests and lifecycle serialization. Lease expiry does not
+  preempt active synchronous computation.
+- PR #59 is pending final validation after a review fix to reject non-object
+  encoding inputs. A completed private CPU candidate run used 34 paper passages
+  and five queries; frozen-vector rescoring matched, and quality metrics remain
+  withheld. Owner and third-party reviews use separate blinded answer sheets,
+  with the approved 0–3 rubric. The user requested publication to the existing
+  LAN report hub; unpublished draft text is not included in this repository.
+- P2 #60 tracks the installer signature bypass. PR #61 and its disposable APT
+  fixture are pending CI/review. The active audit host lacks APT, so local
+  execution explicitly skipped rather than installing host dependencies.
+
+Repository review and CI results do not establish successful deployment,
+production ACL correctness, restore readiness or representative retrieval
+quality. Those acceptance items remain open.
