@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Reject WeaverTools adapter HTTP redirects before forwarding credentials or
+  graph writes beyond the configured database endpoint (#66).
+
 - Require a scoped ArangoDB signing key in the fresh-VPS harness and installation
   instructions; remove the package-authentication bypass recommendation (#60).
 
