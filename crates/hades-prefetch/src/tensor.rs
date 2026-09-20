@@ -237,6 +237,28 @@ pub fn split_graph_edges(
     })
 }
 
+/// Largest pair of u32 vectors whose combined byte length fits isize.
+const MAX_NEGATIVE_SAMPLES: usize = isize::MAX as usize / (2 * std::mem::size_of::<u32>());
+
+pub fn negative_sample_count(positives: usize, ratio: f64) -> Result<usize, TensorError> {
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(TensorError::InvalidNegSamplingRatio { neg: ratio });
+    }
+    let count = positives as f64 * ratio;
+    if !count.is_finite()
+        || count < 1.0
+        || count > MAX_NEGATIVE_SAMPLES as f64
+        || count as usize > MAX_NEGATIVE_SAMPLES
+    {
+        return Err(TensorError::ValidationFailed {
+            message:
+                "negative sample count is zero, nonfinite, or exceeds supported vector capacity"
+                    .into(),
+        });
+    }
+    Ok(count as usize)
+}
+
 /// Generate negative edge samples via rejection sampling.
 ///
 /// Matches Python `RGCNTrainer._negative_sample()`. Samples node pairs
@@ -258,6 +280,11 @@ pub fn negative_sample_seeded(
             dst: Vec::new(),
         });
     }
+    if num_neg > MAX_NEGATIVE_SAMPLES {
+        return Err(TensorError::ValidationFailed {
+            message: "negative sample count exceeds supported vector capacity".into(),
+        });
+    }
     if graph.num_nodes < 2 || graph.num_nodes > u32::MAX as usize {
         return Err(TensorError::ValidationFailed {
             message: "negative sampling requires 2..=u32::MAX nodes".into(),
@@ -272,8 +299,15 @@ pub fn negative_sample_seeded(
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-    let mut neg_src = Vec::with_capacity(num_neg);
-    let mut neg_dst = Vec::with_capacity(num_neg);
+    let mut neg_src = Vec::new();
+    let mut neg_dst = Vec::new();
+    for values in [&mut neg_src, &mut neg_dst] {
+        values
+            .try_reserve_exact(num_neg)
+            .map_err(|error| TensorError::ValidationFailed {
+                message: format!("cannot allocate negative samples: {error}"),
+            })?;
+    }
     let max_attempts = num_neg.saturating_mul(10);
     let mut attempts = 0;
     let num_nodes = graph.num_nodes as u32;
@@ -802,12 +836,7 @@ pub fn prepare_and_serialize(
     let split = split_graph_edges(graph, config)?;
 
     // Negative samples: 1 per positive train edge by default
-    let num_neg = (split.train_idx.len() as f64 * config.neg_sampling_ratio) as usize;
-    if num_neg == 0 {
-        return Err(TensorError::ValidationFailed {
-            message: "negative sampling ratio rounds to zero training samples".into(),
-        });
-    }
+    let num_neg = negative_sample_count(split.train_idx.len(), config.neg_sampling_ratio)?;
     let neg = negative_sample_seeded(graph, num_neg, config.seed)?;
 
     serialize_to_file(path, graph, &split, &neg, config)?;
@@ -974,6 +1003,15 @@ mod tests {
                     .any(|(&s, &d)| s == dst && d == src)
             );
         }
+    }
+
+    #[test]
+    fn excessive_sampling_ratios_fail_before_allocation() {
+        for ratio in [f64::MAX, 1e100, 0.001] {
+            assert!(negative_sample_count(10, ratio).is_err());
+        }
+        assert!(negative_sample_seeded(&test_graph(), usize::MAX, 0).is_err());
+        assert_eq!(negative_sample_count(10, 1.5).unwrap(), 15);
     }
 
     #[test]

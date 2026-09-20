@@ -37,8 +37,8 @@ use hades_core::graph::loader::GraphLoaderError;
 use hades_core::graph::types::{GraphData, IDMap};
 
 use crate::tensor::{
-    EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample_seeded,
-    prepare_and_serialize,
+    EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample_count,
+    negative_sample_seeded, prepare_and_serialize,
 };
 
 // ---------------------------------------------------------------------------
@@ -119,12 +119,15 @@ impl PrefetchConfig {
         let train_neg = (num_train_edges as f64 * self.neg_sampling_ratio) as usize;
         let val_neg = (num_val_edges as f64 * self.neg_sampling_ratio) as usize;
         // Each NegativeSamples has src + dst Vec<u32> = 2 × len × 4 bytes
-        (train_neg + val_neg) * 2 * std::mem::size_of::<u32>()
+        train_neg
+            .saturating_add(val_neg)
+            .saturating_mul(2 * std::mem::size_of::<u32>())
     }
 
     /// Estimate total memory for all buffered epochs.
     pub fn estimate_buffer_bytes(&self, num_train_edges: usize, num_val_edges: usize) -> usize {
-        self.estimate_batch_bytes(num_train_edges, num_val_edges) * self.prefetch_depth
+        self.estimate_batch_bytes(num_train_edges, num_val_edges)
+            .saturating_mul(self.prefetch_depth)
     }
 }
 
@@ -193,8 +196,9 @@ impl Prefetcher {
     ) -> Result<Self, PrefetchError> {
         config.validate()?;
 
-        let num_train_neg = (split.train_idx.len() as f64 * config.neg_sampling_ratio) as usize;
-        let num_val_neg = (split.val_idx.len() as f64 * config.neg_sampling_ratio) as usize;
+        let num_train_neg =
+            negative_sample_count(split.train_idx.len(), config.neg_sampling_ratio)?;
+        let num_val_neg = negative_sample_count(split.val_idx.len(), config.neg_sampling_ratio)?;
 
         if num_train_neg == 0 || num_val_neg == 0 {
             return Err(TensorError::ValidationFailed {
