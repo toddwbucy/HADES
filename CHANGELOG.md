@@ -325,6 +325,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Encode bootstrap credentials safely, keep passwords and responses in memory,
+  bound Unix HTTP requests, and preserve existing user grants (#44).
+
 - Run enrichment source rechecks on blocking workers while preserving pre-write
   and pre-commit validation and transaction cancellation responsiveness (#40).
 
