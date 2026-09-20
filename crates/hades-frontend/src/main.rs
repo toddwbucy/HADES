@@ -11,6 +11,7 @@
 //!   * `hades-viewer serve --db <db> [--bind ...]` -> serve the viewer + graph API.
 
 mod assemble;
+mod backend_process;
 mod contract;
 mod server;
 

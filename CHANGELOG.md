@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Security
+
+- Bound viewer CLI child output and runtime, retain process admission through
+  cancellation cleanup, and prevent child diagnostics from entering HTTP errors (#52).
+
 ### Documentation
 
 - Record the live daemon artifact/compiler provenance and explicit source-mapping
