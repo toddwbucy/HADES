@@ -61,7 +61,8 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 Repository merges have not changed the active service. The last read-only unit
 inspection retained the baseline PIDs and restart counts: daemon 4240/1,
 ArangoDB 3014/0, extractor 3018/0, GPU2 embedder 3016/0. GPU1 remained failed and
-enabled with three restarts. These observations establish no observed restart,
+enabled with three restarts. The unchanged PIDs and counters show no additional restart between the
+2026-09-19 baseline and the 2026-09-20 read-only inspection,
 not inference readiness or workload latency. Systemd memory accounting is not
 process RSS or GPU VRAM.
 
