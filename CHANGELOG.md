@@ -407,6 +407,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Synchronize the training cancellation fixture with server-side cancellation
+  before releasing its worker, preventing a client/server completion race in CI.
+
 - Preserve WeaverTools relationship identity with full-tuple versioned keys,
   reject conflicting declarations and legacy layouts before writes, and make
   retained stale-row semantics explicit (#109).
