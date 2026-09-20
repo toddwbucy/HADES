@@ -120,6 +120,7 @@ jobs:
           cargo test -p hades-proto --test proto_types --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
+          cargo test -p hades-core --test embedding_contract --test embedding_client --verbose
 
   # The pin fixes the drift and removes the only mechanism that ever told this
   # repository a new toolchain wanted changes, which is how CI came to be red
