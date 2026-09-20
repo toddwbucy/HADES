@@ -56,6 +56,7 @@ DEFAULT_FEATURE_DIM = 2048
 
 def _bce_link_loss(pos_score: torch.Tensor, neg_score: torch.Tensor):
     """Binary cross-entropy link loss + accuracy over positives/negatives."""
+    _validate_scores(pos_score, neg_score)
     pos_loss = torch.nn.functional.binary_cross_entropy_with_logits(
         pos_score, torch.ones_like(pos_score)
     )
@@ -63,6 +64,8 @@ def _bce_link_loss(pos_score: torch.Tensor, neg_score: torch.Tensor):
         neg_score, torch.zeros_like(neg_score)
     )
     loss = pos_loss + neg_loss
+    if not torch.isfinite(loss):
+        raise ValueError("link loss is not finite")
     with torch.no_grad():
         pos_acc = (pos_score > 0).float().mean() if pos_score.numel() else torch.tensor(0.0)
         neg_acc = (neg_score <= 0).float().mean() if neg_score.numel() else torch.tensor(0.0)
@@ -70,16 +73,19 @@ def _bce_link_loss(pos_score: torch.Tensor, neg_score: torch.Tensor):
     return loss, float(acc)
 
 
+def _validate_scores(pos_score, neg_score):
+    if any(scores.ndim != 1 or scores.numel() == 0 or not torch.isfinite(scores).all()
+           for scores in (pos_score, neg_score)):
+        raise ValueError("metrics require nonempty finite one-dimensional scores for both classes")
+
+
 def _auc(pos_score: torch.Tensor, neg_score: torch.Tensor) -> float:
-    """ROC-AUC via the Mann–Whitney U statistic (no sklearn dependency)."""
-    n_pos, n_neg = pos_score.numel(), neg_score.numel()
-    if n_pos == 0 or n_neg == 0:
-        return 0.0
-    scores = torch.cat([pos_score, neg_score])
-    ranks = scores.argsort().argsort().float() + 1.0  # average-rank approx
-    rank_pos = ranks[:n_pos].sum()
-    auc = (rank_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
-    return float(auc.clamp(0.0, 1.0))
+    """P(positive > negative) + 0.5 P(tie), without a quadratic pair matrix."""
+    _validate_scores(pos_score, neg_score)
+    negatives = neg_score.sort().values
+    lower = torch.searchsorted(negatives, pos_score, right=False).double()
+    upper = torch.searchsorted(negatives, pos_score, right=True).double()
+    return float(((lower + upper) * 0.5).mean() / neg_score.numel())
 
 
 class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
@@ -359,7 +365,10 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         pos_src, pos_dst = self.edge_src[pos_idx], self.edge_dst[pos_idx]
         pos_score = self.model.score(emb, pos_src, pos_dst)
         neg_score = self.model.score(emb, neg_src, neg_dst)
-        loss, acc = _bce_link_loss(pos_score, neg_score)
+        try:
+            loss, acc = _bce_link_loss(pos_score, neg_score)
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
         loss.backward()
         self.optimizer.step()
         return training_pb2.TrainStepResponse(loss=float(loss.detach()), accuracy=acc)
@@ -382,8 +391,11 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             pos_src, pos_dst = self.edge_src[pos_idx], self.edge_dst[pos_idx]
             pos_score = self.model.score(emb, pos_src, pos_dst)
             neg_score = self.model.score(emb, neg_src, neg_dst)
-            loss, acc = _bce_link_loss(pos_score, neg_score)
-            auc = _auc(pos_score, neg_score)
+            try:
+                loss, acc = _bce_link_loss(pos_score, neg_score)
+                auc = _auc(pos_score, neg_score)
+            except ValueError as exc:
+                await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
         return training_pb2.EvaluateResponse(loss=float(loss), accuracy=acc, auc=auc)
 
     async def GetEmbeddings(self, request, context):

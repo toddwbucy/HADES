@@ -61,7 +61,7 @@ async def main():
         for seed in (7, 29, 41) for legacy in (True, False)]
     print(json.dumps({"fixture": "synthetic directed 8-node ring; 4 train/2 val/2 test edges",
         "device": "cpu", "torch": torch.__version__,
-        "limitations": "Synthetic regression baseline only; does not establish production quality. AUC correction tracked in #17.",
+        "limitations": "Synthetic regression baseline only; does not establish production quality. AUC uses tie-correct pair ranking.",
         "results": results}, indent=2))
 
 

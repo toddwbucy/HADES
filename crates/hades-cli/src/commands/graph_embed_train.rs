@@ -38,12 +38,18 @@ pub async fn run(
     val_ratio: f64,
     test_ratio: f64,
     neg_ratio: f64,
+    seed: u64,
     export_to: Option<&str>,
     checkpoint_dir: &str,
     val_every: usize,
     prefetch_depth: usize,
     no_export: bool,
 ) -> Result<()> {
+    if epochs == 0 || val_every == 0 || val_ratio <= 0.0 || test_ratio <= 0.0 {
+        anyhow::bail!(
+            "training requires positive epochs, validation cadence, and validation/test ratios"
+        );
+    }
     // ── Validate split ratios ───────────────────────────────────────
     if !(0.0..=1.0).contains(&val_ratio) {
         anyhow::bail!("--val-ratio must be between 0.0 and 1.0, got {val_ratio}");
@@ -96,6 +102,7 @@ pub async fn run(
         val_ratio,
         test_ratio,
         neg_sampling_ratio: neg_ratio,
+        seed,
     };
 
     info!("loading graph and preparing training data");
@@ -124,6 +131,7 @@ pub async fn run(
         patience: patience as usize,
         val_every,
         neg_sampling_ratio: neg_ratio,
+        seed,
         prefetch_depth,
         device: config.gpu.device.clone(),
         architecture,
@@ -206,6 +214,7 @@ pub async fn run(
     let result_data = json!({
         "status": "success",
         "training": {
+            "sampling_seed": seed,
             "best_epoch": result.best_epoch,
             "best_val_loss": result.best_val_loss,
             "total_epochs": result.total_epochs,

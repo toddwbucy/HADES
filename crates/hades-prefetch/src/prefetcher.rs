@@ -20,6 +20,7 @@
 //! );
 //!
 //! while let Some(batch) = pf.next_batch().await {
+//!     let batch = batch?;
 //!     // send batch.train_neg / batch.val_neg to Python TrainingService
 //! }
 //! ```
@@ -36,7 +37,8 @@ use hades_core::graph::loader::GraphLoaderError;
 use hades_core::graph::types::{GraphData, IDMap};
 
 use crate::tensor::{
-    EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample, prepare_and_serialize,
+    EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample_seeded,
+    prepare_and_serialize,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,6 +83,8 @@ pub struct PrefetchConfig {
     /// Ratio of negative to positive samples per epoch.
     /// Default: 1.0 (one negative per positive edge).
     pub neg_sampling_ratio: f64,
+    /// Seed for per-epoch train samples and fixed validation samples.
+    pub seed: u64,
 }
 
 impl Default for PrefetchConfig {
@@ -88,6 +92,7 @@ impl Default for PrefetchConfig {
         Self {
             prefetch_depth: 2,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         }
     }
 }
@@ -168,7 +173,7 @@ pub struct TrainingData {
 /// The background task uses [`tokio::task::spawn_blocking`] for the
 /// CPU-bound negative sampling work to avoid starving the async runtime.
 pub struct Prefetcher {
-    rx: mpsc::Receiver<EpochBatch>,
+    rx: mpsc::Receiver<Result<EpochBatch, PrefetchError>>,
     handle: JoinHandle<()>,
 }
 
@@ -191,6 +196,14 @@ impl Prefetcher {
         let num_train_neg = (split.train_idx.len() as f64 * config.neg_sampling_ratio) as usize;
         let num_val_neg = (split.val_idx.len() as f64 * config.neg_sampling_ratio) as usize;
 
+        if num_train_neg == 0 || num_val_neg == 0 {
+            return Err(TensorError::ValidationFailed {
+                message: "training and validation require nonempty positive and negative samples"
+                    .into(),
+            }
+            .into());
+        }
+
         let buffer_bytes = config.estimate_buffer_bytes(split.train_idx.len(), split.val_idx.len());
 
         info!(
@@ -210,6 +223,7 @@ impl Prefetcher {
             num_train_neg,
             num_val_neg,
             num_epochs,
+            config.seed,
         ));
 
         Ok(Self { rx, handle })
@@ -217,11 +231,12 @@ impl Prefetcher {
 
     /// Background producer task.
     async fn producer(
-        tx: mpsc::Sender<EpochBatch>,
+        tx: mpsc::Sender<Result<EpochBatch, PrefetchError>>,
         graph: Arc<GraphData>,
         num_train_neg: usize,
         num_val_neg: usize,
         num_epochs: Option<usize>,
+        seed: u64,
     ) {
         let mut epoch = 0;
         loop {
@@ -237,13 +252,32 @@ impl Prefetcher {
             let g2 = Arc::clone(&graph);
 
             let (train_neg, val_neg) = tokio::join!(
-                tokio::task::spawn_blocking(move || negative_sample(&g1, num_train_neg)),
-                tokio::task::spawn_blocking(move || negative_sample(&g2, num_val_neg)),
+                tokio::task::spawn_blocking(move || negative_sample_seeded(
+                    &g1,
+                    num_train_neg,
+                    seed.wrapping_add(epoch as u64).wrapping_add(10)
+                )),
+                tokio::task::spawn_blocking(move || negative_sample_seeded(
+                    &g2,
+                    num_val_neg,
+                    seed.wrapping_add(1)
+                )),
             );
 
-            // Unwrap JoinHandle results — panic propagation
-            let train_neg = train_neg.expect("train negative sampling panicked");
-            let val_neg = val_neg.expect("val negative sampling panicked");
+            let samples = match (train_neg, val_neg) {
+                (Ok(Ok(train)), Ok(Ok(val))) => Ok((train, val)),
+                (Ok(Err(error)), _) | (_, Ok(Err(error))) => Err(PrefetchError::Tensor(error)),
+                (Err(error), _) | (_, Err(error)) => Err(PrefetchError::SchemaLoad(format!(
+                    "sampling task failed: {error}"
+                ))),
+            };
+            let (train_neg, val_neg) = match samples {
+                Ok(samples) => samples,
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                    return;
+                }
+            };
 
             let batch = EpochBatch {
                 epoch,
@@ -255,7 +289,7 @@ impl Prefetcher {
 
             // Channel send — blocks if buffer is full (backpressure).
             // Returns Err if receiver is dropped → stop producing.
-            if tx.send(batch).await.is_err() {
+            if tx.send(Ok(batch)).await.is_err() {
                 debug!("prefetcher channel closed, stopping");
                 break;
             }
@@ -270,7 +304,7 @@ impl Prefetcher {
     ///
     /// Returns `None` when all epochs have been produced and consumed,
     /// or when the prefetcher has been stopped.
-    pub async fn next_batch(&mut self) -> Option<EpochBatch> {
+    pub async fn next_batch(&mut self) -> Option<Result<EpochBatch, PrefetchError>> {
         self.rx.recv().await
     }
 
@@ -433,6 +467,7 @@ mod tests {
         let bad = PrefetchConfig {
             prefetch_depth: 0,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         assert!(matches!(bad.validate(), Err(PrefetchError::InvalidDepth)));
     }
@@ -443,6 +478,7 @@ mod tests {
             let config = PrefetchConfig {
                 prefetch_depth: 2,
                 neg_sampling_ratio: bad_ratio,
+                seed: 0,
             };
             assert!(
                 matches!(config.validate(), Err(PrefetchError::InvalidNegRatio(_))),
@@ -456,6 +492,7 @@ mod tests {
         let config = PrefetchConfig {
             prefetch_depth: 2,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         // 100 train edges × 1.0 ratio = 100 neg, 10 val edges × 1.0 = 10 neg
         // Each neg: 2 vecs × len × 4 bytes = (100 + 10) × 2 × 4 = 880
@@ -468,10 +505,32 @@ mod tests {
         let config = PrefetchConfig {
             prefetch_depth: 3,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         let batch = config.estimate_batch_bytes(100, 10);
         let buffer = config.estimate_buffer_bytes(100, 10);
         assert_eq!(buffer, batch * 3);
+    }
+
+    #[tokio::test]
+    async fn dense_sampling_error_reaches_consumer() {
+        let mut graph = GraphData::with_capacity(3, 0);
+        for src in 0..3 {
+            for dst in 0..3 {
+                if src != dst {
+                    graph.add_edge(src, dst, 0);
+                }
+            }
+        }
+        let split = Arc::new(EdgeSplit {
+            train_idx: vec![0, 1],
+            val_idx: vec![2, 3],
+            test_idx: vec![4, 5],
+        });
+        let mut pf =
+            Prefetcher::start(Arc::new(graph), split, PrefetchConfig::default(), Some(1)).unwrap();
+        assert!(pf.next_batch().await.unwrap().is_err());
+        assert!(pf.next_batch().await.is_none());
     }
 
     #[tokio::test]
@@ -484,6 +543,7 @@ mod tests {
 
         let mut received = Vec::new();
         while let Some(batch) = pf.next_batch().await {
+            let batch = batch.unwrap();
             received.push(batch);
         }
 
@@ -511,9 +571,14 @@ mod tests {
 
         let mut pf = Prefetcher::start(graph.clone(), split.clone(), config, Some(3)).unwrap();
 
-        let b0 = pf.next_batch().await.unwrap();
-        let b1 = pf.next_batch().await.unwrap();
-        let b2 = pf.next_batch().await.unwrap();
+        let b0 = pf.next_batch().await.unwrap().unwrap();
+        let b1 = pf.next_batch().await.unwrap().unwrap();
+        let b2 = pf.next_batch().await.unwrap().unwrap();
+
+        assert_eq!(b0.val_neg.src, b1.val_neg.src);
+        assert_eq!(b0.val_neg.dst, b1.val_neg.dst);
+        assert_eq!(b1.val_neg.src, b2.val_neg.src);
+        assert_eq!(b1.val_neg.dst, b2.val_neg.dst);
 
         // It's astronomically unlikely that two random samples are identical
         // on a 10-node graph with 20 edges. Check at least one pair differs.
@@ -535,6 +600,7 @@ mod tests {
         let config = PrefetchConfig {
             prefetch_depth: 1,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
 
         // Request unbounded but stop after 2
@@ -546,8 +612,8 @@ mod tests {
         )
         .unwrap();
 
-        let _b0 = pf.next_batch().await.unwrap();
-        let _b1 = pf.next_batch().await.unwrap();
+        let _b0 = pf.next_batch().await.unwrap().unwrap();
+        let _b1 = pf.next_batch().await.unwrap().unwrap();
 
         // Dropping should cancel the background task
         pf.stop();
@@ -582,13 +648,14 @@ mod tests {
         let config = PrefetchConfig {
             prefetch_depth: 1,
             neg_sampling_ratio: 2.0,
+            seed: 0,
         };
 
         let expected_train_neg = (split.train_idx.len() as f64 * 2.0) as usize;
 
         let mut pf = Prefetcher::start(graph.clone(), split.clone(), config, Some(1)).unwrap();
 
-        let batch = pf.next_batch().await.unwrap();
+        let batch = pf.next_batch().await.unwrap().unwrap();
         assert_eq!(batch.train_neg.src.len(), expected_train_neg);
     }
 
@@ -608,6 +675,7 @@ mod tests {
         let num_nodes = graph.num_nodes as u32;
 
         while let Some(batch) = pf.next_batch().await {
+            let batch = batch.unwrap();
             for (&s, &d) in batch.train_neg.src.iter().zip(&batch.train_neg.dst) {
                 assert!(s < num_nodes, "train neg src {s} out of bounds");
                 assert!(d < num_nodes, "train neg dst {d} out of bounds");

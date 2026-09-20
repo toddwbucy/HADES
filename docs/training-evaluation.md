@@ -38,6 +38,28 @@ two architectures, three fixed seeds, 20 CPU epochs per run. The script construc
 all data locally, loads no external model, and contacts no database/service.
 This is a regression baseline, not evidence of production retrieval quality.
 Prior held-out metrics used leaked topology and must not be reused to claim
-unseen-link performance. AUC ties and sampling reproducibility remain tracked
-separately in #17; rerun this baseline after those corrections. Production
+unseen-link performance. The baseline has been rerun with tie-correct AUC (#17). Production
 retraining requires a separate resource and deployment plan.
+
+## Metrics, sampling, and unsupported runs
+
+ROC-AUC counts a tie as half a correct positive/negative ordering. Both score
+classes must be nonempty and finite; unavailable metrics are errors, not zero
+or NaN. Training requires nonempty train/validation/test partitions, positive
+epochs and validation cadence, and nonzero negative counts. Tiny graphs or
+ratios that floor a split to zero fail with an actionable error before training.
+
+Use `graph-embed train --seed 29` to reproduce pair partitions and negative
+sampling for the same graph ordering and pinned dependency versions. The seed
+is recorded in graph metadata and CLI output. Validation negatives stay fixed
+across epochs; training negatives change deterministically per epoch; test
+negatives use a separate seed. This flag does not seed model initialization or
+promise deterministic GPU kernels. Retain the graph artifact for comparisons.
+
+Negative sampling excludes observed pairs in either direction and self-loops,
+with replacement. A bounded rejection budget must produce every requested
+sample or fail explicitly; dense graphs are not silently evaluated on a short
+or empty sample. Failures propagate through prefetching to the orchestrator.
+Early stopping saves only finite improving validation losses, leaves the best
+checkpoint unchanged on ties, and restores that checkpoint before test scoring.
+Nonfinite metrics or failure to produce a checkpoint abort the run.

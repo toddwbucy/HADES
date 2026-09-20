@@ -30,10 +30,10 @@ use std::io::Write;
 use std::path::Path;
 
 use memmap2::Mmap;
-use rand::Rng;
 use rand::seq::SliceRandom;
+use rand::{Rng, SeedableRng};
 use safetensors::tensor::{Dtype, SafeTensors, TensorView};
-use tracing::{info, warn};
+use tracing::info;
 
 use hades_core::graph::types::GraphData;
 
@@ -80,7 +80,7 @@ pub enum TensorError {
     #[error("serialization validation failed: {message}")]
     ValidationFailed { message: String },
 
-    #[error("invalid neg_sampling_ratio: {neg} (must be finite and non-negative)")]
+    #[error("invalid neg_sampling_ratio: {neg} (must be finite and positive)")]
     InvalidNegSamplingRatio { neg: f64 },
 }
 
@@ -97,6 +97,8 @@ pub struct SplitConfig {
     pub test_ratio: f64,
     /// Ratio of negative to positive samples (default: 1.0).
     pub neg_sampling_ratio: f64,
+    /// Seed for reproducible pair partitions and initial negative samples.
+    pub seed: u64,
 }
 
 impl Default for SplitConfig {
@@ -105,6 +107,7 @@ impl Default for SplitConfig {
             val_ratio: 0.1,
             test_ratio: 0.1,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         }
     }
 }
@@ -145,6 +148,11 @@ pub struct NegativeSamples {
 ///
 /// Matches Python `RGCNTrainer._split_edges()`.
 pub fn split_edges(num_edges: usize, config: &SplitConfig) -> Result<EdgeSplit, TensorError> {
+    if num_edges > u32::MAX as usize {
+        return Err(TensorError::ValidationFailed {
+            message: "edge count exceeds u32 index space".into(),
+        });
+    }
     if num_edges == 0 {
         return Err(TensorError::EmptyGraph);
     }
@@ -164,17 +172,17 @@ pub fn split_edges(num_edges: usize, config: &SplitConfig) -> Result<EdgeSplit, 
     }
 
     let mut perm: Vec<u32> = (0..num_edges as u32).collect();
-    perm.shuffle(&mut rand::rng());
+    perm.shuffle(&mut rand::rngs::StdRng::seed_from_u64(config.seed));
 
     let val_size = (num_edges as f64 * config.val_ratio) as usize;
     let test_size = (num_edges as f64 * config.test_ratio) as usize;
     let train_size = num_edges - val_size - test_size;
 
-    if train_size == 0 {
-        return Err(TensorError::InvalidSplitConfig {
-            val: config.val_ratio,
-            test: config.test_ratio,
-            sum: config.val_ratio + config.test_ratio,
+    if train_size == 0 || val_size == 0 || test_size == 0 {
+        return Err(TensorError::ValidationFailed {
+            message: format!(
+                "training requires nonempty train/validation/test partitions; {num_edges} pair groups produce {train_size}/{val_size}/{test_size}; increase graph size or adjust ratios"
+            ),
         });
     }
 
@@ -232,32 +240,47 @@ pub fn split_graph_edges(
 /// Generate negative edge samples via rejection sampling.
 ///
 /// Matches Python `RGCNTrainer._negative_sample()`. Samples node pairs
-/// that are **not** existing edges and **not** self-loops. The exclusion
+/// that are **not** existing edges, their inverses, or self-loops. The exclusion
 /// set is built from the full edge set (not just train edges).
-pub fn negative_sample(graph: &GraphData, num_neg: usize) -> NegativeSamples {
-    if num_neg == 0 || graph.num_nodes < 2 {
-        return NegativeSamples {
+pub fn negative_sample(graph: &GraphData, num_neg: usize) -> Result<NegativeSamples, TensorError> {
+    negative_sample_seeded(graph, num_neg, 0)
+}
+
+/// Deterministic bounded sampling; never return fewer samples than requested.
+pub fn negative_sample_seeded(
+    graph: &GraphData,
+    num_neg: usize,
+    seed: u64,
+) -> Result<NegativeSamples, TensorError> {
+    if num_neg == 0 {
+        return Ok(NegativeSamples {
             src: Vec::new(),
             dst: Vec::new(),
-        };
+        });
+    }
+    if graph.num_nodes < 2 || graph.num_nodes > u32::MAX as usize {
+        return Err(TensorError::ValidationFailed {
+            message: "negative sampling requires 2..=u32::MAX nodes".into(),
+        });
     }
 
     // Build existing edge set for O(1) lookup
     let mut existing: HashSet<(u32, u32)> = HashSet::with_capacity(graph.num_edges);
     for (&s, &d) in graph.edge_src.iter().zip(&graph.edge_dst) {
         existing.insert((s, d));
+        existing.insert((d, s));
     }
 
-    let mut rng = rand::rng();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut neg_src = Vec::with_capacity(num_neg);
     let mut neg_dst = Vec::with_capacity(num_neg);
-    let max_attempts = num_neg * 10;
+    let max_attempts = num_neg.saturating_mul(10);
     let mut attempts = 0;
     let num_nodes = graph.num_nodes as u32;
 
     while neg_src.len() < num_neg && attempts < max_attempts {
         // Generate candidates in batches for efficiency
-        let batch_size = num_neg.min(1024);
+        let batch_size = num_neg.min(1024).min(max_attempts - attempts);
         for _ in 0..batch_size {
             let s: u32 = rng.random_range(0..num_nodes);
             let d: u32 = rng.random_range(0..num_nodes);
@@ -272,22 +295,18 @@ pub fn negative_sample(graph: &GraphData, num_neg: usize) -> NegativeSamples {
         attempts += batch_size;
     }
 
-    // Truncate to exactly num_neg (may be short if graph is too dense)
-    neg_src.truncate(num_neg);
-    neg_dst.truncate(num_neg);
-
-    if neg_src.len() < num_neg {
-        warn!(
-            requested = num_neg,
-            actual = neg_src.len(),
-            "negative sampling exhausted max attempts"
-        );
+    if neg_src.len() != num_neg {
+        return Err(TensorError::ValidationFailed {
+            message: format!(
+                "insufficient negative samples: requested {num_neg}, found {} within {max_attempts} attempts; graph may be too dense",
+                neg_src.len()
+            ),
+        });
     }
-
-    NegativeSamples {
+    Ok(NegativeSamples {
         src: neg_src,
         dst: neg_dst,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +457,7 @@ pub fn serialize_graph(
         "collection_names".into(),
         serde_json::to_string(&graph.collection_names)?,
     );
+    metadata.insert("sampling_seed".into(), config.seed.to_string());
     metadata.insert("val_ratio".into(), config.val_ratio.to_string());
     metadata.insert("test_ratio".into(), config.test_ratio.to_string());
     metadata.insert(
@@ -773,7 +793,7 @@ pub fn prepare_and_serialize(
     graph: &GraphData,
     config: &SplitConfig,
 ) -> Result<EdgeSplit, TensorError> {
-    if !config.neg_sampling_ratio.is_finite() || config.neg_sampling_ratio < 0.0 {
+    if !config.neg_sampling_ratio.is_finite() || config.neg_sampling_ratio <= 0.0 {
         return Err(TensorError::InvalidNegSamplingRatio {
             neg: config.neg_sampling_ratio,
         });
@@ -783,7 +803,12 @@ pub fn prepare_and_serialize(
 
     // Negative samples: 1 per positive train edge by default
     let num_neg = (split.train_idx.len() as f64 * config.neg_sampling_ratio) as usize;
-    let neg = negative_sample(graph, num_neg);
+    if num_neg == 0 {
+        return Err(TensorError::ValidationFailed {
+            message: "negative sampling ratio rounds to zero training samples".into(),
+        });
+    }
+    let neg = negative_sample_seeded(graph, num_neg, config.seed)?;
 
     serialize_to_file(path, graph, &split, &neg, config)?;
     Ok(split)
@@ -926,9 +951,50 @@ mod tests {
     }
 
     #[test]
+    fn seeded_splits_and_samples_repeat() {
+        let graph = test_graph();
+        let config = SplitConfig {
+            seed: 29,
+            ..Default::default()
+        };
+        let first = split_graph_edges(&graph, &config).unwrap();
+        let second = split_graph_edges(&graph, &config).unwrap();
+        assert_eq!(first.train_idx, second.train_idx);
+        assert_eq!(first.val_idx, second.val_idx);
+        let first = negative_sample_seeded(&graph, 20, 29).unwrap();
+        let second = negative_sample_seeded(&graph, 20, 29).unwrap();
+        assert_eq!(first.src, second.src);
+        assert_eq!(first.dst, second.dst);
+        for (&src, &dst) in first.src.iter().zip(&first.dst) {
+            assert!(
+                !graph
+                    .edge_src
+                    .iter()
+                    .zip(&graph.edge_dst)
+                    .any(|(&s, &d)| s == dst && d == src)
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_splits_and_dense_negatives_fail_explicitly() {
+        for count in 1..10 {
+            assert!(split_edges(count, &SplitConfig::default()).is_err());
+        }
+        let mut graph = GraphData::with_capacity(3, 0);
+        for src in 0..3 {
+            for dst in (src + 1)..3 {
+                graph.add_edge(src, dst, 0);
+            }
+        }
+        assert!(negative_sample_seeded(&graph, 1, 0).is_err());
+        assert!(negative_sample_seeded(&GraphData::with_capacity(1, 0), 1, 0).is_err());
+    }
+
+    #[test]
     fn test_negative_sample_basic() {
         let graph = test_graph();
-        let neg = negative_sample(&graph, 15);
+        let neg = negative_sample(&graph, 15).unwrap();
         assert_eq!(neg.src.len(), neg.dst.len());
         assert_eq!(neg.src.len(), 15);
 
@@ -955,7 +1021,7 @@ mod tests {
     #[test]
     fn test_negative_sample_empty() {
         let graph = test_graph();
-        let neg = negative_sample(&graph, 0);
+        let neg = negative_sample(&graph, 0).unwrap();
         assert!(neg.src.is_empty());
         assert!(neg.dst.is_empty());
     }
@@ -964,7 +1030,7 @@ mod tests {
     fn test_serialize_roundtrip() {
         let graph = test_graph();
         let split = split_edges(graph.num_edges, &SplitConfig::default()).unwrap();
-        let neg = negative_sample(&graph, 10);
+        let neg = negative_sample(&graph, 10).unwrap();
         let config = SplitConfig::default();
 
         let bytes = serialize_graph(&graph, &split, &neg, &config).unwrap();
@@ -1035,6 +1101,7 @@ mod tests {
             val_ratio: 0.6,
             test_ratio: 0.6,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         let err = split_edges(100, &bad).unwrap_err();
         assert!(matches!(err, TensorError::InvalidSplitConfig { .. }));
@@ -1043,6 +1110,7 @@ mod tests {
             val_ratio: -0.1,
             test_ratio: 0.1,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         let err = split_edges(100, &negative).unwrap_err();
         assert!(matches!(err, TensorError::InvalidSplitConfig { .. }));
@@ -1055,6 +1123,7 @@ mod tests {
             val_ratio: f64::NAN,
             test_ratio: 0.1,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         assert!(matches!(
             split_edges(100, &nan_val).unwrap_err(),
@@ -1066,6 +1135,7 @@ mod tests {
             val_ratio: 0.1,
             test_ratio: f64::INFINITY,
             neg_sampling_ratio: 1.0,
+            seed: 0,
         };
         assert!(matches!(
             split_edges(100, &inf_test).unwrap_err(),
@@ -1077,6 +1147,7 @@ mod tests {
             val_ratio: 0.1,
             test_ratio: 0.1,
             neg_sampling_ratio: f64::NAN,
+            seed: 0,
         };
         let graph = test_graph();
         let dir = tempfile::tempdir().unwrap();
@@ -1091,6 +1162,7 @@ mod tests {
             val_ratio: 0.1,
             test_ratio: 0.1,
             neg_sampling_ratio: -1.0,
+            seed: 0,
         };
         assert!(matches!(
             prepare_and_serialize(&path, &graph, &neg_neg).unwrap_err(),
@@ -1166,6 +1238,7 @@ mod tests {
             val_ratio: 0.2,
             test_ratio: 0.2,
             neg_sampling_ratio: 2.0,
+            seed: 0,
         };
         let split = split_edges(100, &config).unwrap();
         assert_eq!(split.val_idx.len(), 20);

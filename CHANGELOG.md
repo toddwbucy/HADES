@@ -269,6 +269,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Correct tied-score ROC-AUC and reject unavailable/nonfinite training metrics
+  (#17). Require nonempty splits and samples, propagate dense-graph sampling
+  failures, and validate checkpoint selection. Add `graph-embed train --seed`
+  for repeatable splits and fixed validation/test negative samples.
+
 - Separate training adjacency from held-out link-prediction targets (#14). Split
   inverse and duplicate endpoint pairs together, serialize and return one shared
   partition, and reject invalid partitions or training on held-out edges.

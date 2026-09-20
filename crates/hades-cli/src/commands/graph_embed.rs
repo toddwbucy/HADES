@@ -49,6 +49,10 @@ pub enum GraphEmbedCmd {
         #[arg(long, default_value_t = 0.1)]
         test_ratio: f64,
 
+        /// Seed for repeatable edge partitions and negative sampling (not model initialization).
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+
         /// Negative-to-positive sampling ratio.
         #[arg(long, default_value_t = 1.0)]
         neg_ratio: f64,
