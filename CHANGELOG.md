@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain an actual CLI/disposable-ArangoDB partial-insert false-success
+  reproduction with document read-back evidence (epic #12; remediation pending).
+
 - Verify actual CLI CPU training/checkpoint/export and the distinct training-edge
   versus full-graph update contexts with isolated fixtures (epic #12).
 

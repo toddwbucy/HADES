@@ -1,0 +1,23 @@
+{
+  "runtime_revision": "e22ad5317db96f5ffb780d04304e3f92486e3bf2",
+  "database_version": "3.12.11",
+  "scope": "Actual CLI and disposable Unix-only ArangoDB; synthetic documents only",
+  "observed": {
+    "existing_document_and_revision_preserved": true,
+    "exit_code": 0,
+    "new_document_committed": true,
+    "stderr": "",
+    "stdout": "{\n  \"command\": \"db.insert\",\n  \"data\": [\n    {\n      \"_id\": \"documents/new\",\n      \"_key\": \"new\",\n      \"_rev\": \"_mKByr5C---\"\n    },\n    {\n      \"error\": true,\n      \"errorMessage\": \"unique constraint violated - in index primary of type primary over '_key'; conflicting key: existing\",\n      \"errorNum\": 1210\n    }\n  ],\n  \"success\": true,\n  \"timestamp\": \"2026-09-20T22:34:18.417680235+00:00\"\n}\n"
+  },
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "038d77bd3a72a8bcd0260b223284af6fbf364c661a0c968ae16c93535a02b88a",
+    "crates/hades-core/src/db/crud.rs": "cf59d100fa8b7211d2bf9920285f0c2476ef8b14adbc9e70cd72114538ee8b1d",
+    "crates/hades-core/src/db/transport.rs": "b3d5777b20ee38df1327c44df60bea5e8e2ac2cf57c505a0c42448a63599107a",
+    "crates/hades-cli/src/commands/db_write.rs": "a8ce47327db48812d15ef429177ac72c319d33bf8d1bc000488aa30479554817",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "8cb8a7f3e21115149497c0c8c1ab4de5fea97d498c33af045105465aa8d928e4",
+    "crates/hades-cli/tests/fixtures/db_insert_outcomes.rs": "6520f26355d0943eb30ee35dcdaf65208a59c1442bdbfd3275df7d4222f14b7c",
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131"
+  },
+  "private_server_exit_code": 0,
+  "test_summary": "test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 63.16s"
+}
