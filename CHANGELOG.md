@@ -69,6 +69,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Refresh epic #12 evidence dispositions, revision-bound coverage and remaining
+  independent retrieval, deployment and operational acceptance work.
+
 - Require coordinated trainer/client upgrades for the session-ownership RPC
   contract; legacy unowned requests fail closed (#42).
 
@@ -371,6 +374,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Fail conformance adapter runs on incomplete scope, incompatible collections,
   import rejections or invalid acknowledgements; report partial persistence (#68).
+- Keep WeaverTools node and edge metadata within their own declaration records,
+  including adjacent mixed records without blank separators (#70).
+
 - Verify the actual daemon socket and database health in the fresh-install
   harness with bounded framing, response sizes and startup deadlines (#64).
 

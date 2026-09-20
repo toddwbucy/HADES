@@ -161,3 +161,43 @@ def test_an_inline_graph_reference_does_not_open_a_fence():
 
     real = "```graph\nnode: a-real-one\nkind: assertion\n```\n"
     assert len(GRAPH.findall(real)) == 1, "a real fence stopped matching"
+
+
+@pytest.mark.parametrize("separator", ["\n", "\n\n"])
+def test_mixed_records_keep_their_own_metadata(tmp_path, separator):
+    records = [
+        "node: first\nkind: assertion",
+        "edge: supports\nfrom: first\nto: second\ntag: review\nvia: contract-one",
+        "node: second\nkind: term\ntag: manifest",
+        "edge: depends-on\nfrom: second\nto: first",
+        "node: third\nkind: axiom\ntag: perturbation",
+    ]
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/spec.md").write_text(
+        "```graph\n" + separator.join(records) + "\n```\n"
+    )
+    result = read_documents(tmp_path)
+    assert [(n.ident, n.kind, n.tag) for n in result.nodes] == [
+        ("first", "assertion", None),
+        ("second", "term", "manifest"),
+        ("third", "axiom", "perturbation"),
+    ]
+    declared = [e for e in result.edges if e.relation != "declared-in"]
+    assert [(e.relation, e.tag, e.via) for e in declared] == [
+        ("supports", "review", "contract-one"),
+        ("depends-on", None, None),
+    ]
+    assert result.nodes[0].body == records[0]
+    assert result.nodes[1].body == records[2]
+    assert len([e for e in result.edges if e.relation == "declared-in"]) == 3
+
+
+def test_node_metadata_stops_at_end_of_record_head(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/spec.md").write_text(
+        "```graph\nnode: first\n\nDescription of the declaration.\n"
+        "kind: assertion\ntag: review\n```\n"
+    )
+    node = read_documents(tmp_path).nodes[0]
+    assert (node.kind, node.tag) == ("unknown", None)
+    assert "Description of the declaration." in node.body

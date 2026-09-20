@@ -27,7 +27,7 @@ leave earlier writes committed. An earlier `latest` report may remain after a
 failed run; callers must honor the failure exit status and must not treat it as
 certification of the attempted run.
 
-The focused suite has 56 passing cases including scope, existing/wrong-type
+The focused suite has 59 passing cases including scope, existing/wrong-type
 collections, HTTP errors, partial/malformed imports, report errors, normal success
 and redirect policy. These use synthetic responses and private HTTP peers.
 The [recorded real-database result](adapter-database-result.json) also passed on
