@@ -6,6 +6,9 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Extraction worker lifetime](extraction-worker-lifetime.md): retained cancellation
+  reproduction and private worker/RPC/idle/shutdown ownership contracts.
+
 - [Document replacement](document-replacement.md): real failure reproduction,
   transactional rollback, pipeline cancellation and concurrent writer contracts.
 
