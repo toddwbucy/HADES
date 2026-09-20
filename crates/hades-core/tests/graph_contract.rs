@@ -115,3 +115,87 @@ async fn code_features_carry_pooling_provenance_and_reject_mixed_models() {
         assert!(load(&pool, &schema).await.unwrap_err().to_string().contains("mixes embedding model identities"));
     }).await;
 }
+
+#[tokio::test]
+async fn recorded_smells_match_exact_files_across_roots_without_scanning() {
+    use hades_core::config::HadesConfig;
+    use hades_core::service::{ConnectionPolicy, handle_request};
+    use std::time::Duration;
+    with_temp_db("stored_smells", Fixtures::Empty, |pool| async move {
+        for (name, kind) in [
+            ("codebase_files", 2),
+            ("smell_specs", 2),
+            ("compliance_edges", 3),
+        ] {
+            crud::create_collection(&pool, name, Some(kind))
+                .await
+                .unwrap();
+        }
+        for key in ["root_a", "root_b"] {
+            crud::insert_document(
+                &pool,
+                "codebase_files",
+                &json!({
+                    "_key":key,"path":"synthetic/not-on-disk.rs"
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        crud::insert_document(
+            &pool,
+            "smell_specs",
+            &json!({
+                "_key":"one","name":"fixture smell"
+            }),
+        )
+        .await
+        .unwrap();
+        for key in ["root_a", "root_b"] {
+            crud::insert_document(
+                &pool,
+                "compliance_edges",
+                &json!({
+                    "_key":key,"_from":format!("codebase_files/{key}"),
+                    "_to":"smell_specs/one","enforcement_type":"static"
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let config = HadesConfig::with_database("unused-config-db");
+        for (path, count) in [
+            ("synthetic/not-on-disk.rs", 2),
+            ("codebase_files/root_a", 1),
+            ("absent.rs", 0),
+            ("' RETURN 1", 0),
+        ] {
+            let request = serde_json::to_vec(&json!({
+                "command":"smell.stored_report","params":{"path":path}
+            }))
+            .unwrap();
+            let response = handle_request(
+                &pool,
+                &config,
+                ConnectionPolicy::agent_only(),
+                &request,
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(response.success, "{path}: {response:?}");
+            let data = response.data.unwrap();
+            let rows = data["recorded_smells"].as_array().unwrap();
+            assert_eq!(rows.len(), count);
+            assert_eq!(data["truncated"], false);
+            for row in rows {
+                assert_eq!(row["name"], "fixture smell");
+                assert_eq!(row["enforcement"], "static");
+                assert_eq!(row["smell_id"], "smell_specs/one");
+            }
+            if count == 2 {
+                assert_ne!(rows[0]["file_id"], rows[1]["file_id"]);
+            }
+        }
+    })
+    .await;
+}

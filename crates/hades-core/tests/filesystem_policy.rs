@@ -134,3 +134,48 @@ async fn trusted_admin_can_still_scan_synthetic_file() {
     assert!(response.success, "{response:?}");
     assert!(response.data.unwrap().to_string().contains(marker));
 }
+
+#[tokio::test]
+async fn stored_report_rejects_invalid_identity_before_database_access() {
+    let config = HadesConfig::with_database("fixture");
+    let mut mock = cursor_mock::Mock::new(vec![]).await;
+    for path in [String::new(), "x".repeat(4097)] {
+        let request = serde_json::to_vec(&json!({
+            "command":"smell.stored_report", "params":{"path":path}
+        }))
+        .unwrap();
+        let response = handle_request(
+            &mock.pool,
+            &config,
+            ConnectionPolicy::agent_only(),
+            &request,
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(!response.success);
+    }
+    assert!(mock.events.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn stored_report_rejects_oversized_database_response() {
+    let config = HadesConfig::with_database("fixture");
+    let mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(json!({
+        "result":[{"name":"x".repeat(256 * 1024)}], "hasMore":false
+    }))])
+    .await;
+    let request = serde_json::to_vec(&json!({
+        "command":"smell.stored_report", "params":{"path":"src/lib.rs"}
+    }))
+    .unwrap();
+    let response = handle_request(
+        &mock.pool,
+        &config,
+        ConnectionPolicy::agent_only(),
+        &request,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(!response.success, "{response:?}");
+    assert!(response.data.is_none());
+}
