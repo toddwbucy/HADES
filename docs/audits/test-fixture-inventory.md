@@ -39,6 +39,12 @@ ingestion reservation blocked on a synthetic database response. The mock rejects
 admission before any ingestion child or job insertion. This does not yet cover
 daemon shutdown with a running ingestion child.
 
+The database-gated `codebase_lifecycle` target additionally exercises actual daemon
+shutdown with a running ingestion child held at a synthetic embedding response.
+Both SIGINT and SIGTERM must reap that child, persist failure in the disposable
+database and preserve the previous graph. Its private failure guard verifies the
+fixture's unique source path before signalling any recorded process group.
+
 ## Source-unit fixtures
 
 - `codebase_ingest`, `codebase_persist`, `codebase_prune`, `codebase_retire` use

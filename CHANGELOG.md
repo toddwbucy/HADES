@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Verify actual daemon shutdown with a running ingestion child against disposable
+  ArangoDB, including child reaping, persisted failure and graph preservation (#51).
+
 - Preserve the daemon's effective ingestion configuration through a bounded,
   sealed memory-file handoff instead of reloading ambient child configuration;
   keep credentials out of arguments and temporary files (#51).

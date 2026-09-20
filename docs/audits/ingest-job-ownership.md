@@ -64,7 +64,17 @@ removes its socket. The mock asserts exactly collection/admission requests and n
 job insertion or child spawn. The fixture runs in service-free CI with a cleared
 environment and explicit existing private database sockets to prevent discovery
 of ambient endpoints. Actual daemon shutdown with a running ingestion child and
-persisted job outcomes remains required.
+persisted job outcomes are covered by the additional fixture below.
+
+The maintained `codebase_lifecycle` target now starts the actual daemon and an
+actual ingestion child against the disposable ArangoDB server. A private mock
+embedder holds a Python source-file ingestion during preparation. The initiating
+connection has closed, but the job remains owned and running; a duplicate start
+is refused. SIGINT and SIGTERM each cause direct-child reaping before daemon exit,
+a persisted failed job with a shutdown reason, removal of the daemon socket and
+preservation of the prior graph. This uses synthetic CPU embedding responses,
+not installed services or a model. It does not yet measure simultaneous child
+counts across multiple served databases or prove successful restart/retry.
 
 ## Remaining requirements before publication or closure
 

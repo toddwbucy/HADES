@@ -166,6 +166,168 @@ fn assert_hit(result: &Value, key: &str, marker: &str) {
     assert_eq!(hit["score"], 1.0);
 }
 
+struct PrivateDaemon {
+    child: tokio::process::Child,
+    ingest: Option<(u32, PathBuf)>,
+}
+impl Drop for PrivateDaemon {
+    fn drop(&mut self) {
+        // Failure cleanup verifies the unique private source path before
+        // signalling a recorded group. Never signal a historical database PID.
+        if let Some((pid, root)) = &self.ingest
+            && let Ok(command) = std::fs::read(format!("/proc/{pid}/cmdline"))
+            && command
+                .windows(root.as_os_str().as_encoded_bytes().len())
+                .any(|part| part == root.as_os_str().as_encoded_bytes())
+        {
+            // SAFETY: fixture identity checked; this ingest owns a fresh group.
+            unsafe {
+                libc::kill(-(*pid as i32), libc::SIGKILL);
+            }
+        }
+        let _ = self.child.start_kill();
+    }
+}
+
+async fn daemon_request(socket: &Path, request: Value) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        let bytes = serde_json::to_vec(&request).unwrap();
+        stream.write_u32(bytes.len() as u32).await.unwrap();
+        stream.write_all(&bytes).await.unwrap();
+        let size = stream.read_u32().await.unwrap() as usize;
+        assert!(size <= 1024 * 1024);
+        let mut body = vec![0; size];
+        stream.read_exact(&mut body).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    })
+    .await
+    .expect("private daemon request timed out")
+}
+
+#[tokio::test]
+async fn daemon_shutdown_reaps_running_ingestion_and_persists_failure() {
+    with_temp_db(
+        "daemon_ingest_shutdown",
+        Fixtures::Codebase,
+        |pool| async move {
+            for signal in [libc::SIGTERM, libc::SIGINT] {
+                let embedder = Embedder::new().await;
+                embedder.hold.store(true, Ordering::SeqCst);
+                let tree = tempfile::tempdir().unwrap();
+                let source = tree.path().join("source");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::write(
+                    source.join("fixture.py"),
+                    "def target():\n    return 'quartz_shutdown'\n",
+                )
+                .unwrap();
+                let socket = tree.path().join("daemon.sock");
+                let log = tree.path().join("daemon.log");
+                let child = cli_command(
+                    &pool,
+                    &embedder,
+                    &["daemon", "--socket", socket.to_str().unwrap()],
+                )
+                .env("HADES_USE_GPU", "false")
+                .env("TOKIO_WORKER_THREADS", "2")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(&log).unwrap())
+                .spawn()
+                .unwrap();
+                let mut daemon = PrivateDaemon {
+                    child,
+                    ingest: None,
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    loop {
+                        if tokio::net::UnixStream::connect(&socket).await.is_ok() {
+                            break;
+                        }
+                        assert!(
+                            daemon.child.try_wait().unwrap().is_none(),
+                            "private daemon exited: {}",
+                            std::fs::read_to_string(&log).unwrap()
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let before = snapshot_graph(&pool).await;
+                let started = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(started["success"], true, "{started}");
+                let job = started["data"]["job_id"].as_str().unwrap();
+                let pid = started["data"]["pid"].as_u64().unwrap() as u32;
+                daemon.ingest = Some((pid, source.clone()));
+                // The request connection has already closed. Detached ownership
+                // must keep this actual ingestion alive while it awaits the mock.
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    embedder.entered.notified(),
+                )
+                .await
+                .expect("private ingestion did not reach synthetic embedding");
+                let status = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.status","params":{"job_id":job}}),
+                )
+                .await;
+                assert_eq!(status["data"]["status"], "running", "{status}");
+                assert_eq!(status["data"]["owned_by_service"], true);
+                assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
+                let duplicate = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(duplicate["success"], false, "{duplicate}");
+                // SAFETY: signal only the private daemon's unreaped direct child.
+                assert_eq!(
+                    unsafe { libc::kill(daemon.child.id().unwrap() as i32, signal) },
+                    0
+                );
+                let exited =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), daemon.child.wait())
+                        .await
+                        .expect("private daemon did not drain ingestion")
+                        .unwrap();
+                assert!(
+                    exited.success(),
+                    "{}",
+                    std::fs::read_to_string(&log).unwrap()
+                );
+                // Direct ingestion was reaped by the daemon before the daemon exit.
+                assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+                let recorded = hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", job)
+                    .await
+                    .unwrap();
+                assert_eq!(recorded["status"], "failed", "{recorded}");
+                assert!(recorded["detail"].as_str().unwrap().contains("shutdown"));
+                assert_eq!(recorded["pid"], pid);
+                assert!(recorded["finished_at"].is_string());
+                assert_eq!(recorded["output_storage"], "bounded_job_record");
+                assert_eq!(recorded["log_path"], Value::Null);
+                assert_eq!(snapshot_graph(&pool).await, before);
+                assert!(!socket.exists());
+                embedder.hold.store(false, Ordering::SeqCst);
+                embedder.release.notify_one();
+            }
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn ingest_query_modify_move_delete_and_partial_failure_recover() {
     with_temp_db("cli_lifecycle", Fixtures::Codebase, |pool| async move {
