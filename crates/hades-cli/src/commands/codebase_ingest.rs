@@ -3420,18 +3420,27 @@ struct EnrichmentInput {
 }
 
 impl EnrichmentInput {
-    fn verify_source(&self) -> std::result::Result<(), hades_core::db::ArangoError> {
-        let source = std::fs::read_to_string(&self.path).map_err(|error| {
+    async fn verify_source(&self) -> std::result::Result<(), hades_core::db::ArangoError> {
+        let input = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let source = std::fs::read_to_string(&input.path).map_err(|error| {
+                hades_core::db::ArangoError::Request(format!(
+                    "cannot recheck enrichment source: {error}"
+                ))
+            })?;
+            if code::compute_content_hash(&source) != input.content_hash {
+                return Err(hades_core::db::ArangoError::Request(
+                    "source changed during enrichment; retry ingestion".into(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
             hades_core::db::ArangoError::Request(format!(
-                "cannot recheck enrichment source: {error}"
+                "enrichment source verification task failed: {error}"
             ))
-        })?;
-        if code::compute_content_hash(&source) != self.content_hash {
-            return Err(hades_core::db::ArangoError::Request(
-                "source changed during enrichment; retry ingestion".into(),
-            ));
-        }
-        Ok(())
+        })?
     }
 }
 
@@ -3464,7 +3473,7 @@ async fn enrichment_revisions(
                 .to_owned(),
             path: path.clone(),
         };
-        input.verify_source()?;
+        input.verify_source().await?;
         revisions.insert(relative, input);
     }
     Ok(revisions)
@@ -3553,7 +3562,7 @@ async fn store_lsp_extractions(
             if super::codebase_persist::revision(&client, &key).await?.as_deref() != Some(expected.revision.as_str()) {
                 return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
             }
-            expected.verify_source()?;
+            expected.verify_source().await?;
         }
         let mut batches = vec![(CODEBASE.symbols, symbols)];
         for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
@@ -3578,7 +3587,7 @@ async fn store_lsp_extractions(
             json!({"fkeys":file_patches.iter().map(|(_,key,_,_)| key).collect::<Vec<_>>(),
                 "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
         for input in revisions.values() {
-            input.verify_source()?;
+            input.verify_source().await?;
         }
         Ok(())
     }).await;

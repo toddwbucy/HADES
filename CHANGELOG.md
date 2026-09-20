@@ -322,6 +322,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Run enrichment source rechecks on blocking workers while preserving pre-write
+  and pre-commit validation and transaction cancellation responsiveness (#40).
+
 - Stage parsed and fallback file replacements before a serial database
   transaction; retain previous graph state on persistence failure and reject
   stale prepared writes. Independent transaction ownership aborts cancellation
