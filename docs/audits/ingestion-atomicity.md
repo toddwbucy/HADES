@@ -107,9 +107,18 @@ uses its normal 60-second streaming idle timeout; the test permits a 100-second
 cleanup window. This exercises the shared transaction primitive, not a full CLI
 process interrupted at every persistence request.
 
-Remaining review includes target indexing when higher-fidelity preservation
-bypasses normal analysis, full-ingest process death during persistence, and additional analyzer
-failure coverage. Source-hash checks detect observed drift but do not lock the
+When parsed ingestion preserves higher-fidelity stored analysis, it loads durable
+symbol targets through a bounded snapshot and validates their canonical keys and
+file revision. Stored outgoing-call metadata is excluded from this index; existing
+outgoing relationships remain preserved. The same target loading applies when
+registered-language analysis fails and raw fallback preserves the old graph.
+A private resolver fixture verifies target resolution, exclusion of outgoing
+calls, and stale-snapshot rejection; the existing Go preservation fixture also
+exercises this path.
+
+Remaining review includes explicitly unparsed files that preserve an older
+registered-language graph, full-ingest process death during persistence, and
+additional analyzer failure coverage. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live

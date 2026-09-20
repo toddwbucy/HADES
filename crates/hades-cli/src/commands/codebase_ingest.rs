@@ -1578,7 +1578,7 @@ async fn ingest_file(
                     reason,
                     "semantic and structural analysis unavailable; using raw text fallback"
                 );
-                return ingest_unparsed_file(
+                let result = ingest_unparsed_file(
                     db,
                     embedder,
                     config,
@@ -1590,7 +1590,19 @@ async fn ingest_file(
                     allow_analysis_downgrade,
                     namespace,
                 )
-                .await;
+                .await?;
+                if result.skipped == Some(true) && result.num_symbols.is_none() {
+                    collect_preserved_targets(
+                        db,
+                        &fkey,
+                        expected_revision.as_deref(),
+                        rel_path,
+                        lang,
+                        imports,
+                    )
+                    .await?;
+                }
+                return Ok(result);
             }
         };
     info!(
@@ -1642,6 +1654,15 @@ async fn ingest_file(
     )
     .await?
     {
+        collect_preserved_targets(
+            db,
+            &fkey,
+            expected_revision.as_deref(),
+            rel_path,
+            lang,
+            imports,
+        )
+        .await?;
         warn!(
             path = rel_path,
             incoming_tier = %analysis.analysis_tier,
@@ -2178,6 +2199,124 @@ async fn ingest_file(
         error: None,
         duration_ms: 0,
     })
+}
+
+/// Retain durable targets when incoming analysis is deliberately not applied.
+/// Stored call metadata is excluded: this path must not rewrite outgoing edges.
+async fn collect_preserved_targets(
+    db: &ArangoPool,
+    key: &str,
+    expected_revision: Option<&str>,
+    rel_path: &str,
+    lang: Language,
+    imports: &mut ImportContext,
+) -> Result<()> {
+    let client = db.writer().clone().with_response_limit(32 * 1024 * 1024)?;
+    let response = client.post("cursor", &json!({
+        "query":"RETURN { file: DOCUMENT(@@files, @key), symbols: (FOR s IN @@symbols FILTER s.file_key == @key RETURN s) }",
+        "bindVars":{"@files":CODEBASE.files,"@symbols":CODEBASE.symbols,"key":key},
+        "batchSize":1,"ttl":30,"memoryLimit":33554432,
+        "options":{"maxRuntime":30,"failOnWarning":true}
+    })).await?;
+    let rows = response["result"]
+        .as_array()
+        .context("invalid preserved target snapshot")?;
+    anyhow::ensure!(
+        response["hasMore"] != true && rows.len() == 1,
+        "incomplete preserved target snapshot"
+    );
+    let row = &rows[0];
+    let revision = row["file"]["_rev"]
+        .as_str()
+        .context("preserved file has no revision")?;
+    anyhow::ensure!(
+        Some(revision) == expected_revision,
+        "preserved file changed during analysis; retry ingestion"
+    );
+    let mut symbols = Vec::new();
+    for document in row["symbols"]
+        .as_array()
+        .context("invalid preserved symbols")?
+    {
+        let name = document["name"]
+            .as_str()
+            .context("preserved symbol has no name")?;
+        let qualified = document["qualified_name"]
+            .as_str()
+            .context("preserved symbol has no qualified name")?;
+        let start_line = usize::try_from(
+            document["start_line"]
+                .as_u64()
+                .context("invalid preserved symbol start line")?,
+        )?;
+        let end_line = usize::try_from(
+            document["end_line"]
+                .as_u64()
+                .context("invalid preserved symbol end line")?,
+        )?;
+        anyhow::ensure!(
+            start_line > 0 && end_line >= start_line,
+            "invalid preserved symbol range"
+        );
+        anyhow::ensure!(
+            document["_key"].as_str()
+                == Some(keys::symbol_key(key, qualified, start_line).as_str()),
+            "preserved symbol identity does not match its stored definition"
+        );
+        let kind = match document["kind"].as_str() {
+            Some("callable") => SymbolKind::Function,
+            Some("type") => SymbolKind::Class,
+            Some("value") => SymbolKind::Variable,
+            Some("module") => SymbolKind::Module,
+            _ => bail!("unsupported preserved symbol primitive"),
+        };
+        let mut metadata = match &document["metadata"] {
+            Value::Object(fields) => fields.clone(),
+            Value::Null => serde_json::Map::new(),
+            _ => bail!("invalid preserved symbol metadata"),
+        };
+        metadata.remove("calls");
+        metadata.insert("qualified_name".into(), json!(qualified));
+        // Some LSP documents store ownership outside the metadata object.
+        if let Some(parent) = document["parent_symbol"].as_str() {
+            metadata.insert("parent_symbol".into(), json!(parent));
+        }
+        symbols.push(Symbol {
+            name: name.to_owned(),
+            kind,
+            start_line,
+            end_line,
+            metadata: Value::Object(metadata),
+        });
+    }
+    imports
+        .committed_revisions
+        .insert(key.to_owned(), revision.to_owned());
+    // Structural callers may resolve to semantic targets. No import statements
+    // or call metadata are loaded, so the preserved file contributes no sources.
+    imports
+        .structural_file_symbols
+        .insert(rel_path.to_owned(), symbols.clone());
+    match lang {
+        Language::Python => {
+            imports
+                .python_file_symbols
+                .insert(rel_path.to_owned(), symbols);
+        }
+        Language::Rust => {
+            imports
+                .rust_file_symbols
+                .insert(rel_path.to_owned(), symbols);
+        }
+        Language::Cpp => {
+            imports
+                .cpp_file_symbols
+                .insert(rel_path.to_owned(), symbols);
+        }
+        Language::Go => {}
+        _ => {}
+    }
+    Ok(())
 }
 
 fn collect_relationship_symbols(
@@ -4177,6 +4316,90 @@ mod tests {
     ///
     /// Asserted at the gate rather than through a full ingest, because that is
     /// where the decision is made and a full ingest needs an embedder.
+    #[tokio::test]
+    async fn preserved_symbols_resolve_targets_without_regenerating_outgoing_calls() {
+        with_temp_db("preserved_targets", Fixtures::Codebase, |pool| async move {
+            let namespace = "fixture";
+            let file_key = keys::scoped_file_key(namespace, "provider.py");
+            let target_key = keys::symbol_key(&file_key, "target", 3);
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({"_key":file_key,"analysis_tier":"semantic"}),
+                )
+                .await
+                .unwrap();
+            pool.writer().post("document/codebase_symbols", &json!({
+                "_key":target_key,"file_key":file_key,"name":"target","qualified_name":"target",
+                "start_line":3,"end_line":4,"kind":"callable",
+                "metadata":{"calls":[{"name":"caller","qualified_name":"caller"}]}
+            })).await.unwrap();
+            let revision = super::super::codebase_persist::revision(pool.writer(), &file_key)
+                .await
+                .unwrap();
+            let mut imports = ImportContext::default();
+            collect_preserved_targets(
+                &pool,
+                &file_key,
+                revision.as_deref(),
+                "provider.py",
+                Language::Python,
+                &mut imports,
+            )
+            .await
+            .unwrap();
+            imports.python_file_symbols.insert(
+                "consumer.py".into(),
+                vec![Symbol {
+                    name: "caller".into(),
+                    kind: SymbolKind::Function,
+                    start_line: 1,
+                    end_line: 2,
+                    metadata: json!({"calls":[{"name":"target","qualified_name":"target"}]}),
+                }],
+            );
+            let bare = build_python_symbol_index_scoped(&imports.python_file_symbols, namespace);
+            let qualified =
+                python_calls::build_qualified_index_scoped(&imports.python_file_symbols, namespace);
+            let edges = python_calls::resolve_python_calls_scoped(
+                &imports.python_file_symbols,
+                &qualified,
+                &bare,
+                namespace,
+            );
+            assert_eq!(
+                edges.len(),
+                1,
+                "preserved outgoing call metadata must not be replayed"
+            );
+            assert_eq!(edges[0]["_to"], format!("codebase_symbols/{target_key}"));
+            assert_eq!(
+                imports.committed_revisions.get(&file_key),
+                revision.as_ref()
+            );
+            pool.writer()
+                .patch(
+                    &format!("document/codebase_files/{file_key}"),
+                    &json!({"changed":true}),
+                )
+                .await
+                .unwrap();
+            assert!(
+                collect_preserved_targets(
+                    &pool,
+                    &file_key,
+                    revision.as_deref(),
+                    "provider.py",
+                    Language::Python,
+                    &mut ImportContext::default()
+                )
+                .await
+                .is_err()
+            );
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn explicit_fallback_recovery_clears_pending_only_after_commit() {
         with_temp_db("fallback_pending", Fixtures::Codebase, |pool| async move {

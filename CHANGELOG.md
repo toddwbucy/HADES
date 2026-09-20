@@ -338,7 +338,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   embedding preserves the graph and permits retry. Reject LSP enrichment when
   captured source bytes differ from the stored content hash before analysis or
   during persistence. Verify an abandoned transaction rolls back and releases
-  its exclusive lock through server expiry after writer process death. Further recovery and cancellation
+  its exclusive lock through server expiry after writer process death. Load
+  preserved higher-fidelity symbols as guarded resolution targets without
+  replaying their outgoing calls. Further recovery and cancellation
   coverage remains under audit (#40).
 
 - Build complete Python service wheels with generated RPC bindings, trainer
