@@ -69,6 +69,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Refresh epic #12 evidence dispositions, revision-bound coverage and remaining
+  independent retrieval, deployment and operational acceptance work.
+
 - Require coordinated trainer/client upgrades for the session-ownership RPC
   contract; legacy unowned requests fail closed (#42).
 

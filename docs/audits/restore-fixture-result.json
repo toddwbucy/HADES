@@ -1,0 +1,125 @@
+{
+  "scope": "Synthetic private single-server logical dump/restore; not production recovery certification",
+  "cases": [
+    "documents and vectors identical",
+    "edge endpoints identical",
+    "graph traversal identical",
+    "schema identical and enforced",
+    "unique persistent index identical and enforced"
+  ],
+  "server_version": "3.12.11",
+  "source_seconds": 0.022222247993340716,
+  "target_seconds": 0.21576053102035075,
+  "restored": {
+    "nodes": [
+      {
+        "_id": "nodes/a",
+        "_key": "a",
+        "name": "a",
+        "vector": [
+          0,
+          1
+        ]
+      },
+      {
+        "_id": "nodes/b",
+        "_key": "b",
+        "name": "b",
+        "vector": [
+          1,
+          1
+        ]
+      },
+      {
+        "_id": "nodes/c",
+        "_key": "c",
+        "name": "c",
+        "vector": [
+          2,
+          1
+        ]
+      }
+    ],
+    "links": [
+      {
+        "_from": "nodes/a",
+        "_id": "links/ab",
+        "_key": "ab",
+        "_to": "nodes/b"
+      },
+      {
+        "_from": "nodes/b",
+        "_id": "links/bc",
+        "_key": "bc",
+        "_to": "nodes/c"
+      }
+    ],
+    "schema": {
+      "message": "name required",
+      "level": "strict",
+      "type": "json",
+      "rule": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "indexes": [
+      {
+        "type": "primary",
+        "fields": [
+          "_key"
+        ],
+        "unique": true,
+        "sparse": false
+      },
+      {
+        "type": "persistent",
+        "fields": [
+          "name"
+        ],
+        "unique": true,
+        "sparse": false
+      }
+    ],
+    "graph": [
+      {
+        "collection": "links",
+        "from": [
+          "nodes"
+        ],
+        "to": [
+          "nodes"
+        ]
+      }
+    ],
+    "traversal": [
+      "b",
+      "c"
+    ]
+  },
+  "dump_files": {
+    "nodes_ca15fd43dfaeb80eb8c125735e0479b0.structure.json": "681a7f9564414e44294f8be2e97523e69b50d3812bf23caa7f0c7c0d08f90fe8",
+    "links_807765384d9d5527da8848df14a4f02f.structure.json": "4b18439febb7ef6a6d3c9b57c1e2fc81bce37d6f53dede5c6248187ad89437b0",
+    "_graphs_c827636f2b54efb49f1f02feeeacfb01.structure.json": "5af445e1e8e52a6630784cb5fc70cde47949e5b5a80ef42c1eb5dfdab2a05649",
+    "nodes_ca15fd43dfaeb80eb8c125735e0479b0.data.json.gz": "c7cd2eeba78f222b8740fabb5d30cb020e10fffb2295434134ccaf3fdca7755a",
+    "links_807765384d9d5527da8848df14a4f02f.data.json.gz": "24944074a2b0a2b6f7702558c7bb429f0967b53105260424c55ed1612f200202",
+    "_graphs_c827636f2b54efb49f1f02feeeacfb01.data.json.gz": "089548af20fab977ae3cb7d8fee52268568d1f9d45ca8ac3018c52a2d45c8303",
+    "dump.json": "ce1dc23524ab60811e5a228cf41ea136b2f149cf33e4989abd075649baf96f89",
+    "ENCRYPTION": "140bedbf9c3f6d56a9846d2ba7088798683f4da0c248231336e6a05679e4fdfe"
+  },
+  "binary_sha256": {
+    "arangod": "03275307f9cd0d8153c7f772e9283db502d6d32c932519b52c094986aab697bb",
+    "arangodump": "1fca83d04961e3666e777a45dea7df66309481bcaff58d20fe93699d4c6b8898",
+    "arangorestore": "906b3f42a36832aee270e898ce79d88159ecbef75eab677a0946c625b726e766"
+  },
+  "probe_sha256": "97e0353944d0832a9f078c847024873f07bb72ae389471f8ad0a7af1ddd3ab39",
+  "isolation_helper_sha256": "01be729145319f272fa5ef6c1fbdfda98b2bb204130f682bacc901ad9deef1ef",
+  "status": "passed"
+}
