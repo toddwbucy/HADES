@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Apply LSP request deadlines across writer admission, transmission and response;
+  clean pending requests on cancellation and close interrupted frames before reuse (#94).
+
 - Retain ordinary and late-chunk embedding workers through cancellation and
   drain admitted work before idle or lifespan model cleanup (#92).
 

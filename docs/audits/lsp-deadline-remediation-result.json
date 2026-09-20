@@ -1,0 +1,23 @@
+{
+  "issue": 94,
+  "scope": "Isolated direct-child JSON-RPC transport; no real analyzer or production service",
+  "integration_base": "b0d14f09a7ca1a94c0f4e609216e5bf1b3ae5781",
+  "results": {
+    "focused_unit_tests": 4,
+    "integration_tests": 8,
+    "integrated_duration_seconds": 10.02,
+    "clippy": "passed with -D warnings"
+  },
+  "sha256": {
+    "crates/hades-core/src/code/lsp/client.rs": "dd2808c939fbf5ede2294450b91a1729e91aa4562d0c53de31d6146ec3ad39e5",
+    "crates/hades-core/tests/lsp_deadline.rs": "d6ed6b9e5e8066920e4004b313f2af11d756b0a23496ce79c60d0cc0585f99a2",
+    ".github/workflows/ci.yml": "8ef2fccf7890c9c440b05fc5cd3228102881fec100c91fbec0c3003b01672e8d"
+  },
+  "limitations": [
+    "Cooperative async deadlines do not preempt JSON serialization",
+    "No descendant process ownership certification",
+    "No frame or notification memory limit certification",
+    "No analyzer preflight certification",
+    "No production deployment"
+  ]
+}
