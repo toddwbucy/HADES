@@ -6,6 +6,10 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Training active-compute cancellation](training-compute-cancellation.md): private
+  CPU ordering reproduction for #77; cancelled client outcomes can include a
+  completed model update, and the valid step does not yield to its event loop.
+
 - [Component/API coverage map](component-coverage.md): revision-bound five-crate
   and Python-package inventory, tested boundaries and explicit remaining review.
 

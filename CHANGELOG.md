@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Record private CPU training cancellation and queued-prefetch cleanup
+  reproductions, with explicit outcome and scheduling limits (#77).
+
 - Freeze a revision-bound code-search corpus and candidate questions, with private
   Git snapshot contracts, lossless passages and token-budget preflight evidence (#12).
 
