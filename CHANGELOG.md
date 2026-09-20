@@ -392,6 +392,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Keep extraction input files and worker ownership until executor work drains
   after cancellation; reject shutdown admission and defer model cleanup (#90).
 
+- Store document metadata, chunks and embeddings in one transaction so rejected
+  replacement writes preserve the prior document (#88).
+
 - Reject malformed stored structural vectors in lookup and neighbor requests;
   exclude invalid candidates before neighbor scoring (#85).
 
