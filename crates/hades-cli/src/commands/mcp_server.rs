@@ -984,7 +984,7 @@ pub async fn serve_app(
 ) -> Result<()> {
     let addr = listener.local_addr().context("mcp listener local_addr")?;
     tracing::info!(%addr, "mcp endpoint listening");
-    axum::serve(listener, app)
+    axum::serve(super::transport_limits::AdmittedListener(listener), app)
         .with_graceful_shutdown(async move { shutdown.cancelled_owned().await })
         .await
         .context("mcp server error")?;

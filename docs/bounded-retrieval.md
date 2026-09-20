@@ -29,12 +29,14 @@ retains its cursor reservation until the independent owner finishes cleanup.
 The existing service timeout envelope remains `INTERNAL` with `request timed out`.
 Standalone CLI processes have separate admission accounting.
 
-The Unix daemon admits at most 64 open connections, retaining each connection
-slot through response writes. Excess connections are closed before request
-allocation; clients must reconnect with bounded backoff. Writes have a 15-second
-deadline, including framing and flushing, so stalled readers eventually release
-response buffers. These controls do not yet bound MCP session replay caches;
-that transport remains an outstanding validation and implementation requirement.
+The Unix daemon and MCP listener share a cap of 64 open connections, retaining
+slots through response writes. Excess connections close before request parsing;
+clients must reconnect with bounded backoff. Unix writes have a 15-second deadline,
+including framing and flushing. MCP TCP connections have a five-minute absolute
+lifetime, including stalled reads/writes and SSE streams. Clients reconnect using
+their existing session and Last-Event-ID; a socket expiry does not delete the
+session or its replay cache. These controls do not yet bound MCP session replay
+caches; that remains an outstanding implementation and validation requirement.
 
 Wire limits apply before JSON parsing, including chunked responses. Row count is
 only a work limit, not an estimate of memory use. The reservations are conservative

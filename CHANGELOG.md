@@ -19,8 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
-- Bound Unix daemon connections to 64 and response writes to 15 seconds so
-  stalled readers cannot retain completed search responses indefinitely (#22).
+- Share a 64-connection cap across Unix daemon and MCP sockets, limit Unix
+  response writes to 15 seconds, and expire MCP TCP connections after five minutes
+  without deleting their resumable sessions (#22).
 
 - Exact vector search folds bounded pages into top-K results with shared
   admission and bounded embedding, detail, and structural responses (#22).
