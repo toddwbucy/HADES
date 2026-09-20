@@ -65,7 +65,7 @@ For low-latency local deployments, HADES connects to ArangoDB over a Unix domain
 
 **Build:**
 
-- Rust edition 2024 (stable 1.85+)
+- Rust edition 2024 (Rust 1.98.1)
 
 **Optional — only required for their respective command paths:**
 
@@ -80,33 +80,35 @@ For low-latency local deployments, HADES connects to ArangoDB over a Unix domain
 ```
 cargo build              # debug
 cargo build --release    # release
-cargo test               # ~350 tests
-cargo clippy             # lint
+cargo test --workspace --lib --bins  # unit tests; DB fixtures skip without explicit setup
+cargo clippy --workspace --all-targets -- -D warnings  # lint
 ```
 
 Binary: `target/debug/hades` or `target/release/hades`.
 
-### Pre-release verification
+### Test and pre-release verification
 
-Before installing a new binary, run the end-to-end pipeline smoke test
-against it. It exercises full pipelines (tasks, document ingest, codebase
-ingest, drift→retire→prune, semantic search) on a dedicated
-`bident_burn_smoke` database and asserts the graph invariants that past
-regressions actually violated — foreign keys on chunks/embeddings,
-input canonicalization, the honest batch envelope, `--force` stability:
+CI gates Rust build/lint/unit and service-free contracts, Python CPU contracts,
+and isolated database workflows. The database runner provisions a private server
+and per-test databases; it does not discover or modify an installed HADES service.
 
+```bash
+cargo fetch --locked
+python3 scripts/test_isolated_database.py --docker
+# Alternatively, use an existing test-server binary:
+python3 scripts/test_isolated_database.py --arangod /path/to/arangod
 ```
-HADES_BIN=target/release/hades ./scripts/bident_burn_smoke.sh
-```
 
-Requires live ArangoDB and the embedder service. It creates `bident_burn_smoke`
-on its first run and truncates it on later ones (there is deliberately no
-`drop-database` command, #118), and touches no other database.
+See [test environments and commands](docs/specs/workstation-specific-tests.md)
+for the complete matrix, hashed Python environment, resource limits, and optional
+analyzer/CUDA probes. The lifecycle fixture exercises ingest/search, modification,
+moves, retirement/deletion, graph integrity, and partial failure/retry using a
+private deterministic embedder. It does not establish production retrieval quality.
 
-`scripts/cli_audit.sh` is the command-level companion, asking "does every command
-run" where the smoke test asks "is the graph right". It is hardwired to
-`bident_burn`, which no longer exists, so it fails until the Persephone pass
-reworks it.
+Legacy `scripts/bident_burn_smoke.sh` and `scripts/cli_audit.sh` depend on named
+databases and installed services. They are not CI gates and must not be pointed at
+an active production server. Use the isolated runner for regression checks; any
+production rollout needs its own maintenance, health, backup, and rollback plan.
 
 ## Install
 
@@ -143,7 +145,7 @@ sudo apt-get update && sudo apt-get install -y arangodb3
 During `apt-get install` you'll be prompted to set a root password
 for ArangoDB — note it, you'll use it in step 2.
 
-**Install Rust** (edition 2024, stable 1.85+):
+**Install Rust** (edition 2024, Rust 1.98.1):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

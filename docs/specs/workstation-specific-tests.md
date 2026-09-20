@@ -1,135 +1,77 @@
-# Workstation-specific tests
+# Test environments and CI gates
 
-**Status:** accepted, documents existing practice
-**Issue:** [#93](https://github.com/toddwbucy/HADES/issues/93)
-**Date:** 2026-05-15
+Updated for audit [#20](https://github.com/toddwbucy/HADES/issues/20).
 
-## Problem
+## Test matrix
 
-Some tests in this repository depend on resources that exist only on a
-specific machine: a running ArangoDB instance with particular data, a
-locally-available embedder service, a real `NestedLearning` database
-with populated collections. These tests cannot generalize — renaming
-identifiers doesn't help, because the tests *do* what their names
-say *for that specific data*.
+| Gate | Coverage | External resources |
+|---|---|---|
+| Rust build/test/lint | Workspace library and binary tests, rustfmt, all-target Clippy | Pinned Rust toolchain, protoc |
+| Service-free contracts | `proto_types`, `pipeline`, `config_integration`, embedding contract/client, extraction client, training client | Private mock sockets; no installed ML services |
+| Python CPU contracts | Training topology, metrics, checkpoint/schema/RPC validation, models, subset export, adapter scope | Python 3.12.14 and hashed CPU dependency lock; generated protobufs |
+| Isolated database contracts | CRUD/index/query/transport/cache, graph loader/contract, cursor cancellation, codebase invariants, file identity, full CLI lifecycle | Disposable ArangoDB with vector indexes enabled |
+| Profile selection | Persistent enablement, switching, simulated reboot, failure/rollback | Mock systemctl/curl only |
+| Optional workstation probes | `clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`, CUDA-specific Python case | Explicit analyzer/CUDA prerequisites; not evidence supplied by CPU CI |
 
-The risk is silent drift. If a test silently skips when its environment
-is unavailable, CI green tells us nothing about whether the test
-actually exercises anything. Over time the test ages out, the
-environment shifts, and no one notices until someone needs the test to
-pass and discovers it never has.
+The CLI lifecycle uses a private deterministic embedding HTTP fixture. It covers
+real storage, late-chunk response mapping, query retrieval, content and symbol-line
+changes, file moves, drift/retirement, graph validation, deletion, and a failed
+document phase alongside durable code ingestion/retry. These vectors establish
+pipeline correctness, not the quality of a production embedding model.
 
-## Decision
+## Run database contracts
 
-Workstation-specific tests are first-class. They live in the repo, they
-self-skip in environments where they can't run, and they support an
-opt-in strict mode that converts skip into panic so a workstation can
-verify regressions deliberately.
+Use an isolated checkout on an active server. Never export a live socket or corpus
+name into these tests. The runner creates a private 0700 directory and Unix-only
+server, replaces inherited HADES/Arango configuration, sets `ARANGO_TESTS=1`, and
+terminates its own server/process groups on success, error, timeout, or caught
+interruption. SIGKILL and machine failure cannot run cleanup.
 
-### Convention
-
-A test that needs an external resource (database socket, embedder
-service, specific data) follows this shape:
-
-1. **Lives in `crates/<crate>/tests/<name>.rs`** — Rust's integration
-   test convention. Such tests are not compiled when `cargo test --lib`
-   runs, which is what CI runs by default. They only enter the build
-   when `cargo test` (no flag) or `cargo test --test <name>` runs them
-   explicitly.
-
-2. **Skips gracefully when its environment is absent.** Use a setup
-   helper that returns `Option<Setup>` and have each test do
-   `let Some(setup) = setup_helper() else { return };`. Log a `warn!`
-   line explaining what was missing so a contributor running tests
-   locally can see the skip.
-
-3. **Honors `ARANGO_TESTS=1` (or analogous flag) as strict mode.** When
-   the strict flag is set and the environment is *still* missing, the
-   setup helper panics with a message naming what's needed. This lets
-   a workstation operator deliberately run "everything should work
-   right now" and get a hard failure if it doesn't.
-
-4. **Documents required environment at the top of the file.** A short
-   doc comment listing the external resources the test depends on and
-   the env vars it honors. Example: `tests/graph_loader.rs` lists
-   socket path, password env var, and the expected database state.
-
-### CI behavior
-
-CI runs `cargo test --workspace --lib` by default. This compiles only
-unit tests inside each crate's `src/` tree; integration tests in
-`tests/` are not built, not run, and don't contribute to CI time or
-flake risk.
-
-A future workstation-class CI job could run `ARANGO_TESTS=1 cargo test
---workspace` against a runner that has the required services. Such a
-job is out of scope for this spec; the current convention leaves the
-door open for it.
-
-### What this is not
-
-- **Not a feature flag.** Cargo features were considered and rejected:
-  they require remembering an extra flag, they make `cargo test`
-  semantics non-obvious, and the integration-test directory already
-  provides the isolation we need.
-- **Not a separate repository.** Out-of-tree harness was considered
-  and rejected: tests are meaningfully tied to the crates they
-  exercise, and moving them across a repo boundary adds friction
-  without proportionate benefit at this scale.
-
-## Audit (2026-05-15)
-
-All ArangoDB-dependent integration tests follow the convention:
-
-- `crates/hades-core/tests/graph_loader.rs` — skip+strict
-- `crates/hades-core/tests/arango_cache.rs` — skip+strict
-- `crates/hades-core/tests/arango_crud.rs` — skip+strict
-- `crates/hades-core/tests/arango_index.rs` — skip+strict
-- `crates/hades-core/tests/arango_query.rs` — skip+strict
-- `crates/hades-core/tests/arango_transport.rs` — skip+strict
-  (brought into line with this spec; previously skip-only)
-
-The remaining integration test files
-(`config_integration.rs`, `training_client.rs`, `extraction_client.rs`,
-`embedding_client.rs`, `pipeline.rs`, `proto_types.rs`) are
-self-contained or mock-driven and don't depend on workstation state.
-
-## How to add a new workstation-specific test
-
-```rust
-//! Integration tests for <thing>.
-//!
-//! Prerequisites:
-//! - ArangoDB running with socket at /run/arangodb3/arangodb.sock
-//! - ARANGO_PASSWORD environment variable set
-//!
-//! Tests are skipped gracefully when prerequisites are missing.
-//! Set ARANGO_TESTS=1 to make missing prerequisites a hard error.
-
-use std::path::PathBuf;
-use tracing::warn;
-
-fn require_socket() -> Option<PathBuf> {
-    let socket = PathBuf::from(
-        std::env::var("ARANGO_SOCKET")
-            .unwrap_or_else(|_| "/run/arangodb3/arangodb.sock".to_string()),
-    );
-    if !socket.exists() {
-        if std::env::var("ARANGO_TESTS").is_ok_and(|v| v == "1" || v == "true") {
-            panic!("ARANGO_TESTS=1 but socket missing: {}", socket.display());
-        }
-        warn!("skipping: ArangoDB socket not found at {}", socket.display());
-        return None;
-    }
-    Some(socket)
-}
-
-#[tokio::test]
-async fn test_thing() {
-    let Some(socket) = require_socket() else { return };
-    // ... test against the resource
-}
+```bash
+cargo fetch --locked
+python3 scripts/test_isolated_database.py --arangod /path/to/test/arangod
+# Or use the pinned official container image (Docker required):
+python3 scripts/test_isolated_database.py --docker
 ```
 
-Future contributors writing a workstation-specific test should follow
-this shape so the skip behavior is uniform across the suite.
+Each write test uses `hades_core::test_support::with_temp_db`; no named corpus or
+preexisting seed data is required. The harness requires explicit `ARANGO_SOCKET`
+and `ARANGO_PASSWORD` and never defaults to a system socket. Missing prerequisites
+are visible skips outside strict mode and failures under `ARANGO_TESTS=1`. The
+runner also proves the missing-socket failure path. Vector-index unavailability
+is a strict failure, not a passing skip.
+
+Server caches and thread counts are capped. Local server/test commands have one
+CPU affinity, reduced priority, an 8 GiB address-space ceiling, and timeouts. The
+CI server container additionally has a 1 GiB memory ceiling, PID limit, read-only
+root, private writable fixture mount, and no network. Logs and command results
+remain in the printed `/tmp/hades-tests-*` directory; CI uploads only logs/results.
+
+## Run CPU service contracts
+
+Install into a new test environment, never the running services' environment:
+
+```bash
+python3.12 -m venv /tmp/hades-test-python
+/tmp/hades-test-python/bin/python -m pip install --require-hashes --only-binary=:all: \
+  --extra-index-url https://download.pytorch.org/whl/cpu -r services/requirements-ci.txt
+make -C services proto-gen PROTO_DIR=../proto PYTHON=/tmp/hades-test-python/bin/python
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  /tmp/hades-test-python/bin/python -m pytest services/tests -v
+```
+
+The lock pins direct and transitive dependencies with distribution hashes. Its
+input records the regeneration command. CUDA-specific coverage remains an explicit
+skip on CPU runners. Adapter tests generate their own corpus; no WeaverTools
+checkout, model download, production database, GPU, or installed service is needed.
+
+## Adding tests
+
+Prefer service-free fixtures. Put database workflows in integration binaries,
+with deterministic seed data and teardown through `with_temp_db`. Do not mix
+credential-dependent database tests with unit tests that mutate process-wide
+environment variables. Add the target to the isolated runner, ensure strict mode
+fails when prerequisites are missing, and assert meaningful stored state after
+failure/retry. CI green is evidence only for the gates listed above, not live
+inference, production reboot behavior, backup restoration, or retrieval quality.

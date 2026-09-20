@@ -35,6 +35,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   bodies now share the request deadline instead of waiting indefinitely after
   headers. This supports the bounded retrieval work in #22.
 
+- Gate CPU Python contracts with a hashed dependency lock and database workflows
+  with a private resource-limited ArangoDB runner (#20). Replace named-corpus
+  fixtures with disposable seeded databases, generate adapter fixtures locally,
+  and cover the CLI graph/retrieval lifecycle with partial failure and retry.
+
 - **`config/schemas/codebase.yaml`**, the universal code graph as data. `hades
   ingest` creates its collections and gharial edge definitions directly and leaves
   `hades_schema` holding at most the empty `meta` that `--seed empty` writes, so
