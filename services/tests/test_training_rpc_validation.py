@@ -33,6 +33,7 @@ def loaded_service():
     service.edge_src = torch.tensor([0, 1, 2])
     service.edge_dst = torch.tensor([1, 2, 3])
     service.edge_type = torch.zeros(3, dtype=torch.long)
+    service.train_idx = torch.tensor([0])
     return service
 
 

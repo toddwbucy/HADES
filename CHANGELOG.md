@@ -269,6 +269,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Separate training adjacency from held-out link-prediction targets (#14). Split
+  inverse and duplicate endpoint pairs together, serialize and return one shared
+  partition, and reject invalid partitions or training on held-out edges.
+
 - Reject embedding responses with duplicate, missing, or invalid input indices,
   nonnumeric or nonfinite vectors, unexpected dimensions, or incompatible model
   identities before associating vectors with chunks (#16). Apply vector and model

@@ -15,5 +15,5 @@ pub use prefetcher::{
 pub use tensor::{
     EdgeSplit, MappedGraph, NegativeSamples, SplitConfig, TensorError, negative_sample,
     prepare_and_serialize, serialize_graph, serialize_graph_for_inference,
-    serialize_graph_for_inference_to_file, serialize_to_file, split_edges,
+    serialize_graph_for_inference_to_file, serialize_to_file, split_edges, split_graph_edges,
 };

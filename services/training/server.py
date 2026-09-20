@@ -97,6 +97,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         self.edge_src = None
         self.edge_dst = None
         self.edge_type = None
+        self.train_idx = None  # None denotes an inference-only graph.
 
     # -- helpers ----------------------------------------------------------
     def _build_model(self, in_dim: int) -> int:
@@ -150,6 +151,40 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
     def _clear_graph(self):
         self.x = self.node_collections = None
         self.edge_src = self.edge_dst = self.edge_type = None
+        self.train_idx = None
+
+    def _training_split(self, tensors):
+        """Validate the partition on CPU, including reverse/duplicate leakage."""
+        names = ("train_idx", "val_idx", "test_idx")
+        if not any(name in tensors for name in names):
+            return None  # Full adjacency is permitted only for inference.
+        if not all(name in tensors for name in names):
+            raise ValueError("training graphs require train_idx, val_idx, and test_idx")
+        count = tensors["edge_src"].numel()
+        owner = torch.full((count,), -1, dtype=torch.long)
+        for group, name in enumerate(names):
+            indices = tensors[name]
+            if indices.ndim != 1 or not str(indices.dtype).startswith(("torch.int", "torch.uint")):
+                raise ValueError(f"{name} must be a one-dimensional integer tensor")
+            indices = indices.long()
+            if ((indices < 0) | (indices >= count)).any() or indices.unique().numel() != indices.numel():
+                raise ValueError(f"{name} contains duplicate or out-of-range indices")
+            if (owner[indices] != -1).any():
+                raise ValueError("edge splits overlap")
+            owner[indices] = group
+        if (owner == -1).any() or tensors["train_idx"].numel() == 0:
+            raise ValueError("splits must cover all edges and contain training edges")
+        pairs = {}
+        for src, dst, group in zip(tensors["edge_src"].tolist(), tensors["edge_dst"].tolist(), owner.tolist()):
+            pair = (min(src, dst), max(src, dst))
+            if pairs.setdefault(pair, group) != group:
+                raise ValueError("duplicate/inverse endpoint pairs must share one split")
+        return tensors["train_idx"].long().to(self.device)
+
+    def _adjacency(self):
+        if self.train_idx is None:
+            return self.edge_src, self.edge_dst, self.edge_type
+        return tuple(t[self.train_idx] for t in (self.edge_src, self.edge_dst, self.edge_type))
 
     def _graph_tensors(self, tensors):
         """Validate on CPU before transferring or replacing any active state."""
@@ -231,6 +266,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         try:
             t = load_file(request.safetensors_path)
             x, nc, src, dst, rel = self._graph_tensors(t)
+            train_idx = self._training_split(t)
         except FileNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
         except (ValueError, KeyError, OSError, SafetensorError) as exc:
@@ -243,6 +279,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         self.x = x
         self.node_collections = nc
         self.edge_src, self.edge_dst, self.edge_type = src, dst, rel
+        self.train_idx = train_idx
 
         num_nodes = self.x.size(0)
         num_edges = self.edge_src.size(0)
@@ -259,7 +296,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
 
     def _encode(self) -> torch.Tensor:
         return self.model.encode(
-            self.x, self.node_collections, self.edge_src, self.edge_dst, self.edge_type
+            self.x, self.node_collections, *self._adjacency()
         )
 
     def _validate_subset(self, requested: list[int]) -> None:
@@ -278,9 +315,10 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         targets = torch.tensor(requested, device=self.device, dtype=torch.long)
         active = torch.zeros(num_nodes, device=self.device, dtype=torch.bool)
         active[targets] = True
+        edge_src, edge_dst, edge_type = self._adjacency()
         for _ in self.model.convs:
-            incoming_edges = active[self.edge_dst]
-            active[self.edge_src[incoming_edges]] = True
+            incoming_edges = active[edge_dst]
+            active[edge_src[incoming_edges]] = True
 
         global_nodes = active.nonzero(as_tuple=False).flatten()
         global_to_local = torch.full(
@@ -289,10 +327,10 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         global_to_local[global_nodes] = torch.arange(
             global_nodes.numel(), device=self.device
         )
-        edge_mask = active[self.edge_src] & active[self.edge_dst]
-        local_src = global_to_local[self.edge_src[edge_mask]]
-        local_dst = global_to_local[self.edge_dst[edge_mask]]
-        local_type = self.edge_type[edge_mask]
+        edge_mask = active[edge_src] & active[edge_dst]
+        local_src = global_to_local[edge_src[edge_mask]]
+        local_dst = global_to_local[edge_dst[edge_mask]]
+        local_type = edge_type[edge_mask]
 
         local_embeddings = self.model.encode(
             self.x[global_nodes],
@@ -305,10 +343,14 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
 
     async def TrainStep(self, request, context):
         await self._require_loaded(context)
+        if self.train_idx is None:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "load a graph with explicit training splits")
         try:
             pos_idx, neg_src, neg_dst = self._step_indices(
                 request.train_edge_indices, request.neg_src, request.neg_dst
             )
+            if not torch.isin(pos_idx, self.train_idx).all():
+                raise ValueError("training targets must belong to train_idx")
         except ValueError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         self.model.train()
@@ -324,10 +366,14 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
 
     async def Evaluate(self, request, context):
         await self._require_loaded(context)
+        if self.train_idx is None:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "load a graph with explicit training splits")
         try:
             pos_idx, neg_src, neg_dst = self._step_indices(
                 request.edge_indices, request.neg_src, request.neg_dst
             )
+            if torch.isin(pos_idx, self.train_idx).any():
+                raise ValueError("evaluation targets must belong to a held-out split")
         except ValueError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         self.model.eval()
