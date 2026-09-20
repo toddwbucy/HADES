@@ -392,6 +392,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Own language-server process groups through normal exit, transport failure and
   cancelled shutdown; stop descendants before reaping the leader (#100).
 
+- Bound LSP headers, frame serialization, notification retention and pending
+  admission; fail closed on inbound overflow and reject oversized sends before
+  writing protocol bytes (#98).
+
 - Apply LSP request deadlines across writer admission, transmission and response;
   clean pending requests on cancellation and close interrupted frames before reuse (#94).
 

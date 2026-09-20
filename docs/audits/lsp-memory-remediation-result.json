@@ -1,0 +1,30 @@
+{
+  "issue": 98,
+  "base_main": "f525d1a35339324f09be00a70beada7aadded0fb",
+  "tests": {
+    "focused_unit": 7,
+    "memory_integration": 6,
+    "memory_integration_seconds": 0.42,
+    "deadline_integration": 8,
+    "deadline_integration_seconds": 10.01
+  },
+  "clippy": "core lib, memory and deadline integration targets passed with -D warnings",
+  "limits": {
+    "header_bytes": 8192,
+    "frame_bytes": 16777216,
+    "pending_requests": 128,
+    "retained_notifications": 1024,
+    "notification_wire_bytes": 8388608
+  },
+  "sha256": {
+    "crates/hades-core/src/code/lsp/client.rs": "ba89c378ca356c3d4c2c9108cf41364d3f72390e3f2779d4b1e45d0368b9af4f",
+    "crates/hades-core/tests/lsp_memory.rs": "6e699edac19d408900b91e65873ba483c18c0db19b7776ad0a4a637611206a0a",
+    ".github/workflows/ci.yml": "6a699689c74d9f141de8d55be15b129598fe6bbd4887695c0a9da4817c23eb66"
+  },
+  "production_changed": false,
+  "limitations": [
+    "Per-transport limits, not global daemon heap budget",
+    "Synchronous bounded serialization not preempted",
+    "No descendant sandbox certification"
+  ]
+}

@@ -213,3 +213,7 @@ preflight and descendant boundaries remain outside that verification.
 [LSP descendant ownership](lsp-descendant-review.md) records #100's bounded
 reproductions and process-group lifecycle tests. Process-group signalling does
 not contain descendants that intentionally escape their group.
+
+[LSP memory boundaries](lsp-memory-review.md) retains #98's bounded baseline and
+per-transport framing, notification and pending-admission remediation. This is
+not a global daemon memory budget or subprocess sandbox claim.
