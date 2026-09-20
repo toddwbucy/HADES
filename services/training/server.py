@@ -190,7 +190,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             pair = (min(src, dst), max(src, dst))
             if pairs.setdefault(pair, group) != group:
                 raise ValueError("duplicate/inverse endpoint pairs must share one split")
-        return tensors["train_idx"].long().to(self.device)
+        return tensors["train_idx"].long()
 
     def _adjacency(self):
         if self.train_idx is None:
@@ -224,7 +224,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         ):
             if ((values < 0) | (values >= upper)).any():
                 raise ValueError(f"{name} contains an out-of-range index")
-        return tuple(t.to(self.device) for t in (x, nc, src, dst, rel))
+        return x, nc, src, dst, rel
 
     def _step_indices(self, edge_indices, neg_src, neg_dst):
         """Reject invalid loss inputs before changing model mode or gradients."""
@@ -288,6 +288,11 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             for index, name in enumerate(contract["collection_names"]):
                 if not contract["feature_models"][name] and torch.any(x[nc == index] != 0):
                     raise ValueError(f"collection {name} has features without model provenance")
+            # Reject incompatible metadata entirely on CPU before allocating
+            # a second graph on the model's device.
+            x, nc, src, dst, rel = (tensor.to(self.device) for tensor in (x, nc, src, dst, rel))
+            if train_idx is not None:
+                train_idx = train_idx.to(self.device)
         except FileNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
         except (ValueError, KeyError, TypeError, RuntimeError, OSError, SafetensorError) as exc:

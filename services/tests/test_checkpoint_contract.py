@@ -1,5 +1,6 @@
 """Checkpoint compatibility must preserve weights and active state on rejection."""
 from copy import deepcopy
+from unittest.mock import patch
 import json
 
 import grpc
@@ -139,3 +140,16 @@ def test_unbound_checkpoint_does_not_create_file(tmp_path):
     path = tmp_path / "unbound.pt"
     rejected(service, "Checkpoint", pb.CheckpointRequest(path=str(path)), grpc.StatusCode.FAILED_PRECONDITION)
     assert not path.exists()
+
+
+def test_incompatible_contract_is_rejected_before_device_transfer(tmp_path):
+    service = loaded_service(relations=2, collections=2)
+    contract = deepcopy(service.model_contract)
+    contract["relation_order"].reverse()
+    path = tmp_path / "wrong-mapping.safetensors"
+    write_graph(path, contract)
+    with patch.object(torch.Tensor, "to", side_effect=AssertionError("unexpected device transfer")):
+        with pytest.raises(grpc.aio.AioRpcError) as error:
+            invoke(service, "LoadGraph", pb.LoadGraphRequest(safetensors_path=str(path)))
+        assert error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert "differs from the bound model" in error.value.details()
