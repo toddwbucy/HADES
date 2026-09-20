@@ -916,6 +916,14 @@ impl ServerHandler for HadesMcpServer {
 
 /// The SDK collects the raw body itself, so Axum extractor-only limits do not apply.
 pub(super) async fn enforce_body_limit(request: Request, next: Next) -> Response {
+    enforce_body_limit_with_timeout(request, next, Duration::from_secs(15)).await
+}
+
+async fn enforce_body_limit_with_timeout(
+    request: Request,
+    next: Next,
+    budget: Duration,
+) -> Response {
     static BODIES: std::sync::LazyLock<tokio::sync::Semaphore> =
         std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(64));
     let Ok(_permit) = BODIES.try_acquire() else {
@@ -926,12 +934,7 @@ pub(super) async fn enforce_body_limit(request: Request, next: Next) -> Response
             .into_response();
     };
     let (parts, body) = request.into_parts();
-    let bytes = match tokio::time::timeout(
-        Duration::from_secs(15),
-        axum::body::to_bytes(body, MAX_BODY),
-    )
-    .await
-    {
+    let bytes = match tokio::time::timeout(budget, axum::body::to_bytes(body, MAX_BODY)).await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(error)) => {
             use std::error::Error;
@@ -1201,6 +1204,33 @@ mod tests {
                 "task_update",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn stalled_body_times_out_before_handler_execution() {
+        async fn unexpected_handler() -> StatusCode {
+            panic!("stalled body must not reach the handler")
+        }
+        let app = Router::new()
+            .route("/mcp", axum::routing::post(unexpected_handler))
+            .layer(middleware::from_fn(|request, next| {
+                enforce_body_limit_with_timeout(request, next, Duration::from_millis(20))
+            }));
+        let body = Body::from_stream(futures::stream::pending::<Result<String, std::io::Error>>());
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            app.oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .body(body)
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     }
 
     #[tokio::test]

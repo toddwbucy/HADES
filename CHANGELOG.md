@@ -19,6 +19,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Calibrate search admission against full-handler memory pilots; release normal
+  MCP request reservations after cleanup acknowledgment, retaining the replay
+  window only for cancellation. Add creation-cancellation and body-timeout
+  regressions (#22).
+
 - Enforce MCP's 16 MiB body limit before SDK parsing, including chunked requests;
   cap concurrent body handling and apply a 15-second body-read deadline (#22).
   The previous Axum extractor limit did not cover the SDK's raw body collector.

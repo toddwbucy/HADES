@@ -39,8 +39,8 @@ session. MCP additionally admits 32 sessions, 64 retained request owners, and
 64 concurrent GET/resume streams per process. A request reservation survives HTTP
 cancellation and remains held through explicit SDK cache cleanup and any queued
 response stream. Session slots return only after the worker has exited and both
-manager maps are cleaned. These counts are provisional capacity controls pending
-full-handler measurements, not RSS guarantees.
+manager maps are cleaned. These operational count limits are tested at saturation
+and constrain retained work; they are not process RSS guarantees.
 
 MCP request bodies are collected through an explicit 16 MiB byte limit before
 SDK parsing, including chunked bodies with no Content-Length. Body reads have a
@@ -59,16 +59,33 @@ The installed rmcp 2.2 implementation removes normal terminal-response caches
 immediately; completed-response replay therefore fails, despite its exposed
 completed-cache TTL setting. Do not promise late replay after completion. Cancelled
 requests use a conservative 60-second retention window followed by explicit cache
-removal. Normal responses currently retain their reservation for that same window.
+removal. Normal terminal responses release their owner after cleanup acknowledgment;
+any response stream still queued to HTTP retains its own reservation reference.
 Clients should back off on admission errors and reinitialize after session expiry.
 
 Wire limits apply before JSON parsing, including chunked responses. Row count is
 only a work limit, not an estimate of memory use. The reservations are conservative
 accounting, not an OS RSS limit: transport buffers, JSON allocation, runtime
-state, unrelated commands, and database caches have separate costs. The current
-numbers remain subject to full-handler workload measurements before rollout.
-Engine-only pilots stayed below 16 MiB client RSS and cannot establish an entire
-daemon's memory requirement. The server's AQL accounting likewise does not bound
+state, unrelated commands, and database caches have separate costs.
+
+Keep the measured handler policy at **128 MiB per search and 512 MiB total**.
+Full-handler pilots with 1,000 results, 64 KiB queries, and maximum-width structural
+reranking peaked at 30.8–31.3 MiB for one request and 70.0–72.1 MiB for four.
+Growing the corpus from 1,024 to 4,096 vectors increased latency without increasing
+retained memory. The reservation is over four times the observed single-request
+process peak, retaining headroom for allocator, input, and model-width variation.
+This is a conservative admission decision, not a measured worst-case guarantee.
+
+MCP response retention is separate: 64 unread near-2 MiB responses peaked at
+273–288 MiB in loopback fixtures including clients. Its count and message-size limits
+must not be described as part of the 512 MiB handler pool. At the configured caps,
+32 sessions can retain up to 512 common-channel messages (1 GiB of serialized
+payload at 2 MiB each); active request channels and parsing have additional costs.
+Maximum-size request bodies alone can occupy 1 GiB across 64 admitted readers.
+Those simultaneous extremes were not measured by the response pilot. Budget
+host/cgroup capacity for the full command mix and SDK queues before deployment;
+never set a daemon memory ceiling to 512 MiB on the strength of search accounting.
+[Reproduction and captured measurements](benchmarks/retrieval.md) state their scope. The server's AQL accounting likewise does not bound
 its process RSS. Keep OS-level capacity planning separate.
 
 Known cursors are deleted on success, failure, and cancellation. If an oversized

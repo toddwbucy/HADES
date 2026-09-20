@@ -79,3 +79,8 @@ search/inference work and does not saturate all common notification caches or
 maximum input bodies. Kernel socket buffers are outside the RSS measurement.
 These separate pilots cannot be added together as a measured combined-process
 ceiling; allocator behavior, input parsing, and other handlers remain separate.
+
+After normal terminal responses were changed to release request admission as soon
+as cache cleanup is acknowledged, the [verification repeat](mcp-slow-readers-final.json)
+passed at 288.2 MiB peak RSS. This retains the same 64 near-limit unread responses;
+the variation reinforces that these are measured workloads, not exact RSS caps.

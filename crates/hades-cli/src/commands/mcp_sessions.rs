@@ -67,11 +67,18 @@ impl Default for BoundedSessionManager {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Completion {
+    Pending,
+    Response,
+    Cancelled,
+}
+
 #[derive(Clone)]
 struct RetainedRequest {
     permit: Arc<OwnedSemaphorePermit>,
     rpc_id: Option<RequestId>,
-    completed: watch::Sender<bool>,
+    completed: watch::Sender<Completion>,
 }
 
 /// The output queue also retains the reservation if the HTTP reader stalls.
@@ -273,7 +280,14 @@ impl SessionManager for BoundedSessionManager {
                 inner.accept_message(&id, message).await?;
                 for ((session, _), request) in retained.lock().await.iter() {
                     if session == &id && request.rpc_id.as_ref() == Some(&rpc_id) {
-                        request.completed.send_replace(true);
+                        request.completed.send_if_modified(|state| {
+                            if *state == Completion::Pending {
+                                *state = Completion::Cancelled;
+                                true
+                            } else {
+                                false
+                            }
+                        });
                     }
                 }
                 Ok::<_, LocalSessionManagerError>(())
@@ -389,7 +403,7 @@ impl SessionManager for BoundedSessionManager {
                 }
             };
             let request_id = receiver.http_request_id.expect("request-wise channel ID");
-            let (completed, completion_rx) = watch::channel(false);
+            let (completed, completion_rx) = watch::channel(Completion::Pending);
             let key = (session_id, request_id);
             retained.lock().await.insert(
                 key.clone(),
@@ -436,7 +450,7 @@ impl SessionManager for BoundedSessionManager {
 async fn forward<S>(
     input: S,
     output: mpsc::Sender<ServerSseMessage>,
-    completed: &watch::Sender<bool>,
+    completed: &watch::Sender<Completion>,
 ) where
     S: Stream<Item = ServerSseMessage>,
 {
@@ -447,7 +461,7 @@ async fn forward<S>(
             message.message.as_deref(),
             Some(ServerJsonRpcMessage::Response(_) | ServerJsonRpcMessage::Error(_))
         ) {
-            completed.send_replace(true);
+            completed.send_replace(Completion::Response);
         }
         if let Some(tx) = &output
             && !matches!(
@@ -462,7 +476,7 @@ async fn forward<S>(
 
 async fn retain_until_cleanup<F, E>(
     permit: Arc<OwnedSemaphorePermit>,
-    mut completed: watch::Receiver<bool>,
+    mut completed: watch::Receiver<Completion>,
     mut closed: watch::Receiver<bool>,
     replay_ttl: Duration,
     cleanup: F,
@@ -472,10 +486,12 @@ async fn retain_until_cleanup<F, E>(
     // A request remains accounted if no terminal response has been observed.
     // Session termination must signal completion before its owner can retire.
     tokio::select! {
-        _ = completed.wait_for(|completed| *completed) => {},
+        _ = completed.wait_for(|completed| *completed != Completion::Pending) => {},
         _ = closed.wait_for(|closed| *closed) => {},
     }
-    tokio::time::sleep(replay_ttl).await;
+    if *completed.borrow() == Completion::Cancelled && !*closed.borrow() {
+        tokio::time::sleep(replay_ttl).await;
+    }
     let _ = cleanup.await;
     drop(permit);
 }
@@ -578,6 +594,74 @@ mod tests {
         let size = serde_json::to_vec(&value).unwrap().len();
         assert!(serde_json::to_writer(ByteBudget(size), &value).is_ok());
         assert!(serde_json::to_writer(ByteBudget(size - 1), &value).is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelled_creation_retains_request_until_independent_cleanup() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut manager = BoundedSessionManager {
+                requests_budget: Arc::new(Semaphore::new(1)),
+                ..Default::default()
+            };
+            Arc::get_mut(&mut manager.inner)
+                .unwrap()
+                .session_config
+                .completed_cache_ttl = Duration::from_millis(20);
+            let (id, service, release) = initialized_session(&manager).await;
+            let ping = || {
+                serde_json::from_value(
+                    serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"ping"}),
+                )
+                .unwrap()
+            };
+            {
+                let creation = manager.create_stream(&id, ping());
+                tokio::pin!(creation);
+                // Poll through spawning the independent owner, then cancel the
+                // HTTP caller before the worker acknowledges channel creation.
+                assert!(futures::poll!(creation.as_mut()).is_pending());
+            }
+            assert!(matches!(
+                manager.create_stream(&id, ping()).await,
+                Err(SessionError::Overloaded)
+            ));
+            loop {
+                if !manager.retained.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            release.notify_one();
+            loop {
+                if manager.requests_budget.available_permits() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(manager.retained.lock().await.is_empty());
+            manager.close_session(&id).await.unwrap();
+            let _ = service.cancel().await;
+        })
+        .await
+        .expect("cancelled creation cleans up independently");
+    }
+
+    #[tokio::test]
+    async fn cancelled_session_registration_does_not_spawn_worker() {
+        let manager = BoundedSessionManager {
+            sessions_budget: Arc::new(Semaphore::new(1)),
+            ..Default::default()
+        };
+        let lock = manager.inner.sessions.read().await;
+        {
+            let creation = manager.create_session();
+            tokio::pin!(creation);
+            assert!(futures::poll!(creation.as_mut()).is_pending());
+            assert_eq!(manager.sessions_budget.available_permits(), 0);
+        }
+        assert_eq!(manager.sessions_budget.available_permits(), 1);
+        assert!(lock.is_empty());
+        assert!(manager.closed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -698,17 +782,6 @@ mod tests {
             ));
             assert!(resumed.next().await.is_none());
             drop(resumed);
-            let extra = serde_json::from_value(
-                serde_json::json!({"jsonrpc":"2.0", "id":99, "method":"ping"}),
-            )
-            .unwrap();
-            assert!(
-                matches!(
-                    manager.create_stream(&id, extra).await,
-                    Err(SessionError::Overloaded)
-                ),
-                "completed owner still retains capacity until cleanup"
-            );
             // rmcp 2.2 removes normal terminal-response caches immediately,
             // despite exposing a completed-cache TTL for other close paths.
             assert!(manager.resume(&id, resume_id.clone()).await.is_err());
@@ -770,7 +843,7 @@ mod tests {
     async fn completion_and_cleanup_ack_both_precede_release() {
         let pool = Arc::new(Semaphore::new(1));
         let permit = Arc::new(pool.clone().try_acquire_owned().unwrap());
-        let (done, rx) = watch::channel(false);
+        let (done, rx) = watch::channel(Completion::Pending);
         let (_closed, closed_rx) = watch::channel(false);
         let (cleanup_started, started) = oneshot::channel();
         let (release, released) = oneshot::channel();
@@ -778,7 +851,7 @@ mod tests {
             permit,
             rx,
             closed_rx,
-            Duration::from_millis(10),
+            Duration::from_secs(60),
             async move {
                 cleanup_started.send(()).unwrap();
                 released.await.unwrap();
@@ -788,8 +861,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(pool.available_permits(), 0);
         assert!(!owner.is_finished(), "EOF alone must not release a cache");
-        done.send_replace(true);
-        started.await.unwrap();
+        done.send_replace(Completion::Response);
+        tokio::time::timeout(Duration::from_secs(1), started)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             pool.available_permits(),
             0,
@@ -802,7 +878,7 @@ mod tests {
 
     #[tokio::test]
     async fn disconnected_http_reader_does_not_prevent_terminal_observation() {
-        let (done, rx) = watch::channel(false);
+        let (done, rx) = watch::channel(Completion::Pending);
         let (tx, output) = mpsc::channel(1);
         drop(output);
         let terminal: ServerJsonRpcMessage =
@@ -813,7 +889,7 @@ mod tests {
             ServerSseMessage::new("1/1", terminal),
         ]);
         forward(input, tx, &done).await;
-        assert!(*rx.borrow());
+        assert_eq!(*rx.borrow(), Completion::Response);
     }
 }
 

@@ -42,7 +42,9 @@ fn validated_query_limit(limit: Option<u32>) -> Result<u32, HandlerError> {
 
 /// Work bound for exact scanning; memory is bounded independently by pages and top-K.
 const MAX_SCANNED_EMBEDDINGS: u64 = 100_000;
-// Provisional conservative reservations, to be calibrated by the isolated #22 benchmark.
+// Conservative handler accounting: full-handler pilots peaked at 31.3 MiB (one)
+// and 72.1 MiB (four). Keep headroom for allocator/input variance; see
+// docs/bounded-retrieval.md. Transport queues and database RSS are separate.
 const SEARCH_RESERVATION_BYTES: u32 = 128 * 1024 * 1024;
 static SEARCH_BYTES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(512 * 1024 * 1024);
 
