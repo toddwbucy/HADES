@@ -106,6 +106,13 @@ def _auth_header() -> dict[str, str]:
     return {"Authorization": f"Basic {token}"}
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep credentials and writes at the explicitly configured endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def arango(db: str, path: str, body=None, method="POST"):
     """One request, returning the parsed body whether it succeeded or not.
 
@@ -121,10 +128,14 @@ def arango(db: str, path: str, body=None, method="POST"):
     headers = {"Content-Type": "application/json"} | _auth_header()
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
+        with urllib.request.build_opener(_RejectRedirects()).open(req, timeout=120) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        return json.loads(e.read().decode() or "{}")
+        with e:
+            if 300 <= e.code < 400:
+                return {"error": True, "code": e.code,
+                        "errorMessage": "HTTP redirect refused by adapter endpoint policy"}
+            return json.loads(e.read().decode() or "{}")
 
 
 def code_keys_by_path(db: str) -> dict[str, str]:
