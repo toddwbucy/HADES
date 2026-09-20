@@ -1,0 +1,15 @@
+{
+  "source_revision": "b0d14f09a7ca1a94c0f4e609216e5bf1b3ae5781",
+  "fixture": "private self-terminating Python child, 300 ms sleep, fixed 2 MiB stdout",
+  "captured_bytes": 2097152,
+  "timer_budget_ms": 20,
+  "observed_timer_elapsed_ms": 313,
+  "test_exit_code": 0,
+  "production_touched": false,
+  "sha256": {
+    "crates/hades-core/src/code/lsp/session.rs": "7a49f1bbe660b5a976e1f84f77aa93429a2d49f728edc338e73875625fc49485",
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "5c2941b3ce0a2d6ecb49ed87c1ff241a2b06be21a8d54085a475ec648d213605",
+    "crates/hades-cli/src/commands/tools.rs": "7bac5e0dcb51f26cc6695e1a730506cff2c26993ed069e0986f3b4795a0ddf55",
+    "docs/audits/repros/analyzer_preflight.rs": "df492628d5b16005deba64d9b4771711fa4f1bcea3733e2488662eb2515e56af"
+  }
+}
