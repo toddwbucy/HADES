@@ -1,0 +1,29 @@
+{
+  "grpcio_version": "1.84.0",
+  "scope": "Actual private gRPC transport using current CI environment defaults; fake extraction. Not live installation or Rust client capacity verification.",
+  "source_sha256": {
+    "services/extraction/server.py": "06d99595cd82a3f7468ceee96ea0cc6f77627271716e4f1292da72251d428bac",
+    "docs/audits/repros/extraction_message_boundaries.py": "452753ee8734d113ae20bd9b5c94ace1739adfb25073ee9ab0a066c9354e4032"
+  },
+  "cases": [
+    {
+      "case": "one_mib_upload",
+      "status": "OK",
+      "backend_calls": 1,
+      "returned_text_bytes": 2
+    },
+    {
+      "case": "over_four_mib_upload",
+      "status": "RESOURCE_EXHAUSTED",
+      "backend_calls": 0,
+      "returned_text_bytes": null
+    },
+    {
+      "case": "over_four_mib_response",
+      "status": "RESOURCE_EXHAUSTED",
+      "backend_calls": 1,
+      "returned_text_bytes": null
+    }
+  ],
+  "runtime_source_revision": "66ebc4d6c6c88c41d5e5c5ba3371d3521b88aa10"
+}

@@ -50,7 +50,8 @@ local access; this is filesystem access control, not TLS or per-RPC user identit
 Training ownership tokens separate lifecycles but do not establish operator roles.
 Training explicitly configures 512 MiB send and receive message ceilings.
 Extraction constructs `grpc_aio.server()` without explicit message-size options;
-its effective library defaults were not experimentally measured here. Neither
+the private Python default-message probe below measures selected cases, but not
+the deployed library or Rust client defaults. Neither
 setting bounds files referenced by path or all decoded/working memory.
 
 Embedding starts one Uvicorn worker. Its entry point does not configure a request
@@ -89,5 +90,36 @@ external 120-second watchdog. Embedding uses the real HTTP framework with a fake
 model backend; extraction uses synthetic text and private RPC fixtures; training
 uses CPU fixtures. This validates the named status/ownership paths, not every
 malformed request, default gRPC size, real model or GPU behavior. Source limits
-above were read, not stress-tested. See the individual worker, session and artifact
+above were read; the small additional probes below are not exhaustion stress tests. See the individual worker, session and artifact
 reports for cancellation/publication boundaries and historical reproductions.
+
+
+## Bounded request/message probes
+
+Two retained scripts run against the same application source with fake backends.
+Both completed successfully under 30-second watchdogs; the extraction script
+starts and stops only its own temporary Unix-socket server. Results retain source
+and probe hashes. No model/GPU or live endpoint is involved.
+
+- [Embedding ASGI probe](repros/embedding_request_boundaries.py) and
+  [result](embedding-request-boundary-result.json): missing model and numeric
+  input returned 422, empty input list returned 400, all without backend calls.
+  A different model alias returned 200 with the fixture backend's own model name.
+  One 4 MiB synthetic string and a one-million batch-size hint each reached the
+  fake backend and returned 200. These are accepted samples, not measured maxima;
+  no inference or large-batch allocation was performed.
+- [Extraction gRPC probe](repros/extraction_message_boundaries.py) and
+  [result](extraction-message-boundary-result.json): with private `grpcio 1.84.0`
+  server/channel defaults, a 1 MiB upload succeeded. An upload of 4 MiB + 1024
+  bytes returned `RESOURCE_EXHAUSTED` without calling the extraction route.
+  A synthetic response of the same size returned `RESOURCE_EXHAUSTED` after the
+  route ran. Thus inbound rejection and client-side response rejection protect
+  different stages; message caps do not prevent all work/allocation beforehand.
+
+The first extraction attempt used the wrong keyword for the fake `ExtractionResult`
+(`full_text` instead of `text`) and returned `UNKNOWN`. The fixture was corrected;
+that failed setup is not a provider defect. Final successful results above are
+from the corrected probe. These three samples do not locate exact protobuf-byte
+thresholds or verify Tonic/Rust defaults. The deployed Python metadata records a
+different grpcio version, so the private result is not asserted as its effective
+limit. Remaining admission/body/response-cap and trust-boundary review stays open.
