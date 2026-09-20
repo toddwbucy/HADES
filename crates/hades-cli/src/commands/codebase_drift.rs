@@ -327,7 +327,7 @@ async fn graph_file_side(pool: &ArangoPool, base: &std::path::Path) -> Result<Gr
     let aql = format!(
         "FOR f IN @@files \
            FILTER f.{field} == null OR f.{field} == @root \
-           RETURN {{ key: f._key, hash: f.content_hash, attributed: f.{field} != null, version: f.file_key_version }}",
+           RETURN {{ key: f._key, hash: f.content_hash, attributed: f.{field} != null, version: f.file_key_version, path: f.path, root: f.{field} }}",
         field = INGEST_ROOT_FIELD
     );
     let bind = json!({ "@files": CODEBASE.files, "root": root });
@@ -425,6 +425,15 @@ async fn graph_file_hashes(
                     .get("attributed")
                     .and_then(|a| a.as_bool())
                     .unwrap_or(false);
+                if attributed {
+                    let root = v.get("root").and_then(|r| r.as_str())
+                        .context("invalid file identity: missing or malformed ingest root")?;
+                    let path = v.get("path").and_then(|p| p.as_str())
+                        .context("invalid file identity: missing or malformed relative path")?;
+                    if hades_core::db::keys::scoped_file_key(root, path) != key {
+                        bail!("file identity conflict in drift response; refusing retirement candidates for mismatched root/path/key");
+                    }
+                }
                 Ok((key, hash, attributed))
             })
             .collect(),

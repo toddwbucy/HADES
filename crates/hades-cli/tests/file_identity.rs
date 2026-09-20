@@ -191,6 +191,13 @@ async fn conflicting_or_legacy_identity_is_rejected_before_purge() {
             symbols,
             rows(&pool, "FOR s IN codebase_symbols RETURN s", json!({})).await
         );
+        let drift = cli(
+            &pool,
+            &["codebase", "drift", root.path().to_str().unwrap(), "--full"],
+        );
+        assert!(!drift.status.success());
+        assert!(String::from_utf8_lossy(&drift.stderr).contains("identity conflict"));
+        assert!(drift.stdout.is_empty());
         file.as_object_mut().unwrap().remove("file_key_version");
         crud::insert_documents(&pool, "codebase_files", &[file], true)
             .await
@@ -264,4 +271,50 @@ async fn call_and_import_edges_stay_inside_their_root_namespace() {
             }
         }
     }).await;
+}
+
+#[tokio::test]
+async fn drift_rejects_missing_path_and_holds_unknown_ownership_for_review() {
+    with_temp_db("drift_identity", Fixtures::Codebase, |pool| async move {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("a.py");
+        std::fs::write(&source, "def kept():\n    return 1\n").unwrap();
+        ingest(&pool, root.path());
+        let key = keys::scoped_file_key(root.path().to_str().unwrap(), "a.py");
+        let mut file = crud::get_document(&pool, "codebase_files", &key)
+            .await
+            .unwrap();
+        for field in ["_rev", "_id", "path"] {
+            file.as_object_mut().unwrap().remove(field);
+        }
+        crud::insert_documents(&pool, "codebase_files", &[file.clone()], true)
+            .await
+            .unwrap();
+        let drift = cli(
+            &pool,
+            &["codebase", "drift", root.path().to_str().unwrap(), "--full"],
+        );
+        assert!(!drift.status.success());
+        assert!(String::from_utf8_lossy(&drift.stderr).contains("invalid file identity"));
+        assert!(drift.stdout.is_empty());
+        file["path"] = json!("a.py");
+        file.as_object_mut().unwrap().remove("ingest_root");
+        crud::insert_documents(&pool, "codebase_files", &[file], true)
+            .await
+            .unwrap();
+        std::fs::remove_file(source).unwrap();
+        let drift = cli(
+            &pool,
+            &["codebase", "drift", root.path().to_str().unwrap(), "--full"],
+        );
+        assert!(
+            drift.status.success(),
+            "{}",
+            String::from_utf8_lossy(&drift.stderr)
+        );
+        let report: Value = serde_json::from_slice(&drift.stdout).unwrap();
+        assert_eq!(report["data"]["stale"]["keys"], json!([]));
+        assert_eq!(report["data"]["stale"]["unattributed_keys"], json!([key]));
+    })
+    .await;
 }

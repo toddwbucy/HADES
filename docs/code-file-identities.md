@@ -17,7 +17,9 @@ Canonical aliases of one root retain identities. Moving a root, ingesting a
 subdirectory instead of the original root, or ingesting a single file with a
 different parent namespace creates different identities. Keep the ingest root
 stable. Drift uses the same namespace and rejects legacy identities within its
-comparison scope instead of emitting misleading retirement candidates.
+comparison scope instead of emitting misleading retirement candidates. Attributed
+version-2 rows must reproduce their stored key from root and path; missing or
+mismatched metadata aborts drift. Unknown ownership stays out of retirement lists.
 
 ## Existing databases
 
