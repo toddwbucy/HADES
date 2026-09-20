@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain an actual CLI/disposable-ArangoDB partial-insert false-success
+  reproduction and remediation with document read-back evidence (#120).
+
 - Retain private CLI reproductions of malformed database-list and export responses
   being reported as successful, with separate remediation evidence (#118).
 - Verify actual CLI CPU training/checkpoint/export and the distinct training-edge
@@ -417,6 +420,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Report per-document insert failures through shared CLI/daemon dispatch, with
+  partial-completion diagnostics and uncertain-response handling (#120).
 - Reject malformed CLI database-list/export responses and invalid cursor state;
   preserve cursor cleanup and signal incomplete streamed exports (#118).
 

@@ -391,6 +391,7 @@ pub fn handler_error_code(e: &HandlerError) -> &'static str {
         // single question into six probes to establish a negative.
         HandlerError::Query { source, .. } if source.is_not_found() => "NOT_FOUND",
         HandlerError::Query { .. } => "QUERY_FAILED",
+        HandlerError::InsertFailed { .. } => "INSERT_FAILED",
         HandlerError::SearchOverloaded => "SEARCH_OVERLOADED",
         HandlerError::ServiceError(_) => "SERVICE_ERROR",
     }
@@ -773,5 +774,112 @@ mod tests {
         let policy = ConnectionPolicy::local_admin();
         assert!(policy.permits_database("anything"));
         assert!(policy.permits_ingest_path(Path::new("/")));
+    }
+}
+
+#[cfg(test)]
+mod insert_outcome_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    async fn insert(data: Value, response: Value) -> DaemonResponse {
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(response)]).await;
+        let payload =
+            serde_json::to_vec(&json!({"request_id":"insert-test", "command":"db.insert",
+            "params":{"collection":"docs", "data":data}}))
+            .unwrap();
+        let result = handle_request(
+            &mock.pool,
+            &HadesConfig::default(),
+            ConnectionPolicy::local_admin(),
+            &payload,
+            Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(mock.event("POST document/docs").await, data);
+        assert_eq!(result.request_id.as_deref(), Some("insert-test"));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "insert must not retry automatically"
+        );
+        result
+    }
+    fn good() -> Value {
+        json!({"_id":"docs/new", "_key":"new", "_rev":"revision"})
+    }
+    fn bad() -> Value {
+        json!({"error":true,"errorNum":1210,"errorMessage":"duplicate fixture key"})
+    }
+
+    #[tokio::test]
+    async fn insert_failure_envelope_preserves_partial_outcome_diagnostics() {
+        for (responses, expected) in [
+            (json!([good(), bad()]), "1 succeeded, 1 failed"),
+            (json!([bad(), bad()]), "0 succeeded, 2 failed"),
+        ] {
+            let result = insert(json!([{}, {}]), responses).await;
+            assert!(!result.success);
+            assert_eq!(result.error_code.as_deref(), Some("INSERT_FAILED"));
+            assert!(result.data.is_none());
+            let error = result.error.unwrap();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("1210") && error.contains("duplicate fixture key"));
+            assert!(error.contains("successful items remain committed"));
+            assert!(error.contains("\"index\":1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_success_preserves_single_and_array_payloads() {
+        for (input, output) in [
+            (json!({"error":true}), good()),
+            (json!([{}, {}]), json!([good(), good()])),
+            (json!([]), json!([])),
+        ] {
+            let result = insert(input, output.clone()).await;
+            assert!(result.success, "{:?}", result);
+            assert_eq!(result.data, Some(output));
+            assert!(result.error.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_insert_responses_do_not_claim_known_outcomes() {
+        for response in [
+            json!({}),
+            json!([good()]),
+            json!([good(), null]),
+            json!([good(), {}]),
+            json!([good(),{"error":"true"}]),
+        ] {
+            let result = insert(json!([{}, {}]), response).await;
+            assert!(!result.success);
+            assert_eq!(result.error_code.as_deref(), Some("QUERY_FAILED"));
+            assert!(result.error.unwrap().contains("write outcome is uncertain"));
+        }
+        let result = insert(json!({}), json!([])).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn invalid_insert_input_is_rejected_before_any_write() {
+        for input in [json!(null), json!("text"), json!([{}, 1])] {
+            let mut mock = cursor_mock::Mock::new(vec![]).await;
+            let payload = serde_json::to_vec(
+                &json!({"command":"db.insert","params":{"collection":"docs","data":input}}),
+            )
+            .unwrap();
+            let result = handle_request(
+                &mock.pool,
+                &HadesConfig::default(),
+                ConnectionPolicy::local_admin(),
+                &payload,
+                Duration::from_secs(3),
+            )
+            .await;
+            assert!(!result.success);
+            assert_eq!(result.error_code.as_deref(), Some("INVALID_PARAMS"));
+            assert!(mock.events.try_recv().is_err());
+        }
     }
 }

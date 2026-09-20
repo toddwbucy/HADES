@@ -1,0 +1,29 @@
+{
+  "baseline_revision": "deb33b0",
+  "scope": "Private Unix-only ArangoDB 3.12.11, actual CLI and shared-service private peers; no production deployment",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "3e57cdc498350b3e272a714d055ba200709631d97757138241d73947bb01afb3",
+    "crates/hades-core/src/service.rs": "bee75fb196f4555e4e1752eeec9ca06ec74ebdb2d1692cea6f9cd310a6737bd5",
+    "crates/hades-core/src/db/crud.rs": "cf59d100fa8b7211d2bf9920285f0c2476ef8b14adbc9e70cd72114538ee8b1d",
+    "crates/hades-core/src/db/transport.rs": "b3d5777b20ee38df1327c44df60bea5e8e2ac2cf57c505a0c42448a63599107a",
+    "crates/hades-cli/src/commands/db_write.rs": "a8ce47327db48812d15ef429177ac72c319d33bf8d1bc000488aa30479554817",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "8cb8a7f3e21115149497c0c8c1ab4de5fea97d498c33af045105465aa8d928e4",
+    "crates/hades-cli/tests/fixtures/db_insert_outcomes.rs": "e13386eff8d016d116311844f3ecdec6b3a361e297df56790e888ad1cf65882e",
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131"
+  },
+  "observed": {
+    "existing_document_and_revision_preserved": true,
+    "exit_code": 1,
+    "new_document_committed": true,
+    "stderr": "Error: insert incomplete: 1 succeeded, 1 failed; successful items remain committed; do not retry the entire batch blindly; outcomes: [{\"_id\":\"documents/new\",\"_key\":\"new\",\"_rev\":\"_mKB5X9i---\",\"error\":false,\"index\":0},{\"error\":true,\"errorMessage\":\"unique constraint violated - in index primary of type primary over '_key'; conflicting key: existing\",\"errorNum\":1210,\"index\":1}]\n",
+    "stdout": ""
+  },
+  "lifecycle_summary": "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 63.74s",
+  "controls": "Insert controls: all-failed batch preserves exact rows/revisions; single and all-success batch commit expected keys",
+  "service_contracts": {
+    "passed": 4,
+    "failed": 0,
+    "seconds": 0.01
+  },
+  "private_server_exit_code": 0
+}
