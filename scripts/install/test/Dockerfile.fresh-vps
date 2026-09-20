@@ -55,16 +55,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install ArangoDB 3.12 from the official deb repository.
 #
-# FINDING (2026-05-15): The ArangoDB signing key in their 3.12 deb repo is
-# currently expired (EXPKEYSIG). Until they rotate, the practical workaround
-# is `[trusted=yes]` on the repo line, which tells apt to accept it without
-# signature verification. This is the same workaround a real-VPS operator
-# would need today. The README install section flags this.
-RUN echo 'deb [trusted=yes] https://download.arangodb.com/arangodb312/DEBIAN/ /' > /etc/apt/sources.list.d/arangodb.list \
+# Scope authentication to the vendor key. A failed download, invalid key, or
+# repository signature error must stop the build; never bypass authentication.
+RUN curl -fsSL https://download.arangodb.com/arangodb312/DEBIAN/Release.key -o /tmp/arangodb-release.key \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && gpg --batch --yes --dearmor -o /etc/apt/keyrings/arangodb.gpg /tmp/arangodb-release.key \
+    && rm -f /tmp/arangodb-release.key \
+    && chmod 0644 /etc/apt/keyrings/arangodb.gpg \
+    && echo 'deb [signed-by=/etc/apt/keyrings/arangodb.gpg] https://download.arangodb.com/arangodb312/DEBIAN/ /' > /etc/apt/sources.list.d/arangodb.list \
     && echo 'arangodb3 arangodb3/password password test_root_pw_for_install_validation_only' | debconf-set-selections \
     && echo 'arangodb3 arangodb3/password_again password test_root_pw_for_install_validation_only' | debconf-set-selections \
     && echo 'arangodb3 arangodb3/storage_engine select rocksdb' | debconf-set-selections \
-    && apt-get update \
+    && apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends arangodb3 \
     && rm -rf /var/lib/apt/lists/*
 

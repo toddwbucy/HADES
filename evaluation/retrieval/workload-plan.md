@@ -64,8 +64,9 @@ scoring; publish corrections as a new dataset version.
 Compare vector-only retrieval, the existing file-membership comparator and a
 separately identified learned-graph model where available. Record model/checkpoint,
 task adapter, query/passage prompts, tokenizer, precision and index versions.
-The existing evaluator hardcodes the code task and passage prompt on both sides;
-it must be adapted and validated before claiming document-research results.
+The evaluator selects the code adapter with passage prompts for code search,
+and the retrieval adapter with passage/query prompts for document research.
+It preflights all prefixed inputs through the loaded processor before encoding.
 
 Report recall@5, MRR@10 and nDCG@10 per workload, per query and as an equal-weight
 workload average. Require judgments for every top-ten result from every compared
@@ -85,3 +86,25 @@ Capture latency and memory in isolated fixtures with the measurement boundary
 stated. Set acceptance thresholds from the reviewed representative baseline,
 not the existing 24-question author-judged seed. This plan supplies no new quality
 score and does not complete the retrieval acceptance criterion in epic #12.
+
+## Private research candidate run (2026-09-20)
+
+The frozen nine-draft Bastion snapshot produced 34 passages and five questions.
+An isolated, offline CPU run using the local Jina v4 model encoded all 39 inputs
+with the document-research profile; processor counts were 12–1,091 tokens against
+a 2,048-token ceiling, without truncation. Recorded elapsed time was 813.04 s
+(model loading, preflight, encoding and scoring included), with peak RSS
+8,743,188 KiB. This is a batch resource observation, not serving latency.
+
+Dataset/vector/metrics hashes were verified and frozen-vector rescoring matched
+the initial report exactly. Both methods' quality metrics remain withheld: all
+relevance labels are empty. The comparator is source-file membership, not a
+learned graph. These results do not establish production quality.
+
+The owner and a separately designated third party will independently judge a
+private blinded packet containing five questions and 50 pooled candidates. The
+version-2 packet uses the 0–3 rubric above; it supersedes an unjudged version-1
+packet whose rubric differed. Separate answer sheets preserve reviewer identity,
+date, rationale and unresolved judgments. Keep each review hidden from the other
+until submission; retain original ratings and record adjudication separately.
+No draft text or raw ranking artifact is included in the public repository.

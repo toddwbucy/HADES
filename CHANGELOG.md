@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Require a scoped ArangoDB signing key in the fresh-VPS harness and installation
+  instructions; remove the package-authentication bypass recommendation (#60).
+
 - Enforce atomic detached-ingest admission across served databases and overlapping
   source trees; fail closed on admission errors and retain slots through cleanup (#51).
 - Own ingestion process groups through startup, request disconnects, PID-write
@@ -365,6 +368,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Select distinct document-research adapter/prompts in offline retrieval
+  evaluation and reject oversized prefixed processor inputs before inference;
+  record profile and token-count provenance while preserving code defaults (#12).
 
 - Add strict retrieval judgment coverage for representative datasets: preserve
   unjudged rankings, withhold incomplete scores and aggregates, and distinguish

@@ -25,8 +25,26 @@ The default `legacy_seed` policy preserves the historical version-1/version-2
 results below. Do not use it for representative acceptance. Dataset hashes bind
 the policy as well as the judgments; changing either requires a new dataset
 version and matching provenance. The evaluator's embedding task and prompts are
-still the code profile, so this change alone does not enable paper-research
-encoding or establish a learned-graph baseline.
+selected explicitly as described below; strict scoring does not itself establish
+independent judgments or a learned-graph baseline.
+
+## Encoding profiles and truncation checks
+
+Use `"embedding_profile": "document_research"` for paper drafts. It selects Jina's
+`retrieval` adapter, `passage` prompt for documents and `query` prompt for questions.
+The default `code_search` profile preserves the historical `code` adapter with
+`passage` prompts on both sides. If a dataset also declares `workload`, it must
+match the profile; unknown profiles and mixed declarations are rejected. Run the
+two corpora separately because they use different adapter spaces.
+
+Before any encoding, every input is passed through the loaded model's text
+processor with the corresponding `Passage: ` or `Query: ` prefix and truncation
+disabled. Inputs exceeding the smaller of 2,048 tokens and the processor ceiling
+are rejected. Reduce passage sizes and version the dataset instead of silently
+discarding tails. This path targets the inspected local Jina v4 processor; another
+model requires a separate compatibility review. Provenance records the resolved
+adapter/prompts, all input token counts, evaluator hash, dataset hash and model
+files. Dataset bytes are frozen once before loading or rescoring.
 
 ## Historical code seed
 
