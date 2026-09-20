@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain private CLI reproductions of malformed database-list and export responses
+  being reported as successful (epic #12; remediation pending).
+
 - Retain a private real-CLI reproduction and remediation evidence for training
   session release racing normal runtime shutdown (#115).
 - Refresh the audit fixture inventory with all 39 Rust integration targets and
