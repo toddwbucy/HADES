@@ -1,0 +1,22 @@
+{
+  "source_revision": "e273ef2907b3b891ca9094ae742420e431f4102b",
+  "control": {
+    "file_exists_when_worker_resumes": true,
+    "worker_succeeded": true,
+    "temp_file_removed_after_drain": true
+  },
+  "cancelled": {
+    "worker_running_after_cancellation": true,
+    "active_requests_after_cancellation": 0,
+    "file_exists_after_cancellation": false,
+    "file_exists_when_worker_resumes": false,
+    "worker_succeeded": false,
+    "temp_file_removed_after_drain": true
+  },
+  "source_sha256": {
+    "services/extraction/server.py": "18215e6b6eeeb7181832d6d86895dbeeecfdd055f53fd719367545fa7e7608a0",
+    "services/extraction/docling_backend.py": "5efa779590933392afd037cc1c01e95de4e9293c3a76a35bcf2e85213332fb72",
+    "docs/audits/repros/extraction_cancellation.py": "741cbd05ae166750847c0f9697ea6164ab28c14fefcea55a10b420a59a10b537"
+  },
+  "limits": "Direct servicer task cancellation and gated real text read; no network RPC/deadline/Docling/GPU/production model cleanup proof. Selected source hashes, not full runtime attestation."
+}
