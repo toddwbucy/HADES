@@ -1,0 +1,14 @@
+{
+  "source_revision": "54c62344111d9f1c6bc03cedb298fa88db33a86a",
+  "control_success": true,
+  "worker_running_after_cancel": true,
+  "active_requests_after_cancel": 0,
+  "unload_while_worker_running": true,
+  "worker_drained": true,
+  "source_sha256": {
+    "services/embedding/http_server.py": "9471c4abe324834ca3106f0b4b59edcad99a1064a08ab6d988680cdd5563c340",
+    "services/embedding/jina_v4.py": "da4e91a43f329612ffb86a537765194683b130c3a2bc817635b4531f236b5881",
+    "docs/audits/repros/embedding_worker_lifetime.py": "72c64e2c71b58c365fae260dab4b3da029ce4890d00f36413fc27a64b49bc20a"
+  },
+  "limits": "Real handler and idle monitor with stub model module. No actual GPU/model unload, network request, production incident or full dependency attestation."
+}
