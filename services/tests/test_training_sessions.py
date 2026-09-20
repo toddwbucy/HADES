@@ -179,3 +179,51 @@ def test_idle_sweeper_releases_backend_without_a_successor_request():
                 sweeper.cancel()
                 await asyncio.gather(sweeper, return_exceptions=True)
     asyncio.run(run())
+
+
+def test_operation_outliving_idle_lease_cannot_transfer_ownership():
+    async def run():
+        started, finish = asyncio.Event(), asyncio.Event()
+        now = [0.0]
+        class SlowBackend:
+            async def InitModel(self, request, context):
+                started.set()
+                await finish.wait()
+                return pb.InitModelResponse(device="cpu")
+        async with provider(SlowBackend, lease_seconds=5, clock=lambda: now[0]) as (_, a, b):
+            owner = await acquire(a)
+            operation = a.InitModel(pb.InitModelRequest(), metadata=owner, timeout=3)
+            await asyncio.wait_for(started.wait(), 2)
+            now[0] = 50
+            contender = b.AcquireSession(pb.AcquireSessionRequest(), timeout=3)
+            # Force a scheduling opportunity while the operation owns the lock.
+            await asyncio.sleep(0.05)
+            assert not contender.done()
+            finish.set()
+            assert (await operation).device == "cpu"
+            with pytest.raises(grpc.aio.AioRpcError) as error:
+                await contender
+            assert error.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+            now[0] = 54
+            await a.RenewSession(pb.SessionRequest(), metadata=owner, timeout=3)
+            now[0] = 59
+            successor = await acquire(b)
+            assert successor != owner
+            await rejected(a.InitModel, pb.InitModelRequest(), owner)
+    asyncio.run(run())
+
+
+def test_rejected_foreign_requests_do_not_extend_owner_lease():
+    async def run():
+        now = [0.0]
+        async with provider(loaded_service, lease_seconds=5, clock=lambda: now[0]) as (_, a, b):
+            owner = await acquire(a)
+            now[0] = 4
+            await rejected(b.RenewSession, pb.SessionRequest(), [(SESSION_HEADER, "foreign")])
+            await rejected(b.AcquireSession, pb.AcquireSessionRequest(),
+                           code=grpc.StatusCode.RESOURCE_EXHAUSTED)
+            now[0] = 5
+            successor = await acquire(b)
+            assert successor != owner
+            await rejected(a.ReleaseSession, pb.SessionRequest(), owner)
+    asyncio.run(run())

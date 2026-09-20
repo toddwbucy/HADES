@@ -13,6 +13,7 @@ struct State {
     calls: Vec<&'static str>,
     renewals: usize,
     reject_renewal: bool,
+    legacy_provider: bool,
 }
 #[derive(Clone, Default)]
 struct Service(Arc<Mutex<State>>);
@@ -41,6 +42,9 @@ impl TrainingService for Service {
         _: Request<AcquireSessionRequest>,
     ) -> Result<Response<AcquireSessionResponse>, Status> {
         let mut state = self.0.lock().unwrap();
+        if state.legacy_provider {
+            return Err(Status::unimplemented("legacy provider"));
+        }
         if state.owner.is_some() {
             return Err(Status::resource_exhausted("owned"));
         }
@@ -239,4 +243,37 @@ async fn renewal_failure_fails_closed_without_automatic_reacquisition() {
     assert_eq!(server.service.0.lock().unwrap().generation, 1);
     drop(client);
     server.wait_for(|state| state.owner.is_none()).await;
+}
+
+#[tokio::test]
+async fn cancelled_lifecycle_drops_its_last_guard_and_releases() {
+    let server = Server::start();
+    let client = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let lifecycle = tokio::spawn(async move {
+        let _client = client;
+        started.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    ready.await.unwrap();
+    lifecycle.abort();
+    assert!(lifecycle.await.unwrap_err().is_cancelled());
+    server.wait_for(|state| state.owner.is_none()).await;
+    let successor = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    drop(successor);
+    server.wait_for(|state| state.owner.is_none()).await;
+}
+
+#[tokio::test]
+async fn legacy_provider_fails_without_unowned_fallback() {
+    let server = Server::start();
+    server.service.0.lock().unwrap().legacy_provider = true;
+    let error = TrainingClient::connect_unix_at(&server.path)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Unimplemented"));
+    let state = server.service.0.lock().unwrap();
+    assert!(state.owner.is_none());
+    assert!(state.calls.is_empty());
+    assert_eq!(state.generation, 0);
 }

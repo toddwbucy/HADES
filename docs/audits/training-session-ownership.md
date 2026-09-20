@@ -46,7 +46,10 @@ not a replacement for authentication or resource quotas.
 
 Real CPU RPC tests cover two channels, checkpoint handoff, all protected methods,
 stale/duplicate tokens, lease renewal/expiry, cancelled calls, failed initialization
-and idle cleanup. Rust private-UDS tests cover every operation's metadata,
-shared-clone renewal, last-drop release and failure without reacquisition. These
+and idle cleanup. A long operation retains ownership beyond the idle lease;
+rejected foreign requests cannot extend an abandoned lease. Rust private-UDS
+tests cover every operation's metadata,
+shared-clone renewal, last-drop and cancelled-lifecycle release, rejection of
+legacy providers, and failure without reacquisition. These
 contracts run in the existing Python CPU and `training_client` CI targets.
 No deployed trainer, GPU, production graph or service configuration was used.
