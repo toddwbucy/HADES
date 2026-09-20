@@ -50,6 +50,8 @@ def main(directory):
         invoke(service, "LoadCheckpoint", pb.LoadCheckpointRequest(
             path=str(root / f"{name}.pt"), device="cpu"))
         restored = invoke(service, "GetEmbeddings", pb.GetEmbeddingsRequest())
+        expected_bytes = (root / "full.bin").read_bytes() if name == "before" else complete.embeddings
+        assert restored.embeddings == expected_bytes, "checkpoint replay changed output bytes"
         actual = torch.frombuffer(bytearray(restored.embeddings), dtype=torch.float32).reshape(3, 4)
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     subset = invoke(service, "GetEmbeddings", pb.GetEmbeddingsRequest(
