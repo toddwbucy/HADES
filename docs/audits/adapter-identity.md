@@ -34,3 +34,29 @@ idempotent replay in a disposable database before considering a migration.
 Production changes remain separately controlled by the owner's snapshot/downtime
 policy. This report is baseline evidence, not a completed remediation or complete
 real-WeaverTools corpus conformance audit.
+
+
+## Actual database verification
+
+The subsequent [disposable ArangoDB result](adapter-identity-database-baseline.json)
+confirms persistence loss in all three cases on ArangoDB 3.12.11: two declared
+seam edges produce one persisted row while the writer exits zero, both initially
+and on a repeat run. Actual extraction, collection creation, imports, replacement
+acknowledgements and verification queries ran through an owned loopback bridge
+to a fresh Unix-only server. No production endpoint was used.
+
+The [database probe](repros/adapter_identity_database.py) is retained byte-for-byte;
+copy it to scripts/verify_adapter_identity_database.py in an isolated baseline
+checkout before running so its repository-relative imports resolve. It accepts an
+existing --arangod binary, never a database endpoint. The replay used one CPU,
+nice 10, an 8 GiB child address-space limit, small caches and a 90-second external
+watchdog. Both private server group and bridge thread stopped before success was
+recorded. Synthetic data/artifacts remain under a private temporary directory.
+
+This supersedes the earlier simulated-persistence limitation for these three
+fixtures only. It does not measure prevalence in the real WeaverTools corpus.
+No remediation is yet implemented. A corrected writer must explicitly reject
+or safely migrate legacy identity rows before a new encoding is admitted; merely
+adding a hash can leave duplicate legacy/new representations. Conflicting node
+declarations and stale-row policy also need explicit handling. Any migration
+against live data remains outside discovery and subject to the snapshot policy.

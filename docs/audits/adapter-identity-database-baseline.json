@@ -1,0 +1,50 @@
+{
+  "server_version": "3.12.11",
+  "scope": "Actual extractor/writer and fresh disposable ArangoDB through an owned loopback bridge. Synthetic corpus only; no production endpoint.",
+  "source_sha256": {
+    "services/adapters/weavertools/write_graph.py": "a19066c518c899b72b72676d569818e1ef7eeb9f1c1522d346931b344adccfec",
+    "services/adapters/weavertools/extractor.py": "2b23ae0df32bce1542d48fdbc286e6d857ed39e2fa5c7885f3435f860383609e",
+    "services/adapters/weavertools/records.py": "4e37bc06c906a4bb292a89f99f66c23980950679ca41b46cfe020d7b19d07b62"
+  },
+  "probe_sha256": "d12663bac7f73bdf9e25253c862c48814bdad9baf84c965c87bf1d40419854d9",
+  "cases": [
+    {
+      "case": "truncation",
+      "declared_edges": 2,
+      "first_and_repeat_exit_codes": [
+        0,
+        0
+      ],
+      "first_and_repeat_persisted_edge_counts": [
+        1,
+        1
+      ]
+    },
+    {
+      "case": "delimiter",
+      "declared_edges": 2,
+      "first_and_repeat_exit_codes": [
+        0,
+        0
+      ],
+      "first_and_repeat_persisted_edge_counts": [
+        1,
+        1
+      ]
+    },
+    {
+      "case": "tag",
+      "declared_edges": 2,
+      "first_and_repeat_exit_codes": [
+        0,
+        0
+      ],
+      "first_and_repeat_persisted_edge_counts": [
+        1,
+        1
+      ]
+    }
+  ],
+  "private_server_reaped": true,
+  "private_bridge_stopped": true
+}
