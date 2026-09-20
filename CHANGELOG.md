@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace status, orientation and analyzer-management command contracts, including
+  failure-status and installation evidence limits (epic #12).
+
 - Retain an actual CLI/private Unix-peer regression for malformed graph-list
   replies being reported as an empty successful result (epic #12).
 
