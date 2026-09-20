@@ -176,12 +176,8 @@ pub async fn run_drift(
             // owns, so it is safe to hand to `codebase retire`.
             "keys": sample(&stale_attributed),
             "truncated": stale_attributed.len() > limit,
-            // Stale keys on nodes with no recorded ingest root, listed rather
-            // than counted so they can be reviewed instead of piped. They
-            // predate attribution and cannot be confirmed to belong to this
-            // tree. Re-ingest stamps any whose file still exists; one whose file
-            // is already gone can never be attributed by any re-ingest, and is
-            // pre-#192 backlog to clear with a reviewed `retire`.
+            // Defensively hold out malformed v2 nodes lacking root attribution.
+            // Review their ownership; never pipe them into automatic retirement.
             "unattributed": stale_unattributed.len(),
             "unattributed_keys": sample(&stale_unattributed),
             "unattributed_truncated": stale_unattributed.len() > limit,
@@ -267,9 +263,8 @@ pub async fn run_drift(
              root, so they cannot be confirmed to belong to this tree. They are \
              listed separately as `stale.unattributed_keys` and are NOT in \
              `stale.keys`, so a `--full` pipe into `codebase retire` will not \
-             touch them. Re-ingesting each root attributes any whose file still \
-             exists; one whose file is already gone can never be attributed, and \
-             is pre-attribution backlog to clear with a reviewed retire.",
+             touch them. Review the missing ownership metadata using \
+             docs/code-file-identities.md before changing these records.",
             stale_unattributed.len(),
             stale.len(),
         );
@@ -307,9 +302,8 @@ pub async fn run_drift(
 /// different answers and only one of them is safe to act on:
 ///
 /// - `in_scope`: nodes stamped with this root, plus nodes with no stamp at all.
-///   The unstamped ones predate `ingest_root` and cannot be attributed either
-///   way, so they are kept rather than silently dropped — excluding them would
-///   report a whole existing graph as uningested.
+///   Unstamped v2 nodes are malformed; keep them visible for ownership review
+///   while excluding them from automatic retirement candidates.
 /// - `unattributed`: which of those carry no stamp, so the caller can say how
 ///   much of its answer rests on an assumption.
 /// - `other_roots`: nodes excluded as belonging elsewhere, with the roots they

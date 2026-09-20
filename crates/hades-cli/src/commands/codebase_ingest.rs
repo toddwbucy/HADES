@@ -1170,10 +1170,8 @@ pub(crate) fn parse_language_arg(language: Option<&str>) -> Result<Option<Langua
 
 /// Field on a `codebase_files` node naming the ingest root it was built from.
 ///
-/// Read by `codebase drift`, which cannot otherwise tell one tree from another:
-/// keys are relative to the root, so two trees in one database produce keys
-/// that look alike and a root-blind comparison reports each tree's nodes as
-/// stale for the other (#192).
+/// Read by `codebase drift` to scope its graph query. The root is also part of
+/// the file identity, so distinct trees retain independent documents (#13).
 pub(crate) const INGEST_ROOT_FIELD: &str = "ingest_root";
 
 /// The base directory that ingest strips to form a file node's `rel_path`.
