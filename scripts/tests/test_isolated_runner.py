@@ -42,7 +42,7 @@ class CleanupTests(unittest.TestCase):
         child = mock.Mock(pid=12345)
         with mock.patch.object(runner.os, "killpg", side_effect=ProcessLookupError):
             runner.stop_group(child)
-        child.poll.assert_called_once()
+        child.wait.assert_called_once_with(timeout=1)
 
 
 if __name__ == "__main__":

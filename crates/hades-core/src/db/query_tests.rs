@@ -158,3 +158,103 @@ async fn deletion_response_cannot_hold_caller_past_cleanup_budget() {
         .unwrap();
     assert_eq!(result.results, vec![json!(1)]);
 }
+
+fn fold_limits() -> FoldLimits {
+    FoldLimits {
+        batch_size: 1,
+        response_bytes: 4096,
+        max_rows: 10,
+        server_memory_bytes: 1024 * 1024,
+    }
+}
+
+#[tokio::test]
+async fn streaming_fold_accumulates_without_retaining_pages() {
+    let mut mock = Mock::new(vec![Reply::page(first()), Reply::page(last())]).await;
+    let result = query_fold(
+        &mock.pool,
+        "RETURN 1",
+        json!({}),
+        fold_limits(),
+        0_u64,
+        |sum, row| {
+            *sum += row.as_u64().unwrap();
+            Ok(())
+        },
+        (),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, 3);
+    let body = mock.event("POST cursor").await;
+    assert_eq!(body["options"]["stream"], true);
+    assert_eq!(body["memoryLimit"], 1024 * 1024);
+    mock.event("POST cursor/123").await;
+    mock.released().await;
+}
+
+#[tokio::test]
+async fn streaming_fold_row_budget_errors_and_cleans_up() {
+    let mut mock = Mock::new(vec![Reply::page(first()), Reply::page(last())]).await;
+    let limits = FoldLimits {
+        max_rows: 1,
+        ..fold_limits()
+    };
+    let error = query_fold(
+        &mock.pool,
+        "RETURN 1",
+        json!({}),
+        limits,
+        (),
+        |_, _| Ok(()),
+        (),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("row budget exceeded"));
+    mock.event("POST cursor").await;
+    mock.event("POST cursor/123").await;
+    mock.released().await;
+}
+
+#[tokio::test]
+async fn streaming_fold_cancelled_creation_retains_admission_until_cleanup() {
+    let creation = Arc::new(Notify::new());
+    let deletion = Arc::new(Notify::new());
+    let mut mock = Mock::new(vec![
+        Reply::blocked(first(), creation.clone()),
+        Reply::blocked(json!({"error":false}), deletion.clone()),
+    ])
+    .await;
+    let admission = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = admission.clone().acquire_owned().await.unwrap();
+    let pool = mock.pool.clone();
+    let caller = tokio::spawn(async move {
+        query_fold(
+            &pool,
+            "RETURN 1",
+            json!({}),
+            fold_limits(),
+            (),
+            |_, _| Ok(()),
+            permit,
+        )
+        .await
+    });
+    mock.event("POST cursor").await;
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert_eq!(admission.available_permits(), 0);
+    creation.notify_one();
+    mock.event("DELETE cursor/123").await;
+    assert_eq!(
+        admission.available_permits(),
+        0,
+        "cleanup still owns the resource budget"
+    );
+    deletion.notify_one();
+    let _permit = tokio::time::timeout(Duration::from_secs(2), admission.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+}

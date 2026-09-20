@@ -19,6 +19,23 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Calibrate search admission against full-handler memory pilots; release normal
+  MCP request reservations after cleanup acknowledgment, retaining the replay
+  window only for cancellation. Add creation-cancellation and body-timeout
+  regressions (#22).
+
+- Enforce MCP's 16 MiB body limit before SDK parsing, including chunked requests;
+  cap concurrent body handling and apply a 15-second body-read deadline (#22).
+  The previous Axum extractor limit did not cover the SDK's raw body collector.
+
+- Share a 64-connection cap across Unix daemon and MCP sockets, limit Unix
+  response writes to 15 seconds, and expire MCP TCP connections after five minutes
+  without deleting their resumable sessions (#22).
+
+- Exact vector search folds bounded pages into top-K results with shared
+  admission and bounded embedding, detail, and structural responses (#22).
+  Invalid stored vectors and incompatible model/dimension metadata fail explicitly.
+
 - Code-file keys now include the canonical ingest root and a full path digest,
   preserving distinct dotted, underscored, Unicode, long, and multi-root paths
   (#13). Ingest rejects legacy or conflicting ownership before replacement;
@@ -26,6 +43,23 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and rollback procedure in `docs/code-file-identities.md`.
 
 ### Added
+
+- Record the larger full-handler allocation pilot and near-limit MCP slow-reader
+  memory measurement, using resource-limited isolated fixtures (#22).
+
+- Add an opt-in disposable-database full-search-handler memory benchmark, including
+  maximum result count/query text, hybrid/structural reranking, and serialization;
+  cover MCP request/stream overload and session initialization/idle expiry (#22).
+
+- Bound MCP sessions, retained requests, GET/resume streams, and serialized SDK
+  messages; preserve active-request resume and clean up cancelled request caches
+  independently of HTTP clients (#22). Oversized responses return an explicit
+  `MCP_RESPONSE_TOO_LARGE` error. Completed-response replay remains unavailable
+  with the installed SDK.
+
+- Database clients can bound each HTTP response before JSON parsing; response
+  bodies now share the request deadline instead of waiting indefinitely after
+  headers. This supports the bounded retrieval work in #22.
 
 - Gate CPU Python contracts with a hashed dependency lock and database workflows
   with a private resource-limited ArangoDB runner (#20). Replace named-corpus
@@ -281,6 +315,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Allow detail rows up to the aggregate search result budget by paging one row
+  with bounded envelope headroom; regenerate vector/metric provenance hashes and
+  correct the retrieval seed's training-adjacency excerpt in version 2 (#22).
 
 - Bound plain/gzipped LaTeX source bytes and the complete decompressed tar stream
   before parsing archive headers. Count rejected entries toward the member limit,

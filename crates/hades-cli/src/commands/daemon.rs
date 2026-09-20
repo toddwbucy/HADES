@@ -58,6 +58,8 @@ const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request execution timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A slow reader must not retain a response indefinitely.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -174,9 +176,15 @@ pub async fn run(
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _addr) = result.context("accept failed")?;
+                let Some(permit) = super::transport_limits::try_connection() else {
+                    // Refuse before allocating a request buffer or spawning work.
+                    drop(stream);
+                    continue;
+                };
                 let pool = Arc::clone(&pool);
                 let config = Arc::clone(&config);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(e) = handle_connection(stream, &pool, &config).await {
                         tracing::debug!(error = %e, "connection closed with error");
                     }
@@ -266,11 +274,23 @@ async fn handle_connection(
 
 /// Write a length-prefixed JSON response frame.
 async fn write_frame(stream: &mut UnixStream, response: &DaemonResponse) -> Result<()> {
+    write_frame_with_timeout(stream, response, WRITE_TIMEOUT).await
+}
+
+async fn write_frame_with_timeout(
+    stream: &mut UnixStream,
+    response: &DaemonResponse,
+    budget: Duration,
+) -> Result<()> {
     let json = serde_json::to_vec(response)?;
-    let len = json.len() as u32;
-    stream.write_all(&len.to_be_bytes()).await?;
-    stream.write_all(&json).await?;
-    stream.flush().await?;
+    let len = u32::try_from(json.len()).context("response exceeds frame length range")?;
+    timeout(budget, async {
+        stream.write_all(&len.to_be_bytes()).await?;
+        stream.write_all(&json).await?;
+        stream.flush().await
+    })
+    .await
+    .context("response write timed out")??;
     Ok(())
 }
 
@@ -298,6 +318,16 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use tokio::net::UnixStream;
+
+    #[tokio::test]
+    async fn stalled_reader_cannot_retain_a_response_indefinitely() {
+        let (_client, mut server) = UnixStream::pair().unwrap();
+        let response = DaemonResponse::ok(serde_json::json!({"text":"x".repeat(2*1024*1024)}));
+        let error = write_frame_with_timeout(&mut server, &response, Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("response write timed out"));
+    }
 
     /// Helper: write a length-prefixed frame to a stream.
     async fn write_request(stream: &mut UnixStream, payload: &[u8]) {
