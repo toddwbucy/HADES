@@ -190,7 +190,68 @@ class AppState:
         )
         self.last_request_time = time.time()
         self.active_requests = 0
+        self._operations: set[asyncio.Task] = set()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._closing = False
+        self._close_task: asyncio.Task | None = None
         self._idle_monitor_task: Optional[asyncio.Task[None]] = None
+
+    @staticmethod
+    async def _wait_owned(operation):
+        """Drain admitted work before propagating repeated caller cancellation."""
+        interrupted = False
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                interrupted = True
+            except BaseException:
+                break
+        if interrupted:
+            if not operation.cancelled():
+                operation.exception()
+            raise asyncio.CancelledError
+        return operation.result()
+
+    async def run_work(self, function):
+        """Own executor work independently of the HTTP request task."""
+        if self._closing:
+            raise HTTPException(status_code=503, detail="embedding service is closing")
+        self.active_requests += 1
+        self._idle.clear()
+        operation = asyncio.create_task(self._run_work(function))
+        self._operations.add(operation)
+        operation.add_done_callback(self._operations.discard)
+        return await self._wait_owned(operation)
+
+    async def _run_work(self, function):
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, function)
+        finally:
+            self.active_requests -= 1
+            self.last_request_time = time.time()
+            if self.active_requests == 0:
+                self._idle.set()
+
+    def unload_model(self):
+        """Allow idle/shutdown cleanup only after all admitted workers drain."""
+        if self.active_requests:
+            raise RuntimeError("cannot unload model while embedding workers are active")
+        if self.embedder.is_loaded:
+            self.embedder.unload()
+
+    async def close(self):
+        """Reject new inference and drain workers; threads are not preemptible."""
+        self._closing = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._drain_and_unload())
+        await self._wait_owned(self._close_task)
+
+    async def _drain_and_unload(self):
+        await self.stop_idle_monitor()
+        await self._idle.wait()
+        self.unload_model()
 
     async def start_idle_monitor(self) -> None:
         if self.config.idle_timeout_seconds > 0:
@@ -227,7 +288,7 @@ class AppState:
                     "Embedder idle for %.0fs — unloading model to free GPU memory",
                     self.config.idle_timeout_seconds,
                 )
-                self.embedder.unload()
+                self.unload_model()
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +319,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down embedding service")
-        await state.stop_idle_monitor()
-        if state.embedder.is_loaded:
-            state.embedder.unload()
+        await state.close()
         logger.info("Embedding service stopped")
 
 
@@ -382,10 +441,8 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
         req.batch_size if (req.batch_size is not None and req.batch_size > 0) else None
     )
 
-    state.active_requests += 1
     started = time.time()
     try:
-        loop = asyncio.get_running_loop()
         # Inference is sync (PyTorch); run in the default executor pool to
         # avoid blocking the event loop. Don't share a future across requests
         # — each call creates its own.
@@ -430,11 +487,10 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
                         meta.append((i, c, s, e, cs, ce))
                 return vecs, meta
 
-            vectors, late_meta = await loop.run_in_executor(None, _late)
+            vectors, late_meta = await state.run_work(_late)
         else:
             late_meta = None
-            vectors = await loop.run_in_executor(
-                None,
+            vectors = await state.run_work(
                 lambda: state.embedder.embed_texts(
                     texts, task=task, batch_size=batch_override
                 ),
@@ -452,9 +508,6 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
     except Exception as e:
         logger.exception("Embedding failed")
         raise HTTPException(status_code=500, detail=f"embedding failed: {e}")
-    finally:
-        state.active_requests -= 1
-        state.last_request_time = time.time()
 
     duration_ms = int((time.time() - started) * 1000)
     logger.info(

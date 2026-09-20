@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Retain ordinary and late-chunk embedding workers through cancellation and
+  drain admitted work before idle or lifespan model cleanup (#92).
+
 - Store document metadata, chunks and embeddings in one transaction so rejected
   replacement writes preserve the prior document (#88).
 
