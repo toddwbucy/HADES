@@ -14,7 +14,7 @@
     "crates/hades-core/src/code/lsp/preflight.rs": "dd5a50134330737915ae67a002868c0aac4a88f0040eb289d722038e107f6cc9",
     "crates/hades-core/src/code/lsp/session.rs": "b5f91b11eea20b925877710ee20dcbc46defc7fa7a737ce35003523f52873e01",
     "crates/hades-core/src/code/lsp/mod.rs": "66706c56600d4767bb61801550822b04ce61df10efe2ade0596595c0c6c5cd9d",
-    "crates/hades-cli/src/commands/codebase_ingest.rs": "9ae7659b17f721ea990c614f3abebff67fce1920ccbfe334b2e0d2a064a880a7",
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "f43c1e641a07aee6f519abc6b3935254598c7e58810be64b74622f2065ce5ab1",
     "crates/hades-core/tests/analyzer_preflight.rs": "01229ffdd36001bde22254d7598a7d728cbe82f9cb287be8e5d6cf83b6433fd6",
     ".github/workflows/ci.yml": "339f3ebe6a462c008a243ac86d63a472d9013146fb88e34b78a5a8be2519aa30"
   },

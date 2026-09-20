@@ -65,3 +65,13 @@ descendant. The ten-second test exercises the production timeout value.
 Focused Core/integration and CLI Clippy checks passed with `-D warnings`.
 Selected final hashes are retained in
 [analyzer-preflight-remediation-result.json](analyzer-preflight-remediation-result.json).
+
+
+Manual final-diff review checked process-group PID reservation, kill-before-reap,
+error/unwind cleanup, cancellation signalling, nonblocking pipe fairness, cap
+arithmetic, shared resolution and ingestion downgrade behavior. It found a test
+inserted between an existing regression's documentation and its declaration;
+the new test was moved above that documentation. No runtime defect was identified
+in this review. This was author self-review, not independent third-party review.
+The external review provider reported a capacity/spending limit; its green status
+is not evidence that an external review took place.

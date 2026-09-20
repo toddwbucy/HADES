@@ -3955,6 +3955,27 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn analyzer_preflight_still_requires_explicit_downgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = "/nonexistent/hades-audit-analyzer";
+        let strict = preflight_or_bail("rust-analyzer", Some(missing), root.path(), false).await;
+        assert!(strict.unwrap_err().to_string().contains("preflight failed"));
+        assert!(
+            preflight_or_bail("rust-analyzer", Some(missing), root.path(), true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            preflight_or_bail("fixture", Some("/usr/bin/python3"), root.path(), false)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("/usr/bin/python3")
+        );
+    }
+
     /// #193 end to end: a `.go` node stamped `semantic` by the old gopls patch
     /// must be re-ingestable, and must still be protected when nothing will
     /// re-enrich it.
@@ -3978,27 +3999,6 @@ mod tests {
     ///
     /// No embedder: chunks are stored either way, and the text is what is under
     /// test. Runs in its own database, so the counts are exact.
-    #[tokio::test]
-    async fn analyzer_preflight_still_requires_explicit_downgrade() {
-        let root = tempfile::tempdir().unwrap();
-        let missing = "/nonexistent/hades-audit-analyzer";
-        let strict = preflight_or_bail("rust-analyzer", Some(missing), root.path(), false).await;
-        assert!(strict.unwrap_err().to_string().contains("preflight failed"));
-        assert!(
-            preflight_or_bail("rust-analyzer", Some(missing), root.path(), true)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            preflight_or_bail("fixture", Some("/usr/bin/python3"), root.path(), false)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("/usr/bin/python3")
-        );
-    }
-
     #[tokio::test]
     async fn a_comment_only_edit_removes_the_retired_chunk_text() {
         with_temp_db("chunktext", Fixtures::Codebase, |pool| async move {
