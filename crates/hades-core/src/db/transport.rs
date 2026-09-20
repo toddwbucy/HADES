@@ -44,6 +44,7 @@ pub struct ArangoClient {
     request_timeout: Duration,
     /// Optional wire-byte ceiling, enforced before JSON deserialization.
     response_limit: Option<usize>,
+    transaction_id: Option<String>,
     /// The hyper client for Unix socket connections.
     unix_client: Option<Client<UnixConnector, Full<Bytes>>>,
     /// The hyper client for TCP connections.
@@ -62,6 +63,17 @@ impl std::fmt::Debug for ArangoClient {
 }
 
 impl ArangoClient {
+    pub(crate) fn in_transaction(&self, id: &str) -> Result<Self, ArangoError> {
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ArangoError::Request(
+                "invalid transaction identifier".into(),
+            ));
+        }
+        let mut client = self.clone();
+        client.transaction_id = Some(id.to_owned());
+        Ok(client)
+    }
+
     /// Create a client from the HADES configuration.
     ///
     /// Socket discovery priority:
@@ -93,6 +105,7 @@ impl ArangoClient {
             auth_header,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             response_limit: None,
+            transaction_id: None,
             unix_client: None,
             tcp_client: None,
         };
@@ -138,6 +151,7 @@ impl ArangoClient {
             auth_header: Some(format!("Basic {encoded}")),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             response_limit: None,
+            transaction_id: None,
             unix_client: Some(Client::unix()),
             tcp_client: None,
         }
@@ -156,6 +170,7 @@ impl ArangoClient {
             auth_header: Some(format!("Basic {encoded}")),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             response_limit: None,
+            transaction_id: None,
             unix_client: None,
             tcp_client: Some(
                 Client::builder(TokioExecutor::new())
@@ -266,6 +281,9 @@ impl ArangoClient {
         let mut builder = Request::builder().method(method).uri(uri);
 
         builder = builder.header(CONTENT_TYPE, content_type);
+        if let Some(id) = &self.transaction_id {
+            builder = builder.header("x-arango-trx-id", id);
+        }
 
         if let Some(ref auth) = self.auth_header {
             builder = builder.header(AUTHORIZATION, auth.as_str());
@@ -485,6 +503,7 @@ mod tests {
             auth_header: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             response_limit: None,
+            transaction_id: None,
             unix_client: None,
             tcp_client: None,
         };
@@ -505,6 +524,7 @@ mod tests {
             auth_header: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             response_limit: None,
+            transaction_id: None,
             unix_client: None,
             tcp_client: None,
         };
