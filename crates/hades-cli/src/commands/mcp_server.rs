@@ -634,7 +634,7 @@ impl HadesMcpServer {
     }
 
     #[tool(
-        description = "Start ingesting a tree into a database and return a job id immediately. One command handles both halves: file extension decides whether each file goes to the code analyzers (symbols, edges, AST chunks) or to document extraction, and both land in the same graph. Ingests run for minutes, so poll ingest_status with the returned job_id rather than waiting on this call."
+        description = "Start ingesting a tree into a database and return a job id after recording child startup. One command handles both halves: file extension decides whether each file goes to the code analyzers (symbols, edges, AST chunks) or to document extraction, and both land in the same graph. Ingests run for minutes, so poll ingest_status with the returned job_id rather than waiting on this call."
     )]
     async fn ingest_start(
         &self,
@@ -651,7 +651,7 @@ impl HadesMcpServer {
     }
 
     #[tool(
-        description = "Progress and outcome of an ingest job started by ingest_start. While `status` is `running` the job is still working, or was orphaned by a daemon restart. When it is `completed` or `failed`, `result` holds the ingest's own envelope: routed counts, per-phase summaries, and any files nothing claimed."
+        description = "Progress and outcome of an ingest job started by ingest_start. Status is starting, running, completed, failed, or recovery_required when this service cannot verify ownership of an unfinished record. Recovery requires administrator review before retrying. Terminal result contains the captured JSON envelope when available; failed startup or invalid output can leave result null."
     )]
     async fn ingest_status(
         &self,

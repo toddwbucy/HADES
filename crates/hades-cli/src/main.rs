@@ -36,6 +36,10 @@ struct Cli {
     #[arg(short = 'g', long = "gpu", global = true)]
     gpu: Option<u32>,
 
+    /// Internal sealed configuration handoff from the daemon to its ingest child.
+    #[arg(long, hide = true, global = true)]
+    resolved_config_fd: Option<i32>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -295,7 +299,15 @@ fn run_codebase_ingest(
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let mut config = config::load_config()?;
+    let mut config = if let Some(fd) = cli.resolved_config_fd {
+        anyhow::ensure!(
+            matches!(&cli.command, Commands::Ingest { .. }),
+            "resolved configuration is only accepted for ingestion"
+        );
+        config::snapshot::load_inherited(fd)?
+    } else {
+        config::load_config()?
+    };
     config.apply_cli_overrides(cli.database.as_deref(), cli.gpu);
 
     // ── Command dispatch ────────────────────────────────────────────────

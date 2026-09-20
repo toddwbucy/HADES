@@ -2,7 +2,7 @@
 
 Scope: all 25 top-level `crates/*/tests/*.rs` targets at `979fe97`, plus
 the service-free `filesystem_policy` target added in PR #50 and viewer
-`process_lifecycle` added for #52 (27 total), and
+`process_lifecycle` added for #52 and CLI `daemon_shutdown` for #51 (28 total), and
 source-unit modules containing database client/pool construction. This inventory
 records resource boundaries and maintained execution, not exhaustive behavioral
 coverage of every production component.
@@ -31,6 +31,23 @@ The viewer `process_lifecycle` target runs in the service-free CI step. It start
 only the just-built private viewer and synthetic child scripts, uses ephemeral
 loopback HTTP, signals only its owned viewer and verifies descendant cleanup.
 It never discovers an installed HADES executable or database endpoint.
+
+The CLI `daemon_shutdown` target also runs in service-free CI. It starts the
+just-built daemon with cleared environment, a temporary configuration and explicit
+private Unix database sockets. SIGINT/SIGTERM cover idle exit and draining an
+ingestion reservation blocked on a synthetic database response. The mock rejects
+admission before any ingestion child or job insertion. This does not yet cover
+daemon shutdown with a running ingestion child.
+
+The database-gated `codebase_lifecycle` target additionally exercises actual daemon
+shutdown with a running ingestion child held at a synthetic embedding response.
+Both SIGINT and SIGTERM must reap that child, persist failure in the disposable
+database and preserve the previous graph. Its private failure guard verifies the
+fixture's unique source path before signalling any recorded process group.
+The same target exercises an actual authenticated MCP endpoint serving two private
+databases. Concurrent requests compete for the final ingestion slot; exactly one
+wins. It counts actual daemon children, rejects excess and cross-database duplicate
+tree requests, and checks both child reaping and per-database outcomes on shutdown.
 
 ## Source-unit fixtures
 

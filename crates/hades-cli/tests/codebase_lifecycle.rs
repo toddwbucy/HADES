@@ -166,6 +166,585 @@ fn assert_hit(result: &Value, key: &str, marker: &str) {
     assert_eq!(hit["score"], 1.0);
 }
 
+struct PrivateDaemon {
+    child: tokio::process::Child,
+    ingests: Vec<(u32, PathBuf)>,
+}
+impl Drop for PrivateDaemon {
+    fn drop(&mut self) {
+        // Failure cleanup verifies the unique private source path before
+        // signalling a recorded group. Never signal a historical database PID.
+        for (pid, root) in &self.ingests {
+            if let Ok(command) = std::fs::read(format!("/proc/{pid}/cmdline"))
+                && command
+                    .windows(root.as_os_str().as_encoded_bytes().len())
+                    .any(|part| part == root.as_os_str().as_encoded_bytes())
+            {
+                // SAFETY: fixture identity checked; this ingest owns a fresh group.
+                unsafe {
+                    libc::kill(-(*pid as i32), libc::SIGKILL);
+                }
+            }
+        }
+        let _ = self.child.start_kill();
+    }
+}
+
+async fn daemon_request(socket: &Path, request: Value) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        let bytes = serde_json::to_vec(&request).unwrap();
+        stream.write_u32(bytes.len() as u32).await.unwrap();
+        stream.write_all(&bytes).await.unwrap();
+        let size = stream.read_u32().await.unwrap() as usize;
+        assert!(size <= 1024 * 1024);
+        let mut body = vec![0; size];
+        stream.read_exact(&mut body).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    })
+    .await
+    .expect("private daemon request timed out")
+}
+
+struct PrivateMcp {
+    client: reqwest::Client,
+    url: String,
+    session: String,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl PrivateMcp {
+    async fn connect(address: std::net::SocketAddr) -> Self {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let mut mcp = Self {
+            client,
+            url: format!("http://{address}/mcp"),
+            session: String::new(),
+            next_id: std::sync::atomic::AtomicU64::new(2),
+        };
+        let response = mcp
+            .post(json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2025-03-26","capabilities":{},
+                "clientInfo":{"name":"isolated-ingest-test","version":"1"}}}))
+            .await;
+        mcp.session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(Self::message(response, 1).await["result"].is_object());
+        let response = mcp
+            .post(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await;
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        mcp
+    }
+
+    async fn post(&self, body: Value) -> reqwest::Response {
+        let mut request = self
+            .client
+            .post(&self.url)
+            .bearer_auth("private-fixture-token")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&body);
+        if !self.session.is_empty() {
+            request = request.header("mcp-session-id", &self.session);
+        }
+        let response = request.send().await.unwrap();
+        assert!(
+            response.status().is_success(),
+            "MCP HTTP {}",
+            response.status()
+        );
+        response
+    }
+
+    async fn message(mut response: reqwest::Response, id: u64) -> Value {
+        // Private replies can be JSON or SSE; bound bytes before accumulation.
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            assert!(bytes.len() + chunk.len() <= 1024 * 1024);
+            bytes.extend_from_slice(&chunk);
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+            assert_eq!(value["id"], id);
+            return value;
+        }
+        let body = std::str::from_utf8(&bytes).unwrap();
+        body.lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+            .find(|value| value["id"] == id)
+            .unwrap_or_else(|| panic!("missing private MCP response {id}: {body}"))
+    }
+
+    async fn start(&self, db: &str, path: &Path) -> Value {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let response = self
+            .post(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+            "params":{"name":"ingest_start","arguments":{"db":db,"path":path}}}))
+            .await;
+        let message = Self::message(response, id).await;
+        let text = message["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("unexpected MCP result: {message}"));
+        serde_json::from_str(text).unwrap_or_else(|_| panic!("unexpected tool envelope: {text}"))
+    }
+}
+
+#[tokio::test]
+async fn mcp_ingestion_limit_and_tree_ownership_span_databases() {
+    with_temp_db("mcp_ingest_a", Fixtures::Codebase, |a| async move {
+        with_temp_db("mcp_ingest_b", Fixtures::Codebase, |b| async move {
+            let embedder = Embedder::new().await;
+            embedder.hold.store(true, Ordering::SeqCst);
+            let tree = tempfile::tempdir().unwrap();
+            let roots: Vec<_> = (0..4)
+                .map(|i| {
+                    let root = tree.path().join(format!("source{i}"));
+                    std::fs::create_dir(&root).unwrap();
+                    std::fs::write(
+                        root.join("fixture.py"),
+                        "def target():\n    return 'quartz_mcp'\n",
+                    )
+                    .unwrap();
+                    root
+                })
+                .collect();
+            let token = tree.path().join("token");
+            std::fs::write(&token, "private-fixture-token\n").unwrap();
+            let socket = tree.path().join("daemon.sock");
+            let log = tree.path().join("daemon.log");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            drop(listener);
+            let prefixes = format!("{},{}", a.database(), b.database());
+            let child = cli_command(
+                &a,
+                &embedder,
+                &[
+                    "daemon",
+                    "--socket",
+                    socket.to_str().unwrap(),
+                    "--mcp-bind",
+                    &address.to_string(),
+                    "--mcp-token-file",
+                    token.to_str().unwrap(),
+                    "--mcp-dbs",
+                    b.database(),
+                    "--mcp-db-prefix",
+                    &prefixes,
+                    "--mcp-ingest-root",
+                    tree.path().to_str().unwrap(),
+                ],
+            )
+            .env("HADES_USE_GPU", "false")
+            .env("TOKIO_WORKER_THREADS", "2")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap();
+            let mut daemon = PrivateDaemon {
+                child,
+                ingests: Vec::new(),
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                    assert!(
+                        daemon.child.try_wait().unwrap().is_none(),
+                        "{}",
+                        std::fs::read_to_string(&log).unwrap()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let mcp = PrivateMcp::connect(address).await;
+            let first = mcp.start(a.database(), &roots[0]).await;
+            if let Some(pid) = first["data"]["pid"].as_u64() {
+                daemon.ingests.push((pid as u32, roots[0].clone()));
+            }
+            assert_eq!(first["success"], true, "{first}");
+            // Both contenders target B while A already owns one slot. A
+            // per-database counter or check-before-reserve race admits three.
+            let (candidate_one, candidate_two) = tokio::join!(
+                mcp.start(b.database(), &roots[1]),
+                mcp.start(b.database(), &roots[2])
+            );
+            for (result, root) in [(&candidate_one, &roots[1]), (&candidate_two, &roots[2])] {
+                if let Some(pid) = result["data"]["pid"].as_u64() {
+                    daemon.ingests.push((pid as u32, root.clone()));
+                }
+            }
+            let (second, refused) = if candidate_one["success"] == true {
+                (&candidate_one, &candidate_two)
+            } else {
+                (&candidate_two, &candidate_one)
+            };
+            assert_eq!(second["success"], true, "{second}");
+            assert_eq!(refused["success"], false, "{refused}");
+            assert!(
+                refused
+                    .to_string()
+                    .contains("already admitted across this service"),
+                "{refused}"
+            );
+            let mut jobs = Vec::new();
+            for (result, pool) in [(&first, &a), (second, &b)] {
+                assert_eq!(result["success"], true, "{result}");
+                assert_eq!(result["data"]["database"], pool.database());
+                let pid = result["data"]["pid"].as_u64().unwrap() as u32;
+                jobs.push((
+                    pool,
+                    result["data"]["job_id"].as_str().unwrap().to_owned(),
+                    pid,
+                ));
+            }
+            assert_ne!(jobs[0].2, jobs[1].2);
+            // Held embedder requests keep both children alive throughout all
+            // competing starts. Count the actual direct children, not job rows.
+            let tasks_path = format!("/proc/{}/task", daemon.child.id().unwrap());
+            let children = || -> Vec<u32> {
+                let mut ids = Vec::new();
+                for task in std::fs::read_dir(&tasks_path).unwrap() {
+                    let path = task.unwrap().path().join("children");
+                    match std::fs::read_to_string(path) {
+                        Ok(text) => {
+                            ids.extend(text.split_whitespace().map(|id| id.parse::<u32>().unwrap()))
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => panic!("cannot count private daemon children: {error}"),
+                    }
+                }
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            };
+            let mut expected = vec![jobs[0].2, jobs[1].2];
+            expected.sort_unstable();
+            assert_eq!(children(), expected);
+            let (over_a, over_b, overlap) = tokio::join!(
+                mcp.start(a.database(), &roots[3]),
+                mcp.start(b.database(), &roots[3]),
+                mcp.start(b.database(), &roots[0])
+            );
+            for denied in [&over_a, &over_b] {
+                assert_eq!(denied["success"], false, "{denied}");
+                assert!(
+                    denied
+                        .to_string()
+                        .contains("already admitted across this service"),
+                    "{denied}"
+                );
+            }
+            assert_eq!(overlap["success"], false, "{overlap}");
+            assert!(
+                overlap.to_string().contains("overlapping tree"),
+                "{overlap}"
+            );
+            assert_eq!(children(), expected);
+            for (pool, job, pid) in &jobs {
+                let row = hades_core::db::crud::get_document(pool, "hades_ingest_jobs", job)
+                    .await
+                    .unwrap();
+                assert_eq!(row["status"], "running");
+                assert_eq!(row["pid"], *pid);
+                assert_eq!(
+                    hades_core::db::crud::count_collection(pool, "hades_ingest_jobs")
+                        .await
+                        .unwrap(),
+                    1
+                );
+            }
+            assert_eq!(
+                unsafe { libc::kill(daemon.child.id().unwrap() as i32, libc::SIGTERM) },
+                0
+            );
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), daemon.child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+            for (pool, job, pid) in &jobs {
+                assert_eq!(unsafe { libc::kill(*pid as i32, 0) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+                let row = hades_core::db::crud::get_document(pool, "hades_ingest_jobs", job)
+                    .await
+                    .unwrap();
+                assert_eq!(row["status"], "failed", "{row}");
+                assert!(row["detail"].as_str().unwrap().contains("shutdown"));
+            }
+            assert!(!socket.exists());
+        })
+        .await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn daemon_shutdown_reaps_running_ingestion_and_persists_failure() {
+    with_temp_db(
+        "daemon_ingest_shutdown",
+        Fixtures::Codebase,
+        |pool| async move {
+            for signal in [libc::SIGTERM, libc::SIGINT] {
+                let embedder = Embedder::new().await;
+                embedder.hold.store(true, Ordering::SeqCst);
+                let tree = tempfile::tempdir().unwrap();
+                let source = tree.path().join("source");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::write(
+                    source.join("fixture.py"),
+                    "def target():\n    return 'quartz_shutdown'\n",
+                )
+                .unwrap();
+                let socket = tree.path().join("daemon.sock");
+                let log = tree.path().join("daemon.log");
+                let child = cli_command(
+                    &pool,
+                    &embedder,
+                    &["daemon", "--socket", socket.to_str().unwrap()],
+                )
+                .env("HADES_USE_GPU", "false")
+                .env("TOKIO_WORKER_THREADS", "2")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(&log).unwrap())
+                .spawn()
+                .unwrap();
+                let mut daemon = PrivateDaemon {
+                    child,
+                    ingests: Vec::new(),
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    loop {
+                        if tokio::net::UnixStream::connect(&socket).await.is_ok() {
+                            break;
+                        }
+                        assert!(
+                            daemon.child.try_wait().unwrap().is_none(),
+                            "private daemon exited: {}",
+                            std::fs::read_to_string(&log).unwrap()
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let before = snapshot_graph(&pool).await;
+                let started = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(started["success"], true, "{started}");
+                let job = started["data"]["job_id"].as_str().unwrap();
+                let pid = started["data"]["pid"].as_u64().unwrap() as u32;
+                daemon.ingests.push((pid, source.clone()));
+                // The request connection has already closed. Detached ownership
+                // must keep this actual ingestion alive while it awaits the mock.
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    embedder.entered.notified(),
+                )
+                .await
+                .expect("private ingestion did not reach synthetic embedding");
+                let status = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.status","params":{"job_id":job}}),
+                )
+                .await;
+                assert_eq!(status["data"]["status"], "running", "{status}");
+                assert_eq!(status["data"]["owned_by_service"], true);
+                assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
+                let duplicate = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(duplicate["success"], false, "{duplicate}");
+                // SAFETY: signal only the private daemon's unreaped direct child.
+                assert_eq!(
+                    unsafe { libc::kill(daemon.child.id().unwrap() as i32, signal) },
+                    0
+                );
+                let exited =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), daemon.child.wait())
+                        .await
+                        .expect("private daemon did not drain ingestion")
+                        .unwrap();
+                assert!(
+                    exited.success(),
+                    "{}",
+                    std::fs::read_to_string(&log).unwrap()
+                );
+                // Direct ingestion was reaped by the daemon before the daemon exit.
+                assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+                let recorded = hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", job)
+                    .await
+                    .unwrap();
+                assert_eq!(recorded["status"], "failed", "{recorded}");
+                assert!(recorded["detail"].as_str().unwrap().contains("shutdown"));
+                assert_eq!(recorded["pid"], pid);
+                assert!(recorded["finished_at"].is_string());
+                assert_eq!(recorded["output_storage"], "bounded_job_record");
+                assert_eq!(recorded["log_path"], Value::Null);
+                assert_eq!(snapshot_graph(&pool).await, before);
+                assert!(!socket.exists());
+                embedder.hold.store(false, Ordering::SeqCst);
+                embedder.release.notify_one();
+                // A new daemon instance must admit a retry after the previous
+                // owner durably recorded failure, and persist normal completion.
+                let child = cli_command(
+                    &pool,
+                    &embedder,
+                    &["daemon", "--socket", socket.to_str().unwrap()],
+                )
+                .env("HADES_USE_GPU", "false")
+                .env("TOKIO_WORKER_THREADS", "2")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(&log).unwrap())
+                .spawn()
+                .unwrap();
+                let mut restarted = PrivateDaemon {
+                    child,
+                    ingests: Vec::new(),
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                        assert!(restarted.child.try_wait().unwrap().is_none());
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                // Simulate an interrupted previous owner. Its saved PID is a
+                // live, unrelated fixture process: neither PID existence nor
+                // reuse establishes ownership for this new daemon instance.
+                let stale_job = "0123456789abcdef0123456789abcdef";
+                hades_core::db::crud::insert_document(
+                    &pool,
+                    "hades_ingest_jobs",
+                    &json!({"_key":stale_job,"status":"running",
+                        "owner_instance":recorded["owner_instance"],
+                        "pid":std::process::id(),"path":source}),
+                )
+                .await
+                .unwrap();
+                let stale_before =
+                    hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", stale_job)
+                        .await
+                        .unwrap();
+                let stale_status = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.status","params":{"job_id":stale_job}}),
+                )
+                .await;
+                assert_eq!(stale_status["success"], true, "{stale_status}");
+                assert_eq!(stale_status["data"]["status"], "recovery_required");
+                assert_eq!(stale_status["data"]["recorded_status"], "running");
+                assert_eq!(stale_status["data"]["owned_by_service"], false);
+                let refused = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(refused["success"], false, "{refused}");
+                assert_eq!(
+                    hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", stale_job)
+                        .await
+                        .unwrap(),
+                    stale_before,
+                    "reading or refusing an unowned job must not rewrite its record"
+                );
+                assert_eq!(snapshot_graph(&pool).await, before);
+                // Only this disposable fixture is reconciled explicitly. The
+                // daemon must never infer a terminal outcome from a saved PID.
+                hades_core::db::crud::update_document(
+                    &pool,
+                    "hades_ingest_jobs",
+                    stale_job,
+                    &json!({"status":"failed","detail":"fixture-only reconciliation"}),
+                )
+                .await
+                .unwrap();
+                let retry = daemon_request(
+                    &socket,
+                    json!({"command":"ingest.start","params":{"path":source}}),
+                )
+                .await;
+                assert_eq!(retry["success"], true, "{retry}");
+                let retry_job = retry["data"]["job_id"].as_str().unwrap();
+                let retry_pid = retry["data"]["pid"].as_u64().unwrap() as u32;
+                restarted.ingests.push((retry_pid, source.clone()));
+                let completed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                    loop {
+                        let status = daemon_request(
+                            &socket,
+                            json!({"command":"ingest.status","params":{"job_id":retry_job}}),
+                        )
+                        .await;
+                        assert_eq!(status["success"], true, "{status}");
+                        match status["data"]["status"].as_str() {
+                            Some("running" | "starting") => {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                            }
+                            _ => break status["data"].clone(),
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(completed["status"], "completed", "{completed}");
+                assert_eq!(completed["result"]["success"], true);
+                assert_ne!(completed["owner_instance"], recorded["owner_instance"]);
+                assert_eq!(unsafe { libc::kill(retry_pid as i32, 0) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+                validate(&pool, &embedder).await;
+                assert_eq!(
+                    unsafe { libc::kill(restarted.child.id().unwrap() as i32, signal) },
+                    0
+                );
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        restarted.child.wait()
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+                );
+                assert!(!socket.exists());
+                hades_core::db::crud::delete_document(&pool, "hades_ingest_jobs", stale_job)
+                    .await
+                    .unwrap();
+            }
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn ingest_query_modify_move_delete_and_partial_failure_recover() {
     with_temp_db("cli_lifecycle", Fixtures::Codebase, |pool| async move {
