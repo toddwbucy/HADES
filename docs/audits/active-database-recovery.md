@@ -59,3 +59,22 @@ coverage, concurrent-write consistency, users/permissions, production scale,
 vector indexes, application model/checkpoint compatibility, or loss of the host.
 P1 #63 remains open. A full recovery plan needs actual backup evidence, an owner,
 RPO/RTO and a separately authorized deployment/verification plan.
+
+## Owner-identified backup destination
+
+The owner confirmed that ZFS backups are stored under `/bulk-store`. Read-only
+enumeration of that pool found the replicated ArangoDB snapshots listed above
+(October 22–25, 2025), but no replica of the active `dbpool/home/todd` dataset.
+
+A separate logical dump exists at
+`/bulk-store/backups/dbpool/arangodump-20260808`. Six `dump.json` manifests record
+creation on August 9, 2026 UTC (August 8 local time). One database directory has
+a September modification timestamp, but its manifest still records the August
+dump; directory mtime alone does not establish a newer backup. Additional older
+logical dumps exist under `/bulk-store/arangodb_dumps`. Only metadata and manifest
+fields were inspected, not raw database documents or credentials.
+
+These artifacts establish that backups exist. They do not establish the current
+backup schedule, coverage of recent graphs/changes, or recoverability of the
+actual artifacts. The synthetic rehearsal above must not be represented as a
+restore test of these production backups.
