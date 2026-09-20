@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Verify service-wide ingestion admission through the actual MCP endpoint with
+  two disposable databases, a last-slot race, actual child counts, cross-database
+  tree conflicts and shutdown outcomes in both databases (#51).
+
 - Verify that a restarted daemon reports unowned unfinished ingestion jobs as
   requiring recovery, preserves their records and refuses admission until explicit
   reconciliation, even when a saved PID belongs to a live fixture process; refresh

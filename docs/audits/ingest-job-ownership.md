@@ -73,8 +73,7 @@ connection has closed, but the job remains owned and running; a duplicate start
 is refused. SIGINT and SIGTERM each cause direct-child reaping before daemon exit,
 a persisted failed job with a shutdown reason, removal of the daemon socket and
 preservation of the prior graph. This uses synthetic CPU embedding responses,
-not installed services or a model. It does not yet measure simultaneous child
-counts across multiple served databases. For each signal, a new daemon instance
+not installed services or a model. For each signal, a new daemon instance
 also retries the same source tree, completes ingestion with a new owner identity,
 reaps the child and passes graph validation against the disposable database.
 Before retry, the fixture inserts an unfinished record belonging to the previous
@@ -97,7 +96,19 @@ Validation: the maintained private-database matrix passed after this fix
 (`strict-prerequisite`, `database-contracts`, `codebase`, `cli-lifecycle`), as did
 all 13 ingestion ownership unit tests. The initial lifecycle failure and the
 deterministic stale-snapshot regression establish why the refresh is needed.
-These results do not certify the remaining cross-database concurrency criteria.
+These results cover recovery separately from the concurrency fixture below.
+
+The actual MCP fixture serves two disposable databases on a private loopback
+listener, with a synthetic token and provisioning limited to those database-name
+prefixes and the temporary source directory. One held ingestion occupies a slot
+in database A; two concurrent requests in B compete for the last slot. Exactly
+one succeeds. The fixture counts actual children across all daemon worker threads
+and requires exactly the two returned PIDs. Concurrent additional starts in A
+and B are refused, as is ingestion in B of the tree owned by A. Counts remain two
+and each database contains exactly one job. SIGTERM must reap both children and
+persist a shutdown failure in each correct database before daemon exit. This is
+a controlled concurrency contract, not a production throughput measurement or
+coordination between separate daemon processes.
 
 Process supervision now catches panics around capture/exit observation while
 retaining the process outside the unwind boundary, then signals its group and
@@ -110,8 +121,6 @@ replacing an ordinary invalid-parameter response.
 
 ## Remaining requirements before publication or closure
 
-- Verify concurrent starts against a real disposable database; process-wide
-  admission does not coordinate separate daemons.
 - Own the process group through normal completion, shutdown, panic and task
   cancellation. Retain admission until descendants are stopped and the direct
   child is reaped; direct-child kill-on-drop alone does not prove that invariant.
@@ -120,9 +129,9 @@ replacing an ordinary invalid-parameter response.
   fixtures below do not substitute for real ArangoDB semantics.
 - Verify the sealed effective-configuration handoff in the complete disposable
   database/daemon ingestion lifecycle, retaining provisioning and root boundaries.
-- Add actual synthetic-child/process-group, noisy-output, failure-injection and
-  real disposable-database fixtures, including simultaneous starts across databases
-  and actual peak live-child counts. Complete review and final CI.
+- Review coverage of the private process-group, noisy-output, failure-injection
+  and multi-database concurrency fixtures against every issue requirement; complete
+  final CI before publication or closure.
 
 The current local increment is deliberately not presented as completion of #51.
 No production binary, service configuration, database or GPU workload is changed.

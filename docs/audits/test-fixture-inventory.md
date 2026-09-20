@@ -44,6 +44,10 @@ shutdown with a running ingestion child held at a synthetic embedding response.
 Both SIGINT and SIGTERM must reap that child, persist failure in the disposable
 database and preserve the previous graph. Its private failure guard verifies the
 fixture's unique source path before signalling any recorded process group.
+The same target exercises an actual authenticated MCP endpoint serving two private
+databases. Concurrent requests compete for the final ingestion slot; exactly one
+wins. It counts actual daemon children, rejects excess and cross-database duplicate
+tree requests, and checks both child reaping and per-database outcomes on shutdown.
 
 ## Source-unit fixtures
 
