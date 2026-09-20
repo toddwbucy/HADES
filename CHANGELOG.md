@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain a private real-CLI reproduction of training-session release racing
+  normal runtime shutdown (#115); remediation remains pending.
+
 - Verify structural-vector retention after changed parsed and parser-free source
   text using real CLI ingestion and private fixtures (epic #12).
 - Record private checkpoint/graph generation and partially persisted export
