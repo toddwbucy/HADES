@@ -15,7 +15,7 @@
 use crate::assemble::{Backend, discover_databases};
 use anyhow::{Context, Result, anyhow};
 use axum::{
-    Json, Router,
+    Router,
     extract::{Query, Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
@@ -54,7 +54,7 @@ impl AppState {
         if !self.databases.iter().any(|d| d == db) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": format!("database `{db}` is not in the allowlist") })),
+                crate::payload::BoundedJson(serde_json::json!({ "error": format!("database `{db}` is not in the allowlist") })),
             )
                 .into_response());
         }
@@ -130,6 +130,7 @@ pub async fn serve(
         .route("/api/expand", get(expand))
         .route("/api/node", get(node))
         .route("/api/content", get(content))
+        .route_layer(middleware::from_fn(request_deadline))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -141,7 +142,9 @@ pub async fn serve(
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
     tracing::info!(%addr, "hades-viewer serving");
-    axum::serve(listener, app).await.context("server error")?;
+    axum::serve(crate::transport_limits::AdmittedListener(listener), app)
+        .await
+        .context("server error")?;
     Ok(())
 }
 
@@ -174,7 +177,7 @@ async fn require_known_host(State(state): State<AppState>, req: Request, next: N
     tracing::warn!(%host, "rejected request with unrecognized Host header");
     (
         StatusCode::MISDIRECTED_REQUEST,
-        Json(serde_json::json!({ "error": "unrecognized Host header" })),
+        crate::payload::BoundedJson(serde_json::json!({ "error": "unrecognized Host header" })),
     )
         .into_response()
 }
@@ -256,7 +259,8 @@ fn asset(body: &'static str, content_type: &'static str) -> Response {
 
 /// The databases this server may serve; the first is the client default.
 async fn list_databases(State(state): State<AppState>) -> Response {
-    Json(serde_json::json!({ "databases": &*state.databases })).into_response()
+    crate::payload::BoundedJson(serde_json::json!({ "databases": &*state.databases }))
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -272,7 +276,7 @@ async fn list_graphs(State(state): State<AppState>, Query(q): Query<DbQuery>) ->
     match backend.list_graphs().await {
         Ok(graphs) => {
             let names: Vec<&str> = graphs.iter().map(|g| g.name.as_str()).collect();
-            Json(serde_json::json!({ "graphs": names })).into_response()
+            crate::payload::BoundedJson(serde_json::json!({ "graphs": names })).into_response()
         }
         Err(e) => error_response(e),
     }
@@ -300,7 +304,7 @@ async fn graph_data(State(state): State<AppState>, Query(q): Query<GraphQuery>) 
         (None, client) => client,
     };
     match backend.assemble(&q.graph).await {
-        Ok(snapshot) => Json(snapshot).into_response(),
+        Ok(snapshot) => crate::payload::BoundedJson(snapshot).into_response(),
         Err(e) => error_response(e),
     }
 }
@@ -334,7 +338,7 @@ async fn expand(State(state): State<AppState>, Query(q): Query<ExpandQuery>) -> 
         .neighbors(&q.graph, &q.node, &q.direction, q.limit)
         .await
     {
-        Ok(delta) => Json(delta).into_response(),
+        Ok(delta) => crate::payload::BoundedJson(delta).into_response(),
         Err(e) => error_response(e),
     }
 }
@@ -354,10 +358,12 @@ async fn node(State(state): State<AppState>, Query(q): Query<NodeQuery>) -> Resp
         Err(r) => return r,
     };
     match backend.fetch_node(&q.id).await {
-        Ok(Some(n)) => Json(n).into_response(),
+        Ok(Some(n)) => crate::payload::BoundedJson(n).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": format!("node `{}` not found", q.id) })),
+            crate::payload::BoundedJson(
+                serde_json::json!({ "error": format!("node `{}` not found", q.id) }),
+            ),
         )
             .into_response(),
         Err(e) => error_response(e),
@@ -379,7 +385,9 @@ async fn content(State(state): State<AppState>, Query(q): Query<ContentQuery>) -
         Err(r) => return r,
     };
     match backend.file_content(&q.file_key).await {
-        Ok(chunks) => Json(serde_json::json!({ "chunks": chunks })).into_response(),
+        Ok(chunks) => {
+            crate::payload::BoundedJson(serde_json::json!({ "chunks": chunks })).into_response()
+        }
         Err(e) => error_response(e),
     }
 }
@@ -388,7 +396,19 @@ fn error_response(e: anyhow::Error) -> Response {
     tracing::error!(error = %e, "request failed");
     (
         StatusCode::BAD_GATEWAY,
-        Json(serde_json::json!({ "error": e.to_string() })),
+        crate::payload::BoundedJson(serde_json::json!({ "error": e.to_string() })),
     )
         .into_response()
+}
+
+/// Bound the whole assembly, including sequences of individually bounded children.
+async fn request_deadline(req: Request, next: Next) -> Response {
+    match tokio::time::timeout(std::time::Duration::from_secs(60), next.run(req)).await {
+        Ok(response) => response,
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            "viewer request deadline exceeded",
+        )
+            .into_response(),
+    }
 }

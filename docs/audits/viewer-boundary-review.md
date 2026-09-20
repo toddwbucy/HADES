@@ -79,3 +79,13 @@ collections after individual child permits are released. HTTP connection/request
 admission, serialization/response retention, end-to-end router contracts, shutdown
 behavior and measured aggregate budgets still require work. No deployment or
 complete frontend/security certification is implied.
+
+The next local increment adds a cumulative graph budget (32 collections, 50,000
+documents, 8 MiB serialized document content), a 16 MiB serialization writer cap,
+16 connection slots retained through socket writes, a 120-second connection
+lifetime and a 60-second request deadline. All 22 current frontend tests and
+Clippy pass. These limits are provisional policy, not a peak-RSS claim. Tests
+currently exercise exact serialization boundaries and stalled I/O ownership;
+actual-router assembly/overload/disconnect tests and measured budgets remain.
+Explicit signal-driven server shutdown and private descendant cleanup during
+shutdown must be added before #52 can be considered complete.

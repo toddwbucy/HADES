@@ -227,10 +227,26 @@ impl Backend {
             .ok_or_else(|| anyhow!("named graph `{graph_name}` not found in {}", self.database))?;
 
         let (edge_collections, node_collections) = discover_collections(&graph);
+        if edge_collections.len() + node_collections.len() > 32 {
+            return Err(anyhow!("viewer graph exceeds 32-collection budget"));
+        }
+        let mut remaining_bytes = 8 * 1024 * 1024;
+        let mut remaining_documents = 50_000;
+        let mut charge = |docs: &Vec<Doc>| -> Result<()> {
+            if docs.len() > remaining_documents {
+                return Err(anyhow!("viewer graph exceeds document budget"));
+            }
+            remaining_documents -= docs.len();
+            crate::payload::charge(docs, &mut remaining_bytes)
+                .context("viewer graph exceeds aggregate byte budget")?;
+            Ok(())
+        };
 
         let mut node_docs = BTreeMap::new();
         for col in &node_collections {
-            node_docs.insert(col.clone(), self.export_collection(col).await?);
+            let docs = self.export_collection(col).await?;
+            charge(&docs)?;
+            node_docs.insert(col.clone(), docs);
         }
         // With a cap in play, take the induced subgraph over the vertices we
         // actually fetched; uncapped, a plain export is already consistent.
@@ -242,11 +258,15 @@ impl Backend {
                 .filter_map(|d| take_str(d, "_id"))
                 .collect();
             for col in &edge_collections {
-                edge_docs.insert(col.clone(), self.export_edges_within(col, &ids).await?);
+                let docs = self.export_edges_within(col, &ids).await?;
+                charge(&docs)?;
+                edge_docs.insert(col.clone(), docs);
             }
         } else {
             for col in &edge_collections {
-                edge_docs.insert(col.clone(), self.export_collection(col).await?);
+                let docs = self.export_collection(col).await?;
+                charge(&docs)?;
+                edge_docs.insert(col.clone(), docs);
             }
         }
 

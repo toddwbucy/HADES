@@ -21,6 +21,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Bound viewer CLI child output and runtime, retain process admission through
   cancellation cleanup, and prevent child diagnostics from entering HTTP errors (#52).
+- Bound viewer graph accumulation, JSON serialization, concurrent connections
+  and request/socket lifetimes (#52).
 
 ### Documentation
 
