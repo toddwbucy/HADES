@@ -326,7 +326,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Fixed
 
 - Fence the complete training-provider lifecycle with expiring session ownership;
-  reject competing/stale clients and renew/release shared Rust client leases (#42).
+  reject competing/stale clients and renew/release shared Rust client leases.
+  Allow renewal to queue behind long operations while bounding stalled renewals
+  and retaining provider-side expiry checks (#42).
 
 - Build complete Python service wheels with generated RPC bindings, trainer
   modules and adapter resources; include canonical protos in source archives

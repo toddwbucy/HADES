@@ -14,9 +14,11 @@ struct State {
     renewals: usize,
     reject_renewal: bool,
     legacy_provider: bool,
+    operation_delay: Duration,
+    stall_renewal: bool,
 }
 #[derive(Clone, Default)]
-struct Service(Arc<Mutex<State>>);
+struct Service(Arc<Mutex<State>>, Arc<tokio::sync::Mutex<()>>);
 impl Service {
     // Match the gRPC trait error type used by the mock handlers.
     #[allow(clippy::result_large_err)]
@@ -60,7 +62,11 @@ impl TrainingService for Service {
         &self,
         request: Request<SessionRequest>,
     ) -> Result<Response<SessionResponse>, Status> {
+        let _operation = self.1.lock().await;
         self.owned(&request, "renew")?;
+        if self.0.lock().unwrap().stall_renewal {
+            std::future::pending::<()>().await;
+        }
         let mut state = self.0.lock().unwrap();
         if state.reject_renewal {
             return Err(Status::failed_precondition("expired"));
@@ -80,7 +86,10 @@ impl TrainingService for Service {
         &self,
         request: Request<InitModelRequest>,
     ) -> Result<Response<InitModelResponse>, Status> {
+        let _operation = self.1.lock().await;
         self.owned(&request, "init_model")?;
+        let delay = self.0.lock().unwrap().operation_delay;
+        tokio::time::sleep(delay).await;
         Ok(Response::new(InitModelResponse::default()))
     }
     async fn load_graph(
@@ -276,4 +285,58 @@ async fn legacy_provider_fails_without_unowned_fallback() {
     assert!(state.owner.is_none());
     assert!(state.calls.is_empty());
     assert_eq!(state.generation, 0);
+}
+
+#[tokio::test]
+async fn renewal_waiting_for_a_valid_operation_does_not_poison_the_session() {
+    let server = Server::start();
+    server.service.0.lock().unwrap().operation_delay = Duration::from_millis(900);
+    let client = TrainingClient::connect(hades_core::training::TrainingClientConfig {
+        endpoint: hades_core::training::TrainingEndpoint::Unix(server.path.clone()),
+        slow_timeout: Duration::from_secs(2),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    // With a one-second lease the first renewal starts after 333ms. Like the
+    // Python gateway it waits behind model work; a 333ms renewal cap would
+    // falsely invalidate this successful 900ms initialization.
+    client
+        .init_model(ModelConfig::default(), OptimizerConfig::default(), "cpu")
+        .await
+        .unwrap();
+    client.get_embeddings(None).await.unwrap();
+    server.wait_for(|state| state.renewals >= 1).await;
+    drop(client);
+    server.wait_for(|state| state.owner.is_none()).await;
+}
+
+#[tokio::test]
+async fn stalled_renewal_obeys_the_operation_deadline() {
+    let server = Server::start();
+    server.service.0.lock().unwrap().stall_renewal = true;
+    let client = TrainingClient::connect(hades_core::training::TrainingClientConfig {
+        endpoint: hades_core::training::TrainingEndpoint::Unix(server.path.clone()),
+        timeout: Duration::from_millis(100),
+        slow_timeout: Duration::from_millis(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    server
+        .wait_for(|state| state.calls.contains(&"renew"))
+        .await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if client.get_embeddings(None).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(server.service.0.lock().unwrap().generation, 1);
+    drop(client);
+    server.wait_for(|state| state.owner.is_none()).await;
 }

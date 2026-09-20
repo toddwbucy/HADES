@@ -26,7 +26,11 @@ Discarding tensor references does not promise immediate CUDA allocator release.
 The Rust `TrainingClient` acquires on connection, sends the shared token on every
 operation, and renews every third of the lease duration. Clones share one guard,
 covering the orchestrator and subsequent export. Losing renewal fails subsequent
-operations closed; it never silently acquires a successor session. Last-handle
+operations closed; it never silently acquires a successor session. Renewal waits
+use the longer configured operation deadline because the provider serializes
+renewal with model work. While a renewal is pending, the client may still send
+requests; the provider independently rejects expired/non-owner tokens before
+backend access. The local flag is not an independent lease-validity oracle. Last-handle
 drop stops renewal and attempts a five-second release. Process death, a lost
 acquisition response or runtime shutdown relies on server expiry. Both training
 and checkpoint-backed graph updates use this client.
@@ -53,3 +57,14 @@ shared-clone renewal, last-drop and cancelled-lifecycle release, rejection of
 legacy providers, and failure without reacquisition. These
 contracts run in the existing Python CPU and `training_client` CI targets.
 No deployed trainer, GPU, production graph or service configuration was used.
+
+## Renewal timeout review
+
+A private Rust gRPC fixture uses a one-second lease and a 900ms initialization
+holding the same lock as renewal. Capping renewal to the 333ms heartbeat interval
+incorrectly invalidates the session before initialization completes; the next
+embedding call fails. The operation-sized timeout passes this fixture. A separate
+stalled-renewal fixture verifies that the configured operation deadline still
+ends the wait and prevents silent reacquisition. The server's real CPU RPC tests
+independently verify expiry, stale-token rejection and no transfer during a long
+operation. These are distinct client-liveness and provider-ownership contracts.

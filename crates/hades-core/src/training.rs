@@ -255,7 +255,11 @@ impl TrainingClient {
         let mut renewal_client = inner.clone();
         let renewal_token = token.clone();
         let renewal_lost = lost.clone();
-        let renewal_timeout = config.slow_timeout;
+        // The provider serializes renewal with model work. A lease-interval
+        // timeout would invalidate healthy operations that hold ownership past
+        // that interval. Bound renewal by the longest permitted operation;
+        // expired tokens are still fenced by the provider on every state RPC.
+        let renewal_timeout = config.slow_timeout.max(config.timeout);
         let interval = Duration::from_secs(u64::from(acquired.lease_seconds)) / 3;
         let heartbeat = tokio::spawn(async move {
             loop {
