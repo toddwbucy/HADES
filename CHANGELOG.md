@@ -396,6 +396,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve WeaverTools relationship identity with full-tuple versioned keys,
+  reject conflicting declarations and legacy layouts before writes, and make
+  retained stale-row semantics explicit (#109).
+
 - Publish LSP document-open state only after didOpen is sent; keep failed and
   cancelled reads retryable and order same-URI opens/closes independently (#102).
 

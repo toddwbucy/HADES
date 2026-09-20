@@ -46,6 +46,8 @@ def test_run_failure_exit_and_truthful_count(monkeypatch, capsys, failure):
         if path == 'cursor':
             if failure == 'scope':return {'error':True}
             return {'result':[['fixture.md','fixture']], 'hasMore':False}
+        if path == 'collection' and method == 'GET':
+            return {'result': []}
         if path == 'collection':
             if failure == 'collection':return {'error':True,'code':403}
             return {'name':body['name'],'type':body['type']}
@@ -121,6 +123,8 @@ def test_failed_run_preserves_acknowledged_rows(monkeypatch, capsys, failure, ac
         calls.append(path)
         if path == 'cursor':
             return {'result': [['fixture.md', 'fixture']], 'hasMore': False}
+        if path == 'collection' and method == 'GET':
+            return {'result': []}
         if path == 'collection':
             return {'name': body['name'], 'type': body['type']}
         if path.startswith('import?'):

@@ -60,3 +60,38 @@ or safely migrate legacy identity rows before a new encoding is admitted; merely
 adding a hash can leave duplicate legacy/new representations. Conflicting node
 declarations and stale-row policy also need explicit handling. Any migration
 against live data remains outside discovery and subject to the snapshot policy.
+
+## Local remediation and validation
+
+Version 2 derives 69-byte ASCII node/edge keys from SHA-256 over JSON-framed
+full identities. Edge identity includes persisted endpoints, relation, basis,
+via and tag; endpoint construction uses the same node-key function and leaves
+HADES's persisted file/document keys intact. Readable node identifiers remain
+attributes. Exact duplicate rows are deduplicated, while conflicting duplicate
+node declarations fail before mutation.
+
+A read-only preflight checks all existing adapter node/relation/report collections.
+Legacy or mixed-version rows and changed stored node kinds are refused before
+collection creation/imports. There is no automatic migration/bypass: rebuild
+legacy adapters into a fresh, independently verified graph and review consumer
+cutover/rollback separately. The guard is not a lock against simultaneous legacy
+or arbitrary writers; those must be stopped during a version cutover.
+
+The [real-database remediation result](adapter-identity-remediation-result.json)
+passes all three collision cases with two persisted edges on initial and repeat
+runs, stable keys/values and valid endpoints. Legacy rows, conflicting declarations
+and stored-kind changes are rejected while preserving exact old rows/revisions.
+The maintained scripts/verify_adapter_identity_database.py runs these positive
+contracts against a fresh server. Both private server and bridge stopped before
+success. The historical baseline probe/results remain unchanged.
+
+All 75 adapter identity/failure/redirect/scope CPU tests pass (0.31 seconds).
+The original disposable-database writer suite also checks first/repeat success,
+schema rejection and wrong collection type. The [result of that replay](adapter-identity-writer-regression-result.json)
+records those outcomes. This is no claim of full real-WeaverTools corpus conformance.
+
+Stale retirement remains explicitly unsupported: absent rows are retained, and
+the latest report now says so. A successful incremental write is not a current
+whole-graph snapshot. Existing partial-import/error accounting remains; this
+change adds no whole-run transaction. Repository changes have not been deployed.
+Final integration/CI/review remain required before #109 can close.

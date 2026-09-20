@@ -1,0 +1,21 @@
+{
+  "server_version": "3.12.11",
+  "cases": [
+    {
+      "case": "first",
+      "exit_code": 0
+    },
+    {
+      "case": "repeat",
+      "exit_code": 0
+    },
+    {
+      "case": "schema-rejected",
+      "exit_code": 1
+    },
+    {
+      "case": "wrong-collection-type",
+      "rejected": true
+    }
+  ]
+}

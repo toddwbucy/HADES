@@ -89,3 +89,31 @@ the older `WeaverTools_v3` graph, its collection names predate that graph, and
 not yet called. Until they are, a kernel-to-assertion link has to be declared
 rather than derived. The census cannot see the file either, since it walks
 `.rs` only.
+
+## Identity version 2 and existing graphs
+
+The writer uses bounded SHA-256 keys over framed identities. Node keys bind the
+full declared identifier; edge keys bind persisted endpoints, relation, basis,
+via and tag. Readable identifiers remain in document attributes. Exact duplicate
+input records are deduplicated; conflicting declarations are refused before
+collection creation or imports.
+
+Every adapter row and report carries adapter_identity_version: 2. Before writing,
+the adapter inspects its existing node, relation and report collections. Legacy,
+mixed-version rows or a changed kind for an existing declared node cause refusal
+before the write stage. There is no automatic migration or bypass flag. Do not
+stamp old rows as version 2: that does not repair their keys or lost relationships.
+
+For a legacy graph, prepare a separately reviewed rebuild into a fresh database:
+ingest its code/documents first, run this writer, verify relationship counts and
+endpoint integrity, then plan consumer cutover and rollback. Preserve the old
+database until that plan permits retirement. A live rebuild/cutover needs the
+owner's arranged downtime and verified active-data snapshot; the audit does not
+perform it. Stop legacy writers before changing the writer version. The preflight
+is not a database-wide concurrency lock against unrelated or older writers.
+
+This remains an incremental writer with partial-run persistence, not a complete
+snapshot replacement. Rows absent from a later extraction are retained; the report
+explicitly sets stale_retirement_performed to false and describes its coverage as
+present extracted rows only. Successful imports do not certify removal of stale
+declarations. In-place retirement/migration requires a separate reviewed procedure.

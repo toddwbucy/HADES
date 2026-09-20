@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import hashlib
 import json
 import os
 import re
@@ -53,6 +54,7 @@ NODE_COLLECTIONS = {
     "system": "wt_systems",
 }
 REPORT = "wt_ingest_report"
+IDENTITY_VERSION = 2
 
 # `source` nodes are deliberately absent: a source file already exists in the
 # graph as `codebase_files`, put there by `hades ingest`, and duplicating it
@@ -229,14 +231,72 @@ def import_rows(db, name, rows):
     return accepted
 
 
-def key_for(ident: str) -> str:
-    """An ArangoDB key for an extractor ident, keeping the ident readable.
+class IdentityError(AdapterError):
+    """Input or stored identity layout is unsafe to write without review."""
 
-    ArangoDB keys permit letters, digits and `_ - . @ ( ) + , = ; $ ! * ' %`, so
-    a slash or a space has to go. Replaced rather than hashed, because a key a
-    human can read is worth more here than one that round-trips.
+
+def identity_key(domain: str, parts: list) -> str:
+    # JSON arrays frame components and distinguish null/empty strings. Hash the
+    # complete UTF-8 identity, never a sanitized/truncated display prefix.
+    encoded = json.dumps([domain, *parts], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return f"v2-{domain}-" + hashlib.sha256(encoded).hexdigest()
+
+
+def key_for(ident: str) -> str:
+    """Versioned, bounded node key; readable identity remains in the document."""
+    if not isinstance(ident, str) or not ident:
+        raise IdentityError("node identifiers must be nonempty strings")
+    return identity_key("n", [ident])
+
+
+def require_identity_layout(db: str, nodes=()) -> None:
+    """Read-only guard: never mix legacy and v2 adapter rows automatically.
+
+    This is a maintenance compatibility guard, not a concurrency lock. Stop
+    legacy writers before a version cutover; arbitrary concurrent DB writers
+    cannot be fenced by this check.
     """
-    return re.sub(r"[^A-Za-z0-9_.\-]", "_", ident)
+    response = checked(arango(db, "collection", method="GET"), "identity inventory")
+    entries = response.get("result")
+    if not isinstance(entries, list):
+        raise IdentityError("malformed adapter collection inventory")
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise IdentityError("malformed adapter collection name")
+        name = entry["name"]
+        if name not in {*NODE_COLLECTIONS.values(), REPORT} and not (name.startswith("wt_") and name.endswith("_edges")):
+            continue
+        response = checked(arango(db, "cursor", {
+            "query": "FOR row IN @@collection FILTER row.adapter_identity_version != @version OR (@check_kinds AND HAS(@node_kinds, row.ident) AND row.kind != @node_kinds[row.ident]) LIMIT 1 RETURN row._key",
+            "bindVars": {"@collection": name, "version": IDENTITY_VERSION,
+                         "check_kinds": name in NODE_COLLECTIONS.values(),
+                         "node_kinds": {node.ident: node.kind for node in nodes}},
+            "batchSize": 1,
+        }), "identity version read")
+        rows = response.get("result")
+        if not isinstance(rows, list) or len(rows) > 1 or response.get("hasMore") is not False:
+            raise IdentityError("malformed adapter identity result")
+        if rows:
+            raise IdentityError("legacy, mixed or conflicting stored adapter identities require a separately reviewed rebuild; no automatic migration")
+
+
+def validate_declarations(nodes, edges) -> list:
+    """Refuse ambiguous declarations before collection creation or imports."""
+    by_ident = {}
+    for node in nodes:
+        key_for(node.ident)
+        previous = by_ident.get(node.ident)
+        if previous is not None and previous != node:
+            raise IdentityError("conflicting duplicate node declaration")
+        by_ident[node.ident] = node
+    for edge in edges:
+        if any(not isinstance(value, str) or not value for value in (edge.src, edge.dst, edge.relation, edge.basis)):
+            raise IdentityError("edge identity fields must be nonempty strings")
+        if any(value is not None and not isinstance(value, str) for value in (edge.via, edge.tag)):
+            raise IdentityError("edge via/tag must be strings or null")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", edge.relation):
+            raise IdentityError("unsupported edge relation name")
+    return list(by_ident.values())
 
 
 def file_key(rel_path: str) -> str:
@@ -268,18 +328,15 @@ def _main() -> int:
 
     docs, code = ingest(Path(args.repo), set(doc_keys), set(code_keys))
 
-    # Collections first, ignoring "duplicate name" so a re-run is safe.
+    nodes = validate_declarations(docs.nodes, docs.edges + code.edges)
+
+    # Derive the complete batch before any mutation.
     relations = {e.relation for e in docs.edges} | {e.relation for e in code.edges}
     edge_collections = {rel: f"wt_{rel.replace('-', '_')}_edges" for rel in relations}
-    if not args.dry_run:
-        for name in list(NODE_COLLECTIONS.values()) + [REPORT]:
-            ensure_collection(args.db, name, 2)
-        for name in edge_collections.values():
-            ensure_collection(args.db, name, 3)
 
     # Nodes.
     by_collection: dict[str, list[dict]] = collections.defaultdict(list)
-    for node in docs.nodes:
+    for node in nodes:
         target = NODE_COLLECTIONS.get(node.kind)
         if target is None:
             print(f"  no collection for node kind {node.kind!r}, skipping", file=sys.stderr)
@@ -288,7 +345,7 @@ def _main() -> int:
             "_key": key_for(node.ident), "ident": node.ident, "kind": node.kind,
             "path": node.path, "line": node.line, "title": node.title,
             "body": node.body, "tag": node.tag, "lang": node.lang,
-            "basis": "declared",
+            "basis": "declared", "adapter_identity_version": IDENTITY_VERSION,
         })
 
     # Edges. A cites edge's source is a file HADES already ingested, so the node
@@ -300,7 +357,7 @@ def _main() -> int:
     missing_documents: list[str] = []
     # One pass over the node list instead of one per edge endpoint. The lookups
     # below ran `any()` over 491 nodes twice for each of 1,637 edges.
-    kind_of = {n.ident: n.kind for n in docs.nodes}
+    kind_of = {n.ident: n.kind for n in nodes}
     for name, edges in (("documents", docs.edges), ("code", code.edges)):
         for e in edges:
             if e.relation == "cites":
@@ -329,15 +386,31 @@ def _main() -> int:
             # `via` is in the key because it is part of the edge's identity: see
             # the note on `Edge.via`. Three seams between one pair of crates
             # collapsed into one row without it.
-            identity = f"{e.src}--{e.relation}--{e.dst}"
-            if e.via:
-                identity = f"{identity}--via-{e.via}"
+            identity = [src_id, e.relation, dst_id, e.basis, e.via, e.tag]
             by_collection[edge_collections[e.relation]].append({
-                "_key": key_for(identity)[:254],
+                "_key": identity_key("e", identity),
+                "adapter_identity_version": IDENTITY_VERSION,
                 "_from": src_id, "_to": dst_id,
                 "relation": e.relation, "basis": e.basis,
                 "via": e.via, "tag": e.tag,
             })
+
+    # Identical duplicate declarations are idempotent. A conflicting record
+    # for the same persisted key must fail before mutation, including in dry-run.
+    for collection, rows in by_collection.items():
+        unique = {}
+        for row in rows:
+            previous = unique.get(row["_key"])
+            if previous is not None and previous != row:
+                raise IdentityError("conflicting records resolve to the same identity")
+            unique[row["_key"]] = row
+        by_collection[collection] = list(unique.values())
+    require_identity_layout(args.db, nodes)
+    if not args.dry_run:
+        for name in list(NODE_COLLECTIONS.values()) + [REPORT]:
+            ensure_collection(args.db, name, 2)
+        for name in edge_collections.values():
+            ensure_collection(args.db, name, 3)
 
     # The scope is a decision the graph made, so what it excluded is printed
     # rather than left in a report nobody opens. A file holding declarations that
@@ -377,6 +450,9 @@ def _main() -> int:
         # raising, so the second run would have silently kept the first run's notes.
         report = arango(args.db, f"document/{REPORT}?overwriteMode=replace", {
             "_key": "latest",
+            "adapter_identity_version": IDENTITY_VERSION,
+            "stale_retirement_performed": False,
+            "coverage": "present extracted rows only; older absent rows are retained",
             "repo": args.repo,
             "document_notes": docs.notes,
             "code_notes": code.notes,
@@ -420,6 +496,9 @@ def main() -> int:
     """Fail the CLI on backend failures without claiming a whole-run transaction."""
     try:
         return _main()
+    except IdentityError as error:
+        print(f"adapter identity preflight refused: {error}; no write stage started", file=sys.stderr)
+        return 1
     except (AdapterError, OSError, ValueError) as error:
         acknowledged = getattr(error, "acknowledged", 0)
         print(f"adapter run failed; server acknowledged at least {acknowledged:,} imported rows; "
