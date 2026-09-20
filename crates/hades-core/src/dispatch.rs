@@ -119,6 +119,12 @@ pub enum HandlerError {
         outcomes: Value,
     },
 
+    /// Materialization completed with execution errors; prior writes are retained.
+    #[error(
+        "materialization incomplete; earlier writes, if any, remain committed; inspect report before retrying: {report}"
+    )]
+    MaterializationFailed { report: Value },
+
     /// Shared search resources are currently exhausted.
     #[error("search capacity exhausted; retry after another search completes")]
     SearchOverloaded,
@@ -3188,7 +3194,8 @@ mod handlers {
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        Ok(json!({
+        let failed = !totals.errors.is_empty();
+        let report = json!({
             "definitions": definitions_output,
             "totals": {
                 "edges_created": totals.edges_created,
@@ -3201,7 +3208,12 @@ mod handlers {
             "dry_run": dry_run,
             "schema_source": if schema.from_database { "hades_schema" } else { "nl_statics_fallback" },
             "named_graphs_registered": graphs_registered,
-        }))
+        });
+        if failed {
+            Err(HandlerError::MaterializationFailed { report })
+        } else {
+            Ok(report)
+        }
     }
 
     /// Stats accumulated during materialization of one edge definition.

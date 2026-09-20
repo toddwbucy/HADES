@@ -198,6 +198,64 @@ async fn export_output_failure_still_releases_cursor() {
 }
 
 #[tokio::test]
+async fn materialize_scan_failure_is_not_success() {
+    let collections = json!({"result":[{"name":"hades_schema","type":2},{"name":"docs","type":2}]});
+    let schema = json!({"hasMore":false,"result":[
+        {"schema_type":"schema_meta"},
+        {"schema_type":"edge_definition","name":"edges","source_field":"related",
+         "from_collections":["docs"],"to_collections":["docs"]}
+    ]});
+    let mut incorrect_successes = 0;
+    for args in [
+        vec!["graph", "materialize"],
+        vec!["graph", "materialize", "--dry-run"],
+    ] {
+        let (control, _) = run(
+            &args,
+            vec![
+                collections.clone(),
+                schema.clone(),
+                collections.clone(),
+                json!({"hasMore":false,"result":[]}),
+            ],
+        )
+        .await;
+        assert!(control.status.success(), "{control:?}");
+        let (output, calls) = run(
+            &args,
+            vec![
+                collections.clone(),
+                schema.clone(),
+                collections.clone(),
+                json!({"hasMore":false,"result":null}),
+            ],
+        )
+        .await;
+        println!(
+            "materialize failure probe: {}",
+            json!({"args":args,"exit":output.status.code(),
+            "stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"calls":calls})
+        );
+        assert_eq!(
+            calls,
+            [
+                "GET /_db/fixture/_api/collection",
+                "POST /_db/fixture/_api/cursor",
+                "GET /_db/fixture/_api/collection",
+                "POST /_db/fixture/_api/cursor"
+            ]
+        );
+        if output.status.success() {
+            incorrect_successes += 1;
+        }
+    }
+    assert_eq!(
+        incorrect_successes, 0,
+        "failed source scans must not report successful materialization"
+    );
+}
+
+#[tokio::test]
 async fn graph_list_rejects_malformed_success_responses() {
     // Empty is valid, but absent or malformed graph metadata is not evidence
     // that the selected database has no graphs.

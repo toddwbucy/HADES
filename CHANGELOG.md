@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain actual CLI/private-peer reproductions of materialization scan failures
+  reported as success in normal and dry-run modes (epic #12).
+
 - Retain an actual CLI/private Unix-peer regression for malformed graph-list
   replies being reported as an empty successful result (epic #12).
 
@@ -425,6 +428,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Report accumulated graph materialization execution errors as failure while
+  retaining partial-run diagnostics and committed-write semantics (#125).
 
 - Reject malformed graph-list metadata in shared dispatch rather than reporting
   empty success; preserve valid graph discovery and surface CLI/daemon errors (#123).
