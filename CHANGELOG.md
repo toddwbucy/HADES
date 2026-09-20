@@ -410,6 +410,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Await bounded training-session release on graph embedding CLI success and error
+  paths before runtime shutdown, preserving primary operation failures (#115).
+
 - Synchronize the training cancellation fixture with server-side cancellation
   before releasing its worker, preventing a client/server completion race in CI.
 

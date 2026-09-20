@@ -93,6 +93,7 @@ pub async fn run(
         .await
         .context("failed to connect to HADES training service")?;
 
+    let operation: Result<serde_json::Value> = async {
     // ── Prepare training data ────────────────────────────────────────
     let safetensors_dir = PathBuf::from(checkpoint_dir);
     std::fs::create_dir_all(&safetensors_dir).context("failed to create checkpoint directory")?;
@@ -240,6 +241,9 @@ pub async fn run(
         "checkpoint_path": result.checkpoint_path,
     });
 
+    Ok(result_data)
+    }.await;
+    let result_data = super::graph_embed::finish_session(&training_client, operation).await?;
     output::print_output("graph-embed.train", result_data, &OutputFormat::Json);
     Ok(())
 }

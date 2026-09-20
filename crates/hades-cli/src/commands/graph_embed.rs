@@ -122,3 +122,26 @@ pub enum GraphEmbedCmd {
         new_nodes: bool,
     },
 }
+
+/// Finish ownership cleanup while the CLI runtime is still alive. Preserve an
+/// operation failure as the primary error if cleanup also fails.
+pub(super) async fn finish_session<T>(
+    client: &hades_core::training::TrainingClient,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let release = client.release().await;
+    match result {
+        Ok(value) => {
+            release.map_err(anyhow::Error::from).map_err(|error| {
+                error.context("training operation completed, but session release failed")
+            })?;
+            Ok(value)
+        }
+        Err(primary) => {
+            if let Err(error) = release {
+                tracing::warn!(%error, "training session release also failed");
+            }
+            Err(primary)
+        }
+    }
+}

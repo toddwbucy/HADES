@@ -27,3 +27,39 @@ alignment report. It additionally requires bubblewrap/user namespaces.
 Issue #115 requires bounded explicit release at the normal operation boundary,
 error/cancellation/clone semantics, and successful back-to-back CLI calls without
 fixture workarounds. This report does not claim remediation or deployment.
+
+
+## Remediation verification
+
+The client now exposes a bounded, awaited `release()`. All clones stop admitting
+operations when release begins; concurrent releases share one acknowledgement.
+Failed/cancelled attempts remain retryable, and last-drop cleanup/server expiry
+remain abnormal-shutdown fallbacks. Callers must finish outstanding operations
+before releasing. Both CLI commands await cleanup before returning or printing
+success; a cleanup failure does not replace a primary operation error.
+
+[Separate remediation evidence](cli-training-release-remediation.json) retains
+the passing private replay and twelve source/probe hashes. Ten core session
+contracts pass, including acknowledgement, clones, retry, cancellation, and a
+stalled release bounded to five seconds. Focused all-target Clippy passes.
+
+The real CLI fixture performs ten successive lifecycles on one CPU provider with
+its unchanged default lease. It verifies full export of three vectors, immediate
+missing-only export of one, update failure on a malformed checkpoint, train
+failure on a file used as the checkpoint directory, and immediate successful
+successors after both failures. Failed operations preserve database rows. An
+injected unavailable release acknowledgement after actual provider cleanup
+suppresses success output; combined operation/release failure preserves the
+operation error and logs cleanup failure. The fixture observes every acquisition
+and completed provider release; it never resets ownership between commands.
+
+Full-inference vectors and unselected rows/revisions are compared exactly.
+Subset inference compacts the incoming neighbourhood and changes matrix shapes;
+its comparison to full inference allows float32 rounding (`rtol=1e-6`,
+`atol=1e-7`). The initial exact comparison exposed a maximum difference of
+2.24e-8 after the session defect was fixed. This tolerance is not a ranking-quality
+threshold. The original failing baseline JSON remains unchanged.
+
+This verifies normal command boundaries and selected failure paths, not a full
+successful CLI training run, abrupt process death, GPU behavior, deployment, or
+retrieval quality. The optional private fixture is not part of ordinary CI.

@@ -16,6 +16,8 @@ struct State {
     legacy_provider: bool,
     operation_delay: Duration,
     stall_renewal: bool,
+    reject_release: bool,
+    release_delay: Duration,
 }
 #[derive(Clone, Default)]
 struct Service(Arc<Mutex<State>>, Arc<tokio::sync::Mutex<()>>);
@@ -79,6 +81,12 @@ impl TrainingService for Service {
         request: Request<SessionRequest>,
     ) -> Result<Response<SessionResponse>, Status> {
         self.owned(&request, "release")?;
+        let delay = self.0.lock().unwrap().release_delay;
+        tokio::time::sleep(delay).await;
+        if self.0.lock().unwrap().reject_release {
+            return Err(Status::unavailable("release unavailable"));
+        }
+        self.owned(&request, "release_ack")?;
         self.0.lock().unwrap().owner = None;
         Ok(Response::new(SessionResponse {}))
     }
@@ -339,4 +347,80 @@ async fn stalled_renewal_obeys_the_operation_deadline() {
     assert_eq!(server.service.0.lock().unwrap().generation, 1);
     drop(client);
     server.wait_for(|state| state.owner.is_none()).await;
+}
+
+#[tokio::test]
+async fn explicit_release_waits_for_ack_and_closes_all_clones() {
+    let server = Server::start();
+    server.service.0.lock().unwrap().release_delay = Duration::from_millis(50);
+    let client = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    let clone = client.clone();
+    let (first, second) = tokio::join!(client.release(), clone.release());
+    first.unwrap();
+    second.unwrap();
+    assert!(server.service.0.lock().unwrap().owner.is_none());
+    assert_eq!(
+        server
+            .service
+            .0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|&&c| c == "release")
+            .count(),
+        1
+    );
+    assert!(clone.get_embeddings(None).await.is_err());
+    let successor = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    drop(client);
+    drop(clone);
+    successor.get_embeddings(None).await.unwrap();
+    successor.release().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_explicit_release_can_retry_without_reopening_admission() {
+    let server = Server::start();
+    let client = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    server.service.0.lock().unwrap().reject_release = true;
+    assert!(client.release().await.is_err());
+    assert!(client.get_embeddings(None).await.is_err());
+    assert!(TrainingClient::connect_unix_at(&server.path).await.is_err());
+    server.service.0.lock().unwrap().reject_release = false;
+    client.release().await.unwrap();
+    assert!(server.service.0.lock().unwrap().owner.is_none());
+}
+
+#[tokio::test]
+async fn cancelled_explicit_release_remains_retryable() {
+    let server = Server::start();
+    server.service.0.lock().unwrap().release_delay = Duration::from_secs(1);
+    let client = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    let clone = client.clone();
+    let release = tokio::spawn(async move { clone.release().await });
+    server
+        .wait_for(|state| state.calls.contains(&"release"))
+        .await;
+    release.abort();
+    assert!(release.await.unwrap_err().is_cancelled());
+    assert!(client.get_embeddings(None).await.is_err());
+    server.service.0.lock().unwrap().release_delay = Duration::ZERO;
+    client.release().await.unwrap();
+    assert!(server.service.0.lock().unwrap().owner.is_none());
+}
+
+#[tokio::test]
+async fn stalled_explicit_release_has_a_deadline_and_can_retry() {
+    let server = Server::start();
+    server.service.0.lock().unwrap().release_delay = Duration::from_secs(30);
+    let client = TrainingClient::connect_unix_at(&server.path).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(7), client.release())
+        .await
+        .expect("release must be bounded");
+    assert!(result.is_err());
+    assert!(client.get_embeddings(None).await.is_err());
+    server.service.0.lock().unwrap().release_delay = Duration::ZERO;
+    client.release().await.unwrap();
+    assert!(server.service.0.lock().unwrap().owner.is_none());
 }
