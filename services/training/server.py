@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generated"))
 
 from hades.training import training_pb2, training_pb2_grpc  # noqa: E402
 
+from .session import SessionTrainingServicer
 from .contract import validate_contract
 from .config import TrainingConfig  # noqa: E402
 from .rgcn_model import HadesRGCN  # noqa: E402
@@ -535,7 +536,7 @@ async def serve() -> None:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
-    servicer = TrainingServicer(config)
+    servicer = SessionTrainingServicer(lambda: TrainingServicer(config))
     server = grpc_aio.server(options=[
         ("grpc.max_send_message_length", 512 * 1024 * 1024),
         ("grpc.max_receive_message_length", 512 * 1024 * 1024),
@@ -575,10 +576,15 @@ async def serve() -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     logger.info("Training service ready")
-    await stop_event.wait()
-
-    logger.info("Shutting down training service...")
-    await server.stop(grace=5)
+    sweeper = asyncio.create_task(servicer.sweep_expired())
+    try:
+        await stop_event.wait()
+    finally:
+        sweeper.cancel()
+        await asyncio.gather(sweeper, return_exceptions=True)
+        logger.info("Shutting down training service...")
+        await server.stop(grace=5)
+        await servicer.close()
     if sock.exists() and stat.S_ISSOCK(sock.stat().st_mode):
         sock.unlink()
     logger.info("Training service stopped")

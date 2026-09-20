@@ -25,6 +25,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Require coordinated trainer/client upgrades for the session-ownership RPC
+  contract; legacy unowned requests fail closed (#42).
+
 - Calibrate search admission against full-handler memory pilots; release normal
   MCP request reservations after cleanup acknowledgment, retaining the replay
   window only for cancellation. Add creation-cancellation and body-timeout
@@ -321,6 +324,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Fence the complete training-provider lifecycle with expiring session ownership;
+  reject competing/stale clients and renew/release shared Rust client leases.
+  Allow renewal to queue behind long operations while bounding stalled renewals
+  and retaining provider-side expiry checks (#42).
 
 - Encode bootstrap credentials safely, keep passwords and responses in memory,
   bound Unix HTTP requests, and preserve existing user grants (#44).
