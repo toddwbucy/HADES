@@ -135,52 +135,98 @@ def arango(db: str, path: str, body=None, method="POST"):
             if 300 <= e.code < 400:
                 return {"error": True, "code": e.code,
                         "errorMessage": "HTTP redirect refused by adapter endpoint policy"}
-            return json.loads(e.read().decode() or "{}")
+            payload = json.loads(e.read().decode() or "{}")
+            if not isinstance(payload, dict):
+                payload = {}
+            return dict(payload, error=True, code=e.code)
+
+
+class AdapterError(RuntimeError):
+    """A backend result cannot certify the requested adapter operation."""
+
+    def __init__(self, message, acknowledged=0):
+        super().__init__(message)
+        self.acknowledged = acknowledged
+
+
+def checked(response, stage):
+    """Reject API errors and malformed envelopes without echoing backend secrets."""
+    if not isinstance(response, dict) or response.get("error", False) is not False:
+        raise AdapterError(f"{stage} failed")
+    return response
+
+
+def scope_pairs(db, query):
+    """Read complete, validated scope before extraction or writes begin."""
+    response = arango(db, "cursor", {"query": query, "batchSize": 5000})
+    pairs = {}
+    cursor = None
+    try:
+        while True:
+            response = checked(response, "scope read")
+            rows = response.get("result")
+            more = response.get("hasMore")
+            if type(more) is not bool or not isinstance(rows, list):
+                raise AdapterError("malformed scope cursor")
+            if more:
+                identifier = response.get("id")
+                if not isinstance(identifier, str) or not identifier.isascii() or not identifier.isdigit():
+                    raise AdapterError("malformed scope cursor identifier")
+                cursor = identifier
+            for row in rows:
+                if not isinstance(row, list) or len(row) != 2 or any(not isinstance(v, str) or not v for v in row):
+                    raise AdapterError("malformed scope path/key pair")
+                path, key = row
+                if path in pairs and pairs[path] != key:
+                    raise AdapterError("ambiguous scope path maps to multiple keys")
+                pairs[path] = key
+            if not more:
+                cursor = None
+                return pairs
+            response = arango(db, f"cursor/{cursor}", method="PUT")
+    finally:
+        if cursor is not None:
+            try:
+                arango(db, f"cursor/{cursor}", method="DELETE")
+            except (OSError, ValueError):
+                pass  # Preserve the original failure; server TTL is the fallback.
 
 
 def code_keys_by_path(db: str) -> dict[str, str]:
-    """Repo-relative path -> the `codebase_files` key the ingest gave it.
-
-    Two jobs. It **bounds the conformance pass** to the files the graph holds, so a
-    citation in a file the ingest never took is reported rather than turned into an
-    edge with no source. And it supplies the key instead of re-deriving it, so the
-    `_from` of every `cites` edge is the key the ingest wrote rather than this
-    module's guess at how the ingest writes keys. The document half was re-deriving
-    its key the same way until the path-and-key mismatch it invites was found, and
-    this is the other half of that.
-    """
-    resp = arango(db, "cursor", {
-        "query": "FOR f IN codebase_files RETURN [f.path, f._key]",
-        "batchSize": 5000,
-    })
-    pairs = list(resp.get("result") or [])
-    while resp.get("hasMore"):
-        resp = arango(db, f"cursor/{resp['id']}", method="PUT")
-        pairs.extend(resp.get("result") or [])
-    return {path: key for path, key in pairs if path}
+    """Use persisted file keys and refuse an incomplete code scope."""
+    return scope_pairs(db, "FOR f IN codebase_files RETURN [f.path, f._key]")
 
 
 def document_keys_by_rel(db: str) -> dict[str, str]:
-    """Relative path -> the `_key` `hades ingest` gave that document.
+    """Use persisted document keys and refuse an incomplete document scope."""
+    return scope_pairs(db, "FOR d IN documents FILTER d.source_rel != null RETURN [d.source_rel, d._key]")
 
-    A `declared-in` edge points at the markdown that declares the record, and
-    that markdown is already in the graph as a `documents` row with its text, its
-    chunks and a vector. Looked up by `source_rel` rather than re-deriving the
-    key, because the derivation is the CLI's (`derive_doc_key` drops the
-    extension, normalizes separators and strips a trailing version suffix) and a
-    second implementation of it here would agree until it did not. A path absent
-    from this map is reported, not guessed at.
-    """
-    resp = arango(db, "cursor", {
-        "query": "FOR d IN documents FILTER d.source_rel != null "
-                 "RETURN [d.source_rel, d._key]",
-        "batchSize": 5000,
-    })
-    pairs = list(resp.get("result") or [])
-    while resp.get("hasMore"):
-        resp = arango(db, f"cursor/{resp['id']}", method="PUT")
-        pairs.extend(resp.get("result") or [])
-    return {rel: key for rel, key in pairs}
+
+def ensure_collection(db, name, kind):
+    """Only tolerate duplicate-name responses for an existing compatible collection."""
+    response = arango(db, "collection", {"name": name, "type": kind})
+    if isinstance(response, dict) and response.get("error") is True and response.get("code") == 409 and response.get("errorNum") == 1207:
+        response = arango(db, f"collection/{name}/properties", method="GET")
+    response = checked(response, "collection setup")
+    if response.get("name") != name or type(response.get("type")) is not int or response["type"] != kind:
+        raise AdapterError("collection name/type mismatch")
+
+
+def import_rows(db, name, rows):
+    """Require complete per-row acknowledgement, including partial-error counters."""
+    response = checked(arango(db, f"import?collection={name}&type=documents&onDuplicate=replace", rows), "import")
+    for field in ("errors", "created", "updated", "ignored", "empty"):
+        value = response.get(field)
+        if type(value) is not int or value < 0:
+            raise AdapterError("malformed import counters")
+    accepted = response["created"] + response["updated"]
+    if accepted > len(rows):
+        raise AdapterError("import acknowledgement exceeds submitted rows")
+    if response["errors"] or response["ignored"] or response["empty"]:
+        raise AdapterError("import rejected or skipped rows; partial writes may persist", accepted)
+    if accepted != len(rows):
+        raise AdapterError("import acknowledgement count differs from submitted rows")
+    return accepted
 
 
 def key_for(ident: str) -> str:
@@ -198,7 +244,7 @@ def file_key(rel_path: str) -> str:
     return rel_path.replace(".", "_").replace("/", "_")
 
 
-def main() -> int:
+def _main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", required=True)
     ap.add_argument("--repo", default="/opt/weavertools/WeaverTools")
@@ -227,9 +273,9 @@ def main() -> int:
     edge_collections = {rel: f"wt_{rel.replace('-', '_')}_edges" for rel in relations}
     if not args.dry_run:
         for name in list(NODE_COLLECTIONS.values()) + [REPORT]:
-            arango(args.db, "collection", {"name": name, "type": 2})
+            ensure_collection(args.db, name, 2)
         for name in edge_collections.values():
-            arango(args.db, "collection", {"name": name, "type": 3})
+            ensure_collection(args.db, name, 3)
 
     # Nodes.
     by_collection: dict[str, list[dict]] = collections.defaultdict(list)
@@ -320,52 +366,65 @@ def main() -> int:
         print("\ndry run, nothing written")
         return 0
 
-    for name, rows in sorted(by_collection.items()):
-        resp = arango(args.db, f"import?collection={name}&type=documents&onDuplicate=replace",
-                      rows)
-        if resp.get("errors"):
-            print(f"  {name}: {resp.get('created', 0)} created, "
-                  f"{resp.get('errors')} errors, {resp.get('details', [])[:2]}",
-                  file=sys.stderr)
+    accepted = 0
+    try:
+        for name, rows in sorted(by_collection.items()):
+            accepted += import_rows(args.db, name, rows)
 
-    # What the extraction could not vouch for, written where a query can find it.
-    # overwriteMode=replace, because a fixed `_key` POSTs into a 409 on every run
-    # after the first and this function returns the error body rather than
-    # raising, so the second run would have silently kept the first run's notes.
-    report = arango(args.db, f"document/{REPORT}?overwriteMode=replace", {
-        "_key": "latest",
-        "repo": args.repo,
-        "document_notes": docs.notes,
-        "code_notes": code.notes,
-        "dangling_documents": [vars(e) for e in docs.dangling],
-        "dangling_code": [vars(e) for e in code.dangling],
-        "cites_sources_with_no_file_node": missing_sources,
-        "declared_in_targets_with_no_document_row": sorted(set(missing_documents)),
-        "warning": "counts in *_notes describe claims the extraction could not "
-                   "resolve. A coverage query that ignores them will read "
-                   "unenforced claims as enforced.",
-    })
-    if report.get("error"):
-        print(f"  report write failed: {report.get('errorMessage')}", file=sys.stderr)
-    if missing_sources:
-        print(
-            f"\n{len(missing_sources)} cites edge(s) name a file with no graph node, "
-            f"so they dangle. Ingest those files first, e.g. with --unparsed-ext:",
-            file=sys.stderr,
-        )
-        for src in sorted(set(missing_sources))[:10]:
-            print(f"    {src}", file=sys.stderr)
-    if missing_documents:
-        print(
-            f"\n{len(set(missing_documents))} declared-in edge(s) name a markdown file "
-            f"with no `documents` row, so they dangle. Run the ingest over the tree "
-            f"first:",
-            file=sys.stderr,
-        )
-        for rel in sorted(set(missing_documents))[:10]:
-            print(f"    {rel}", file=sys.stderr)
-    print(f"\nwrote {sum(len(v) for v in by_collection.values()):,} documents plus one report")
-    return 1 if missing_sources or missing_documents or report.get("error") else 0
+        # What the extraction could not vouch for, written where a query can find it.
+        # overwriteMode=replace, because a fixed `_key` POSTs into a 409 on every run
+        # after the first and this function returns the error body rather than
+        # raising, so the second run would have silently kept the first run's notes.
+        report = arango(args.db, f"document/{REPORT}?overwriteMode=replace", {
+            "_key": "latest",
+            "repo": args.repo,
+            "document_notes": docs.notes,
+            "code_notes": code.notes,
+            "dangling_documents": [vars(e) for e in docs.dangling],
+            "dangling_code": [vars(e) for e in code.dangling],
+            "cites_sources_with_no_file_node": missing_sources,
+            "declared_in_targets_with_no_document_row": sorted(set(missing_documents)),
+            "warning": "counts in *_notes describe claims the extraction could not "
+                       "resolve. A coverage query that ignores them will read "
+                       "unenforced claims as enforced.",
+        })
+        report = checked(report, "report write")
+        if report.get("_key") != "latest" or report.get("_id") != f"{REPORT}/latest":
+            raise AdapterError("malformed report write acknowledgement")
+        if missing_sources:
+            print(
+                f"\n{len(missing_sources)} cites edge(s) name a file with no graph node, "
+                f"so they dangle. Ingest those files first, e.g. with --unparsed-ext:",
+                file=sys.stderr,
+            )
+            for src in sorted(set(missing_sources))[:10]:
+                print(f"    {src}", file=sys.stderr)
+        if missing_documents:
+            print(
+                f"\n{len(set(missing_documents))} declared-in edge(s) name a markdown file "
+                f"with no `documents` row, so they dangle. Run the ingest over the tree "
+                f"first:",
+                file=sys.stderr,
+            )
+            for rel in sorted(set(missing_documents))[:10]:
+                print(f"    {rel}", file=sys.stderr)
+        if missing_sources or missing_documents:
+            raise AdapterError("imported edges have missing endpoints")
+        print(f"\nserver acknowledged {accepted:,} imported rows plus one report")
+        return 0
+    except (AdapterError, OSError, ValueError) as error:
+        raise AdapterError("write stage failed", accepted + getattr(error, "acknowledged", 0)) from error
+
+
+def main() -> int:
+    """Fail the CLI on backend failures without claiming a whole-run transaction."""
+    try:
+        return _main()
+    except (AdapterError, OSError, ValueError) as error:
+        acknowledged = getattr(error, "acknowledged", 0)
+        print(f"adapter run failed; server acknowledged at least {acknowledged:,} imported rows; "
+              "earlier writes may persist; no successful run is certified", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
