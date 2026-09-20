@@ -108,3 +108,9 @@ packet whose rubric differed. Separate answer sheets preserve reviewer identity,
 date, rationale and unresolved judgments. Keep each review hidden from the other
 until submission; retain original ratings and record adjudication separately.
 No draft text or raw ranking artifact is included in the public repository.
+
+
+The [frozen code-search corpus](code-corpus.md) pins implementation, tests and
+selected configuration/deployment sources at `92f9f82`, with 1,153 passages and
+five unlabeled questions. Its processor preflight passes; encoding and independent
+judgments do not yet establish code-search quality.

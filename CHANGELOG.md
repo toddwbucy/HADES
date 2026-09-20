@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Freeze a revision-bound code-search corpus and candidate questions, with private
+  Git snapshot contracts, lossless passages and token-budget preflight evidence (#12).
+
 - Verify one actual historical WeaverTools backup in a private bounded restore,
   retaining aggregate results and replay instructions with current-coverage limits (#63).
 

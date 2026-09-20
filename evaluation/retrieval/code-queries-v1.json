@@ -1,0 +1,27 @@
+[
+  {
+    "id": "C1",
+    "text": "Where does HADES select the database for a request, and prevent access to a database outside the allowed set?",
+    "relevance": {}
+  },
+  {
+    "id": "C2",
+    "text": "What happens when replacing an ingested file fails halfway through?",
+    "relevance": {}
+  },
+  {
+    "id": "C3",
+    "text": "How are vector results combined with graph information, and what happens when graph embeddings are missing or stale?",
+    "relevance": {}
+  },
+  {
+    "id": "C4",
+    "text": "How does HADES stop a cancelled training job, and which work may continue?",
+    "relevance": {}
+  },
+  {
+    "id": "C5",
+    "text": "Which code and tests would change to support another document source?",
+    "relevance": {}
+  }
+]
