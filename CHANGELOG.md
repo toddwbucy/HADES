@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Require a scoped ArangoDB signing key in the fresh-VPS harness and installation
+  instructions; remove the package-authentication bypass recommendation (#60).
+
 - Enforce atomic detached-ingest admission across served databases and overlapping
   source trees; fail closed on admission errors and retain slots through cleanup (#51).
 - Own ingestion process groups through startup, request disconnects, PID-write
