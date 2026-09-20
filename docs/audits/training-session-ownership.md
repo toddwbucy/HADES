@@ -16,8 +16,10 @@ non-owner tokens fail before reaching the backend. Competing acquisition returns
 `RESOURCE_EXHAUSTED`. Tokens must not be logged or persisted in artifacts.
 
 A per-operation lock prevents expiry or ownership transfer during an operation.
-Completion, including failed or cancelled operations, resets the owner's idle
-lease. This does not roll back a completed optimizer step when a response is lost.
+Completion and ordinary backend failures reset the owner's idle lease.
+Cancellation/deadline/disconnect after admission retains the operation lock until
+work finishes, then discards the interrupted session. This does not roll back a
+completed optimizer step or file write when a response is lost.
 A failed initialization remains owned so its caller can retry or release; it
 cannot expose partial state to another client. Release or expiry discards the
 backend. An idle sweeper checks every 30 seconds; the next RPC also checks expiry.
@@ -36,9 +38,12 @@ acquisition response or runtime shutdown relies on server expiry. Both training
 and checkpoint-backed graph updates use this client.
 
 Long operations retain exclusive ownership until the handler completes; the
-lease is not a preemptive compute timeout. Current synchronous model operations
-can block the Python event loop. Cooperative interruption and worker isolation
-remain separate performance/cancellation audit work.
+lease is not a preemptive compute timeout. State-bearing backend operations run
+in a worker thread, with status errors delivered on the server loop. The session
+wrapper shields and drains admitted work through repeated handler cancellation.
+Shutdown marks the provider closing, joins admitted work through its ownership
+lock, discards state and rejects new acquisition. See the
+[worker contract](training-worker-ownership.md) for interruption/recovery limits.
 
 ## Compatibility and evidence
 

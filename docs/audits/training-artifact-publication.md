@@ -41,7 +41,10 @@ management or certify an arbitrary existing checkpoint as recoverable.
 Ten new private-file tests cover both serializers failing with/without an existing
 artifact, both RPCs failing at file-sync/replacement, unchanged successful formats,
 checkpoint tensor contents, destination-symlink semantics and private mode.
-All 94 training tests pass on this branch. No live service, database, GPU, backup
+Two further private provider tests cancel a checkpoint after staging and verify
+that failure preserves the old file, success publishes a loadable checkpoint, and
+session ownership lasts until the publication outcome. All 101 training tests
+pass on the combined worker/artifact branch. No live service, database, GPU, backup
 or production artifact was changed. Tests run with the existing CPU environment:
 
 ```sh

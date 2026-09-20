@@ -34,6 +34,7 @@ class SessionTrainingServicer(rpc.TrainingServiceServicer):
         self._token = None
         self._deadline = 0.0
         self._backend = None
+        self._closing = False
 
     def _discard(self):
         self._token = None
@@ -48,6 +49,8 @@ class SessionTrainingServicer(rpc.TrainingServiceServicer):
         self._deadline = self._clock() + self._lease_seconds
 
     async def _require_owner(self, context):
+        if self._closing:
+            await context.abort(grpc.StatusCode.UNAVAILABLE, "training provider is closing")
         self._expire()
         tokens = [value for key, value in context.invocation_metadata()
                   if key == SESSION_HEADER]
@@ -58,6 +61,8 @@ class SessionTrainingServicer(rpc.TrainingServiceServicer):
 
     async def AcquireSession(self, request, context):
         async with self._lock:
+            if self._closing:
+                await context.abort(grpc.StatusCode.UNAVAILABLE, "training provider is closing")
             self._expire()
             if self._token is not None:
                 await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED,
@@ -91,19 +96,38 @@ class SessionTrainingServicer(rpc.TrainingServiceServicer):
                 self._expire()
 
     async def close(self):
+        self._closing = True
         async with self._lock:
             self._discard()
 
     async def _invoke(self, name, request, context):
         async with self._lock:
             await self._require_owner(context)
+            operation = asyncio.create_task(getattr(self._backend, name)(request, context))
+            interrupted = False
             try:
-                return await getattr(self._backend, name)(request, context)
+                # Keep the operation and the ownership lock alive through any
+                # caller cancellation, including repeated shutdown cancellation.
+                while not operation.done():
+                    try:
+                        await asyncio.shield(operation)
+                    except asyncio.CancelledError:
+                        interrupted = True
+                    except BaseException:
+                        break
+                if interrupted:
+                    if not operation.cancelled():
+                        operation.exception()  # retrieve failures of abandoned work
+                    raise asyncio.CancelledError
+                return operation.result()
             finally:
-                # An in-flight operation cannot expire under another owner.
-                # Failed/cancelled calls retain the same owner for bounded
-                # recovery; release or inactivity eventually discards state.
-                self._renew()
+                if interrupted:
+                    # An admitted operation may have changed weights or files.
+                    # Discard ambiguous state only after the worker has drained.
+                    self._discard()
+                else:
+                    self._renew()
+
 
 
 def _owned_operation(name):
