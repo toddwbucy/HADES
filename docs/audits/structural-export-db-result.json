@@ -1,0 +1,26 @@
+{
+  "status": "passed",
+  "server_version": "3.12.11",
+  "source_sha256": {
+    "crates/hades-core/src/graph/export.rs": "ff243a956d8cf3e5456cd8d1a2b9e47359e68a59618be2ffd5fa9b3a5496f7fc",
+    "crates/hades-core/tests/structural_export_db.rs": "7cd654874f89e1d05f6824c435d06f383f1acb1febf8fbb4d35b3620a520a01f",
+    "scripts/test_isolated_database.py": "e29a4688120b6bb512efb56695f4ea73bde4cb86ede9af66b834be9a7906d71f"
+  },
+  "test": "real_export_and_missing_target_preserve_explicit_partial_progress",
+  "fixture_nodes": 2,
+  "checks": [
+    "full export acknowledges both nodes",
+    "compact subset updates the selected node only",
+    "missing target returns BatchFailed after one acknowledged batch",
+    "earlier update persists; subsequent target stays unchanged"
+  ],
+  "owned_server_stopped": true,
+  "owned_command_stopped": true,
+  "limits": {
+    "cpus": 1,
+    "child_address_space_bytes": 8589934592,
+    "command_deadline_seconds": 300,
+    "endpoint": "new private Unix socket; no TCP"
+  },
+  "provenance_limit": "Selected source hashes only; not a complete dependency or operating-system attestation."
+}
