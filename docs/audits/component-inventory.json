@@ -179,6 +179,7 @@
     },
     "hades-proto": {
       "source_files": [
+        "crates/hades-proto/build.rs",
         "crates/hades-proto/src/lib.rs"
       ],
       "test_tree_files": [
