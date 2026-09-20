@@ -8,17 +8,72 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex as SyncMutex,
+    atomic::{AtomicBool, AtomicI64, Ordering},
+};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::{Mutex, Notify, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use super::LspError;
 
 /// A pending request awaiting its response.
 type ResponseSender = oneshot::Sender<Result<Value, LspError>>;
+
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+struct Pending {
+    closed: bool,
+    senders: HashMap<i64, ResponseSender>,
+}
+
+#[derive(Default)]
+struct Transport {
+    pending: SyncMutex<Pending>,
+    stop: CancellationToken,
+}
+impl Transport {
+    fn close(&self, reason: &str) {
+        let mut pending = self.pending.lock().unwrap();
+        pending.closed = true;
+        for (_, sender) in pending.senders.drain() {
+            let _ = sender.send(Err(LspError::Process(reason.into())));
+        }
+        self.stop.cancel();
+    }
+}
+struct PendingGuard {
+    transport: Arc<Transport>,
+    id: i64,
+}
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.transport
+            .pending
+            .lock()
+            .unwrap()
+            .senders
+            .remove(&self.id);
+    }
+}
+struct FailureGuard {
+    transport: Arc<Transport>,
+    reason: &'static str,
+    armed: bool,
+}
+impl Drop for FailureGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.transport.close(self.reason);
+        }
+    }
+}
 
 /// JSON-RPC LSP transport client.
 ///
@@ -26,13 +81,14 @@ type ResponseSender = oneshot::Sender<Result<Value, LspError>>;
 /// Content-Length framed JSON-RPC over stdin/stdout.
 pub struct LspClient {
     /// Handle to the child process.
-    child: Child,
+    owner: Option<tokio::task::JoinHandle<()>>,
+    running: Arc<AtomicBool>,
     /// Stdin writer (wrapped in Mutex for exclusive access).
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     /// Next request ID to allocate.
-    next_id: Arc<Mutex<i64>>,
+    next_id: AtomicI64,
     /// Pending request map: id → oneshot sender.
-    pending: Arc<Mutex<HashMap<i64, ResponseSender>>>,
+    transport: Arc<Transport>,
     /// Buffered server notifications.
     notifications: Arc<Mutex<Vec<Value>>>,
     /// Signalled when any notification arrives.
@@ -73,36 +129,47 @@ impl LspClient {
             .take()
             .ok_or_else(|| LspError::Process("no stdout handle".into()))?;
 
-        let pending: Arc<Mutex<HashMap<i64, ResponseSender>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let notifications: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let transport = Arc::new(Transport::default());
+        let notifications = Arc::new(Mutex::new(Vec::new()));
         let notification_signal = Arc::new(Notify::new());
-
-        // Spawn the reader task.
-        let reader_pending = Arc::clone(&pending);
-        let reader_notifs = Arc::clone(&notifications);
-        let reader_signal = Arc::clone(&notification_signal);
         let reader_stdin = Arc::new(Mutex::new(stdin));
-
-        // Clone stdin Arc for the reader (to respond to server-initiated requests).
-        let reader_stdin_clone = Arc::clone(&reader_stdin);
-
+        let reader_transport = transport.clone();
+        let reader_notifs = notifications.clone();
+        let reader_signal = notification_signal.clone();
+        let reader_stdin_clone = reader_stdin.clone();
         let reader_handle = tokio::spawn(async move {
-            reader_loop(
-                stdout,
-                reader_pending,
-                reader_notifs,
-                reader_signal,
-                reader_stdin_clone,
-            )
-            .await;
+            let _closed = FailureGuard {
+                transport: reader_transport.clone(),
+                reason: "LSP reader terminated",
+                armed: true,
+            };
+            tokio::select! {
+                biased;
+                _ = reader_transport.stop.cancelled() => {},
+                _ = reader_loop(stdout, reader_transport.clone(), reader_notifs, reader_signal, reader_stdin_clone) => {},
+            }
+        });
+        let running = Arc::new(AtomicBool::new(true));
+        let owner_running = running.clone();
+        let owner_transport = transport.clone();
+        let owner = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = owner_transport.stop.cancelled() => { let _ = child.kill().await; },
+                _ = child.wait() => {},
+            }
+            // The independent owner retains the child through cancellation and reap.
+            let _ = child.wait().await;
+            owner_running.store(false, Ordering::Release);
+            // Let the reader drain any buffered final response before EOF.
         });
 
         Ok(Self {
-            child,
+            owner: Some(owner),
+            running,
             stdin: reader_stdin,
-            next_id: Arc::new(Mutex::new(1)),
-            pending,
+            next_id: AtomicI64::new(1),
+            transport,
             notifications,
             notification_signal,
             reader_handle: Some(reader_handle),
@@ -116,39 +183,28 @@ impl LspClient {
         params: Value,
         timeout: std::time::Duration,
     ) -> Result<Value, LspError> {
-        let id = {
-            let mut next = self.next_id.lock().await;
-            let id = *next;
-            *next += 1;
-            id
-        };
-
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
-
-        let message = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-
-        self.send_message(&message).await?;
-
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                // Channel closed — reader task died.
-                Err(LspError::Process("reader task closed channel".into()))
+        {
+            let mut pending = self.transport.pending.lock().unwrap();
+            if pending.closed {
+                return Err(LspError::Process("LSP transport is closed".into()));
             }
-            Err(_) => {
-                // Timeout — clean up pending entry.
-                self.pending.lock().await.remove(&id);
-                Err(LspError::Timeout(format!(
-                    "{method} (id={id}, timeout={timeout:?})"
-                )))
-            }
+            pending.senders.insert(id, tx);
         }
+        let _pending = PendingGuard {
+            transport: self.transport.clone(),
+            id,
+        };
+        let message = serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+        let operation = async {
+            send_frame(&self.stdin, &self.transport, &message).await?;
+            rx.await
+                .map_err(|_| LspError::Process("LSP response channel closed".into()))?
+        };
+        tokio::time::timeout(timeout, operation)
+            .await
+            .map_err(|_| LspError::Timeout(format!("{method} (id={id}, timeout={timeout:?})")))?
     }
 
     /// Send a JSON-RPC notification (no response expected).
@@ -158,7 +214,7 @@ impl LspClient {
             "method": method,
             "params": params,
         });
-        self.send_message(&message).await
+        bounded_send(&self.stdin, &self.transport, &message).await
     }
 
     /// Drain all buffered notifications, optionally filtered by method.
@@ -184,48 +240,86 @@ impl LspClient {
 
     /// Graceful shutdown: send shutdown request, then exit notification.
     pub async fn shutdown(mut self) -> Result<(), LspError> {
-        // Send shutdown request (best effort).
-        let _ = self
-            .request("shutdown", Value::Null, std::time::Duration::from_secs(5))
-            .await;
-
-        // Send exit notification.
+        let _ = self.request("shutdown", Value::Null, SEND_TIMEOUT).await;
         let _ = self.notify("exit", Value::Null).await;
-
-        // Wait for child to exit.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait()).await;
-
-        // Abort reader task.
-        if let Some(handle) = self.reader_handle.take() {
-            handle.abort();
+        if let Some(mut owner) = self.owner.take() {
+            match tokio::time::timeout(SEND_TIMEOUT, &mut owner).await {
+                Ok(result) => {
+                    result.map_err(|e| LspError::Process(format!("LSP process owner: {e}")))?
+                }
+                Err(_) => {
+                    self.transport.close("LSP shutdown grace expired");
+                    tokio::time::timeout(SEND_TIMEOUT, owner)
+                        .await
+                        .map_err(|_| LspError::Timeout("language server reap".into()))?
+                        .map_err(|e| LspError::Process(format!("LSP process owner: {e}")))?;
+                }
+            }
         }
-
+        if let Some(reader) = self.reader_handle.take() {
+            reader.abort();
+            let _ = reader.await;
+        }
         Ok(())
     }
 
-    /// Check if the child process is still running.
+    /// Whether the owned direct child is still running and transport usable.
     pub fn is_alive(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_none()
+        self.running.load(Ordering::Acquire) && !self.transport.stop.is_cancelled()
     }
-
-    /// Write a JSON-RPC message with Content-Length framing.
-    async fn send_message(&self, message: &Value) -> Result<(), LspError> {
-        let body = serde_json::to_vec(message)?;
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
-
-        let mut stdin = self.stdin.lock().await;
-        stdin.write_all(header.as_bytes()).await?;
-        stdin.write_all(&body).await?;
-        stdin.flush().await?;
-        Ok(())
+}
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        self.transport.close("LSP client dropped");
     }
+}
+
+async fn bounded_send(
+    stdin: &Mutex<tokio::process::ChildStdin>,
+    transport: &Arc<Transport>,
+    message: &Value,
+) -> Result<(), LspError> {
+    tokio::time::timeout(SEND_TIMEOUT, send_frame(stdin, transport, message))
+        .await
+        .map_err(|_| LspError::Timeout("LSP message transmission".into()))?
+}
+
+async fn send_frame(
+    stdin: &Mutex<tokio::process::ChildStdin>,
+    transport: &Arc<Transport>,
+    message: &Value,
+) -> Result<(), LspError> {
+    let body = serde_json::to_vec(message)?;
+    let header = format!("Content-Length: {}\r\n\r\n", body.len());
+    let mut writer = tokio::select! {
+        biased;
+        _ = transport.stop.cancelled() => return Err(LspError::Process("LSP transport is closed".into())),
+        writer = stdin.lock() => writer,
+    };
+    // No guard while queued: cancelling before transmission leaves framing intact.
+    let mut frame = FailureGuard {
+        transport: transport.clone(),
+        reason: "LSP frame transmission interrupted",
+        armed: true,
+    };
+    tokio::select! {
+        biased;
+        _ = transport.stop.cancelled() => return Err(LspError::Process("LSP transport is closed".into())),
+        result = async {
+            writer.write_all(header.as_bytes()).await?;
+            writer.write_all(&body).await?;
+            writer.flush().await
+        } => { result?; }
+    }
+    frame.armed = false;
+    Ok(())
 }
 
 /// Background task: reads Content-Length framed messages from stdout
 /// and dispatches them to the appropriate handler.
 async fn reader_loop(
     stdout: tokio::process::ChildStdout,
-    pending: Arc<Mutex<HashMap<i64, ResponseSender>>>,
+    transport: Arc<Transport>,
     notifications: Arc<Mutex<Vec<Value>>>,
     notification_signal: Arc<Notify>,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -248,7 +342,7 @@ async fn reader_loop(
         // Parse JSON.
         let message: Value = match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => break,
         };
 
         // Dispatch.
@@ -257,7 +351,7 @@ async fn reader_loop(
         {
             // Response to a request we sent.
             if let Some(id) = message["id"].as_i64() {
-                let sender = pending.lock().await.remove(&id);
+                let sender = transport.pending.lock().unwrap().senders.remove(&id);
                 if let Some(tx) = sender {
                     let result = if let Some(err) = message.get("error") {
                         Err(LspError::JsonRpc {
@@ -278,26 +372,15 @@ async fn reader_loop(
                     "id": id,
                     "result": null,
                 });
-                let body_bytes = serde_json::to_vec(&response).unwrap_or_default();
-                let header = format!("Content-Length: {}\r\n\r\n", body_bytes.len());
-                let mut stdin_guard = stdin.lock().await;
-                let _ = stdin_guard.write_all(header.as_bytes()).await;
-                let _ = stdin_guard.write_all(&body_bytes).await;
-                let _ = stdin_guard.flush().await;
+                if bounded_send(&stdin, &transport, &response).await.is_err() {
+                    break;
+                }
             }
         } else {
             // Notification from server.
             notifications.lock().await.push(message);
             notification_signal.notify_waiters();
         }
-    }
-
-    // Wake all pending requests so they don't hang.
-    let mut pending = pending.lock().await;
-    for (_, tx) in pending.drain() {
-        let _ = tx.send(Err(LspError::Process(
-            "reader task ended (server exited)".into(),
-        )));
     }
 }
 
@@ -358,5 +441,89 @@ mod tests {
             read_headers(&mut reader).await
         });
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn queued_timeout_and_cancellation_remove_pending_without_closing_transport() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = LspClient::start(
+            "/usr/bin/python3",
+            &["-c", "import time; time.sleep(30)"],
+            directory.path(),
+        )
+        .await
+        .unwrap();
+        let writer = client.stdin.lock().await;
+        let timeout = client
+            .request("queued", Value::Null, Duration::from_millis(20))
+            .await;
+        assert!(matches!(timeout, Err(LspError::Timeout(_))));
+        assert!(client.transport.pending.lock().unwrap().senders.is_empty());
+        assert!(!client.transport.stop.is_cancelled());
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                client.request("cancelled", Value::Null, Duration::from_secs(30))
+            )
+            .await
+            .is_err()
+        );
+        assert!(client.transport.pending.lock().unwrap().senders.is_empty());
+        assert!(!client.transport.stop.is_cancelled());
+        drop(writer);
+        assert!(client.is_alive());
+        // A cancelled queued request did not poison the writer or leave a frame.
+        client.notify("small", Value::Null).await.unwrap();
+        client.transport.close("fixture complete");
+        tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn partial_write_cancellation_closes_transport_and_drains_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = LspClient::start(
+            "/usr/bin/python3",
+            &["-c", "import time; time.sleep(30)"],
+            directory.path(),
+        )
+        .await
+        .unwrap();
+        // Poll the first request until its small frame is sent and it awaits a response.
+        let mut waiting = Box::pin(client.request("waiting", Value::Null, Duration::from_secs(30)));
+        tokio::select! {
+            biased;
+            result = &mut waiting => panic!("peer unexpectedly answered: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+        assert_eq!(client.transport.pending.lock().unwrap().senders.len(), 1);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(30),
+                client.request(
+                    "blocked",
+                    Value::String("x".repeat(1024 * 1024)),
+                    Duration::from_secs(30)
+                )
+            )
+            .await
+            .is_err()
+        );
+        assert!(client.transport.stop.is_cancelled());
+        assert!(client.transport.pending.lock().unwrap().senders.is_empty());
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+                .await
+                .unwrap(),
+            Err(LspError::Process(_))
+        ));
+        drop(waiting);
+        assert!(client.notify("must not reuse", Value::Null).await.is_err());
+        tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
