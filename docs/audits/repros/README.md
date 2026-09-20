@@ -20,9 +20,9 @@ export AUDIT_PYTHON=/path/to/test/python
 python3 docs/audits/repros/historical_source.py
 ```
 
-The validator rejects another commit or tracked modifications. Python/database
+The validator rejects another commit, tracked modifications or nonignored untracked files. Python/database
 probes invoke it before executing the historical source. Generated bindings and
-build outputs are untracked; keep this worktree dedicated to historical probes.
+build outputs are ignored; keep this worktree dedicated to historical probes.
 
 ## Python CPU contracts
 

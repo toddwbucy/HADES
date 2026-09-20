@@ -14,6 +14,10 @@ def source_root(value=None):
     actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     if actual != REVISION:
         raise RuntimeError(f"Historical probes require {REVISION}; found {actual}")
+    status = subprocess.check_output(
+        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"], text=True)
+    if status:
+        raise RuntimeError("Historical checkout has tracked changes or untracked files")
     subprocess.run(["git", "-C", str(root), "diff", "--exit-code", "HEAD", "--"],
                    check=True, stdout=subprocess.DEVNULL)
     return root
