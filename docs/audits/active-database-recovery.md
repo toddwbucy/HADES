@@ -99,12 +99,13 @@ The [retained result](weavertools-backup-restore-result.json) and
   synthetic rehearsal above covers a unique index and enforced schema.
 - All restored edge endpoints resolve: zero dangling edges.
 - Source file hashes are unchanged after the run. Result hashes bind every dump
-  file, both binaries, probe and isolation helper. No document text is published.
+  file, both binaries, runtime ICU/timezone data, probe and isolation helper. No document text is published.
 - ArangoDB 3.12.11 performed the restore in approximately 0.22 seconds, excluding
   server startup, validation and recovery of the rest of the application. This
   is not a production recovery-time estimate.
 
-Repeat from an isolated checkout with matching existing binaries:
+Repeat from an isolated checkout with matching existing binaries and their adjacent
+`icudtl.dat`, `icudtl_legacy.dat` and `tzdata/` runtime files:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 timeout 210 python3 docs/audits/repros/restore_weavertools_backup.py \
@@ -130,3 +131,23 @@ backup success, retention/monitoring, recent-data recovery, live consistency,
 users/ACLs, named graphs, model checkpoints, all-database recovery or recovery
 after loss of this host. Issue #63 stays open. Owner RPO/RTO targets have been
 requested; deploying a production backup job still requires its own reviewed plan.
+
+
+### Replay evidence hardening
+
+The retained run uses explicit validation failures, which remain active under
+`python -O` / `PYTHONOPTIMIZE`; subprocess waits are separate from validation
+expressions. It copies and hashes the probe, isolation helper, binaries and
+required ICU/timezone data before execution, re-executes the private probe copy,
+and imports/runs only those copies. Execution files have no write permission and
+their hashes are checked again after verification. This isolates the run from
+later changes to the original paths. It is not a hermetic operating-system or
+shared-library snapshot and does not defend against a hostile process with the
+same account's authority.
+
+The final retained run passed with Python optimization enabled. A separate private
+copy with a duplicated dump key was rejected under `-O` during preflight, before
+starting a server; it produced no passing result. Earlier staging attempts exposed
+missing adjacent ICU and timezone resources and exited during server startup;
+owned-process cleanup ran and neither attempt produced a passing result. The
+recorded successful result belongs to the complete staged implementation.
