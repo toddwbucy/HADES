@@ -71,12 +71,8 @@ struct FileResult {
     num_chunks: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_embeddings: Option<usize>,
-    /// Set when the chunks were stored but the embed call failed. The file
-    /// is structurally ingested (symbols, chunks, edges all present), but
-    /// the chunks have no associated embeddings — typically a transient
-    /// embedder failure (OOM on the embedding service GPU, request timeout,
-    /// etc.). The user-facing summary counts these as
-    /// `partial_embedding_failures` so they don't get lost in a green run.
+    /// Embedding preparation failed; the previous committed graph is retained.
+    /// The summary keeps this diagnostic separate from database write failures.
     #[serde(skip_serializing_if = "Option::is_none")]
     embedding_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,17 +108,10 @@ struct ImportContext {
     cpp_file_symbols: HashMap<String, Vec<Symbol>>,
     /// Lower-fidelity files used for syntax-only relationship resolution.
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
-    /// Old symbol key -> the key that replaced it, for symbols this run moved
-    /// without renaming (#9).
-    ///
-    /// `symbol_key` hashes the definition line, so a comment inserted above a
-    /// symbol changes its key while its name and its meaning stay put. The file
-    /// is rewritten under the new keys and a *dependent* that did not change is
-    /// skipped, leaving its stored edge pointing at a key nothing holds. The
-    /// pairing is computed where both sides are known -- inside the rewrite,
-    /// with the pre-purge symbols still readable -- because after the purge the
-    /// old keys are gone and a key cannot be reversed into a name.
-    symbol_key_remap: Vec<(String, String)>,
+    /// Inbound edges remapped inside acknowledged file transactions.
+    repointed_edges: u64,
+    committed_revisions: HashMap<String, String>,
+    remapped_symbols: usize,
 }
 
 /// One half of an ingest, as data rather than as printed output.
@@ -161,7 +150,12 @@ pub async fn run(
         allow_analysis_downgrade,
     )
     .await?;
-    output::print_output("codebase.ingest", outcome.data, &OutputFormat::Json);
+    output::print_output_with_success(
+        "codebase.ingest",
+        outcome.data,
+        &OutputFormat::Json,
+        outcome.failure.is_none(),
+    );
     match outcome.failure {
         Some(e) => Err(e),
         None => Ok(()),
@@ -276,7 +270,9 @@ pub async fn run_phase(
         rust_file_symbols: HashMap::new(),
         cpp_file_symbols: HashMap::new(),
         structural_file_symbols: HashMap::new(),
-        symbol_key_remap: Vec::new(),
+        repointed_edges: 0,
+        committed_revisions: HashMap::new(),
+        remapped_symbols: 0,
     };
     // Collect absolute paths for Rust files — used for rust-analyzer post-loop phase.
     let mut rust_abs_paths: Vec<PathBuf> = Vec::new();
@@ -357,18 +353,35 @@ pub async fn run_phase(
         }
 
         let result = if is_unparsed {
-            ingest_unparsed_file(
-                &db,
-                embedder.as_ref(),
-                config,
-                file_path,
-                &rel_path,
-                None,
-                "no registered language or grammar",
-                force,
-                allow_analysis_downgrade,
-                namespace,
-            )
+            async {
+                let key = keys::scoped_file_key(namespace, &rel_path);
+                let observed = super::codebase_persist::revision(db.writer(), &key).await?;
+                let result = ingest_unparsed_file(
+                    &db,
+                    embedder.as_ref(),
+                    config,
+                    file_path,
+                    &rel_path,
+                    None,
+                    "no registered language or grammar",
+                    force,
+                    allow_analysis_downgrade,
+                    namespace,
+                )
+                .await?;
+                if result.skipped == Some(true) && result.num_symbols.is_none() {
+                    collect_preserved_targets(
+                        &db,
+                        &key,
+                        observed.as_deref(),
+                        &rel_path,
+                        None,
+                        &mut imports,
+                    )
+                    .await?;
+                }
+                Ok::<_, anyhow::Error>(result)
+            }
             .await
         } else {
             ingest_file(
@@ -429,17 +442,6 @@ pub async fn run_phase(
         &py_symbol_index,
         namespace,
     );
-    if !py_import_edges.is_empty() {
-        info!(
-            edge_count = py_import_edges.len(),
-            "resolved Python import edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.imports_edges, &py_import_edges, true).await
-        {
-            warn!(error = %e, "failed to store Python import edges");
-        }
-    }
 
     // Resolve Python call graph edges (symbol → symbol). Uses the calls + parent_symbol
     // metadata attached during AST extraction; reuses the bare-name index already built
@@ -452,47 +454,15 @@ pub async fn run_phase(
         &py_symbol_index,
         namespace,
     );
-    if !py_call_edges.is_empty() {
-        info!(
-            edge_count = py_call_edges.len(),
-            "resolved Python call edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.calls_edges, &py_call_edges, true).await
-        {
-            warn!(error = %e, "failed to store Python call edges");
-        }
-    }
 
     // Resolve compiler-grade C/C++/CUDA calls, including CUDA kernel launches.
     // libclang records target USRs and definition spans during each file parse;
     // this batch phase maps them onto HADES's cross-file span keys.
     let cpp_call_edges =
         cpp_edges::resolve_cpp_calls_scoped(&base, &imports.cpp_file_symbols, namespace);
-    if !cpp_call_edges.is_empty() {
-        info!(
-            edge_count = cpp_call_edges.len(),
-            "resolved C/C++/CUDA call edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.calls_edges, &cpp_call_edges, true).await
-        {
-            warn!(error = %e, "failed to store C/C++/CUDA call edges");
-        }
-    }
 
     let structural_edges =
         tree_sitter_edges::resolve_scoped(&imports.structural_file_symbols, namespace);
-    if !structural_edges.calls.is_empty() {
-        crud::insert_documents(&db, CODEBASE.calls_edges, &structural_edges.calls, true)
-            .await
-            .context("failed to store Tree-sitter call edges")?;
-    }
-    if !structural_edges.imports.is_empty() {
-        crud::insert_documents(&db, CODEBASE.imports_edges, &structural_edges.imports, true)
-            .await
-            .context("failed to store Tree-sitter import edges")?;
-    }
 
     // Resolve Rust import graph edges (file → symbol).
     let rust_symbol_index =
@@ -502,26 +472,43 @@ pub async fn run_phase(
         &rust_symbol_index,
         namespace,
     );
-    if !rs_import_edges.is_empty() {
-        info!(
-            edge_count = rs_import_edges.len(),
-            "resolved Rust import edges"
-        );
-        if let Err(e) =
-            crud::insert_documents(&db, CODEBASE.imports_edges, &rs_import_edges, true).await
-        {
-            warn!(error = %e, "failed to store Rust import edges");
-        }
-    }
+
+    // This separate enrichment stage is all-or-nothing. File replacements
+    // preceding it remain committed, but failures cannot masquerade as success.
+    let relationship_error = if results.iter().any(|result| !result.success) {
+        Some(
+            "relationship stage deferred because file preparation failed; retry ingestion"
+                .to_owned(),
+        )
+    } else {
+        super::codebase_persist::store_relationships(
+        &db,
+        std::mem::take(&mut imports.committed_revisions),
+        vec![
+            (CODEBASE.imports_edges, py_import_edges.clone()),
+            (CODEBASE.calls_edges, py_call_edges.clone()),
+            (CODEBASE.calls_edges, cpp_call_edges.clone()),
+            (CODEBASE.calls_edges, structural_edges.calls.clone()),
+            (CODEBASE.imports_edges, structural_edges.imports.clone()),
+            (CODEBASE.imports_edges, rs_import_edges.clone()),
+        ],
+    ).await.err().map(|error| format!("failed to atomically store cross-file relationships; earlier file replacements remain committed: {error}"))
+    };
+    let stored_relationships = usize::from(relationship_error.is_none());
 
     let total_import_edges =
         py_import_edges.len() + rs_import_edges.len() + structural_edges.imports.len();
+
+    let mut enrichment_failure: Option<String> = None;
 
     // ── rust-analyzer deep analysis ────────────────────────────────────
     // When Rust files were ingested, optionally use rust-analyzer for richer
     // symbol extraction: qualified names, call hierarchy, impl-trait edges,
     // PyO3/FFI detection. This enrichment phase runs after the syn-based loop.
-    let ra_stats = if !rust_abs_paths.is_empty() && rust_analyzer_cmd.is_some() {
+    let ra_stats = if relationship_error.is_none()
+        && !rust_abs_paths.is_empty()
+        && rust_analyzer_cmd.is_some()
+    {
         match run_rust_analyzer_phase(&db, &base, &rust_abs_paths, rust_analyzer_cmd.as_deref())
             .await
         {
@@ -540,6 +527,9 @@ pub async fn run_phase(
                 // shows only the outermost context and swallows the underlying
                 // cause (#180).
                 warn!(error = %format!("{e:#}"), "rust-analyzer enrichment failed, syn-based data retained");
+                if !allow_analysis_downgrade {
+                    enrichment_failure = Some(format!("rust-analyzer enrichment failed: {e:#}"));
+                }
                 SemanticLspStats::default()
             }
         }
@@ -552,20 +542,23 @@ pub async fn run_phase(
     // is the exact state that previously reported success while the graph
     // silently lost its calls/implements layer. Only the downgrade flag makes
     // proceeding an explicit choice.
-    if !rust_abs_paths.is_empty()
+    if relationship_error.is_none()
+        && !rust_abs_paths.is_empty()
         && rust_analyzer_cmd.is_some()
         && ra_stats.workspaces == 0
         && !ra_stats.store_failed
         && !allow_analysis_downgrade
     {
-        anyhow::bail!(
-            "rust-analyzer enrichment produced nothing across {} Rust file(s) \
+        enrichment_failure.get_or_insert_with(|| {
+            format!(
+                "rust-analyzer enrichment produced nothing across {} Rust file(s) \
              (crates_analyzed = 0) despite a passing preflight. The graph would \
              keep syn symbols but lose calls/implements edges. Investigate the \
              analyzer session logs above, or pass --allow-analysis-downgrade to \
              accept the loss explicitly.",
-            rust_abs_paths.len()
-        );
+                rust_abs_paths.len()
+            )
+        });
     }
 
     // A store failure is a distinct stage from analysis failure (#180): the
@@ -573,17 +566,22 @@ pub async fn run_phase(
     // it correctly so operators don't chase analyzer session logs for a
     // database error.
     if ra_stats.store_failed && !allow_analysis_downgrade {
-        anyhow::bail!(
-            "rust-analyzer analyzed {} crate(s) but storing the enrichment to \
+        enrichment_failure.get_or_insert_with(|| {
+            format!(
+                "rust-analyzer analyzed {} crate(s) but storing the enrichment to \
              ArangoDB failed (see the store warnings above for the database \
              error). The graph keeps syn symbols but loses calls/implements \
              edges. Fix the store error and re-run, or pass \
              --allow-analysis-downgrade to accept the loss explicitly.",
-            ra_stats.workspaces
-        );
+                ra_stats.workspaces
+            )
+        });
     }
 
-    let gopls_stats = if !go_abs_paths.is_empty() && gopls_cmd.is_some() {
+    let gopls_stats = if relationship_error.is_none()
+        && !go_abs_paths.is_empty()
+        && gopls_cmd.is_some()
+    {
         match run_gopls_phase(&db, &base, &go_abs_paths, gopls_cmd.as_deref()).await {
             Ok(stats) => {
                 info!(
@@ -596,6 +594,10 @@ pub async fn run_phase(
             }
             Err(error) => {
                 warn!(error = %format!("{error:#}"), "gopls enrichment failed; Tree-sitter Go data retained");
+                if !allow_analysis_downgrade {
+                    enrichment_failure
+                        .get_or_insert_with(|| format!("gopls enrichment failed: {error:#}"));
+                }
                 SemanticLspStats::default()
             }
         }
@@ -610,7 +612,6 @@ pub async fn run_phase(
     // nothing written" to anything parsing the output (#194 review). The
     // existing `CodebaseIngestFailure` at the end of this function already
     // follows print-then-fail; these now match it.
-    let mut enrichment_failure: Option<String> = None;
 
     // Same store-vs-analysis attribution as the rust-analyzer path (#180):
     // gopls analyzed its modules but the results never reached ArangoDB, so
@@ -643,24 +644,20 @@ pub async fn run_phase(
     // the graph and there is nothing to report. Bailing there would assert a
     // loss that did not happen, on the common case of re-running ingest over an
     // unchanged tree with one perpetually-unhappy module.
-    let rewritten_go_under_failed_module: Vec<&str> = if gopls_stats.failed_workspaces.is_empty() {
-        Vec::new()
-    } else {
-        results
-            .iter()
-            .filter(|r| !r.skipped.unwrap_or(false) && r.success && r.path.ends_with(".go"))
-            .filter(|r| {
-                let absolute = base.join(&r.path);
-                gopls_stats
-                    .failed_workspaces
-                    .iter()
-                    .any(|root| absolute.starts_with(root))
-            })
-            .map(|r| r.path.as_str())
-            .collect()
-    };
+    let rewritten_go_under_failed_module = failed_enrichment_paths(&base, &results, &gopls_stats);
+    let rewritten_rust_under_failure = failed_enrichment_paths(&base, &results, &ra_stats);
+    if !allow_analysis_downgrade && !rewritten_rust_under_failure.is_empty() {
+        enrichment_failure.get_or_insert_with(|| format!(
+            "rust-analyzer enrichment incomplete for rewritten files: {}; retry ingestion or explicitly allow analysis downgrade",
+            rewritten_rust_under_failure.join(", ")
+        ));
+    }
 
-    if !go_abs_paths.is_empty() && gopls_cmd.is_some() && !allow_analysis_downgrade {
+    if relationship_error.is_none()
+        && !go_abs_paths.is_empty()
+        && gopls_cmd.is_some()
+        && !allow_analysis_downgrade
+    {
         if gopls_stats.workspaces == 0 {
             enrichment_failure.get_or_insert_with(|| {
                 format!(
@@ -673,7 +670,7 @@ pub async fn run_phase(
         } else if !rewritten_go_under_failed_module.is_empty() {
             enrichment_failure.get_or_insert_with(|| {
                 format!(
-                    "gopls analyzed {} of {} Go module(s); {} failed to start a session \
+                    "gopls analyzed {} of {} Go module(s); {} workspace/file failures \
                  (see the warnings above). {} file(s) under the failed module(s) were \
                  re-ingested this run, so their gopls symbols and calls/implements \
                  edges are gone — the fidelity guard stands aside for Go on the \
@@ -682,7 +679,7 @@ pub async fn run_phase(
                  the loss explicitly.",
                     gopls_stats.workspaces,
                     gopls_stats.workspaces_attempted,
-                    gopls_stats.failed_workspaces.len(),
+                    gopls_stats.failed_workspaces.len() + gopls_stats.failed_files.len(),
                     rewritten_go_under_failed_module.len()
                 )
             });
@@ -707,15 +704,15 @@ pub async fn run_phase(
     // records a real dependency, and removing it would erase the only signal
     // that the dependent needs re-ingesting. Runs after the enrichment phases so
     // a symbol rust-analyzer/gopls recreates is not counted as gone.
-    // Re-point what moved before counting what is left (#9). A symbol that kept
+    // File transactions already re-pointed moved symbols (#9). A symbol that kept
     // its name and changed only its line is the common case, and its dependents
     // were skipped precisely because nothing about them changed -- so the edge is
     // still correct about the dependency and wrong only about the key.
-    let repointed = repoint_inbound_edges(&db, &imports.symbol_key_remap).await;
+    let repointed = imports.repointed_edges;
     if repointed > 0 {
         info!(
             edges = repointed,
-            symbols = imports.symbol_key_remap.len(),
+            symbols = imports.remapped_symbols,
             "re-pointed inbound edges onto symbols that moved without being renamed"
         );
     }
@@ -751,7 +748,7 @@ pub async fn run_phase(
         .count();
     let total_embeddings: usize = results.iter().filter_map(|r| r.num_embeddings).sum();
 
-    // Files whose chunks were stored but whose embed call failed (e.g. embedder
+    // Files preserved because embedding preparation failed (e.g. embedder
     // GPU OOM, timeout). Their per-file `embedding_error` carries the message;
     // we surface a count + the affected paths here so a green-looking "completed"
     // doesn't hide silent vector loss.
@@ -780,17 +777,21 @@ pub async fn run_phase(
         // Inbound edges re-pointed onto symbols that moved without being
         // renamed (#9), as opposed to the ones above, which could not be.
         "repointed_inbound_edges": repointed,
-        "import_edges": total_import_edges,
-        "python_import_edges": py_import_edges.len(),
-        "rust_import_edges": rs_import_edges.len(),
-        "python_call_edges": py_call_edges.len(),
-        "cpp_call_edges": cpp_call_edges.len(),
-        "structural_call_edges": structural_edges.calls.len(),
-        "structural_import_edges": structural_edges.imports.len(),
+        "relationship_error": relationship_error,
+        "enrichment_error": enrichment_failure,
+        "import_edges": total_import_edges * stored_relationships,
+        "python_import_edges": py_import_edges.len() * stored_relationships,
+        "rust_import_edges": rs_import_edges.len() * stored_relationships,
+        "python_call_edges": py_call_edges.len() * stored_relationships,
+        "cpp_call_edges": cpp_call_edges.len() * stored_relationships,
+        "structural_call_edges": structural_edges.calls.len() * stored_relationships,
+        "structural_import_edges": structural_edges.imports.len() * stored_relationships,
         "rust_analyzer": {
             "symbols": ra_stats.symbols,
             "edges": ra_stats.edges,
             "crates_analyzed": ra_stats.workspaces,
+            "failed_workspaces": ra_stats.failed_workspaces,
+            "failed_files": ra_stats.failed_files,
             "store_errors": ra_stats.store_errors,
             "store_failed": ra_stats.store_failed,
         },
@@ -798,6 +799,8 @@ pub async fn run_phase(
             "symbols": gopls_stats.symbols,
             "edges": gopls_stats.edges,
             "modules_analyzed": gopls_stats.workspaces,
+            "failed_workspaces": gopls_stats.failed_workspaces,
+            "failed_files": gopls_stats.failed_files,
             "store_errors": gopls_stats.store_errors,
             "store_failed": gopls_stats.store_failed,
         },
@@ -808,7 +811,9 @@ pub async fn run_phase(
     // The failure travels with the summary rather than replacing it, so the
     // caller can emit both. Enrichment loss outranks per-file failures because
     // it means the graph is missing a whole layer of edges.
-    let failure = if let Some(message) = enrichment_failure {
+    let failure = if let Some(message) = relationship_error {
+        Some(anyhow::anyhow!("{message}"))
+    } else if let Some(message) = enrichment_failure {
         Some(anyhow::anyhow!("{message}"))
     } else if failed > 0 {
         Some(CodebaseIngestFailure { total, failed }.into())
@@ -1581,6 +1586,8 @@ async fn ingest_file(
     namespace: &str,
 ) -> Result<FileResult> {
     // Read source.
+    let fkey = keys::scoped_file_key(namespace, rel_path);
+    let expected_revision = super::codebase_persist::revision(db.writer(), &fkey).await?;
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
 
@@ -1607,7 +1614,7 @@ async fn ingest_file(
                     reason,
                     "semantic and structural analysis unavailable; using raw text fallback"
                 );
-                return ingest_unparsed_file(
+                let result = ingest_unparsed_file(
                     db,
                     embedder,
                     config,
@@ -1619,7 +1626,19 @@ async fn ingest_file(
                     allow_analysis_downgrade,
                     namespace,
                 )
-                .await;
+                .await?;
+                if result.skipped == Some(true) && result.num_symbols.is_none() {
+                    collect_preserved_targets(
+                        db,
+                        &fkey,
+                        expected_revision.as_deref(),
+                        rel_path,
+                        Some(lang),
+                        imports,
+                    )
+                    .await?;
+                }
+                return Ok(result);
             }
         };
     info!(
@@ -1661,7 +1680,6 @@ async fn ingest_file(
     // this entirely, re-ingesting in place (#145) — the per-file purge below
     // touches only this file's own symbols and outbound edges, so inbound
     // authored bridge edges are preserved (unlike a cascading `db purge`).
-    let fkey = keys::scoped_file_key(namespace, rel_path);
     verify_file_identity(db, namespace, rel_path, &fkey).await?;
     if preserve_higher_fidelity(
         db,
@@ -1672,6 +1690,15 @@ async fn ingest_file(
     )
     .await?
     {
+        collect_preserved_targets(
+            db,
+            &fkey,
+            expected_revision.as_deref(),
+            rel_path,
+            Some(lang),
+            imports,
+        )
+        .await?;
         warn!(
             path = rel_path,
             incoming_tier = %analysis.analysis_tier,
@@ -1693,6 +1720,15 @@ async fn ingest_file(
     let content_hash = hades_core::code::compute_content_hash(&source);
     if !force && check_unchanged(db, &fkey, &content_hash, embedder.is_some()).await? == Some(true)
     {
+        // Skipping persistence must not remove a target from relationship
+        // resolution. Retain the revision observed before analysis so a
+        // concurrent replacement causes the later relationship stage to fail.
+        let observed = expected_revision
+            .clone()
+            .context("file appeared during analysis; retry ingestion")?;
+        let num_symbols = analysis.symbols.len();
+        imports.committed_revisions.insert(fkey.clone(), observed);
+        collect_relationship_symbols(imports, rel_path, lang, &mut analysis);
         debug!(
             path = rel_path,
             "unchanged (same content_hash, embeddings present), skipping"
@@ -1701,7 +1737,7 @@ async fn ingest_file(
             path: rel_path.to_string(),
             success: true,
             language: Some(lang.name().to_string()),
-            num_symbols: Some(analysis.symbols.len()),
+            num_symbols: Some(num_symbols),
             num_chunks: None,
             num_embeddings: None,
             embedding_error: None,
@@ -1711,7 +1747,8 @@ async fn ingest_file(
         });
     }
 
-    // Purge this file's existing symbols and incident edges before re-writing.
+    // Snapshot prior identities before preparing a replacement. Purging happens
+    // only inside the later atomic store, after analysis/embedding succeeds.
     // Symbol/edge inserts are overwrite-by-key only, so without this a renamed
     // or deleted symbol would leave an orphaned row that later inflates
     // `symbol_count` and dangles in the graph (#126). We only reach here when
@@ -1721,33 +1758,7 @@ async fn ingest_file(
     // Read the symbols about to be destroyed, so the rewrite can be paired with
     // its predecessor (#9). After the purge a key cannot be reversed into a
     // name, so this is the only moment both sides are knowable.
-    let previous_symbols = existing_symbol_identities(db, &fkey).await;
-
-    purge_file_symbols_and_edges(db, &fkey).await;
-
-    // Collect Python import symbols for later edge resolution.
-    if lang == Language::Python {
-        let py_import_syms: Vec<Symbol> = analysis
-            .symbols
-            .iter()
-            .filter(|s| s.kind == hades_core::code::SymbolKind::Import)
-            .cloned()
-            .collect();
-        if !py_import_syms.is_empty() {
-            imports
-                .python_imports
-                .insert(rel_path.to_string(), py_import_syms);
-        }
-    }
-
-    // Collect Rust use-paths for later import edge resolution.
-    // Symbol transfer into the index is deferred until after all uses of analysis.symbols.
-    if lang == Language::Rust {
-        let use_paths = rust_imports::collect_use_paths(&analysis.symbols);
-        if !use_paths.is_empty() {
-            imports.rust_imports.insert(rel_path.to_string(), use_paths);
-        }
-    }
+    let previous_symbols = existing_symbol_identities(db, &fkey).await?;
 
     // Chunk with AST-aligned chunking.
     let chunker = AstChunking::new(analysis.top_level_defs.clone());
@@ -1848,11 +1859,6 @@ async fn ingest_file(
         })
         .collect();
 
-    // Remove stale embeddings for this file before (re-)embedding.
-    // This ensures that if embedding is skipped or fails, old vectors
-    // from a previous run (which embed outdated text) don't linger.
-    delete_file_embeddings(db, &fkey).await;
-
     // Embed with LATE CHUNKING: encode each window of the file in one pass and
     // pool per AST boundary, so every chunk vector is conditioned on the code
     // around it. Embedding chunks independently (the previous behaviour) threw
@@ -1896,7 +1902,7 @@ async fn ingest_file(
                     None,
                 ),
                 Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
+                    warn!(path = rel_path, error = %e, "embedding preparation failed; retaining committed graph");
                     (Vec::new(), Some(e.to_string()))
                 }
             }
@@ -2121,6 +2127,20 @@ async fn ingest_file(
         }
         _ => (Vec::new(), None),
     };
+    if let Some(error) = &embedding_error {
+        return Ok(FileResult {
+            path: rel_path.to_owned(),
+            success: false,
+            language: Some(lang.name().to_owned()),
+            num_symbols: None,
+            num_chunks: None,
+            num_embeddings: None,
+            embedding_error: Some(error.clone()),
+            skipped: Some(false),
+            error: Some("embedding preparation failed; committed file graph retained".into()),
+            duration_ms: 0,
+        });
+    }
     let num_embeddings_written = embedding_docs.len();
 
     // Build file document (after embedding so we can record embedding_count).
@@ -2133,9 +2153,7 @@ async fn ingest_file(
     // Pair the old keys with the new ones, for symbols that moved without being
     // renamed. Recorded on the shared context and applied after every file has
     // been written, because a dependent may itself be rewritten later in the run.
-    imports
-        .symbol_key_remap
-        .extend(pair_moved_symbol_keys(&previous_symbols, &symbol_docs));
+    let symbol_key_remap = pair_moved_symbol_keys(&previous_symbols, &symbol_docs);
 
     let primitive_count = symbol_docs
         .iter()
@@ -2161,6 +2179,7 @@ async fn ingest_file(
         // re-resolution (#183).
         "content_hash": content_hash,
         "symbol_count": primitive_count,
+        "relationships_pending": true,
         "chunk_count": num_chk,
         "embedding_count": num_embeddings_written,
         "total_lines": analysis.metrics.total_lines,
@@ -2171,57 +2190,215 @@ async fn ingest_file(
         "ingested_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    // Store to ArangoDB. Embeddings are persisted BEFORE the file document
-    // so that embedding_count is only recorded once the vectors are durable.
-    // This prevents check_unchanged() from skipping future backfills if
-    // embedding persistence fails partway through.
+    let remapped_symbols = symbol_key_remap.len();
+    let stored = super::codebase_persist::Replacement {
+        key: fkey.clone(),
+        expected_revision,
+        chunks: chunk_docs,
+        symbols: symbol_docs,
+        embeddings: embedding_docs,
+        defines: define_edges,
+        file: file_doc,
+        purge_symbols: true,
+        merge_file: false,
+        symbol_remap: symbol_key_remap,
+    }
+    .store(db)
+    .await
+    .context("failed to atomically replace file graph")?;
+    imports.repointed_edges += stored.moved_edges;
+    imports
+        .committed_revisions
+        .insert(fkey.clone(), stored.revision);
+    imports.remapped_symbols += remapped_symbols;
 
-    // Remove stale chunks immediately before re-writing them. Chunk inserts are
-    // overwrite-by-key, so a re-ingest producing *fewer* chunks than the previous
-    // run would otherwise leave the old high-index docs behind — inflating
-    // `chunk_count` and stranding chunks that reference symbols the purge above
-    // already removed (#159). The unparsed path always did this; the parsed path
-    // did not, so shrinking source files accumulated orphans `--force` could not
-    // clear.
-    //
-    // This sits here rather than before the embedder call so the delete→insert
-    // window contains no network round-trip: delete→write is not atomic, and a
-    // failure between them leaves `chunk_count > 0` with zero stored chunks (the
-    // mirror of #159). The window cannot be closed without a transaction, so it
-    // is kept as small as possible. The next successful ingest self-heals.
-    // Runs unconditionally — a file that drops to zero chunks must still have
-    // its old ones removed.
-    delete_file_chunks(db, &fkey).await;
+    collect_relationship_symbols(imports, rel_path, lang, &mut analysis);
 
-    if !chunk_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.chunks, &chunk_docs, true)
-            .await
-            .context("failed to store chunk documents")?;
+    info!(
+        path = rel_path,
+        language = lang.name(),
+        symbols = num_sym,
+        chunks = num_chk,
+        embeddings = num_embeddings_written,
+        "ingested"
+    );
+
+    Ok(FileResult {
+        path: rel_path.to_string(),
+        success: true,
+        language: Some(lang.name().to_string()),
+        num_symbols: Some(num_sym),
+        num_chunks: Some(num_chk),
+        num_embeddings: Some(num_embeddings_written),
+        embedding_error,
+        skipped: None,
+        error: None,
+        duration_ms: 0,
+    })
+}
+
+/// Retain durable targets when incoming analysis is deliberately not applied.
+/// Stored call metadata is excluded: this path must not rewrite outgoing edges.
+async fn collect_preserved_targets(
+    db: &ArangoPool,
+    key: &str,
+    expected_revision: Option<&str>,
+    rel_path: &str,
+    lang: Option<Language>,
+    imports: &mut ImportContext,
+) -> Result<()> {
+    let client = db.writer().clone().with_response_limit(32 * 1024 * 1024)?;
+    let response = client.post("cursor", &json!({
+        "query":"RETURN { file: DOCUMENT(@@files, @key), symbols: (FOR s IN @@symbols FILTER s.file_key == @key RETURN s) }",
+        "bindVars":{"@files":CODEBASE.files,"@symbols":CODEBASE.symbols,"key":key},
+        "batchSize":1,"ttl":30,"memoryLimit":33554432,
+        "options":{"maxRuntime":30,"failOnWarning":true}
+    })).await?;
+    let rows = response["result"]
+        .as_array()
+        .context("invalid preserved target snapshot")?;
+    anyhow::ensure!(
+        response["hasMore"] != true && rows.len() == 1,
+        "incomplete preserved target snapshot"
+    );
+    let row = &rows[0];
+    let revision = row["file"]["_rev"]
+        .as_str()
+        .context("preserved file has no revision")?;
+    anyhow::ensure!(
+        Some(revision) == expected_revision,
+        "preserved file changed during analysis; retry ingestion"
+    );
+    let lang = match lang {
+        Some(language) => language,
+        None => match row["file"]["language"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "python" => Language::Python,
+            "rust" => Language::Rust,
+            "c++" | "cpp" | "c" | "cuda" => Language::Cpp,
+            "go" => Language::Go,
+            _ => bail!("preserved file has no supported stored language"),
+        },
+    };
+    let mut symbols = Vec::new();
+    for document in row["symbols"]
+        .as_array()
+        .context("invalid preserved symbols")?
+    {
+        let name = document["name"]
+            .as_str()
+            .context("preserved symbol has no name")?;
+        let qualified = document["qualified_name"]
+            .as_str()
+            .context("preserved symbol has no qualified name")?;
+        let start_line = usize::try_from(
+            document["start_line"]
+                .as_u64()
+                .context("invalid preserved symbol start line")?,
+        )?;
+        let end_line = usize::try_from(
+            document["end_line"]
+                .as_u64()
+                .context("invalid preserved symbol end line")?,
+        )?;
+        anyhow::ensure!(
+            start_line > 0 && end_line >= start_line,
+            "invalid preserved symbol range"
+        );
+        anyhow::ensure!(
+            document["_key"].as_str()
+                == Some(keys::symbol_key(key, qualified, start_line).as_str()),
+            "preserved symbol identity does not match its stored definition"
+        );
+        let kind = match document["kind"].as_str() {
+            Some("callable") => SymbolKind::Function,
+            Some("type") => SymbolKind::Class,
+            Some("value") => SymbolKind::Variable,
+            Some("module") => SymbolKind::Module,
+            _ => bail!("unsupported preserved symbol primitive"),
+        };
+        let mut metadata = match &document["metadata"] {
+            Value::Object(fields) => fields.clone(),
+            Value::Null => serde_json::Map::new(),
+            _ => bail!("invalid preserved symbol metadata"),
+        };
+        metadata.remove("calls");
+        metadata.insert("qualified_name".into(), json!(qualified));
+        // Some LSP documents store ownership outside the metadata object.
+        if let Some(parent) = document["parent_symbol"].as_str() {
+            metadata.insert("parent_symbol".into(), json!(parent));
+        }
+        symbols.push(Symbol {
+            name: name.to_owned(),
+            kind,
+            start_line,
+            end_line,
+            metadata: Value::Object(metadata),
+        });
+    }
+    imports
+        .committed_revisions
+        .insert(key.to_owned(), revision.to_owned());
+    // Structural callers may resolve to semantic targets. No import statements
+    // or call metadata are loaded, so the preserved file contributes no sources.
+    imports
+        .structural_file_symbols
+        .insert(rel_path.to_owned(), symbols.clone());
+    match lang {
+        Language::Python => {
+            imports
+                .python_file_symbols
+                .insert(rel_path.to_owned(), symbols);
+        }
+        Language::Rust => {
+            imports
+                .rust_file_symbols
+                .insert(rel_path.to_owned(), symbols);
+        }
+        Language::Cpp => {
+            imports
+                .cpp_file_symbols
+                .insert(rel_path.to_owned(), symbols);
+        }
+        Language::Go => {}
+        _ => {}
+    }
+    Ok(())
+}
+
+fn collect_relationship_symbols(
+    imports: &mut ImportContext,
+    rel_path: &str,
+    lang: Language,
+    analysis: &mut hades_core::code::FileAnalysis,
+) {
+    // Collect Python import symbols for later edge resolution.
+    if lang == Language::Python {
+        let py_import_syms: Vec<Symbol> = analysis
+            .symbols
+            .iter()
+            .filter(|s| s.kind == hades_core::code::SymbolKind::Import)
+            .cloned()
+            .collect();
+        if !py_import_syms.is_empty() {
+            imports
+                .python_imports
+                .insert(rel_path.to_string(), py_import_syms);
+        }
     }
 
-    if !symbol_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.symbols, &symbol_docs, true)
-            .await
-            .context("failed to store symbol documents")?;
+    // Collect Rust use-paths for later import edge resolution.
+    // Symbol transfer into the index is deferred until after all uses of analysis.symbols.
+    if lang == Language::Rust {
+        let use_paths = rust_imports::collect_use_paths(&analysis.symbols);
+        if !use_paths.is_empty() {
+            imports.rust_imports.insert(rel_path.to_string(), use_paths);
+        }
     }
-
-    if !embedding_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.embeddings, &embedding_docs, true)
-            .await
-            .context("failed to store embedding documents")?;
-    }
-
-    if !define_edges.is_empty() {
-        crud::insert_documents(db, CODEBASE.defines_edges, &define_edges, true)
-            .await
-            .context("failed to store define edges")?;
-    }
-
-    // File document stored last — embedding_count is only recorded after
-    // vectors are durable, so check_unchanged() won't wrongly skip backfills.
-    crud::insert_documents(db, CODEBASE.files, &[file_doc], true)
-        .await
-        .context("failed to store file document")?;
 
     // Transfer symbols into relationship indexes.
     if analysis.analysis_tier == AnalysisTier::Structural {
@@ -2249,28 +2426,6 @@ async fn ingest_file(
         Language::Go => {}
         _ => {}
     }
-
-    info!(
-        path = rel_path,
-        language = lang.name(),
-        symbols = num_sym,
-        chunks = num_chk,
-        embeddings = num_embeddings_written,
-        "ingested"
-    );
-
-    Ok(FileResult {
-        path: rel_path.to_string(),
-        success: true,
-        language: Some(lang.name().to_string()),
-        num_symbols: Some(num_sym),
-        num_chunks: Some(num_chk),
-        num_embeddings: Some(num_embeddings_written),
-        embedding_error,
-        skipped: None,
-        error: None,
-        duration_ms: 0,
-    })
 }
 
 fn uses_semantic_relationship_resolver(language: Language, tier: AnalysisTier) -> bool {
@@ -2316,9 +2471,10 @@ async fn ingest_unparsed_file(
     allow_analysis_downgrade: bool,
     namespace: &str,
 ) -> Result<FileResult> {
+    let fkey = keys::scoped_file_key(namespace, rel_path);
+    let expected_revision = super::codebase_persist::revision(db.writer(), &fkey).await?;
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
-    let fkey = keys::scoped_file_key(namespace, rel_path);
     verify_file_identity(db, namespace, rel_path, &fkey).await?;
     let lang_label = language_label.unwrap_or_else(|| unparsed_language_label(rel_path));
 
@@ -2365,9 +2521,6 @@ async fn ingest_unparsed_file(
             duration_ms: 0,
         });
     }
-    if allow_analysis_downgrade {
-        purge_file_symbols_and_edges(db, &fkey).await;
-    }
 
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
@@ -2394,11 +2547,6 @@ async fn ingest_unparsed_file(
             })
         })
         .collect();
-
-    // Clear stale chunks AND embeddings before re-writing, so a re-ingest that
-    // produces fewer chunks leaves no orphaned high-index chunk/vector docs.
-    delete_file_chunks(db, &fkey).await;
-    delete_file_embeddings(db, &fkey).await;
 
     // Embed chunks (skipped if embedder unavailable).
     //
@@ -2441,26 +2589,28 @@ async fn ingest_unparsed_file(
                     (docs, None)
                 }
                 Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding failed, storing without vectors");
+                    warn!(path = rel_path, error = %e, "embedding preparation failed; retaining committed graph");
                     (Vec::new(), Some(e.to_string()))
                 }
             }
         }
         _ => (Vec::new(), None),
     };
+    if let Some(error) = &embedding_error {
+        return Ok(FileResult {
+            path: rel_path.to_owned(),
+            success: false,
+            language: Some(lang_label.to_owned()),
+            num_symbols: None,
+            num_chunks: None,
+            num_embeddings: None,
+            embedding_error: Some(error.clone()),
+            skipped: Some(false),
+            error: Some("embedding preparation failed; committed file graph retained".into()),
+            duration_ms: 0,
+        });
+    }
     let num_embeddings_written = embedding_docs.len();
-
-    // Persist chunks + embeddings (ours — overwrite-by-key is fine).
-    if !chunk_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.chunks, &chunk_docs, true)
-            .await
-            .context("failed to store chunk documents")?;
-    }
-    if !embedding_docs.is_empty() {
-        crud::insert_documents(db, CODEBASE.embeddings, &embedding_docs, true)
-            .await
-            .context("failed to store embedding documents")?;
-    }
 
     // Merge the file node — preserve any pre-existing fields, set only ours,
     // create if absent.
@@ -2478,6 +2628,7 @@ async fn ingest_unparsed_file(
         "symbol_hash": content_hash,
         "content_hash": content_hash,
         "symbol_count": 0,
+        "relationships_pending": false,
         "chunk_count": num_chk,
         "embedding_count": num_embeddings_written,
         "total_lines": total_lines,
@@ -2487,7 +2638,21 @@ async fn ingest_unparsed_file(
         "fallback_reason": fallback_reason,
         "ingested_at": chrono::Utc::now().to_rfc3339(),
     });
-    upsert_merge_file_node(db, &fkey, fields).await?;
+    super::codebase_persist::Replacement {
+        key: fkey.clone(),
+        expected_revision,
+        chunks: chunk_docs,
+        symbols: Vec::new(),
+        embeddings: embedding_docs,
+        defines: Vec::new(),
+        file: fields,
+        purge_symbols: allow_analysis_downgrade,
+        merge_file: true,
+        symbol_remap: Vec::new(),
+    }
+    .store(db)
+    .await
+    .context("failed to atomically replace fallback file graph")?;
 
     info!(
         path = rel_path,
@@ -2514,6 +2679,7 @@ async fn ingest_unparsed_file(
 /// Merge-write a `codebase_files` node: PATCH (preserving existing fields) when
 /// it exists, otherwise insert. Lets the unparsed fallback attach to a
 /// pre-existing file node without clobbering its metadata (#121).
+#[cfg(test)]
 async fn upsert_merge_file_node(db: &ArangoPool, fkey: &str, fields: Value) -> Result<()> {
     match crud::update_document(db, CODEBASE.files, fkey, &fields).await {
         Ok(_) => Ok(()),
@@ -2554,6 +2720,7 @@ fn build_line_offsets(source: &str) -> Vec<usize> {
 ///
 /// Called before (re-)embedding to ensure stale vectors from a previous
 /// run don't linger when the embedder is unavailable or fails.
+#[cfg(test)]
 async fn delete_file_embeddings(db: &ArangoPool, file_key: &str) {
     if let Err(e) = hades_core::db::query::remove_docs_by_fields(
         db,
@@ -2573,6 +2740,7 @@ async fn delete_file_embeddings(db: &ArangoPool, file_key: &str) {
 /// re-ingest which produces fewer chunks leaves no orphaned high-index chunk docs
 /// behind (overwrite-by-key only updates the chunks that still exist). The parsed
 /// path was missing this call until #159.
+#[cfg(test)]
 async fn delete_file_chunks(db: &ArangoPool, file_key: &str) {
     if let Err(e) =
         hades_core::db::query::remove_docs_by_fields(db, CODEBASE.chunks, &["file_key"], file_key)
@@ -2658,31 +2826,40 @@ async fn count_dangling_inbound(db: &ArangoPool, file_keys: &[String]) -> u64 {
 /// Read immediately before a purge so the rewrite can be paired with what it
 /// replaced (#9). Ordered by line, because the pairing is positional among
 /// symbols that share a qualified name.
-async fn existing_symbol_identities(db: &ArangoPool, file_key: &str) -> Vec<(String, u64, String)> {
+async fn existing_symbol_identities(
+    db: &ArangoPool,
+    file_key: &str,
+) -> Result<Vec<(String, u64, String)>> {
     let aql = "FOR s IN @@symbols FILTER s.file_key == @key \
                SORT s.start_line, s._key \
                RETURN [s.qualified_name, s.start_line, s._key]";
     let bind = json!({ "@symbols": CODEBASE.symbols, "key": file_key });
-    match hades_core::db::query::query(db, aql, Some(&bind), None, false, ExecutionTarget::Reader)
-        .await
-    {
-        Ok(r) => r
-            .results
-            .iter()
-            .filter_map(|row| {
-                let a = row.as_array()?;
-                Some((
-                    a.first()?.as_str()?.to_string(),
-                    a.get(1)?.as_u64().unwrap_or(0),
-                    a.get(2)?.as_str()?.to_string(),
-                ))
-            })
-            .collect(),
-        Err(e) => {
-            debug!(file_key, error = %e, "could not read prior symbols; no remap for this file");
-            Vec::new()
-        }
-    }
+    let result =
+        hades_core::db::query::query(db, aql, Some(&bind), None, false, ExecutionTarget::Writer)
+            .await?;
+    result
+        .results
+        .iter()
+        .map(|row| {
+            let values = row.as_array().context("invalid prior symbol identity")?;
+            Ok((
+                values
+                    .first()
+                    .and_then(Value::as_str)
+                    .context("missing prior symbol name")?
+                    .to_owned(),
+                values
+                    .get(1)
+                    .and_then(Value::as_u64)
+                    .context("missing prior symbol line")?,
+                values
+                    .get(2)
+                    .and_then(Value::as_str)
+                    .context("missing prior symbol key")?
+                    .to_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// Pair each old symbol key with the key that replaced it.
@@ -2771,139 +2948,19 @@ fn pair_moved_symbol_keys(
 /// first symbol onto the third position, silently attaching a dependency to a
 /// definition nobody wrote. Reading first fixes each edge's destination from its
 /// pre-move target, which is the only reading that means anything.
+#[cfg(test)]
 async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u64 {
-    if remap.is_empty() {
-        return 0;
-    }
-    // One write transaction per chunk. A reformat or a licence-header sweep can
-    // move every symbol in a repository, and the whole remap in one bind
-    // parameter is a multi-megabyte body against three collections.
-    const CHUNK: usize = 2_000;
-
-    let by_old: HashMap<&str, &str> = remap
+    let remap = remap.to_vec();
+    let collections = CODEBASE
+        .all_collections()
         .iter()
-        .map(|(old, new)| (old.as_str(), new.as_str()))
+        .map(|(name, _)| name.to_string())
         .collect();
-    let mut moved = 0u64;
-
-    for (edges, kind) in [
-        (CODEBASE.imports_edges, "imports"),
-        (CODEBASE.calls_edges, "calls"),
-        (CODEBASE.implements_edges, "implements"),
-    ] {
-        // Phase one: read, over every chunk, before anything is written.
-        //
-        // **The chunking must not break the read-before-write property.** Reads
-        // are chunked only to bound the bind parameter; if a write landed
-        // between two of them, a chain split across the boundary (`A -> B` in
-        // one chunk, `B -> C` in the next) would have the second chunk find the
-        // edge the first had just moved to B and drag it on to C, attaching a
-        // dependency to a definition nobody wrote. That is the failure the
-        // count-changed guard exists to prevent, reintroduced by the chunking.
-        let mut rewritten: Vec<Value> = Vec::new();
-        let mut superseded: Vec<String> = Vec::new();
-        for window in remap.chunks(CHUNK) {
-            let olds: Vec<String> = window
-                .iter()
-                .map(|(old, _)| format!("{}/{}", CODEBASE.symbols, old))
-                .collect();
-            let read = "FOR e IN @@edges FILTER e._to IN @olds RETURN e";
-            let bind = json!({ "@edges": edges, "olds": olds });
-            let found = match hades_core::db::query::query(
-                db,
-                read,
-                Some(&bind),
-                None,
-                false,
-                ExecutionTarget::Reader,
-            )
-            .await
-            {
-                Ok(r) => r.results,
-                Err(e) => {
-                    warn!(collection = edges, error = %e, "could not read edges to re-point");
-                    continue;
-                }
-            };
-
-            for doc in &found {
-                let (Some(old_id), Some(from_id), Some(old_key)) = (
-                    doc["_to"].as_str(),
-                    doc["_from"].as_str(),
-                    doc["_key"].as_str(),
-                ) else {
-                    continue;
-                };
-                let old_suffix = old_id.rsplit('/').next().unwrap_or(old_id);
-                let Some(new_suffix) = by_old.get(old_suffix) else {
-                    continue;
-                };
-                let from_suffix = from_id.rsplit('/').next().unwrap_or(from_id);
-                let new_key = keys::edge_key(from_suffix, kind, new_suffix);
-
-                let mut next = doc.clone();
-                if let Some(obj) = next.as_object_mut() {
-                    obj.remove("_id");
-                    obj.remove("_rev");
-                    obj.insert("_key".into(), json!(new_key));
-                    obj.insert(
-                        "_to".into(),
-                        json!(format!("{}/{}", CODEBASE.symbols, new_suffix)),
-                    );
-                }
-                if new_key != old_key {
-                    superseded.push(old_key.to_string());
-                }
-                rewritten.push(next);
-            }
-        }
-        if rewritten.is_empty() {
-            continue;
-        }
-
-        // A key being dropped can be a key just written. In a chain the edge
-        // that moved to B takes the key the edge leaving B used to hold, so a
-        // blind removal deletes a document written moments earlier and the
-        // relation disappears. Computed over the whole collection's work, not
-        // per chunk, for the same reason the reads are.
-        let written_keys: std::collections::HashSet<&str> = rewritten
-            .iter()
-            .filter_map(|d| d["_key"].as_str())
-            .collect();
-        superseded.retain(|k| !written_keys.contains(k.as_str()));
-
-        // Phase two: write. The canonical document first, so a failure between
-        // the two leaves a duplicate rather than a hole.
-        let mut wrote_all = true;
-        for batch in rewritten.chunks(CHUNK) {
-            if let Err(e) = crud::insert_documents(db, edges, batch, true).await {
-                warn!(collection = edges, error = %e, "could not write re-pointed edges");
-                wrote_all = false;
-                break;
-            }
-            moved += batch.len() as u64;
-        }
-        if !wrote_all {
-            continue;
-        }
-        for batch in superseded.chunks(CHUNK) {
-            let drop = "FOR k IN @keys REMOVE k IN @@edges OPTIONS { ignoreErrors: true }";
-            let bind = json!({ "@edges": edges, "keys": batch });
-            if let Err(e) = hades_core::db::query::query(
-                db,
-                drop,
-                Some(&bind),
-                None,
-                false,
-                ExecutionTarget::Writer,
-            )
-            .await
-            {
-                warn!(collection = edges, error = %e, "could not drop superseded edge keys");
-            }
-        }
-    }
-    moved
+    hades_core::db::transaction::run(db, collections, move |client| async move {
+        super::codebase_persist::remap_inbound(&client, &remap).await
+    })
+    .await
+    .unwrap()
 }
 
 /// Purge a file's existing symbols and the **source-owned (outgoing) edges**
@@ -2921,6 +2978,7 @@ async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u
 ///
 /// The `ids` list is snapshotted in-query from the current symbols plus the
 /// file `_id`, so the edge filter is consistent even under concurrent inserts.
+#[cfg(test)]
 async fn purge_file_symbols_and_edges(db: &ArangoPool, file_key: &str) {
     let aql = "\
         LET ids = APPEND( \
@@ -3038,12 +3096,14 @@ async fn preserve_higher_fidelity(
     match crud::get_document(db, CODEBASE.files, file_key).await {
         Ok(doc) => {
             let stored = doc["analysis_tier"].as_str().and_then(AnalysisTier::parse);
-            Ok(should_preserve_tier(
-                stored,
-                incoming,
-                allow_downgrade,
-                reenriched_this_run,
-            ))
+            let preserve =
+                should_preserve_tier(stored, incoming, allow_downgrade, reenriched_this_run);
+            if preserve && doc["relationships_pending"] == true {
+                anyhow::bail!(
+                    "relationship recovery requires the stored analyzer tier; restore its prerequisites or explicitly allow analysis downgrade"
+                );
+            }
+            Ok(preserve)
         }
         Err(e) if e.is_not_found() => Ok(false),
         Err(e) => Err(e.into()),
@@ -3053,11 +3113,10 @@ async fn preserve_higher_fidelity(
 /// Check if a file can be skipped during incremental ingest.
 ///
 /// Returns `Some(true)` if the file should be skipped:
-/// - Symbol hash matches AND (embeddings already exist OR no embedder to backfill)
+/// - Content hash matches, relationships are complete, and embeddings need no backfill
 ///
 /// Returns `Some(false)` if re-processing is needed:
-/// - Symbol hash differs, OR
-/// - Symbol hash matches but embeddings are missing and embedder is available
+/// - Content hash differs, relationships are pending, or embeddings need backfill
 ///
 /// Returns `None` if the file is not in the database (first ingest).
 async fn check_unchanged(
@@ -3068,6 +3127,10 @@ async fn check_unchanged(
 ) -> Result<Option<bool>> {
     match crud::get_document(db, CODEBASE.files, file_key).await {
         Ok(doc) => {
+            if doc["relationships_pending"] == true {
+                return Ok(Some(false));
+            }
+
             // `content_hash` and not `symbol_hash` (#7). A row written before
             // that field existed has none, so the empty string never matches a
             // real digest and the file is re-processed once to record one --
@@ -3129,7 +3192,7 @@ struct SemanticLspStats {
     /// to adopt it.
     workspaces_attempted: usize,
     /// Documents ArangoDB rejected individually (illegal key, bad body).
-    /// Non-zero means degraded-but-usable enrichment.
+    /// Retained for output compatibility; atomic stores report store_failed instead.
     store_errors: usize,
     /// The store stage failed wholesale (request-level error). Analysis
     /// results exist but none of them reached the database.
@@ -3138,6 +3201,29 @@ struct SemanticLspStats {
     /// files were handed to the phase but never enriched, so the caller needs
     /// them to decide whether this run destroyed anything (#194 review).
     failed_workspaces: Vec<PathBuf>,
+    failed_files: Vec<PathBuf>,
+}
+
+/// Report affected rewritten files regardless of extension: --language can
+/// schedule an analyzer for a file whose suffix is not .rs or .go.
+fn failed_enrichment_paths<'a>(
+    base: &Path,
+    results: &'a [FileResult],
+    stats: &SemanticLspStats,
+) -> Vec<&'a str> {
+    results
+        .iter()
+        .filter(|result| result.success && result.skipped != Some(true))
+        .filter(|result| {
+            let path = base.join(&result.path);
+            stats.failed_files.contains(&path)
+                || stats
+                    .failed_workspaces
+                    .iter()
+                    .any(|root| path.starts_with(root))
+        })
+        .map(|result| result.path.as_str())
+        .collect()
 }
 
 /// Run rust-analyzer over ingested Rust files to produce rich symbols and edges.
@@ -3155,6 +3241,7 @@ async fn run_rust_analyzer_phase(
     rust_files: &[PathBuf],
     command: Option<&str>,
 ) -> Result<SemanticLspStats> {
+    let revisions = enrichment_revisions(db, base, rust_files).await?;
     let groups = group_files_by_crate(rust_files);
     if groups.is_empty() {
         return Ok(SemanticLspStats::default());
@@ -3168,6 +3255,8 @@ async fn run_rust_analyzer_phase(
 
     let mut all_extractions = HashMap::new();
     let mut crates_analyzed = 0;
+    let mut failed_workspaces = Vec::new();
+    let mut failed_files = Vec::new();
 
     for (crate_root, crate_files) in &groups {
         info!(
@@ -3192,6 +3281,7 @@ async fn run_rust_analyzer_phase(
                     error = %e,
                     "failed to start rust-analyzer session, skipping crate"
                 );
+                failed_workspaces.push(crate_root.clone());
                 continue;
             }
         };
@@ -3199,6 +3289,12 @@ async fn run_rust_analyzer_phase(
         let extractor = RustSymbolExtractor::new(&session, true).with_path_root(base);
         let file_refs: Vec<&Path> = crate_files.iter().map(|p| p.as_path()).collect();
         let extractions = extractor.extract_crate(&file_refs).await;
+        failed_files.extend(
+            crate_files
+                .iter()
+                .filter(|path| !extractions.contains_key(path.to_string_lossy().as_ref()))
+                .cloned(),
+        );
 
         // Convert absolute path keys to relative paths (matching file_key convention).
         for (abs_path_str, extraction) in extractions {
@@ -3219,16 +3315,20 @@ async fn run_rust_analyzer_phase(
         }
     }
 
-    store_lsp_extractions(
+    let mut stats = store_lsp_extractions(
         db,
         all_extractions,
+        revisions,
         crates_analyzed,
         groups.len(),
         "rust-analyzer",
         "ra",
         base.to_str().context("ingest root must be valid UTF-8")?,
     )
-    .await
+    .await?;
+    stats.failed_workspaces = failed_workspaces;
+    stats.failed_files = failed_files;
+    Ok(stats)
 }
 
 /// Run gopls over each discovered Go module. Tree-sitter artifacts remain in
@@ -3240,6 +3340,7 @@ async fn run_gopls_phase(
     go_files: &[PathBuf],
     command: Option<&str>,
 ) -> Result<SemanticLspStats> {
+    let revisions = enrichment_revisions(db, base, go_files).await?;
     let groups = group_files_by_go_module(go_files);
     if groups.is_empty() {
         return Ok(SemanticLspStats::default());
@@ -3251,6 +3352,7 @@ async fn run_gopls_phase(
     );
     let mut all_extractions = HashMap::new();
     let mut modules_analyzed = 0;
+    let mut failed_files = Vec::new();
     let mut failed_modules: Vec<PathBuf> = Vec::new();
     for (module_root, module_files) in &groups {
         let session = match GoplsSession::start_with_options(
@@ -3273,7 +3375,14 @@ async fn run_gopls_phase(
         };
         let extractor = GoSymbolExtractor::new(&session, true).with_path_root(base);
         let file_refs: Vec<&Path> = module_files.iter().map(PathBuf::as_path).collect();
-        for (absolute, extraction) in extractor.extract_module(&file_refs).await {
+        let extractions = extractor.extract_module(&file_refs).await;
+        failed_files.extend(
+            module_files
+                .iter()
+                .filter(|path| !extractions.contains_key(path.to_string_lossy().as_ref()))
+                .cloned(),
+        );
+        for (absolute, extraction) in extractions {
             let absolute = Path::new(&absolute);
             let relative = absolute
                 .strip_prefix(base)
@@ -3290,6 +3399,7 @@ async fn run_gopls_phase(
     let mut stats = store_lsp_extractions(
         db,
         all_extractions,
+        revisions,
         modules_analyzed,
         groups.len(),
         "gopls",
@@ -3298,13 +3408,84 @@ async fn run_gopls_phase(
     )
     .await?;
     stats.failed_workspaces = failed_modules;
+    stats.failed_files = failed_files;
     Ok(stats)
 }
 
-/// Persist language-neutral LSP symbol documents and semantic edges.
+#[derive(Clone)]
+struct EnrichmentInput {
+    revision: String,
+    content_hash: String,
+    path: PathBuf,
+}
+
+impl EnrichmentInput {
+    async fn verify_source(&self) -> std::result::Result<(), hades_core::db::ArangoError> {
+        let input = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let source = std::fs::read_to_string(&input.path).map_err(|error| {
+                hades_core::db::ArangoError::Request(format!(
+                    "cannot recheck enrichment source: {error}"
+                ))
+            })?;
+            if code::compute_content_hash(&source) != input.content_hash {
+                return Err(hades_core::db::ArangoError::Request(
+                    "source changed during enrichment; retry ingestion".into(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            hades_core::db::ArangoError::Request(format!(
+                "enrichment source verification task failed: {error}"
+            ))
+        })?
+    }
+}
+
+async fn enrichment_revisions(
+    db: &ArangoPool,
+    base: &Path,
+    files: &[PathBuf],
+) -> Result<HashMap<String, EnrichmentInput>> {
+    let namespace = base.to_str().context("ingest root must be valid UTF-8")?;
+    let mut revisions = HashMap::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(base)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        let key = keys::scoped_file_key(namespace, &relative);
+        let document = db
+            .writer()
+            .get(&format!("document/{}/{key}", CODEBASE.files))
+            .await?;
+        let input = EnrichmentInput {
+            revision: document["_rev"]
+                .as_str()
+                .context("enrichment file has no revision")?
+                .to_owned(),
+            content_hash: document["content_hash"]
+                .as_str()
+                .context("enrichment file has no content hash; re-ingest it")?
+                .to_owned(),
+            path: path.clone(),
+        };
+        input.verify_source().await?;
+        revisions.insert(relative, input);
+    }
+    Ok(revisions)
+}
+
+/// Enrichment is a separate atomic stage: failed stores retain the committed
+/// structural graph and do not publish partial symbols, edges or success flags.
+#[allow(clippy::too_many_arguments)]
 async fn store_lsp_extractions(
     db: &ArangoPool,
     all_extractions: HashMap<String, FileExtraction>,
+    revisions: HashMap<String, EnrichmentInput>,
     workspaces: usize,
     workspaces_attempted: usize,
     analyzer: &'static str,
@@ -3318,229 +3499,113 @@ async fn store_lsp_extractions(
             ..Default::default()
         });
     }
-    let file_patches: Vec<(String, usize, String)> = all_extractions
+    let file_patches: Vec<_> = all_extractions
         .iter()
         .map(|(path, extraction)| {
             (
                 path.clone(),
+                keys::scoped_file_key(namespace, path),
                 extraction.symbols.len(),
                 extraction.analyzed_at.clone(),
             )
         })
         .collect();
     let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace);
-    let symbol_docs = resolver.build_symbol_documents();
+    let symbols = resolver
+        .build_symbol_documents()
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let semantic_edges = resolver.build_edges();
-
-    let mut stored_symbols = 0usize;
-    let mut stored_edges = 0usize;
-    let mut store_errors = 0usize;
-
-    // Store enriched symbol documents (overwrite=true for idempotent re-runs).
-    // Per-document error reporting (#180): one rejected document degrades one
-    // symbol, not the whole batch, and ArangoDB's rejection reasons are logged
-    // instead of swallowed.
-    if !symbol_docs.is_empty() {
-        let docs: Vec<Value> = symbol_docs
-            .iter()
-            .filter_map(|s| serde_json::to_value(s).ok())
-            .collect();
-        match crud::insert_documents_detailed(db, CODEBASE.symbols, &docs, true).await {
-            Ok((result, details)) => {
-                stored_symbols = (result.created + result.updated) as usize;
-                store_errors += result.errors as usize;
-                if result.errors > 0 {
-                    warn!(
-                        analyzer,
-                        rejected = result.errors,
-                        stored = stored_symbols,
-                        details = %details.iter().take(5).cloned().collect::<Vec<_>>().join(" | "),
-                        "ArangoDB rejected some symbol documents (first 5 reasons shown)"
-                    );
-                }
-                info!(
-                    count = stored_symbols,
-                    analyzer, "stored LSP symbol documents"
-                );
-            }
-            Err(e) => {
-                // Request-level failure: nothing was stored. Keep the analysis
-                // stats so the caller reports the store as the failed stage
-                // rather than pretending the analyzer produced nothing.
-                warn!(
-                    analyzer,
-                    error = %e,
-                    "failed to store symbol documents; skipping edge store"
-                );
-                return Ok(SemanticLspStats {
-                    workspaces,
-                    store_failed: true,
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    // Store edges grouped by collection (collection-per-relation).
-    if !semantic_edges.is_empty() {
-        // Build edge documents with deterministic keys.
-        let edge_docs: Vec<(EdgeKind, Value)> = semantic_edges
-            .iter()
-            .map(|e| {
-                let from_suffix = e.from.rsplit('/').next().unwrap_or(&e.from);
-                let to_suffix = e.to.rsplit('/').next().unwrap_or(&e.to);
-                let edge_key = keys::edge_key(from_suffix, e.kind.as_str(), to_suffix);
-                let mut doc = json!({
-                    "_key": edge_key,
-                    "_from": e.from,
-                    "_to": e.to,
-                    "analysis_tier": "semantic",
-                    "analyzer": analyzer,
-                    "resolution": "semantic",
-                });
-                // Merge edge metadata.
-                if let Value::Object(meta) = &e.metadata
-                    && let Value::Object(ref mut obj) = doc
-                {
-                    for (k, v) in meta {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-                (e.kind, doc)
-            })
-            .collect();
-
-        // Group by edge kind and insert into the appropriate collection.
-        for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
-            let docs: Vec<Value> = edge_docs
-                .iter()
-                .filter(|(k, _)| *k == kind)
-                .map(|(_, d)| d.clone())
-                .collect();
-            if !docs.is_empty() {
-                match crud::insert_documents_detailed(db, kind.collection(), &docs, true).await {
-                    Ok((result, details)) => {
-                        stored_edges += (result.created + result.updated) as usize;
-                        store_errors += result.errors as usize;
-                        if result.errors > 0 {
-                            warn!(
-                                analyzer,
-                                collection = kind.collection(),
-                                rejected = result.errors,
-                                details = %details.iter().take(5).cloned().collect::<Vec<_>>().join(" | "),
-                                "ArangoDB rejected some edge documents (first 5 reasons shown)"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            analyzer,
-                            collection = kind.collection(),
-                            error = %e,
-                            "failed to store edge batch"
-                        );
-                        return Ok(SemanticLspStats {
-                            symbols: stored_symbols,
-                            edges: stored_edges,
-                            workspaces,
-                            workspaces_attempted,
-                            store_errors,
-                            store_failed: true,
-                            // Filled in by the phase, which knows which failed.
-                            failed_workspaces: Vec::new(),
-                        });
-                    }
-                }
-            }
-        }
-
-        info!(count = stored_edges, analyzer, "stored LSP semantic edges");
-    }
-
-    let mut patched_count = 0;
-    for (rel_path, sym_count, analyzed_at) in &file_patches {
-        let fkey = keys::scoped_file_key(namespace, rel_path);
-        // Deliberately does NOT touch `analysis_tier`/`analyzer`. Those describe
-        // the analysis that produced this node's `symbol_hash` and chunks, and
-        // enrichment rewrites neither. Stamping the file `semantic` here made a
-        // Go node advertise a fidelity its own digest did not have, and — because
-        // `preserve_higher_fidelity` compares against exactly this field — meant
-        // every later run offered `structural`, lost, and skipped the file
-        // permanently, `--force` included (#193). The enrichment is recorded
-        // under the prefixed keys below, and the symbols and edges it writes
-        // carry `analysis_tier: "semantic"` on themselves.
-        let mut patch = json!({});
-        if let Value::Object(fields) = &mut patch {
-            fields.insert(format!("{metadata_prefix}_analyzed"), json!(true));
-            fields.insert(format!("{metadata_prefix}_symbol_count"), json!(sym_count));
-            fields.insert(format!("{metadata_prefix}_analyzed_at"), json!(analyzed_at));
-        }
-        match crud::update_document(db, CODEBASE.files, &fkey, &patch).await {
-            Ok(_) => patched_count += 1,
-            Err(e) => {
-                debug!(file_key = %fkey, error = %e, "failed to patch file document (non-fatal)");
-            }
-        }
-    }
-    if patched_count > 0 {
-        info!(
-            count = patched_count,
-            analyzer, "patched file documents with semantic LSP metadata"
-        );
-    }
-
-    // Recompute `symbol_count` from the authoritative stored set for every
-    // LSP-touched file. Enrichment adds symbols (struct fields, methods) beyond
-    // the syn primitives that `ingest_file` counted, so the syn-based
-    // `symbol_count` is now stale (#126). Counting the actually-stored symbols
-    // keeps the denorm consistent — the same "count from the stored set" stance
-    // as #113 — and treats the richer RA granularity as canonical. The
-    // `file_key` index on `codebase_symbols` keeps the per-file count cheap.
-    let touched_fkeys: Vec<String> = file_patches
+    let edge_docs: Vec<(EdgeKind, Value)> = semantic_edges
         .iter()
-        .map(|(rel_path, _, _)| keys::scoped_file_key(namespace, rel_path))
+        .map(|e| {
+            let from_suffix = e.from.rsplit('/').next().unwrap_or(&e.from);
+            let to_suffix = e.to.rsplit('/').next().unwrap_or(&e.to);
+            let edge_key = keys::edge_key(from_suffix, e.kind.as_str(), to_suffix);
+            let mut doc = json!({
+                "_key": edge_key,
+                "_from": e.from,
+                "_to": e.to,
+                "analysis_tier": "semantic",
+                "analyzer": analyzer,
+                "resolution": "semantic",
+            });
+            // Merge edge metadata.
+            if let Value::Object(meta) = &e.metadata
+                && let Value::Object(ref mut obj) = doc
+            {
+                for (k, v) in meta {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            (e.kind, doc)
+        })
         .collect();
-    if !touched_fkeys.is_empty() {
-        let n = touched_fkeys.len();
-        let aql = "FOR fk IN @fkeys \
-                   LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) \
-                   UPDATE fk WITH { symbol_count: c } IN @@files";
-        let bind = json!({
-            "fkeys": touched_fkeys,
-            "@sym": CODEBASE.symbols,
-            "@files": CODEBASE.files,
-        });
-        match hades_core::db::query::query(
-            db,
-            aql,
-            Some(&bind),
-            None,
-            false,
-            ExecutionTarget::Writer,
-        )
-        .await
-        {
-            Ok(_) => debug!(
-                files = n,
-                analyzer, "recomputed symbol_count after semantic LSP enrichment"
-            ),
-            Err(e) => warn!(
-                error = %e,
-                analyzer,
-                "failed to recompute symbol_count after LSP enrichment (non-fatal)"
-            ),
-        }
-    }
 
+    let symbol_count = symbols.len();
+    let edge_count = edge_docs.len();
+    let collections = CODEBASE
+        .all_collections()
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    let namespace_owned = namespace.to_owned();
+    let stored = hades_core::db::transaction::run(db, collections, move |client| async move {
+        for (path, _, _, _) in &file_patches {
+            if !revisions.contains_key(path) {
+                return Err(hades_core::db::ArangoError::Request("missing enrichment preparation revision".into()));
+            }
+        }
+        for (path, expected) in &revisions {
+            let key = keys::scoped_file_key(&namespace_owned, path);
+            if super::codebase_persist::revision(&client, &key).await?.as_deref() != Some(expected.revision.as_str()) {
+                return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
+            }
+            expected.verify_source().await?;
+        }
+        let mut batches = vec![(CODEBASE.symbols, symbols)];
+        for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
+            batches.push((kind.collection(), edge_docs.iter().filter(|(k, _)| *k == kind).map(|(_, d)| d.clone()).collect()));
+        }
+        for (collection, docs) in batches {
+            if docs.is_empty() { continue; }
+            let response = client.post(&format!("document/{collection}?overwriteMode=replace"), &json!(docs)).await?;
+            let rows = response.as_array().ok_or_else(|| hades_core::db::ArangoError::Request("invalid enrichment batch response".into()))?;
+            if rows.len() != docs.len() || rows.iter().any(|row| row["error"] == true) {
+                return Err(hades_core::db::ArangoError::Request(format!("failed enrichment batch in {collection}")));
+            }
+        }
+        for (_, key, count, analyzed_at) in &file_patches {
+            let patch = json!({format!("{metadata_prefix}_analyzed"):true,
+                format!("{metadata_prefix}_symbol_count"):count,
+                format!("{metadata_prefix}_analyzed_at"):analyzed_at});
+            client.patch(&format!("document/{}/{key}", CODEBASE.files), &patch).await?;
+        }
+        super::codebase_persist::query(&client,
+            "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
+            json!({"fkeys":file_patches.iter().map(|(_,key,_,_)| key).collect::<Vec<_>>(),
+                "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+        for input in revisions.values() {
+            input.verify_source().await?;
+        }
+        Ok(())
+    }).await;
+    if let Err(error) = stored {
+        warn!(%error, analyzer, "atomic enrichment store failed; committed graph retained");
+        return Ok(SemanticLspStats {
+            workspaces,
+            workspaces_attempted,
+            store_failed: true,
+            ..Default::default()
+        });
+    }
     Ok(SemanticLspStats {
-        symbols: stored_symbols,
-        edges: stored_edges,
+        symbols: symbol_count,
+        edges: edge_count,
         workspaces,
         workspaces_attempted,
-        store_errors,
-        store_failed: false,
-        // Filled in by the phase, which knows which failed.
-        failed_workspaces: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -4356,6 +4421,239 @@ mod tests {
     /// Asserted at the gate rather than through a full ingest, because that is
     /// where the decision is made and a full ingest needs an embedder.
     #[tokio::test]
+    async fn preserved_symbols_resolve_targets_without_regenerating_outgoing_calls() {
+        with_temp_db("preserved_targets", Fixtures::Codebase, |pool| async move {
+            let namespace = "fixture";
+            let file_key = keys::scoped_file_key(namespace, "provider.py");
+            let target_key = keys::symbol_key(&file_key, "target", 3);
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({"_key":file_key,"analysis_tier":"semantic"}),
+                )
+                .await
+                .unwrap();
+            pool.writer().post("document/codebase_symbols", &json!({
+                "_key":target_key,"file_key":file_key,"name":"target","qualified_name":"target",
+                "start_line":3,"end_line":4,"kind":"callable",
+                "metadata":{"calls":[{"name":"caller","qualified_name":"caller"}]}
+            })).await.unwrap();
+            let revision = super::super::codebase_persist::revision(pool.writer(), &file_key)
+                .await
+                .unwrap();
+            let mut imports = ImportContext::default();
+            collect_preserved_targets(
+                &pool,
+                &file_key,
+                revision.as_deref(),
+                "provider.py",
+                Some(Language::Python),
+                &mut imports,
+            )
+            .await
+            .unwrap();
+            imports.python_file_symbols.insert(
+                "consumer.py".into(),
+                vec![Symbol {
+                    name: "caller".into(),
+                    kind: SymbolKind::Function,
+                    start_line: 1,
+                    end_line: 2,
+                    metadata: json!({"calls":[{"name":"target","qualified_name":"target"}]}),
+                }],
+            );
+            let bare = build_python_symbol_index_scoped(&imports.python_file_symbols, namespace);
+            let qualified =
+                python_calls::build_qualified_index_scoped(&imports.python_file_symbols, namespace);
+            let edges = python_calls::resolve_python_calls_scoped(
+                &imports.python_file_symbols,
+                &qualified,
+                &bare,
+                namespace,
+            );
+            assert_eq!(
+                edges.len(),
+                1,
+                "preserved outgoing call metadata must not be replayed"
+            );
+            assert_eq!(edges[0]["_to"], format!("codebase_symbols/{target_key}"));
+            assert_eq!(
+                imports.committed_revisions.get(&file_key),
+                revision.as_ref()
+            );
+            pool.writer()
+                .patch(
+                    &format!("document/codebase_files/{file_key}"),
+                    &json!({"changed":true}),
+                )
+                .await
+                .unwrap();
+            assert!(
+                collect_preserved_targets(
+                    &pool,
+                    &file_key,
+                    revision.as_deref(),
+                    "provider.py",
+                    Some(Language::Python),
+                    &mut ImportContext::default()
+                )
+                .await
+                .is_err()
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn explicit_fallback_recovery_clears_pending_only_after_commit() {
+        with_temp_db("fallback_pending", Fixtures::Codebase, |pool| async move {
+            let config = HadesConfig::default();
+            let tree = tempfile::tempdir().unwrap();
+            let path = tree.path().join("file.py");
+            std::fs::write(&path, "def target():\n    return 1\n").unwrap();
+            let mut imports = ImportContext::default();
+            ingest_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                None,
+                &mut imports,
+                None,
+                false,
+                false,
+                false,
+                FALLBACK_WINDOW_CHARS,
+                "",
+            )
+            .await
+            .unwrap();
+            let key = keys::scoped_file_key("", "file.py");
+            let document = format!("document/codebase_files/{key}");
+            let before = pool.reader().get(&document).await.unwrap();
+            assert_eq!(before["relationships_pending"], true);
+            let rejected = ingest_unparsed_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                Some("python"),
+                "fixture analyzer unavailable",
+                false,
+                false,
+                "",
+            )
+            .await;
+            assert!(
+                rejected.is_err(),
+                "incomplete higher-fidelity data must not silently skip"
+            );
+            pool.writer().put("collection/codebase_chunks/properties", &json!({
+                "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+            })).await.unwrap();
+            assert!(
+                ingest_unparsed_file(
+                    &pool,
+                    None,
+                    &config,
+                    &path,
+                    "file.py",
+                    Some("python"),
+                    "fixture analyzer unavailable",
+                    false,
+                    true,
+                    ""
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(pool.reader().get(&document).await.unwrap(), before);
+            pool.writer()
+                .put(
+                    "collection/codebase_chunks/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            let recovered = ingest_unparsed_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                Some("python"),
+                "fixture analyzer unavailable",
+                false,
+                true,
+                "",
+            )
+            .await
+            .unwrap();
+            assert!(recovered.success && recovered.skipped != Some(true));
+            let after = pool.reader().get(&document).await.unwrap();
+            assert_eq!(after["relationships_pending"], false);
+            assert_eq!(after["analysis_tier"], "text");
+            assert_eq!(
+                crud::count_collection(&pool, CODEBASE.symbols)
+                    .await
+                    .unwrap(),
+                0
+            );
+            let repeated = ingest_unparsed_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                Some("python"),
+                "fixture analyzer unavailable",
+                false,
+                true,
+                "",
+            )
+            .await
+            .unwrap();
+            assert_eq!(repeated.skipped, Some(true));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn pending_relationships_cannot_be_skipped_or_silently_downgraded() {
+        with_temp_db("pending_gate", Fixtures::Codebase, |pool| async move {
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({
+                        "_key":"pending", "content_hash":"same", "analysis_tier":"semantic",
+                        "relationships_pending":true, "chunk_count":1, "embedding_count":1
+                    }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                check_unchanged(&pool, "pending", "same", true)
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
+            let error =
+                preserve_higher_fidelity(&pool, "pending", AnalysisTier::Structural, false, false)
+                    .await
+                    .unwrap_err();
+            assert!(error.to_string().contains("relationship recovery requires"));
+            assert!(
+                !preserve_higher_fidelity(&pool, "pending", AnalysisTier::Structural, true, false)
+                    .await
+                    .unwrap()
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_gate_reads_content_hash_not_symbol_hash() {
         with_temp_db("gate", Fixtures::Codebase, |pool| async move {
             let fkey = "issue7__gate__lib_rs";
@@ -4444,6 +4742,14 @@ mod tests {
                 first.error
             );
 
+            super::super::codebase_persist::store_relationships(
+                &pool,
+                std::mem::take(&mut imports.committed_revisions),
+                Vec::new(),
+            )
+            .await
+            .expect("complete fixture relationship stage");
+
             // Reproduce the pre-fix state: the old `store_lsp_extractions` stamped
             // the file node `semantic` while leaving `symbol_hash` tree-sitter's.
             upsert_merge_file_node(
@@ -4480,6 +4786,14 @@ mod tests {
              re-enrich it (error: {:?})",
                 released.error
             );
+
+            super::super::codebase_persist::store_relationships(
+                &pool,
+                std::mem::take(&mut imports.committed_revisions),
+                Vec::new(),
+            )
+            .await
+            .expect("complete fixture relationship stage");
 
             // And the guard must still hold when nothing will restore the purge —
             // re-stamp, then re-ingest with no gopls phase scheduled.
@@ -5482,5 +5796,157 @@ mod tests {
         assert_eq!(windows[0].text, "bbbbcccc");
         assert_eq!(windows[0].boundaries, vec![(0, 4), (4, 8)]);
         assert_eq!(windows[0].chunk_indices, vec![3, 4]);
+    }
+
+    #[tokio::test]
+    async fn enrichment_rejects_partial_metadata_and_stale_preparation() {
+        use hades_core::code::lsp::symbols::ExtractedSymbol;
+        with_temp_db("enrichment_atomic", Fixtures::Codebase, |pool| async move {
+            let tree = tempfile::tempdir().unwrap();
+            let namespace = tree.path().to_str().unwrap();
+            let path = "fixture.rs";
+            let source = "fn target() {}\n";
+            std::fs::write(tree.path().join(path), source).unwrap();
+            let key = keys::scoped_file_key(namespace, path);
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({"_key":key,"path":path,"symbol_count":0,"content_hash":code::compute_content_hash(source)}),
+                )
+                .await
+                .unwrap();
+            let before = pool
+                .writer()
+                .get(&format!("document/codebase_files/{key}"))
+                .await
+                .unwrap();
+            let dependency = tree.path().join("dependency.rs");
+            std::fs::write(&dependency, "pub struct Dependency;\n").unwrap();
+            let dependency_key = keys::scoped_file_key(namespace, "dependency.rs");
+            pool.writer().post("document/codebase_files", &json!({
+                "_key":dependency_key, "content_hash":code::compute_content_hash("pub struct Dependency;\n")
+            })).await.unwrap();
+            let revisions = enrichment_revisions(&pool, tree.path(), &[tree.path().join(path), dependency.clone()]).await.unwrap();
+            let mut extraction = FileExtraction::empty();
+            extraction.symbols.push(ExtractedSymbol {
+                name: "target".into(),
+                qualified_name: "target".into(),
+                kind: "function".into(),
+                visibility: "public".into(),
+                signature: "fn target()".into(),
+                start_line: 0,
+                end_line: 1,
+                parent_symbol: None,
+                impl_trait: None,
+                is_pyo3: false,
+                is_ffi: false,
+                is_unsafe: false,
+                derives: Vec::new(),
+                python_name: None,
+                calls: Vec::new(),
+            });
+            let extractions = HashMap::from([(path.to_owned(), extraction)]);
+            std::fs::write(tree.path().join(path), "fn newer() {}\n").unwrap();
+            assert!(enrichment_revisions(&pool, tree.path(), &[tree.path().join(path)]).await.is_err());
+            let changed = store_lsp_extractions(&pool, extractions.clone(), revisions.clone(),
+                1, 1, "fixture", "fixture", namespace).await.unwrap();
+            assert!(changed.store_failed);
+            assert_eq!(pool.writer().get(&format!("document/codebase_files/{key}")).await.unwrap(), before);
+            assert_eq!(crud::count_collection(&pool, CODEBASE.symbols).await.unwrap(), 0);
+            std::fs::write(tree.path().join(path), source).unwrap();
+            // Even a captured input without an extraction can influence another
+            // file's analyzer output, so it must participate in validation.
+            std::fs::write(&dependency, "pub struct ChangedDependency;\n").unwrap();
+            let dependency_changed = store_lsp_extractions(&pool, extractions.clone(), revisions.clone(),
+                1, 1, "fixture", "fixture", namespace).await.unwrap();
+            assert!(dependency_changed.store_failed);
+            assert_eq!(crud::count_collection(&pool, CODEBASE.symbols).await.unwrap(), 0);
+            std::fs::write(&dependency, "pub struct Dependency;\n").unwrap();
+            pool.writer().put("collection/codebase_files/properties", &json!({
+                "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+            })).await.unwrap();
+            let failed = store_lsp_extractions(
+                &pool,
+                extractions.clone(),
+                revisions.clone(),
+                1,
+                1,
+                "fixture",
+                "fixture",
+                namespace,
+            )
+            .await
+            .unwrap();
+            assert!(failed.store_failed);
+            assert_eq!(failed.symbols, 0);
+            assert_eq!(
+                pool.writer()
+                    .get(&format!("document/codebase_files/{key}"))
+                    .await
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                crud::count_collection(&pool, CODEBASE.symbols)
+                    .await
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                crud::count_collection(&pool, CODEBASE.defines_edges)
+                    .await
+                    .unwrap(),
+                0
+            );
+            pool.writer()
+                .put(
+                    "collection/codebase_files/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            let success = store_lsp_extractions(
+                &pool,
+                extractions.clone(),
+                revisions.clone(),
+                1,
+                1,
+                "fixture",
+                "fixture",
+                namespace,
+            )
+            .await
+            .unwrap();
+            assert!(!success.store_failed);
+            assert_eq!(success.symbols, 1);
+            let committed = pool
+                .writer()
+                .get(&format!("document/codebase_files/{key}"))
+                .await
+                .unwrap();
+            assert_eq!(committed["fixture_analyzed"], true);
+            assert_eq!(committed["symbol_count"], 1);
+            let stale = store_lsp_extractions(
+                &pool,
+                extractions,
+                revisions,
+                1,
+                1,
+                "fixture",
+                "fixture",
+                namespace,
+            )
+            .await
+            .unwrap();
+            assert!(stale.store_failed);
+            assert_eq!(
+                pool.writer()
+                    .get(&format!("document/codebase_files/{key}"))
+                    .await
+                    .unwrap(),
+                committed
+            );
+        })
+        .await;
     }
 }

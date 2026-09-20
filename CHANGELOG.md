@@ -325,6 +325,39 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Run enrichment source rechecks on blocking workers while preserving pre-write
+  and pre-commit validation and transaction cancellation responsiveness (#40).
+
+- Stage parsed and fallback file replacements before a serial database
+  transaction; retain previous graph state on persistence failure and reject
+  stale prepared writes. Independent transaction ownership aborts cancellation
+  and callback failures. LSP enrichment commits symbols, edges and metadata
+  atomically, rejects stale preparations, and embedding preparation errors retain
+  the prior graph. Remap moved symbols' inbound edges in the file transaction;
+  remap failures roll back replacement and overlapping moves retain their targets.
+  Store cross-file relationship batches atomically, reject stale file revisions
+  and missing endpoints, and propagate stage failures with their JSON summary.
+  Pending parsed files retry relationships without `--force`; acknowledge stage
+  completion only after its transaction commits. Keep unchanged analyzed files
+  in relationship resolution with revision guards, and clear pending recovery
+  after explicit raw-text downgrade commits. Verify CLI interruption during
+  embedding preserves the graph and permits retry. Reject LSP enrichment when
+  captured source bytes differ from the stored content hash before analysis or
+  during persistence. Verify an abandoned transaction rolls back and releases
+  its exclusive lock through server expiry after writer process death. Load
+  preserved higher-fidelity symbols as guarded resolution targets without
+  replaying their outgoing calls, including explicitly unparsed files whose
+  stored language identifies the retained analysis. Preserve JSON summaries on
+  Rust enrichment failure and report direct codebase-ingest failure accurately.
+  Distinguish failed extraction from empty success and report rewritten files
+  affected by partial workspace or file-level enrichment failure. Verify that
+  racing replacement and relationship stages cannot both commit from one revision.
+  Exercise full-CLI process death after acknowledged transactional chunk writes,
+  checking all graph collections after server expiry and successful retry. Cover
+  the real operation deadline and ensure purge errors abort before replacement writes.
+  Further recovery and cancellation
+  coverage remains under audit (#40).
+
 - Build complete Python service wheels with generated RPC bindings, trainer
   modules and adapter resources; include canonical protos in source archives
   and verify installed-wheel imports outside the checkout in CI (#38).

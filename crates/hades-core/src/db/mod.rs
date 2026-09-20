@@ -11,6 +11,7 @@ pub mod index;
 pub mod keys;
 mod pool;
 pub mod query;
+pub mod transaction;
 mod transport;
 pub mod vector;
 
