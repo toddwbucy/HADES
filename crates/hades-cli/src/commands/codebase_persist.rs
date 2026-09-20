@@ -1,5 +1,7 @@
 //! Atomic persistence of already-prepared file replacements.
-use hades_core::db::{ArangoClient, ArangoError, ArangoPool, collections::CODEBASE, transaction};
+use hades_core::db::{
+    ArangoClient, ArangoError, ArangoPool, collections::CODEBASE, keys, transaction,
+};
 use serde_json::{Value, json};
 
 pub(super) async fn revision(
@@ -29,10 +31,11 @@ pub(super) struct Replacement {
     pub file: Value,
     pub purge_symbols: bool,
     pub merge_file: bool,
+    pub symbol_remap: Vec<(String, String)>,
 }
 
 impl Replacement {
-    pub async fn store(mut self, pool: &ArangoPool) -> Result<(), ArangoError> {
+    pub async fn store(mut self, pool: &ArangoPool) -> Result<u64, ArangoError> {
         let collections = CODEBASE
             .all_collections()
             .iter()
@@ -70,12 +73,127 @@ impl Replacement {
                     }
                 }
             }
+            let moved = remap_inbound(&client, &self.symbol_remap).await?;
             self.file["_key"] = json!(self.key);
             let mode = if self.merge_file { "update" } else { "replace" };
             client.post(&format!("document/{}?overwriteMode={mode}", CODEBASE.files), &self.file).await?;
-            Ok(())
+            Ok(moved)
         }).await
     }
+}
+
+/// Remap each collection from its original snapshot, including overlapping key
+/// chains. The caller must hold the codebase collections in one transaction.
+pub(super) async fn remap_inbound(
+    client: &ArangoClient,
+    remap: &[(String, String)],
+) -> Result<u64, ArangoError> {
+    use std::collections::{HashMap, HashSet};
+    if remap.is_empty() {
+        return Ok(0);
+    }
+    let client = client.clone().with_response_limit(32 * 1024 * 1024)?;
+    let by_old: HashMap<&str, &str> = remap
+        .iter()
+        .map(|(old, new)| (old.as_str(), new.as_str()))
+        .collect();
+    let olds: Vec<String> = by_old
+        .keys()
+        .map(|key| format!("{}/{key}", CODEBASE.symbols))
+        .collect();
+    let mut moved = 0;
+    for (edges, kind) in [
+        (CODEBASE.imports_edges, "imports"),
+        (CODEBASE.calls_edges, "calls"),
+        (CODEBASE.implements_edges, "implements"),
+    ] {
+        // One bounded aggregate row prevents a pagination task from outliving
+        // the transaction. Exhausting either budget aborts the replacement.
+        let response = client
+            .post(
+                "cursor",
+                &json!({
+                    "query":"RETURN (FOR e IN @@edges FILTER e._to IN @olds RETURN e)",
+                    "bindVars":{"@edges":edges,"olds":olds}, "batchSize":1, "ttl":30,
+                    "memoryLimit":33554432,
+                    "options":{"maxRuntime":30,"failOnWarning":true}
+                }),
+            )
+            .await?;
+        if response["hasMore"] == true {
+            return Err(ArangoError::Request(
+                "unexpected remap cursor continuation".into(),
+            ));
+        }
+        let found = response["result"]
+            .as_array()
+            .filter(|rows| rows.len() == 1)
+            .and_then(|rows| rows[0].as_array())
+            .ok_or_else(|| ArangoError::Request("invalid remap snapshot response".into()))?;
+        let mut rewritten = Vec::with_capacity(found.len());
+        let mut superseded = Vec::new();
+        for doc in found {
+            let (Some(old_id), Some(from_id), Some(old_key)) = (
+                doc["_to"].as_str(),
+                doc["_from"].as_str(),
+                doc["_key"].as_str(),
+            ) else {
+                return Err(ArangoError::Request("invalid inbound edge identity".into()));
+            };
+            let old_suffix = old_id.rsplit('/').next().unwrap_or(old_id);
+            let new_suffix = by_old
+                .get(old_suffix)
+                .ok_or_else(|| ArangoError::Request("unexpected inbound edge target".into()))?;
+            let from_suffix = from_id.rsplit('/').next().unwrap_or(from_id);
+            let new_key = keys::edge_key(from_suffix, kind, new_suffix);
+            let mut next = doc.clone();
+            let object = next
+                .as_object_mut()
+                .ok_or_else(|| ArangoError::Request("invalid inbound edge".into()))?;
+            object.remove("_id");
+            object.remove("_rev");
+            object.insert("_key".into(), json!(new_key));
+            object.insert(
+                "_to".into(),
+                json!(format!("{}/{}", CODEBASE.symbols, new_suffix)),
+            );
+            if new_key != old_key {
+                superseded.push(old_key.to_owned());
+            }
+            rewritten.push(next);
+        }
+        let written_keys: HashSet<&str> = rewritten
+            .iter()
+            .filter_map(|doc| doc["_key"].as_str())
+            .collect();
+        superseded.retain(|key| !written_keys.contains(key.as_str()));
+        for batch in rewritten.chunks(2_000) {
+            let response = client
+                .post(
+                    &format!("document/{edges}?overwriteMode=replace"),
+                    &json!(batch),
+                )
+                .await?;
+            let rows = response
+                .as_array()
+                .ok_or_else(|| ArangoError::Request("invalid remap write response".into()))?;
+            if rows.len() != batch.len() || rows.iter().any(|row| row["error"] == true) {
+                return Err(ArangoError::Request(format!(
+                    "failed to remap {edges} documents"
+                )));
+            }
+            moved += batch.len() as u64;
+        }
+        for batch in superseded.chunks(2_000) {
+            query(
+                &client,
+                "FOR k IN @keys REMOVE k IN @@edges",
+                json!({"@edges":edges,"keys":batch}),
+            )
+            .await?;
+        }
+    }
+    Ok(moved)
 }
 
 pub(super) async fn query(
@@ -114,7 +232,102 @@ mod tests {
             file: json!({"path":"file.sh","content_hash":text,"chunk_count":1}),
             purge_symbols: false,
             merge_file: true,
+            symbol_remap: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_inbound_remap_rolls_back_file_replacement() {
+        with_temp_db("remap_rollback", Fixtures::Codebase, |pool| async move {
+            prepared(None, "original").store(&pool).await.unwrap();
+            pool.writer()
+                .post(
+                    "document/codebase_symbols",
+                    &json!({
+                        "_key":"old", "file_key":"file", "qualified_name":"target", "start_line":1
+                    }),
+                )
+                .await
+                .unwrap();
+            let old_edge = keys::edge_key("consumer", "calls", "old");
+            pool.writer().post("document/codebase_calls_edges", &json!({
+                "_key":old_edge, "_from":"codebase_files/consumer", "_to":"codebase_symbols/old"
+            })).await.unwrap();
+            let paths = [
+                "document/codebase_files/file".to_owned(),
+                "document/codebase_chunks/chunk".to_owned(),
+                "document/codebase_symbols/old".to_owned(),
+                format!("document/codebase_calls_edges/{old_edge}"),
+            ];
+            let mut before = Vec::new();
+            for path in &paths {
+                before.push(pool.reader().get(path).await.unwrap());
+            }
+            pool.writer().put("collection/codebase_calls_edges/properties", &json!({
+                "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+            })).await.unwrap();
+            let observed = revision(pool.writer(), "file").await.unwrap();
+            let replacement = || {
+                let mut next = prepared(observed.clone(), "replacement");
+                next.purge_symbols = true;
+                next.symbols = vec![json!({"_key":"new", "file_key":"file",
+                    "qualified_name":"target", "start_line":2})];
+                next.symbol_remap = vec![("old".into(), "new".into())];
+                next
+            };
+            let error = replacement().store(&pool).await.unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("failed to remap codebase_calls_edges"),
+                "{error}"
+            );
+            for (path, expected) in paths.iter().zip(before) {
+                assert_eq!(pool.reader().get(path).await.unwrap(), expected);
+            }
+            assert!(
+                pool.reader()
+                    .get("document/codebase_symbols/new")
+                    .await
+                    .unwrap_err()
+                    .is_not_found()
+            );
+            let new_path = format!(
+                "document/codebase_calls_edges/{}",
+                keys::edge_key("consumer", "calls", "new")
+            );
+            assert!(
+                pool.reader()
+                    .get(&new_path)
+                    .await
+                    .unwrap_err()
+                    .is_not_found()
+            );
+            pool.writer()
+                .put(
+                    "collection/codebase_calls_edges/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(replacement().store(&pool).await.unwrap(), 1);
+            assert_eq!(
+                pool.reader().get(&new_path).await.unwrap()["_to"],
+                "codebase_symbols/new"
+            );
+            assert!(
+                pool.reader()
+                    .get(&paths[3])
+                    .await
+                    .unwrap_err()
+                    .is_not_found()
+            );
+            assert_eq!(
+                pool.reader().get(&paths[1]).await.unwrap()["text"],
+                "replacement"
+            );
+        })
+        .await;
     }
 
     #[tokio::test]

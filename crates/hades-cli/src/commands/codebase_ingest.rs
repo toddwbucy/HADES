@@ -108,17 +108,9 @@ struct ImportContext {
     cpp_file_symbols: HashMap<String, Vec<Symbol>>,
     /// Lower-fidelity files used for syntax-only relationship resolution.
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
-    /// Old symbol key -> the key that replaced it, for symbols this run moved
-    /// without renaming (#9).
-    ///
-    /// `symbol_key` hashes the definition line, so a comment inserted above a
-    /// symbol changes its key while its name and its meaning stay put. The file
-    /// is rewritten under the new keys and a *dependent* that did not change is
-    /// skipped, leaving its stored edge pointing at a key nothing holds. The
-    /// pairing is computed where both sides are known -- inside the rewrite,
-    /// with the pre-purge symbols still readable -- because after the purge the
-    /// old keys are gone and a key cannot be reversed into a name.
-    symbol_key_remap: Vec<(String, String)>,
+    /// Inbound edges remapped inside acknowledged file transactions.
+    repointed_edges: u64,
+    remapped_symbols: usize,
 }
 
 /// One half of an ingest, as data rather than as printed output.
@@ -272,7 +264,8 @@ pub async fn run_phase(
         rust_file_symbols: HashMap::new(),
         cpp_file_symbols: HashMap::new(),
         structural_file_symbols: HashMap::new(),
-        symbol_key_remap: Vec::new(),
+        repointed_edges: 0,
+        remapped_symbols: 0,
     };
     // Collect absolute paths for Rust files — used for rust-analyzer post-loop phase.
     let mut rust_abs_paths: Vec<PathBuf> = Vec::new();
@@ -703,15 +696,15 @@ pub async fn run_phase(
     // records a real dependency, and removing it would erase the only signal
     // that the dependent needs re-ingesting. Runs after the enrichment phases so
     // a symbol rust-analyzer/gopls recreates is not counted as gone.
-    // Re-point what moved before counting what is left (#9). A symbol that kept
+    // File transactions already re-pointed moved symbols (#9). A symbol that kept
     // its name and changed only its line is the common case, and its dependents
     // were skipped precisely because nothing about them changed -- so the edge is
     // still correct about the dependency and wrong only about the key.
-    let repointed = repoint_inbound_edges(&db, &imports.symbol_key_remap).await;
+    let repointed = imports.repointed_edges;
     if repointed > 0 {
         info!(
             edges = repointed,
-            symbols = imports.symbol_key_remap.len(),
+            symbols = imports.remapped_symbols,
             "re-pointed inbound edges onto symbols that moved without being renamed"
         );
     }
@@ -2150,7 +2143,8 @@ async fn ingest_file(
         "ingested_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    super::codebase_persist::Replacement {
+    let remapped_symbols = symbol_key_remap.len();
+    let repointed = super::codebase_persist::Replacement {
         key: fkey.clone(),
         expected_revision,
         chunks: chunk_docs,
@@ -2160,11 +2154,13 @@ async fn ingest_file(
         file: file_doc,
         purge_symbols: true,
         merge_file: false,
+        symbol_remap: symbol_key_remap,
     }
     .store(db)
     .await
     .context("failed to atomically replace file graph")?;
-    imports.symbol_key_remap.extend(symbol_key_remap);
+    imports.repointed_edges += repointed;
+    imports.remapped_symbols += remapped_symbols;
 
     // Collect Python import symbols for later edge resolution.
     if lang == Language::Python {
@@ -2459,6 +2455,7 @@ async fn ingest_unparsed_file(
         file: fields,
         purge_symbols: allow_analysis_downgrade,
         merge_file: true,
+        symbol_remap: Vec::new(),
     }
     .store(db)
     .await
@@ -2758,139 +2755,19 @@ fn pair_moved_symbol_keys(
 /// first symbol onto the third position, silently attaching a dependency to a
 /// definition nobody wrote. Reading first fixes each edge's destination from its
 /// pre-move target, which is the only reading that means anything.
+#[cfg(test)]
 async fn repoint_inbound_edges(db: &ArangoPool, remap: &[(String, String)]) -> u64 {
-    if remap.is_empty() {
-        return 0;
-    }
-    // One write transaction per chunk. A reformat or a licence-header sweep can
-    // move every symbol in a repository, and the whole remap in one bind
-    // parameter is a multi-megabyte body against three collections.
-    const CHUNK: usize = 2_000;
-
-    let by_old: HashMap<&str, &str> = remap
+    let remap = remap.to_vec();
+    let collections = CODEBASE
+        .all_collections()
         .iter()
-        .map(|(old, new)| (old.as_str(), new.as_str()))
+        .map(|(name, _)| name.to_string())
         .collect();
-    let mut moved = 0u64;
-
-    for (edges, kind) in [
-        (CODEBASE.imports_edges, "imports"),
-        (CODEBASE.calls_edges, "calls"),
-        (CODEBASE.implements_edges, "implements"),
-    ] {
-        // Phase one: read, over every chunk, before anything is written.
-        //
-        // **The chunking must not break the read-before-write property.** Reads
-        // are chunked only to bound the bind parameter; if a write landed
-        // between two of them, a chain split across the boundary (`A -> B` in
-        // one chunk, `B -> C` in the next) would have the second chunk find the
-        // edge the first had just moved to B and drag it on to C, attaching a
-        // dependency to a definition nobody wrote. That is the failure the
-        // count-changed guard exists to prevent, reintroduced by the chunking.
-        let mut rewritten: Vec<Value> = Vec::new();
-        let mut superseded: Vec<String> = Vec::new();
-        for window in remap.chunks(CHUNK) {
-            let olds: Vec<String> = window
-                .iter()
-                .map(|(old, _)| format!("{}/{}", CODEBASE.symbols, old))
-                .collect();
-            let read = "FOR e IN @@edges FILTER e._to IN @olds RETURN e";
-            let bind = json!({ "@edges": edges, "olds": olds });
-            let found = match hades_core::db::query::query(
-                db,
-                read,
-                Some(&bind),
-                None,
-                false,
-                ExecutionTarget::Reader,
-            )
-            .await
-            {
-                Ok(r) => r.results,
-                Err(e) => {
-                    warn!(collection = edges, error = %e, "could not read edges to re-point");
-                    continue;
-                }
-            };
-
-            for doc in &found {
-                let (Some(old_id), Some(from_id), Some(old_key)) = (
-                    doc["_to"].as_str(),
-                    doc["_from"].as_str(),
-                    doc["_key"].as_str(),
-                ) else {
-                    continue;
-                };
-                let old_suffix = old_id.rsplit('/').next().unwrap_or(old_id);
-                let Some(new_suffix) = by_old.get(old_suffix) else {
-                    continue;
-                };
-                let from_suffix = from_id.rsplit('/').next().unwrap_or(from_id);
-                let new_key = keys::edge_key(from_suffix, kind, new_suffix);
-
-                let mut next = doc.clone();
-                if let Some(obj) = next.as_object_mut() {
-                    obj.remove("_id");
-                    obj.remove("_rev");
-                    obj.insert("_key".into(), json!(new_key));
-                    obj.insert(
-                        "_to".into(),
-                        json!(format!("{}/{}", CODEBASE.symbols, new_suffix)),
-                    );
-                }
-                if new_key != old_key {
-                    superseded.push(old_key.to_string());
-                }
-                rewritten.push(next);
-            }
-        }
-        if rewritten.is_empty() {
-            continue;
-        }
-
-        // A key being dropped can be a key just written. In a chain the edge
-        // that moved to B takes the key the edge leaving B used to hold, so a
-        // blind removal deletes a document written moments earlier and the
-        // relation disappears. Computed over the whole collection's work, not
-        // per chunk, for the same reason the reads are.
-        let written_keys: std::collections::HashSet<&str> = rewritten
-            .iter()
-            .filter_map(|d| d["_key"].as_str())
-            .collect();
-        superseded.retain(|k| !written_keys.contains(k.as_str()));
-
-        // Phase two: write. The canonical document first, so a failure between
-        // the two leaves a duplicate rather than a hole.
-        let mut wrote_all = true;
-        for batch in rewritten.chunks(CHUNK) {
-            if let Err(e) = crud::insert_documents(db, edges, batch, true).await {
-                warn!(collection = edges, error = %e, "could not write re-pointed edges");
-                wrote_all = false;
-                break;
-            }
-            moved += batch.len() as u64;
-        }
-        if !wrote_all {
-            continue;
-        }
-        for batch in superseded.chunks(CHUNK) {
-            let drop = "FOR k IN @keys REMOVE k IN @@edges OPTIONS { ignoreErrors: true }";
-            let bind = json!({ "@edges": edges, "keys": batch });
-            if let Err(e) = hades_core::db::query::query(
-                db,
-                drop,
-                Some(&bind),
-                None,
-                false,
-                ExecutionTarget::Writer,
-            )
-            .await
-            {
-                warn!(collection = edges, error = %e, "could not drop superseded edge keys");
-            }
-        }
-    }
-    moved
+    hades_core::db::transaction::run(db, collections, move |client| async move {
+        super::codebase_persist::remap_inbound(&client, &remap).await
+    })
+    .await
+    .unwrap()
 }
 
 /// Purge a file's existing symbols and the **source-owned (outgoing) edges**
