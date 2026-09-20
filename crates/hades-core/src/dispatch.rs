@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::HadesConfig;
+#[cfg(test)]
+use crate::cursor_mock;
 use crate::db::{ArangoError, ArangoPool};
 
 /// Maximum value accepted for `limit` parameters in dispatch handlers.
@@ -6678,6 +6680,41 @@ mod handlers {
 mod tests {
     use super::*;
 
+    async fn guarded_dispatch(
+        pool: &ArangoPool,
+        config: &HadesConfig,
+        command: DaemonCommand,
+    ) -> Result<Value, DispatchError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatch(pool, config, command),
+        )
+        .await
+        .expect("private dispatch fixture timed out")
+    }
+
+    async fn assert_allowed_aql(aql: &str) {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
+        let result = guarded_dispatch(
+            &mock.pool,
+            &config,
+            DaemonCommand::DbAql(DbAqlParams {
+                aql: aql.to_owned(),
+                bind: None,
+                limit: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, serde_json::json!({"results":[7],"count":1}));
+        assert_eq!(mock.event("POST cursor").await["query"], aql);
+        assert!(mock.events.try_recv().is_err());
+    }
+
     /// The documented wire names must deserialize, since docs/daemon-protocol.md
     /// and `ingest.start`'s own `poll` field both tell clients to use them. Every
     /// other variant in this enum carries an explicit `serde(rename)`; these three
@@ -7021,21 +7058,24 @@ mod tests {
 
     // -- AQL read-only enforcement --------------------------------------------
 
-    #[test]
-    fn test_db_aql_rejects_insert() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
+    #[tokio::test]
+    async fn test_db_aql_rejects_insert() {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
-        let result = rt.block_on(dispatch(
-            &pool,
+        let result = guarded_dispatch(
+            &mock.pool,
             &config,
             DaemonCommand::DbAql(DbAqlParams {
                 aql: "INSERT { foo: 1 } INTO test".to_string(),
                 bind: None,
                 limit: None,
             }),
-        ));
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -7043,23 +7083,30 @@ mod tests {
             err,
             DispatchError::Handler(HandlerError::InvalidParameter { .. })
         ));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
-    #[test]
-    fn test_db_aql_rejects_remove() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
+    #[tokio::test]
+    async fn test_db_aql_rejects_remove() {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
-        let result = rt.block_on(dispatch(
-            &pool,
+        let result = guarded_dispatch(
+            &mock.pool,
             &config,
             DaemonCommand::DbAql(DbAqlParams {
                 aql: "FOR d IN test REMOVE d IN test".to_string(),
                 bind: None,
                 limit: None,
             }),
-        ));
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -7067,6 +7114,10 @@ mod tests {
             err,
             DispatchError::Handler(HandlerError::InvalidParameter { .. })
         ));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     /// The two forms that defeated the whitespace-splitting guard.
@@ -7076,26 +7127,29 @@ mod tests {
     /// executing: `REMOVE(d)` yields a RemoveNode and `INSERT{...}` yields an
     /// InsertNode. Neither keyword is whitespace-delimited, so the old
     /// `split_whitespace()` comparison never saw either one.
-    #[test]
-    fn test_db_aql_rejects_mutations_without_whitespace_delimiters() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
+    #[tokio::test]
+    async fn test_db_aql_rejects_mutations_without_whitespace_delimiters() {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
         for aql in [
             "FOR d IN test REMOVE(d) IN test",
             r#"INSERT{"a":1} INTO test"#,
             "FOR d IN test\nREMOVE\td IN test",
         ] {
-            let result = rt.block_on(dispatch(
-                &pool,
+            let result = guarded_dispatch(
+                &mock.pool,
                 &config,
                 DaemonCommand::DbAql(DbAqlParams {
                     aql: aql.to_string(),
                     bind: None,
                     limit: None,
                 }),
-            ));
+            )
+            .await;
             assert!(
                 matches!(
                     result,
@@ -7106,6 +7160,10 @@ mod tests {
                 "mutating AQL was not rejected: {aql}"
             );
         }
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     /// Tightening the guard must not start rejecting read-only queries.
@@ -7113,32 +7171,12 @@ mod tests {
     /// A keyword after `.` is a field name and after `@` is a bind parameter,
     /// and a keyword embedded in a longer identifier is not a token at all.
     /// AQL reserves these words, so none of these can be a modification.
-    #[test]
-    fn test_db_aql_allows_keywords_that_are_not_tokens() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
-
-        for aql in [
-            "FOR d IN test FILTER d.remove == 1 RETURN d",
-            "FOR d IN removeme RETURN d",
-            "FOR d IN test FILTER d.x == @update RETURN d",
-            "FOR d IN test RETURN d.insert",
-        ] {
-            let result = rt.block_on(dispatch(
-                &pool,
-                &config,
-                DaemonCommand::DbAql(DbAqlParams {
-                    aql: aql.to_string(),
-                    bind: None,
-                    limit: None,
-                }),
-            ));
-            if let Err(DispatchError::Handler(HandlerError::InvalidParameter { .. })) = result {
-                panic!("read-only query was rejected as mutating: {aql}");
-            }
-            // Otherwise: connection error or success — both acceptable.
-        }
+    #[tokio::test]
+    async fn test_db_aql_allows_keywords_that_are_not_tokens() {
+        assert_allowed_aql(r#"FOR d IN test FILTER d.remove == 1 RETURN d"#).await;
+        assert_allowed_aql(r#"FOR d IN removeme RETURN d"#).await;
+        assert_allowed_aql(r#"FOR d IN test FILTER d.x == @update RETURN d"#).await;
+        assert_allowed_aql(r#"FOR d IN test RETURN d.insert"#).await;
     }
 
     /// Non-ASCII input must not panic the token scan.
@@ -7146,128 +7184,66 @@ mod tests {
     /// The stripper emits one space per non-ASCII byte precisely so its byte
     /// offsets stay aligned with the input's. Widening each byte to a `char`
     /// would desynchronize them and slicing could land mid-character.
-    #[test]
-    fn test_db_aql_guard_handles_non_ascii() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
-
-        let result = rt.block_on(dispatch(
-            &pool,
-            &config,
-            DaemonCommand::DbAql(DbAqlParams {
-                aql: "FOR d IN test FILTER d.name == 'Ünïcøde ünd Ümlaut' RETURN d".to_string(),
-                bind: None,
-                limit: None,
-            }),
-        ));
-        if let Err(DispatchError::Handler(HandlerError::InvalidParameter { .. })) = result {
-            panic!("non-ASCII read-only query was rejected as mutating");
-        }
+    #[tokio::test]
+    async fn test_db_aql_guard_handles_non_ascii() {
+        assert_allowed_aql(r#"FOR d IN test FILTER d.name == 'Ünïcøde ünd Ümlaut' RETURN d"#).await;
     }
 
-    #[test]
-    fn test_db_aql_rejects_update() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
+    #[tokio::test]
+    async fn test_db_aql_rejects_update() {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
-        let result = rt.block_on(dispatch(
-            &pool,
+        let result = guarded_dispatch(
+            &mock.pool,
             &config,
             DaemonCommand::DbAql(DbAqlParams {
                 aql: "FOR d IN test UPDATE d WITH { x: 1 } IN test".to_string(),
                 bind: None,
                 limit: None,
             }),
-        ));
+        )
+        .await;
 
         assert!(result.is_err());
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
-    #[test]
-    fn test_db_aql_allows_return() {
-        // "RETURN 1" should pass the read-only check (will fail at AQL execution
-        // if ArangoDB is unreachable, but should not fail at validation).
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
-
-        let result = rt.block_on(dispatch(
-            &pool,
-            &config,
-            DaemonCommand::DbAql(DbAqlParams {
-                aql: "RETURN 1".to_string(),
-                bind: None,
-                limit: None,
-            }),
-        ));
-
-        // This will fail with a connection error (ArangoDB not running in test),
-        // NOT with InvalidParameter — that's the important assertion.
-        if let Err(DispatchError::Handler(HandlerError::InvalidParameter { .. })) = result {
-            panic!("RETURN 1 should not be rejected as mutating AQL");
-        }
-        // Otherwise: connection error or success — both acceptable.
+    #[tokio::test]
+    async fn test_db_aql_allows_return() {
+        assert_allowed_aql(r#"RETURN 1"#).await;
     }
 
     // -- AQL string stripping -------------------------------------------------
 
-    #[test]
-    fn test_db_aql_allows_insert_in_string() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
-
-        // The word INSERT appears inside a string literal — should NOT be rejected.
-        let result = rt.block_on(dispatch(
-            &pool,
-            &config,
-            DaemonCommand::DbAql(DbAqlParams {
-                aql: r#"FOR d IN test FILTER d.title == "INSERT TITLE HERE" RETURN d"#.to_string(),
-                bind: None,
-                limit: None,
-            }),
-        ));
-
-        if let Err(DispatchError::Handler(HandlerError::InvalidParameter { .. })) = result {
-            panic!("INSERT inside a string literal should not be rejected");
-        }
-        // Otherwise: connection error or success — both acceptable.
+    #[tokio::test]
+    async fn test_db_aql_allows_insert_in_string() {
+        assert_allowed_aql(r#"FOR d IN test FILTER d.title == "INSERT TITLE HERE" RETURN d"#).await;
     }
 
-    #[test]
-    fn test_db_aql_allows_update_in_comment() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
-
-        // The word UPDATE appears inside a comment — should NOT be rejected.
-        let result = rt.block_on(dispatch(
-            &pool,
-            &config,
-            DaemonCommand::DbAql(DbAqlParams {
-                aql: "FOR d IN test /* UPDATE note */ RETURN d".to_string(),
-                bind: None,
-                limit: None,
-            }),
-        ));
-
-        if let Err(DispatchError::Handler(HandlerError::InvalidParameter { .. })) = result {
-            panic!("UPDATE inside a comment should not be rejected");
-        }
+    #[tokio::test]
+    async fn test_db_aql_allows_update_in_comment() {
+        assert_allowed_aql(r#"FOR d IN test /* UPDATE note */ RETURN d"#).await;
     }
 
     // -- db_list profile validation -------------------------------------------
 
-    #[test]
-    fn test_db_list_invalid_profile() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
+    #[tokio::test]
+    async fn test_db_list_invalid_profile() {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
-        let result = rt.block_on(dispatch(
-            &pool,
+        let result = guarded_dispatch(
+            &mock.pool,
             &config,
             DaemonCommand::DbList(DbListParams {
                 collection: Some("nonexistent_profile".into()),
@@ -7275,7 +7251,8 @@ mod tests {
                 paper: None,
                 fields: None,
             }),
-        ));
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -7283,30 +7260,41 @@ mod tests {
             err,
             DispatchError::Handler(HandlerError::InvalidParameter { .. })
         ));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     // -- db_aql bind validation ------------------------------------------------
 
-    #[test]
-    fn test_db_aql_rejects_non_object_bind() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = HadesConfig::with_database("test_db");
-        let pool = ArangoPool::from_config(&config).unwrap();
+    #[tokio::test]
+    async fn test_db_aql_rejects_non_object_bind() {
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
-        let result = rt.block_on(dispatch(
-            &pool,
+        let result = guarded_dispatch(
+            &mock.pool,
             &config,
             DaemonCommand::DbAql(DbAqlParams {
                 aql: "RETURN 1".to_string(),
                 bind: Some(serde_json::json!([1, 2, 3])),
                 limit: None,
             }),
-        ));
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
             matches!(err, DispatchError::Handler(HandlerError::InvalidParameter { ref name, .. }) if name == "bind")
+        );
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
         );
     }
 
@@ -7411,26 +7399,33 @@ mod tests {
 
     // -- Collection type parsing ----------------------------------------------
 
-    #[test]
-    fn test_create_collection_invalid_type() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+    #[tokio::test]
+    async fn test_create_collection_invalid_type() {
         let mut config = HadesConfig::default();
-        config.apply_cli_overrides(Some("bident_burn"), None);
-        let pool = ArangoPool::from_config(&config).unwrap();
+        config.apply_cli_overrides(Some("fixture"), None);
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
-        let result = rt.block_on(dispatch(
-            &pool,
+        let result = guarded_dispatch(
+            &mock.pool,
             &config,
             DaemonCommand::DbCreateCollection(DbCreateCollectionParams {
                 name: "test".into(),
                 collection_type: Some("invalid_type".into()),
             }),
-        ));
+        )
+        .await;
 
         assert!(matches!(
             result.unwrap_err(),
             DispatchError::Handler(HandlerError::InvalidParameter { .. })
         ));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     // ── Graph command tests ────────────────────────────────────────

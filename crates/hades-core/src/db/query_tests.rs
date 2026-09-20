@@ -1,12 +1,11 @@
 //! Private mock-socket contracts; never connect to an installed database.
 use super::*;
+use crate::cursor_mock;
+use cursor_mock::{Mock, Reply};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-#[path = "../../tests/common/cursor_mock.rs"]
-mod cursor_mock;
-use cursor_mock::{Mock, Reply};
 fn first() -> Value {
     json!({"id":"123", "hasMore":true, "result":[1],"extra":{"stats":{"fullCount":2}}})
 }
