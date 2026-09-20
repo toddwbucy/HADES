@@ -1,0 +1,235 @@
+{
+  "revision": "307892f94ae37b4b4e33e4bede7b8edec0e91717",
+  "method": "git ls-tree -r --name-only REV; regular path suffix/prefix selection recorded by the lists",
+  "limitations": [
+    "File inventory, not proof of test or review coverage.",
+    "Rust test-tree counts include helper files and exclude inline unit tests.",
+    "Python test modules are shared under services/tests and are not attributed by filename.",
+    "Generated build outputs and installed dependencies are outside this tracked-source inventory."
+  ],
+  "components": {
+    "hades-cli": {
+      "source_files": [
+        "crates/hades-cli/src/commands/codebase.rs",
+        "crates/hades-cli/src/commands/codebase_drift.rs",
+        "crates/hades-cli/src/commands/codebase_ingest.rs",
+        "crates/hades-cli/src/commands/codebase_mgmt.rs",
+        "crates/hades-cli/src/commands/codebase_persist.rs",
+        "crates/hades-cli/src/commands/codebase_prune.rs",
+        "crates/hades-cli/src/commands/codebase_retire.rs",
+        "crates/hades-cli/src/commands/codebase_validate.rs",
+        "crates/hades-cli/src/commands/daemon.rs",
+        "crates/hades-cli/src/commands/db.rs",
+        "crates/hades-cli/src/commands/db_graph.rs",
+        "crates/hades-cli/src/commands/db_read.rs",
+        "crates/hades-cli/src/commands/db_schema.rs",
+        "crates/hades-cli/src/commands/db_search.rs",
+        "crates/hades-cli/src/commands/db_write.rs",
+        "crates/hades-cli/src/commands/embed.rs",
+        "crates/hades-cli/src/commands/embed_mgmt.rs",
+        "crates/hades-cli/src/commands/graph_embed.rs",
+        "crates/hades-cli/src/commands/graph_embed_query.rs",
+        "crates/hades-cli/src/commands/graph_embed_train.rs",
+        "crates/hades-cli/src/commands/graph_embed_update.rs",
+        "crates/hades-cli/src/commands/ingest.rs",
+        "crates/hades-cli/src/commands/mcp_memory_benchmark.rs",
+        "crates/hades-cli/src/commands/mcp_server.rs",
+        "crates/hades-cli/src/commands/mcp_sessions.rs",
+        "crates/hades-cli/src/commands/mod.rs",
+        "crates/hades-cli/src/commands/output.rs",
+        "crates/hades-cli/src/commands/schema.rs",
+        "crates/hades-cli/src/commands/smell.rs",
+        "crates/hades-cli/src/commands/smell_mgmt.rs",
+        "crates/hades-cli/src/commands/system.rs",
+        "crates/hades-cli/src/commands/task.rs",
+        "crates/hades-cli/src/commands/task_mgmt.rs",
+        "crates/hades-cli/src/commands/tools.rs",
+        "crates/hades-cli/src/commands/transport_limits.rs",
+        "crates/hades-cli/src/main.rs"
+      ],
+      "test_tree_files": [
+        "crates/hades-cli/tests/codebase_lifecycle.rs",
+        "crates/hades-cli/tests/daemon_shutdown.rs",
+        "crates/hades-cli/tests/file_identity.rs"
+      ]
+    },
+    "hades-core": {
+      "source_files": [
+        "crates/hades-core/src/batch/error.rs",
+        "crates/hades-core/src/batch/mod.rs",
+        "crates/hades-core/src/batch/processor.rs",
+        "crates/hades-core/src/batch/progress.rs",
+        "crates/hades-core/src/batch/rate_limit.rs",
+        "crates/hades-core/src/batch/state.rs",
+        "crates/hades-core/src/canonical_json.rs",
+        "crates/hades-core/src/chunking/mod.rs",
+        "crates/hades-core/src/chunking/strategies.rs",
+        "crates/hades-core/src/code/chunking.rs",
+        "crates/hades-core/src/code/cpp.rs",
+        "crates/hades-core/src/code/cpp_edges.rs",
+        "crates/hades-core/src/code/language.rs",
+        "crates/hades-core/src/code/lsp/client.rs",
+        "crates/hades-core/src/code/lsp/edges.rs",
+        "crates/hades-core/src/code/lsp/go_symbols.rs",
+        "crates/hades-core/src/code/lsp/gopls.rs",
+        "crates/hades-core/src/code/lsp/mod.rs",
+        "crates/hades-core/src/code/lsp/rust_analyzer.rs",
+        "crates/hades-core/src/code/lsp/rust_symbols.rs",
+        "crates/hades-core/src/code/lsp/session.rs",
+        "crates/hades-core/src/code/lsp/symbols.rs",
+        "crates/hades-core/src/code/mod.rs",
+        "crates/hades-core/src/code/python.rs",
+        "crates/hades-core/src/code/python_calls.rs",
+        "crates/hades-core/src/code/rust_ast.rs",
+        "crates/hades-core/src/code/rust_imports.rs",
+        "crates/hades-core/src/code/symbols.rs",
+        "crates/hades-core/src/code/tree_sitter.rs",
+        "crates/hades-core/src/code/tree_sitter_edges.rs",
+        "crates/hades-core/src/config/mod.rs",
+        "crates/hades-core/src/config/snapshot.rs",
+        "crates/hades-core/src/config/types.rs",
+        "crates/hades-core/src/daemon_client.rs",
+        "crates/hades-core/src/db/cache.rs",
+        "crates/hades-core/src/db/collections.rs",
+        "crates/hades-core/src/db/crud.rs",
+        "crates/hades-core/src/db/error.rs",
+        "crates/hades-core/src/db/index.rs",
+        "crates/hades-core/src/db/keys.rs",
+        "crates/hades-core/src/db/mod.rs",
+        "crates/hades-core/src/db/pool.rs",
+        "crates/hades-core/src/db/query.rs",
+        "crates/hades-core/src/db/query_tests.rs",
+        "crates/hades-core/src/db/transaction.rs",
+        "crates/hades-core/src/db/transport.rs",
+        "crates/hades-core/src/db/vector.rs",
+        "crates/hades-core/src/dispatch.rs",
+        "crates/hades-core/src/graph/export.rs",
+        "crates/hades-core/src/graph/loader.rs",
+        "crates/hades-core/src/graph/mod.rs",
+        "crates/hades-core/src/graph/runtime_schema.rs",
+        "crates/hades-core/src/graph/types.rs",
+        "crates/hades-core/src/ingest_jobs.rs",
+        "crates/hades-core/src/ingest_jobs/process.rs",
+        "crates/hades-core/src/ingest_jobs/records.rs",
+        "crates/hades-core/src/ingest_routing.rs",
+        "crates/hades-core/src/lib.rs",
+        "crates/hades-core/src/persephone/embedding.rs",
+        "crates/hades-core/src/persephone/extraction.rs",
+        "crates/hades-core/src/persephone/mod.rs",
+        "crates/hades-core/src/pipeline/mod.rs",
+        "crates/hades-core/src/pipeline/orchestrator.rs",
+        "crates/hades-core/src/retrieval.rs",
+        "crates/hades-core/src/schema_apply.rs",
+        "crates/hades-core/src/service.rs",
+        "crates/hades-core/src/test_support.rs",
+        "crates/hades-core/src/training.rs"
+      ],
+      "test_tree_files": [
+        "crates/hades-core/tests/arango_cache.rs",
+        "crates/hades-core/tests/arango_crud.rs",
+        "crates/hades-core/tests/arango_index.rs",
+        "crates/hades-core/tests/arango_query.rs",
+        "crates/hades-core/tests/arango_transport.rs",
+        "crates/hades-core/tests/clang_cuda_probe.rs",
+        "crates/hades-core/tests/common/cursor_mock.rs",
+        "crates/hades-core/tests/common/embedding_mock.rs",
+        "crates/hades-core/tests/common/mod.rs",
+        "crates/hades-core/tests/common/training_session.rs",
+        "crates/hades-core/tests/config_integration.rs",
+        "crates/hades-core/tests/cursor_lifecycle.rs",
+        "crates/hades-core/tests/embedding_client.rs",
+        "crates/hades-core/tests/embedding_contract.rs",
+        "crates/hades-core/tests/extraction_client.rs",
+        "crates/hades-core/tests/filesystem_policy.rs",
+        "crates/hades-core/tests/gopls_semantic.rs",
+        "crates/hades-core/tests/graph_contract.rs",
+        "crates/hades-core/tests/graph_loader.rs",
+        "crates/hades-core/tests/pipeline.rs",
+        "crates/hades-core/tests/ra_span_agreement.rs",
+        "crates/hades-core/tests/retrieval_benchmark.rs",
+        "crates/hades-core/tests/retrieval_quality.rs",
+        "crates/hades-core/tests/search_admission.rs",
+        "crates/hades-core/tests/search_handler_benchmark.rs",
+        "crates/hades-core/tests/training_client.rs",
+        "crates/hades-core/tests/transaction.rs"
+      ]
+    },
+    "hades-frontend": {
+      "source_files": [
+        "crates/hades-frontend/src/assemble.rs",
+        "crates/hades-frontend/src/backend_process.rs",
+        "crates/hades-frontend/src/contract.rs",
+        "crates/hades-frontend/src/main.rs",
+        "crates/hades-frontend/src/payload.rs",
+        "crates/hades-frontend/src/server.rs",
+        "crates/hades-frontend/src/transport_limits.rs"
+      ],
+      "test_tree_files": [
+        "crates/hades-frontend/tests/process_lifecycle.rs"
+      ]
+    },
+    "hades-prefetch": {
+      "source_files": [
+        "crates/hades-prefetch/src/lib.rs",
+        "crates/hades-prefetch/src/orchestrator.rs",
+        "crates/hades-prefetch/src/prefetcher.rs",
+        "crates/hades-prefetch/src/tensor.rs"
+      ],
+      "test_tree_files": []
+    },
+    "hades-proto": {
+      "source_files": [
+        "crates/hades-proto/build.rs",
+        "crates/hades-proto/src/lib.rs"
+      ],
+      "test_tree_files": [
+        "crates/hades-proto/tests/proto_types.rs"
+      ]
+    },
+    "python/extraction": {
+      "source_files": [
+        "services/extraction/__init__.py",
+        "services/extraction/config.py",
+        "services/extraction/docling_backend.py",
+        "services/extraction/latex_backend.py",
+        "services/extraction/server.py"
+      ]
+    },
+    "python/embedding": {
+      "source_files": [
+        "services/embedding/__init__.py",
+        "services/embedding/config.py",
+        "services/embedding/http_server.py",
+        "services/embedding/jina_v4.py",
+        "services/embedding/tensors.py"
+      ]
+    },
+    "python/training": {
+      "source_files": [
+        "services/training/__init__.py",
+        "services/training/config.py",
+        "services/training/contract.py",
+        "services/training/rgcn_model.py",
+        "services/training/sage_model.py",
+        "services/training/server.py",
+        "services/training/session.py"
+      ]
+    },
+    "python/adapters": {
+      "source_files": [
+        "services/adapters/__init__.py",
+        "services/adapters/weavertools/__init__.py",
+        "services/adapters/weavertools/extractor.py",
+        "services/adapters/weavertools/records.py",
+        "services/adapters/weavertools/scip_reader.py",
+        "services/adapters/weavertools/write_graph.py"
+      ]
+    }
+  },
+  "protocol_sources": [
+    "proto/hades/training/training.proto",
+    "proto/persephone/common/common.proto",
+    "proto/persephone/embedding/embedding.proto",
+    "proto/persephone/extraction/extraction.proto"
+  ]
+}

@@ -76,6 +76,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   evidence register distinguishing merged fixes, deployment state and remaining
   full-audit acceptance work.
 
+- Map all five crates and Python service/adapter packages to recorded audit
+  evidence and remaining API, cancellation and component review scope (#12).
 - Record the active database authentication boundary and a private 11-case ACL
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
