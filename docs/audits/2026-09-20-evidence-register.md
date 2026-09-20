@@ -6,6 +6,9 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Deployment provenance follow-up](2026-09-20-deployment-provenance.md): live
+  executable hash, ELF build ID/compiler evidence and limits of source mapping.
+
 - [Initial review and deployment baseline](2026-09-19-initial-audit.md):
   read-only service inventory, binary hash, selected static findings and gaps.
 - [Isolated audit](2026-09-19-isolated-audit.md): reproducible defects,
@@ -37,8 +40,9 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Search/transport retention | #22, PR #32, merge `16c4f7d`; final CI gates passed | Not deployed |
 | bfloat16 NumPy conversion | #33, PR #34, merge `d464c9d`; ten CPU contracts | Not deployed |
 | LaTeX/archive expansion | #35, PR #36, merge `74ff141`; 13 byte/header/count regressions | Not deployed |
-| Incomplete Python distributions | #38, PR #39; installed wheel/sdist and isolated build contracts | Review pending; live environment unchanged |
-| Failed file replacement loses committed graph | P1 #40; schema-rejection fixture changes chunk/symbol counts from 1/1 to 0/0 | Remediation pending; isolated discovery only |
+| Incomplete Python distributions | #38, PR #39 merged `5c82e95`; installed wheel/sdist and isolated build contracts | Not deployed |
+| Failed file replacement loses committed graph | P1 #40, PR #41; file transactions, revision fences, stage rollback/retry and cancellation fixtures | Final-head gates pending; not deployed |
+| Shared trainer state crosses client lifecycles | P1 #42, PR #43; two-channel CPU reproduction and expiring ownership contracts | Review/final-head gates pending; not deployed |
 
 ## Workstream coverage and explicit gaps
 
@@ -53,8 +57,8 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Performance/reliability | Isolated engine, handler and transport pilots | Remaining non-search queue/time-out paths |
 | Tests/CI | Rust, Python CPU and disposable ArangoDB gates | Full write-fixture inventory; broader failure injection beyond the selected end-to-end contract |
 | Retrieval evaluation | 24 author-judged queries, frozen CPU Jina vectors, file-membership comparator | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
-| Packaging/operations | Manifest and launch scripts inspected | Fresh installation/protobuf packaging, health/readiness, upgrade/rollback and isolated restore rehearsal |
-| Findings/remediation | Ten approved issues plus four additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
+| Packaging/operations | Manifest and launch scripts inspected | Fresh installation beyond verified wheel/sdist contracts, health/readiness, upgrade/rollback and isolated restore rehearsal |
+| Findings/remediation | Ten approved issues plus five additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
 
 ## Deployment boundary
 
