@@ -26,5 +26,24 @@ certification of the attempted run.
 The focused suite has 52 passing cases including scope, existing/wrong-type
 collections, HTTP errors, partial/malformed imports, report errors, normal success
 and redirect policy. These use synthetic responses and private HTTP peers.
-Real ArangoDB acceptance of the strengthened response contracts still requires
-an isolated fixture; no production graph was used.
+The [recorded real-database result](adapter-database-result.json) also passed on
+ArangoDB 3.12.11: initial and repeated writes return success, schema-rejected
+imports return failure, and existing collections of the wrong type are rejected.
+The repeat run exercises real duplicate-name responses and collection properties;
+imports exercise actual ArangoDB acknowledgement fields. No production graph was
+used.
+
+Reproduce with an existing binary:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 timeout 90 python3 scripts/verify_adapter_database.py \
+  --arangod /path/to/existing/arangod
+```
+
+This opt-in probe creates a fresh server on a private Unix socket and an owned
+loopback HTTP bridge for the adapter. It uses synthetic records, one CPU, nice 10,
+an 8 GiB server address-space cap and small database caches. Configuration and
+credentials are private, server groups are cleaned up, and artifacts remain in a
+new temporary directory. Extraction is stubbed to isolate the writer contract;
+this does not certify a complete WeaverTools extraction/ingestion run. The probe
+is retained separately from the normal CPU test suite.
