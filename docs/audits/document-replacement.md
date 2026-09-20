@@ -88,6 +88,7 @@ committing, all rows match the complete second generation. These controlled
 observations test atomic publication, not throughput or source-revision ordering.
 The first writer uses overwrite=false on an absent document and succeeds.
 
-All three database fixtures pass together. They are included in the default
+All three database fixtures pass together; `document-replacement-result.json`
+retains the final checks and selected source hashes. They are included in the default
 strict CI database contract list. No live database or ML service was contacted.
 Final CI and review remain required before merge.
