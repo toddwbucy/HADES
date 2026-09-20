@@ -120,6 +120,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Record revision-bound daemon command tiers, curated MCP exposure and transport
+  response contracts for epic #12, with a reproducible static inventory, provider
+  status/size-limit review and private CPU replay.
+
 - Record the larger full-handler allocation pilot and near-limit MCP slow-reader
   memory measurement, using resource-limited isolated fixtures (#22).
 

@@ -1,0 +1,65 @@
+{
+  "scope": "Private real ASGI app; fake model backend. 4 MiB is an accepted sample, not a measured maximum. No inference or network.",
+  "source_sha256": {
+    "services/embedding/http_server.py": "498f2fa57612be5144a12ee5743b8e11e2894a7b21f3483d1755a623bbccbf16",
+    "services/tests/test_embedding_ownership.py": "365661046513088590ba4ce553d2d10dfe6797c9b47f4f383f1d8abe764406ca",
+    "docs/audits/repros/embedding_request_boundaries.py": "f80fcec89b7f0416c782f363af4cfdb30f4130a5633131d8dfb586f6e8ada8df"
+  },
+  "cases": [
+    {
+      "case": "missing_model",
+      "status": 422,
+      "backend_calls": [],
+      "response_model": null
+    },
+    {
+      "case": "wrong_input_type",
+      "status": 422,
+      "backend_calls": [],
+      "response_model": null
+    },
+    {
+      "case": "empty_list",
+      "status": 400,
+      "backend_calls": [],
+      "response_model": null
+    },
+    {
+      "case": "model_alias",
+      "status": 200,
+      "backend_calls": [
+        {
+          "inputs": 1,
+          "bytes": 1,
+          "batch_size": null
+        }
+      ],
+      "response_model": "fixture"
+    },
+    {
+      "case": "large_single_text",
+      "status": 200,
+      "backend_calls": [
+        {
+          "inputs": 1,
+          "bytes": 4194304,
+          "batch_size": null
+        }
+      ],
+      "response_model": "fixture"
+    },
+    {
+      "case": "large_batch_hint",
+      "status": 200,
+      "backend_calls": [
+        {
+          "inputs": 1,
+          "bytes": 1,
+          "batch_size": 1000000
+        }
+      ],
+      "response_model": "fixture"
+    }
+  ],
+  "runtime_source_revision": "66ebc4d6c6c88c41d5e5c5ba3371d3521b88aa10"
+}

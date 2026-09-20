@@ -1,0 +1,25 @@
+{
+  "source_revision": "66ebc4d6c6c88c41d5e5c5ba3371d3521b88aa10",
+  "source_sha256": {
+    "services/extraction/server.py": "06d99595cd82a3f7468ceee96ea0cc6f77627271716e4f1292da72251d428bac",
+    "services/embedding/http_server.py": "498f2fa57612be5144a12ee5743b8e11e2894a7b21f3483d1755a623bbccbf16",
+    "services/training/server.py": "bfbe55ac82d5f88a3881a9e4e7acd424ba06ed69a6c9454d0cfed87bbd0ac9ef",
+    "services/training/session.py": "1c5cbebfce8e79a93765bcd3df1d7d5a0c4d41993ca1aa86acedbc10b8829576",
+    "crates/hades-core/src/persephone/extraction.rs": "723f50812518e8ad68cbfbd8284c588455f2cc3a85a55d0b5a3ca427369fa535",
+    "crates/hades-core/src/persephone/embedding.rs": "f57939e39265e77f0a5ba46036daeaf58cf30d74daffab0f97e0f275c89712ab",
+    "crates/hades-core/src/training.rs": "44089aac21563356905c13d3d023ad067d4e62d7366a9135f2bc8e49f396219d",
+    "proto/persephone/extraction/extraction.proto": "debf71962cbd13b0a8a0d5b3c36bb6072c307922830d53f6838861c655191673",
+    "proto/persephone/embedding/embedding.proto": "ee61112c7ee291c20cea29d67e8f68017cc3528f72129eb46570168e2369fe9d",
+    "proto/hades/training/training.proto": "10b7eadc4aa438859c8fb38fc4c786adbb43b72d5c44cf541cf14acfa492e686"
+  },
+  "test_files": [
+    "test_embedding_ownership.py",
+    "test_extraction_ownership.py",
+    "test_training_rpc_validation.py",
+    "test_training_sessions.py"
+  ],
+  "passed": 78,
+  "seconds": 7.52,
+  "runtime": "/tmp/hades-ci-python/bin/python; CPU/private fixtures; no production provider requests",
+  "limits": "source inspection of size/admission settings is not a stress or effective-default measurement"
+}
