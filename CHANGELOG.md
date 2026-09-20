@@ -381,6 +381,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Cancel and join owned prefetch sampling jobs during explicit shutdown, with
+  cooperative cancellation during edge indexing and candidate generation (#77).
+
 - Fail conformance adapter runs on incomplete scope, incompatible collections,
   import rejections or invalid acknowledgements; report partial persistence (#68).
 - Keep WeaverTools node and edge metadata within their own declaration records,

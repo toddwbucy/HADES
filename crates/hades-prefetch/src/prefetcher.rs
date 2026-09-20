@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument};
 
 use hades_core::db::ArangoPool;
@@ -37,8 +38,8 @@ use hades_core::graph::loader::GraphLoaderError;
 use hades_core::graph::types::{GraphData, IDMap};
 
 use crate::tensor::{
-    EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample_count,
-    negative_sample_seeded, prepare_and_serialize,
+    EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample_cancellable,
+    negative_sample_count, prepare_and_serialize,
 };
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,7 @@ pub struct TrainingData {
 pub struct Prefetcher {
     rx: mpsc::Receiver<Result<EpochBatch, PrefetchError>>,
     handle: JoinHandle<()>,
+    cancel: CancellationToken,
 }
 
 impl Prefetcher {
@@ -221,6 +223,7 @@ impl Prefetcher {
 
         let (tx, rx) = mpsc::channel(config.prefetch_depth);
 
+        let cancel = CancellationToken::new();
         let handle = tokio::spawn(Self::producer(
             tx,
             graph,
@@ -228,9 +231,10 @@ impl Prefetcher {
             num_val_neg,
             num_epochs,
             config.seed,
+            cancel.clone(),
         ));
 
-        Ok(Self { rx, handle })
+        Ok(Self { rx, handle, cancel })
     }
 
     /// Background producer task.
@@ -241,9 +245,13 @@ impl Prefetcher {
         num_val_neg: usize,
         num_epochs: Option<usize>,
         seed: u64,
+        cancel: CancellationToken,
     ) {
         let mut epoch = 0;
         loop {
+            if cancel.is_cancelled() {
+                break;
+            }
             if let Some(max) = num_epochs
                 && epoch >= max
             {
@@ -255,18 +263,36 @@ impl Prefetcher {
             let g1 = Arc::clone(&graph);
             let g2 = Arc::clone(&graph);
 
-            let (train_neg, val_neg) = tokio::join!(
-                tokio::task::spawn_blocking(move || negative_sample_seeded(
+            let train_cancel = cancel.clone();
+            let val_cancel = cancel.clone();
+            let mut train = tokio::task::spawn_blocking(move || {
+                negative_sample_cancellable(
                     &g1,
                     num_train_neg,
-                    seed.wrapping_add(epoch as u64).wrapping_add(10)
-                )),
-                tokio::task::spawn_blocking(move || negative_sample_seeded(
-                    &g2,
-                    num_val_neg,
-                    seed.wrapping_add(1)
-                )),
-            );
+                    seed.wrapping_add(epoch as u64).wrapping_add(10),
+                    || train_cancel.is_cancelled(),
+                )
+            });
+            let mut val = tokio::task::spawn_blocking(move || {
+                negative_sample_cancellable(&g2, num_val_neg, seed.wrapping_add(1), || {
+                    val_cancel.is_cancelled()
+                })
+            });
+            let (train_neg, val_neg) = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // Abort queued jobs; running jobs observe the token. Join
+                    // both before dropping the producer's ownership of work.
+                    train.abort();
+                    val.abort();
+                    let _ = tokio::join!(train, val);
+                    return;
+                }
+                samples = async { tokio::join!(&mut train, &mut val) } => samples,
+            };
+            if cancel.is_cancelled() {
+                return;
+            }
 
             let samples = match (train_neg, val_neg) {
                 (Ok(Ok(train)), Ok(Ok(val))) => Ok((train, val)),
@@ -312,13 +338,18 @@ impl Prefetcher {
         self.rx.recv().await
     }
 
-    /// Stop the prefetcher, cancelling the background task.
-    ///
-    /// Any buffered batches still in the channel are discarded.
-    /// Prefer dropping the `Prefetcher` (which also cancels) unless
-    /// you need to explicitly await shutdown.
+    /// Request cancellation and discard buffered batches without waiting.
+    /// Running samplers cooperate at checkpoints; use `shutdown` to join them.
     pub fn stop(self) {
-        self.handle.abort();
+        self.cancel.cancel();
+    }
+
+    /// Cancel queued/running sampling and wait for all owned sampling jobs.
+    /// Allocator calls are not preemptible; this has no wall-clock guarantee.
+    pub async fn shutdown(mut self) -> Result<(), tokio::task::JoinError> {
+        self.cancel.cancel();
+        self.rx.close();
+        (&mut self.handle).await
     }
 
     /// Check whether the background task is still running.
@@ -329,7 +360,8 @@ impl Prefetcher {
 
 impl Drop for Prefetcher {
     fn drop(&mut self) {
-        self.handle.abort();
+        self.cancel.cancel();
+        self.rx.close();
     }
 }
 
@@ -456,6 +488,77 @@ mod tests {
         graph.set_node_features(7, &emb);
 
         graph
+    }
+
+    #[test]
+    fn shutdown_joins_queued_samples_and_releases_graph() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let gate = tokio::task::spawn_blocking(move || {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            entered_rx.await.unwrap();
+            let graph = Arc::new(test_graph());
+            let split = Arc::new(split_edges(graph.num_edges, &SplitConfig::default()).unwrap());
+            let pf =
+                Prefetcher::start(graph.clone(), split, PrefetchConfig::default(), None).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while Arc::strong_count(&graph) != 4 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let shutdown = tokio::spawn(pf.shutdown());
+            tokio::task::yield_now().await;
+            release_tx.send(()).unwrap();
+            gate.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), shutdown)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(Arc::strong_count(&graph), 1);
+        });
+    }
+
+    #[tokio::test]
+    async fn shutdown_unblocks_full_buffer_and_drop_requests_cancellation() {
+        for explicit in [true, false] {
+            let graph = Arc::new(test_graph());
+            let split = Arc::new(split_edges(graph.num_edges, &SplitConfig::default()).unwrap());
+            let pf =
+                Prefetcher::start(graph.clone(), split, PrefetchConfig::default(), None).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while pf.rx.len() < 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if explicit {
+                tokio::time::timeout(std::time::Duration::from_secs(2), pf.shutdown())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            } else {
+                drop(pf);
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while Arc::strong_count(&graph) != 1 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
     }
 
     #[test]
