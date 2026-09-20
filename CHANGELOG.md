@@ -283,6 +283,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   (#19). Mocked switch/reboot/failure tests and a maintenance rollback guide cover
   the procedure; matching metadata is explicitly not proof of inference health.
 
+- AQL cursor ownership now survives caller cancellation, including cancellation
+  before the first response supplies its ID. Known cursors are deleted after
+  completion, malformed payloads, server errors, or timeout. Query execution and
+  cleanup have explicit time budgets, with server runtime/TTL fallbacks (#21).
+
 - Bind graph artifacts and checkpoints to versioned semantic contracts (#15):
   relation order, collection indices, feature width/provenance, construction
   policy, and architecture. Reject incompatible or legacy unverified artifacts
