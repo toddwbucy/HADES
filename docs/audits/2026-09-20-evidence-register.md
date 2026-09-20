@@ -37,6 +37,7 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Search/transport retention | #22, PR #32; review and final evidence pending | Not deployed |
 | bfloat16 NumPy conversion | #33, PR #34, merge `d464c9d`; ten CPU contracts | Not deployed |
 | LaTeX/archive expansion | #35, PR #36; byte/header/count regressions | Review pending; not deployed |
+| Incomplete Python distributions | #38; clean and proto-generated wheel ZIP inspection | Remediation pending; live environment unchanged |
 
 ## Workstream coverage and explicit gaps
 
@@ -52,7 +53,7 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Tests/CI | Rust, Python CPU and disposable ArangoDB gates | End-to-end acceptance scope including partial failures and all write-fixture inventory |
 | Retrieval evaluation | 24 author-judged queries, frozen CPU Jina vectors, file-membership comparator | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
 | Packaging/operations | Manifest and launch scripts inspected | Fresh installation/protobuf packaging, health/readiness, upgrade/rollback and isolated restore rehearsal |
-| Findings/remediation | Ten approved issues plus two additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
+| Findings/remediation | Ten approved issues plus three additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
 
 ## Deployment boundary
 
@@ -68,3 +69,14 @@ schema compatibility checks, backup/rollback plan, and separately authorized
 maintenance execution. Discovery has not altered production data, dependencies,
 permissions, services or model files. Do not check off full workstreams merely
 because the ten initial repository defects have fixes.
+
+## Packaging reproduction
+
+A tracked-file copy of merged revision `d464c9d` was built with the existing
+isolated CPU interpreter and setuptools, without installing dependencies. The
+clean wheel contained five extraction and five embedding files but zero generated,
+training or adapter files. After `make proto-gen`, a second wheel contained 15
+generated files; training, adapters and `schema.yaml` were still absent. #38 tracks
+build prerequisites, distribution scope, generated/runtime version compatibility,
+and installed-wheel verification outside the source directory. Source/editable
+launches are not evidence that a wheel can run the declared services.
