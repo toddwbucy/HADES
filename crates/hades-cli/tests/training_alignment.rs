@@ -237,6 +237,51 @@ async fn training_rows_remain_attached_to_qualified_node_ids() {
                 assert_eq!(actual, wanted, "failed refresh generation {id}");
             }
             println!("Failed refresh: one acknowledged new-checkpoint vector; two old-checkpoint vectors retained; explicit export error.");
+            // The actual CLI must be unable to contact the fixed live training
+            // socket even if the expected no-op branch regresses. Bubblewrap
+            // hides /run and devices, while the private DB socket stays visible.
+            crud::update_document(&pool, "papers", "same", &json!({"embedding":[9., -3.]}))
+                .await.unwrap();
+            let mut before_noop = Vec::new();
+            for id in &names {
+                let (collection, key) = id.split_once('/').unwrap();
+                before_noop.push(crud::get_document(&pool, collection, key).await.unwrap());
+            }
+            let absent_checkpoint = root.path().join("absent-checkpoint");
+            let cli = |missing_only: bool| {
+                let mut command = std::process::Command::new("timeout");
+                command.args(["--kill-after=5", "30", "bwrap", "--ro-bind", "/", "/",
+                    "--tmpfs", "/run", "--dev", "/dev", "--unshare-net", "--",
+                    env!("CARGO_BIN_EXE_hades"), "--db", pool.database(), "--gpu", "0",
+                    "graph-embed", "update", "--checkpoint-dir"])
+                    .arg(&absent_checkpoint);
+                if missing_only { command.arg("--new-nodes"); }
+                command.output().unwrap()
+            };
+            let noop = cli(true);
+            assert!(noop.status.success(), "no-op failed: {}", String::from_utf8_lossy(&noop.stderr));
+            let reply: Value = serde_json::from_slice(&noop.stdout).unwrap();
+            assert_eq!(reply["success"], true);
+            assert_eq!(reply["data"]["model"]["checkpoint_validated"], false);
+            assert_eq!(reply["data"]["model"]["service_contacted"], false);
+            assert_eq!(reply["data"]["export"]["count"], 0);
+            for (id, expected_row) in names.iter().zip(&before_noop) {
+                let (collection, key) = id.split_once('/').unwrap();
+                assert_eq!(crud::get_document(&pool, collection, key).await.unwrap(), *expected_row);
+            }
+            assert!(!absent_checkpoint.exists());
+            let full_without_checkpoint = cli(false);
+            assert!(!full_without_checkpoint.status.success());
+            assert!(String::from_utf8_lossy(&full_without_checkpoint.stderr).contains("checkpoint"));
+            crud::update_document(&pool, "papers", "same", &json!({"structural_embedding":null}))
+                .await.unwrap();
+            let missing_row = crud::get_document(&pool, "papers", "same").await.unwrap();
+            let needs_work = cli(true);
+            assert!(!needs_work.status.success());
+            assert!(String::from_utf8_lossy(&needs_work.stderr).contains("checkpoint"));
+            assert_eq!(crud::get_document(&pool, "papers", "same").await.unwrap(), missing_row);
+            assert!(!absent_checkpoint.exists());
+            println!("CLI missing-only: changed database features plus mixed existing vectors produce no-op with exact row/revision preservation; full mode and a null vector require the absent checkpoint. Live training socket and GPU devices hidden.");
         },
     )
     .await;

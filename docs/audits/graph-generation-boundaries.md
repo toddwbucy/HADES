@@ -33,6 +33,22 @@ target fails. The error reports one acknowledged update. Reading all three real
 documents confirms one later-checkpoint vector and two earlier-checkpoint vectors
 remain. This is explicit partial persistence, not false success or rollback.
 
+## Actual CLI missing-only behavior
+
+After the mixed export, the fixture patches a source document's feature vector
+in the private database and invokes the real CLI with `--new-nodes`. A nonexistent
+checkpoint directory is intentional. The command succeeds with zero exports,
+`checkpoint_validated: false` and `service_contacted: false`; all three documents,
+including their revisions, remain exactly unchanged. A full-update control fails
+on the absent checkpoint. Setting one stored structural vector to null makes the
+missing-only command require that checkpoint too, with no further row mutation.
+
+These CLI calls require `bwrap` and enabled user namespaces. They run with `/run`
+hidden, private devices without GPUs, read-only host mounts and an isolated network
+namespace. The private database Unix socket remains accessible. This prevents
+unexpected use of the hard-coded live training endpoint. The CLI's required
+`--gpu 0` is a declaration only in these cases; no GPU operation occurs.
+
 ## Evidence and interpretation
 
 The final fixture and focused lint pass. The
@@ -48,7 +64,7 @@ ranking harm or imply the documented missing-only mode promises full freshness.
 Readers currently have no enforced shared generation identity; a successful
 subset update or a failed full update must not be described as a complete refresh.
 
-Remaining acceptance work includes actual changed-text ingestion, missing-only
-selection through the CLI, query behavior during partial generations,
+Remaining acceptance work includes actual changed-text ingestion, successful
+CLI inference through the Rust training client, query behavior during partial generations,
 representative learned-graph quality, and a reviewed generation/legacy policy
 before any production migration. No runtime behavior is changed by this audit.

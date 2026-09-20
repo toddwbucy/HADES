@@ -22,10 +22,10 @@
       ]
     }
   },
-  "test_log": "    Finished `test` profile [unoptimized] target(s) in 0.30s\n     Running tests/training_alignment.rs (/tmp/hades-audit-target/debug/deps/training_alignment-8ee12f9464ed13b9)\n\nrunning 1 test\ntest training_rows_remain_attached_to_qualified_node_ids ... CPU generation evidence: {\"compatible_checkpoints_with_distinct_weights\": true, \"exact_checkpoint_replay\": true, \"changed_output_ids\": {\"features\": [\"papers/same\", \"concepts/same\"], \"neighbors\": [\"concepts/same\"]}}\n\nFailed refresh: one acknowledged new-checkpoint vector; two old-checkpoint vectors retained; explicit export error.\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s\n\n",
+  "test_log": "   Compiling hades-cli v0.3.0 (/tmp/hades-graph-generations/crates/hades-cli)\n    Finished `test` profile [unoptimized] target(s) in 1.32s\n     Running tests/training_alignment.rs (/tmp/hades-audit-target/debug/deps/training_alignment-8ee12f9464ed13b9)\n\nrunning 1 test\ntest training_rows_remain_attached_to_qualified_node_ids ... CPU generation evidence: {\"compatible_checkpoints_with_distinct_weights\": true, \"exact_checkpoint_replay\": true, \"changed_output_ids\": {\"features\": [\"papers/same\", \"concepts/same\"], \"neighbors\": [\"concepts/same\"]}}\n\nFailed refresh: one acknowledged new-checkpoint vector; two old-checkpoint vectors retained; explicit export error.\nCLI missing-only: changed database features plus mixed existing vectors produce no-op with exact row/revision preservation; full mode and a null vector require the absent checkpoint. Live training socket and GPU devices hidden.\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.60s\n\n",
   "private_server_exit_code": 0,
   "source_sha256": {
-    "crates/hades-cli/tests/training_alignment.rs": "d6c3d2e9beda66c88bfccbc8b3ae34b9eccbde9904f75656bb11b182ecff5220",
+    "crates/hades-cli/tests/training_alignment.rs": "b6e6543631873173253a0858aeb4437ae11624927067fdd1c59cf340af785bdf",
     "services/tests/training_alignment_peer.py": "68980d99117c2fad120ef3b11dd67aae3c92d7baac7ce749deeb4dbcb5582042",
     "scripts/test_isolated_database.py": "f592ff12ea67a2ae78610c9c0e836c29fdd4eada52ba35c2bb396db2a50fac29",
     "crates/hades-core/src/graph/loader.rs": "0feb282a57af0d568a7682b99a0c1d1d4f2ed43e73348e1e1edd4ddeb1cf9066",
