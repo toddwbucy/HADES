@@ -21,9 +21,8 @@ control-flow defect, not actual GPU corruption or network-disconnect behavior.
 
 `repros/embedding_worker_lifetime.py /path/to/isolated/checkout` is a historical
 reproduction and intentionally asserts the baseline defect. It is not a passing
-regression that should require the defect after remediation. Ordinary and
-late-chunk worker ownership, idle/lifespan cleanup, closing admission, errors and
-repeated cancellation still require implementation and private tests. The baseline alone is not a fix; remediation is described below. No production
+regression that should require the defect after remediation. The remediation addresses ordinary and late-chunk worker ownership,
+idle/lifespan cleanup, closing admission, errors and repeated cancellation. The baseline alone is not a fix; remediation is described below. No production
 deployment occurred.
 
 ## Remediation and scope
@@ -48,3 +47,8 @@ cancellation, idle-monitor cycles, closing admission, idempotent/repeatedly
 cancelled close, real lifespan drain, HTTP validation and response metadata.
 Hash-locked FastAPI/Uvicorn/HTTPX CI dependencies were added without changing
 existing package pins. No model downloads or production dependency installs.
+
+The final integrated Python CPU suite passed **268 tests**, with one explicitly
+CUDA-only case skipped. This includes 17 new embedding ownership/framework cases
+and the merged extraction tests. Existing dependency pins are unchanged; only
+the HTTP test dependencies and their transitive requirements were added.
