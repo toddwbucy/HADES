@@ -320,6 +320,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   with bounded envelope headroom; regenerate vector/metric provenance hashes and
   correct the retrieval seed's training-adjacency excerpt in version 2 (#22).
 
+- Convert embedding tensors to detached CPU float32 before NumPy export,
+  supporting bfloat16 model output and tensors requiring gradients. Conversion
+  to float32 preserves batch shape and ordering, including lists of tensor rows
+  (#33); float64 values can round to float32 precision.
+
 - The embedder profile selector now persists exactly one enabled instance,
   reconciles failed/runtime-enabled profiles without restarting an already-selected
   service, validates responder identity, and attempts rollback on switch failure

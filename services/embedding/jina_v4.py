@@ -24,6 +24,8 @@ import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 
+from .tensors import embeddings_to_numpy
+
 logger = logging.getLogger(__name__)
 
 # Jina V4 constants
@@ -738,32 +740,7 @@ class JinaV4Embedder:
     @staticmethod
     def _to_numpy(embeddings: Any) -> np.ndarray:
         """Convert embeddings (tensor, list, or ndarray) to numpy float32."""
-        if torch.is_tensor(embeddings):
-            if embeddings.is_cuda:
-                embeddings = embeddings.cpu()
-            return embeddings.numpy().astype(np.float32, copy=False)
-
-        if hasattr(embeddings, "detach"):
-            embeddings = embeddings.detach()
-            if hasattr(embeddings, "is_cuda") and embeddings.is_cuda:
-                embeddings = embeddings.cpu()
-            return embeddings.numpy().astype(np.float32, copy=False)
-
-        if isinstance(embeddings, list):
-            processed = []
-            for e in embeddings:
-                if torch.is_tensor(e):
-                    if e.is_cuda:
-                        e = e.cpu()
-                    processed.append(e.numpy())
-                else:
-                    processed.append(np.array(e))
-            return np.vstack(processed).astype(np.float32, copy=False)
-
-        if isinstance(embeddings, np.ndarray):
-            return embeddings.astype(np.float32, copy=False)
-
-        return np.array(embeddings, dtype=np.float32)
+        return embeddings_to_numpy(embeddings)
 
     def unload(self) -> None:
         """Release GPU memory held by the model."""

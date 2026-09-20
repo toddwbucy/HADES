@@ -71,7 +71,7 @@ state, unrelated commands, and database caches have separate costs.
 
 Keep the measured handler policy at **128 MiB per search and 512 MiB total**.
 Full-handler pilots with 1,000 results, 64 KiB queries, and maximum-width structural
-reranking peaked at 30.8–31.3 MiB for one request and 70.0–72.1 MiB for four.
+reranking peaked at 30.8–31.7 MiB for one request and 68.4–72.1 MiB for four.
 Growing the corpus from 1,024 to 4,096 vectors increased latency without increasing
 retained memory. The reservation is over four times the observed single-request
 process peak, retaining headroom for allocator, input, and model-width variation.

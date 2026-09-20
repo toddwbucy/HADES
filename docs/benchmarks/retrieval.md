@@ -84,3 +84,10 @@ After normal terminal responses were changed to release request admission as soo
 as cache cleanup is acknowledged, the [verification repeat](mcp-slow-readers-final.json)
 passed at 288.2 MiB peak RSS. This retains the same 64 near-limit unread responses;
 the variation reinforces that these are measured workloads, not exact RSS caps.
+
+After review changed detail hydration to one row per page with 1 MiB + 64 KiB
+wire headroom, the [final 4,096-row verification](search-handler-final-4096x2048.json)
+passed with a clean private-server shutdown. Peaks were 31.7 MiB (one request)
+and 68.4 MiB (four); median latencies were 4.02 s and 14.81 s. Earlier handler
+pilots used four detail rows per page. This repeat supports retaining the search
+accounting policy; it retains the same synthetic-workload and sampling limits.
