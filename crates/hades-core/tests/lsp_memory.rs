@@ -1,62 +1,138 @@
-//! Bounded baseline: oversized headers and retained notifications, no OOM probe.
+//! Bounded private child tests; no analyzer, workspace scan or database.
 use hades_core::code::lsp::client::LspClient;
 use serde_json::json;
-use std::path::Path;
 use std::time::Duration;
 
-#[tokio::test]
-async fn oversized_header_and_unconsumed_notifications_are_accepted() {
+async fn rejects_peer(script: &str, expected: &str) {
     let directory = tempfile::tempdir().unwrap();
-    let script = r#"
-import sys,json,os
-open("pid","w").write(str(os.getpid()))
-headers={}
-while True:
- line=sys.stdin.buffer.readline()
- if line==b'\r\n': break
- k,v=line.decode().split(':',1);headers[k]=v.strip()
-request=json.loads(sys.stdin.buffer.read(int(headers['Content-Length'])))
-def send(message,padding=False):
- body=json.dumps(message).encode()
- header=('Content-Length: %d\r\n'%len(body)).encode()
- if padding: header+=b'X-Fixture: '+b'x'*65536+b'\r\n'
- sys.stdout.buffer.write(header+b'\r\n'+body)
-for i in range(2048): send({'jsonrpc':'2.0','method':'window/logMessage','params':{'message':'x'*256}})
-send({'jsonrpc':'2.0','id':request['id'],'result':True},True)
+    let mut client = LspClient::start("/usr/bin/python3", &["-c", script], directory.path())
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.request("fixture", json!({}), Duration::from_secs(30)),
+    )
+    .await
+    .unwrap();
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains(expected), "{error}");
+    assert!(!client.is_alive());
+    tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn excessive_headers_are_rejected() {
+    rejects_peer("import sys,time; sys.stdout.buffer.write(b'X: '+b'x'*65536); sys.stdout.buffer.flush(); time.sleep(5)", "header").await;
+}
+
+#[tokio::test]
+async fn oversized_frame_declaration_is_rejected_without_waiting_for_body() {
+    rejects_peer("import sys,time; sys.stdout.buffer.write(b'Content-Length: 16777217\\r\\n\\r\\n'); sys.stdout.buffer.flush(); time.sleep(5)", "frame exceeds").await;
+}
+
+const FLOOD: &str = r#"
+import sys,json,time
+size=int(sys.argv[1]);count=int(sys.argv[2])
+body=json.dumps({'jsonrpc':'2.0','method':'window/logMessage','params':{'message':'x'*size}}).encode()
+frame=('Content-Length: %d\r\n\r\n'%len(body)).encode()+body
+for _ in range(count): sys.stdout.buffer.write(frame)
 sys.stdout.buffer.flush()
-# Remain alive until the client closes its owned stdin.
-sys.stdin.buffer.read()
+time.sleep(5)
 "#;
-    let client = LspClient::start("/usr/bin/python3", &["-c", script], directory.path())
+
+#[tokio::test]
+async fn notification_count_overflow_fails_pending_request() {
+    let script = format!("import sys; sys.argv=['fixture','256','2048']\n{FLOOD}");
+    rejects_peer(&script, "notification retention limit").await;
+}
+
+#[tokio::test]
+async fn notification_wire_bytes_overflow_before_count_limit() {
+    let script = format!("import sys; sys.argv=['fixture','1048576','9']\n{FLOOD}");
+    rejects_peer(&script, "notification retention limit").await;
+}
+
+const ECHO: &str = r#"
+import sys,json
+while True:
+ headers={}
+ while True:
+  line=sys.stdin.buffer.readline()
+  if not line: sys.exit(0)
+  if line==b'\r\n': break
+  k,v=line.decode().split(':',1);headers[k]=v.strip()
+ message=json.loads(sys.stdin.buffer.read(int(headers['Content-Length'])))
+ if message.get('method')=='exit': sys.exit(0)
+ if 'id' not in message: continue
+ body=json.dumps({'jsonrpc':'2.0','id':message['id'],'result':message.get('params')}).encode()
+ sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(body)).encode()+body)
+ sys.stdout.buffer.flush()
+"#;
+
+#[tokio::test]
+async fn outbound_overflow_rejects_before_writing_and_preserves_stream() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = LspClient::start("/usr/bin/python3", &["-c", ECHO], directory.path())
         .await
         .unwrap();
-    let result = client
-        .request("fixture", json!({}), Duration::from_secs(3))
+    let error = client
+        .request(
+            "oversized",
+            json!("x".repeat(16 * 1024 * 1024)),
+            Duration::from_secs(5),
+        )
         .await
-        .unwrap();
-    assert_eq!(result, json!(true));
-    assert!(
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("outgoing LSP frame exceeds"), "{error}");
+    assert!(client.is_alive());
+    assert_eq!(
         client
-            .drain_notifications(Some("$/progress"))
+            .request("echo", json!(42), Duration::from_secs(2))
             .await
-            .is_empty()
+            .unwrap(),
+        json!(42)
+    );
+    tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn normal_notifications_survive_filtered_drains() {
+    let directory = tempfile::tempdir().unwrap();
+    let prefix = r#"
+import sys,json
+for method in ['$/progress','window/logMessage','$/progress']:
+ body=json.dumps({'jsonrpc':'2.0','method':method,'params':{'value':'fixture'}}).encode()
+ sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n'%len(body)).encode()+body)
+sys.stdout.buffer.flush()
+"#;
+    let script = format!("{prefix}\n{ECHO}");
+    let client = LspClient::start("/usr/bin/python3", &["-c", &script], directory.path())
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .request("echo", json!(7), Duration::from_secs(2))
+            .await
+            .unwrap(),
+        json!(7)
+    );
+    assert_eq!(
+        client.drain_notifications(Some("$/progress")).await.len(),
+        2
     );
     let retained = client.drain_notifications(None).await;
-    assert_eq!(retained.len(), 2048);
-    println!(
-        "AUDIT: accepted header padding=65536 bytes, retained notifications={}",
-        retained.len()
-    );
-    let pid: u32 = std::fs::read_to_string(directory.path().join("pid"))
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0]["method"], "window/logMessage");
+    assert!(client.drain_notifications(None).await.is_empty());
+    tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+        .await
         .unwrap()
-        .parse()
         .unwrap();
-    drop(client);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while Path::new(&format!("/proc/{pid}")).exists() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("private child was not reaped");
 }
