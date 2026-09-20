@@ -330,6 +330,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Isolate dispatch and authorization unit tests with private cursor mocks; require
+  exact allowed-query results and no requests from rejected commands (#47).
 - Fence the complete training-provider lifecycle with expiring session ownership;
   reject competing/stale clients and renew/release shared Rust client leases.
   Allow renewal to queue behind long operations while bounding stalled renewals

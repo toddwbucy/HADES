@@ -315,6 +315,13 @@ async fn shutdown_signal() {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+use hades_core::db::ArangoClient;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../hades-core/tests/common/cursor_mock.rs"]
+mod cursor_mock;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use tokio::net::UnixStream;
@@ -353,11 +360,13 @@ mod tests {
         // and verify the daemon returns ACCESS_DENIED without dispatching.
         let (mut client, server) = UnixStream::pair().unwrap();
 
-        // Dummy pool+config — dispatch is never reached (tier check fires first).
-        // The pool just needs to exist; no real DB connection happens in this test.
+        // A private mock contains any request if the authorization guard regresses.
         let mut config = HadesConfig::default();
-        config.database.name = Some("bident_burn".to_string());
-        let pool = ArangoPool::from_config(&config).unwrap();
+        config.database.name = Some("fixture".to_string());
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
         let payload = serde_json::to_vec(&serde_json::json!({
             "session": "agent",
@@ -375,10 +384,14 @@ mod tests {
             resp
         };
 
-        let (resp, _) = tokio::join!(client_task, handle_connection(server, &pool, &config),);
+        let (resp, _) = tokio::join!(client_task, handle_connection(server, &mock.pool, &config),);
 
         assert!(!resp.success);
         assert_eq!(resp.error_code.as_deref(), Some("ACCESS_DENIED"));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     #[tokio::test]
