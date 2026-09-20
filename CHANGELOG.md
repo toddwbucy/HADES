@@ -366,6 +366,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Verify the actual daemon socket and database health in the fresh-install
+  harness with bounded framing, response sizes and startup deadlines (#64).
+
 - Select distinct document-research adapter/prompts in offline retrieval
   evaluation and reject oversized prefixed processor inputs before inference;
   record profile and token-count provenance while preserving code defaults (#12).
