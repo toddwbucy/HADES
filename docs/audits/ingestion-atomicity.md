@@ -155,8 +155,25 @@ collections with their pre-ingest contents. A subsequent ingest and graph/query
 validation verify recovery. This covers one confirmed mid-replacement checkpoint;
 it does not claim exhaustive interruption at every HTTP request or commit boundary.
 
-Final implementation review of the stage boundaries remains required. Source-hash checks detect observed drift but do not lock the
-filesystem: edit-and-restore races, changes after the final check, and analyzer
+The implementation review checked scoped transaction headers, exclusive collection
+coverage, revision guards, post-commit index publication, per-row write errors,
+and maintained-runner inclusion. Final PR checks remain required. Source-hash
+checks detect observed drift but do not lock the filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.
+
+
+## Issue #40 requirement review
+
+| Requirement | Evidence and boundary |
+| --- | --- |
+| Prepare before destructive persistence; retain file graph on failure | `Replacement::store` scopes chunks, symbols, vectors, outgoing cleanup, inbound remapping and metadata to one transaction. CLI schema-rejection tests compare all eight collections and verify retry. Later relationship/LSP stages have the explicitly documented separate semantics above. |
+| Propagate purge and write errors | `purge_request_failure_aborts_without_attempting_replacement_writes` injects a purge API failure and observes abort with no replacement or commit request. Late chunk, inbound-edge and metadata rejection fixtures verify rollback. |
+| Define concurrency and cancellation; publish indexes after commit | Prepared revision races admit one winner, stale enrichment is rejected, and in-memory remap/index updates follow acknowledged persistence. Creation cancellation, callback panic, caller cancellation and writer process death have distinct contracts. |
+| Verify rejected writes, timeout, cancellation, competing updates and retry | `operation_deadline_rolls_back_writes_and_releases_lock` exercises the actual 60-second deadline after destructive writes, verifies the exact original document and absence of partial writes, then acquires a new exclusive transaction. CLI interruption fixtures cover preparation and an acknowledged mid-persistence write, all-collection preservation and retry. |
+| Cover parsed, fallback and enrichment; no live deployment | Separate stage guarantees, pending markers, explicit fallback recovery, source drift, partial analyzer failures and summary status have fixtures. Every write test uses private mocks or disposable databases; production source, configuration and data remain unchanged. |
+
+These checks establish the stated stage contracts, not a whole-ingest transaction,
+filesystem snapshot, or guarantee that an unacknowledged commit did not happen.
+The broader epic's audit and deployment acceptance remain separate.

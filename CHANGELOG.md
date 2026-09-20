@@ -347,7 +347,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   affected by partial workspace or file-level enrichment failure. Verify that
   racing replacement and relationship stages cannot both commit from one revision.
   Exercise full-CLI process death after acknowledged transactional chunk writes,
-  checking all graph collections after server expiry and successful retry.
+  checking all graph collections after server expiry and successful retry. Cover
+  the real operation deadline and ensure purge errors abort before replacement writes.
   Further recovery and cancellation
   coverage remains under audit (#40).
 

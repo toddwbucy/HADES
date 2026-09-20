@@ -277,3 +277,67 @@ async fn killed_writer_rolls_back_on_server_expiry_and_releases_lock() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn operation_deadline_rolls_back_writes_and_releases_lock() {
+    with_temp_db(
+        "operation_deadline",
+        Fixtures::Codebase,
+        |pool| async move {
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({"_key":"retained","value":9}),
+                )
+                .await
+                .unwrap();
+            let before = pool
+                .reader()
+                .get("document/codebase_files/retained")
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(75),
+                transaction::run(&pool, vec!["codebase_files".into()], |client| async move {
+                    client.delete("document/codebase_files/retained").await?;
+                    client
+                        .post("document/codebase_files", &json!({"_key":"partial"}))
+                        .await?;
+                    std::future::pending::<Result<(), ArangoError>>().await
+                }),
+            )
+            .await
+            .expect("transaction operation deadline did not return");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("operation timed out")
+            );
+            transaction::run(
+                &pool,
+                vec!["codebase_files".into()],
+                move |client| async move {
+                    assert_eq!(
+                        client.get("document/codebase_files/retained").await?,
+                        before
+                    );
+                    assert!(
+                        client
+                            .get("document/codebase_files/partial")
+                            .await
+                            .unwrap_err()
+                            .is_not_found()
+                    );
+                    client
+                        .post("document/codebase_files", &json!({"_key":"after_timeout"}))
+                        .await?;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        },
+    )
+    .await;
+}

@@ -333,6 +333,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn purge_request_failure_aborts_without_attempting_replacement_writes() {
+        use axum::{
+            Json, Router,
+            http::{Method, StatusCode},
+        };
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("arango.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let recorded = recorded.clone();
+            async move {
+                let method = request.method().clone();
+                let path = request.uri().path().to_owned();
+                let body = axum::body::to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                recorded.lock().await.push((method.clone(), path.clone()));
+                match (method, path.as_str()) {
+                    (Method::POST, path) if path.ends_with("/transaction/begin") =>
+                        (StatusCode::OK, Json(json!({"result":{"id":"123","status":"running"}}))),
+                    (Method::GET, path) if path.ends_with("/document/codebase_files/file") =>
+                        (StatusCode::OK, Json(json!({"_rev":"before"}))),
+                    (Method::POST, path) if path.ends_with("/cursor") => {
+                        let query: Value = serde_json::from_slice(&body).unwrap();
+                        assert!(query["query"].as_str().unwrap().contains("REMOVE d IN @@symbols"));
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":true,"errorNum":1,"errorMessage":"injected purge failure"})))
+                    }
+                    (Method::DELETE, path) if path.ends_with("/transaction/123") =>
+                        (StatusCode::OK, Json(json!({"result":{"status":"aborted"}}))),
+                    _ => (StatusCode::BAD_REQUEST, Json(json!({"error":true,"errorMessage":"unexpected request"}))),
+                }
+            }
+        });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ArangoClient::with_socket(socket, "fixture", "fixture", "fixture");
+        let pool = ArangoPool::new(client.clone(), client);
+        let mut replacement = prepared(Some("before".into()), "new");
+        replacement.purge_symbols = true;
+        let error = replacement.store(&pool).await.unwrap_err();
+        server.abort();
+        assert!(error.to_string().contains("injected purge failure"));
+        let calls = calls.lock().await;
+        assert_eq!(
+            calls.len(),
+            4,
+            "replacement writes or commit followed a failed purge: {calls:?}"
+        );
+        assert_eq!(calls[3].0, Method::DELETE);
+        assert!(calls[3].1.ends_with("/transaction/123"));
+    }
+
+    #[tokio::test]
     async fn replacement_and_relationship_commit_cannot_both_use_one_revision() {
         with_temp_db("stage_race", Fixtures::Codebase, |pool| async move {
             let mut initial = prepared(None, "original");
