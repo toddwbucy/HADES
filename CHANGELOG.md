@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Retain actual CLI/private-peer reproductions of materialization scan failures
+  reported as success in normal and dry-run modes (epic #12).
+
 - Trace all 33 database CLI leaves through defaults, routing,
   result semantics and explicit validation limits (epic #12).
 

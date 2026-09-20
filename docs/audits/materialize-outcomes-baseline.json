@@ -1,0 +1,47 @@
+{
+  "source_revision": "71ddf59fa2cb9862e08bac479be968cc60b8a20e",
+  "scope": "Actual CLI/private Unix HTTP peers; source cursor result:null fault, not a production occurrence or partial-write reproduction",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "3e57cdc498350b3e272a714d055ba200709631d97757138241d73947bb01afb3",
+    "crates/hades-core/src/graph/runtime_schema.rs": "799182ac099b7856821108fef3228268b34d201c2b38fba010fb2a0afa5a63d2",
+    "crates/hades-core/src/db/query.rs": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
+    "crates/hades-cli/src/commands/db_graph.rs": "77a2d9c8c823d5156ae7038c9dba4e7371e1c061bb93727466d8c11b709f9daa",
+    "crates/hades-cli/tests/db_response_shapes.rs": "76894efdacd4061facc63a82a4698ffaeb288705d88e2bc372a7e074f2abfd1c"
+  },
+  "observed": [
+    {
+      "dry_run": false,
+      "exit_code": 0,
+      "outer_success": true,
+      "edges_created": 0,
+      "collections_scanned": 1,
+      "totals_errors": [
+        "docs: request error: cursor response 'result' field is not an array"
+      ],
+      "requests": [
+        "GET collection",
+        "POST cursor (schema read)",
+        "GET collection",
+        "POST cursor (source scan)"
+      ]
+    },
+    {
+      "dry_run": true,
+      "exit_code": 0,
+      "outer_success": true,
+      "edges_created": 0,
+      "collections_scanned": 1,
+      "totals_errors": [
+        "docs: request error: cursor response 'result' field is not an array"
+      ],
+      "requests": [
+        "GET collection",
+        "POST cursor (schema read)",
+        "GET collection",
+        "POST cursor (source scan)"
+      ]
+    }
+  ],
+  "controls": "Valid empty source scans exit zero for both normal and dry-run materialization.",
+  "test_result": "Expected failure: 2 incorrect successes, wanted 0; 0 passed, 1 failed, 4 filtered; 0.03s; cargo exit 101"
+}
