@@ -831,6 +831,7 @@ dependencies = [
  "chrono",
  "clap",
  "flate2",
+ "futures",
  "hades-core",
  "hades-prefetch",
  "http-body-util",

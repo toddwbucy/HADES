@@ -31,6 +31,7 @@ tokio-util.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 flate2.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 # The throwaway-database harness, which the write tests in `commands/` use.

@@ -35,8 +35,26 @@ clients must reconnect with bounded backoff. Unix writes have a 15-second deadli
 including framing and flushing. MCP TCP connections have a five-minute absolute
 lifetime, including stalled reads/writes and SSE streams. Clients reconnect using
 their existing session and Last-Event-ID; a socket expiry does not delete the
-session or its replay cache. These controls do not yet bound MCP session replay
-caches; that remains an outstanding implementation and validation requirement.
+session. MCP additionally admits 32 sessions, 64 retained request owners, and
+64 concurrent GET/resume streams per process. A request reservation survives HTTP
+cancellation and remains held through explicit SDK cache cleanup and any queued
+response stream. Session slots return only after the worker has exited and both
+manager maps are cleaned. These counts are provisional capacity controls pending
+full-handler measurements, not RSS guarantees.
+
+Messages entering MCP SDK queues are limited to 2 MiB of serialized JSON, measured
+without allocating an extra serialized copy. Oversized responses become terminal
+`MCP_RESPONSE_TOO_LARGE` errors with their original request IDs; oversized
+non-responses terminate the transport. Handler-side allocations still need their
+own limits. SDK channel/cache capacity remains 16 messages.
+
+An isolated test verifies reconnecting an active request using Last-Event-ID.
+The installed rmcp 2.2 implementation removes normal terminal-response caches
+immediately; completed-response replay therefore fails, despite its exposed
+completed-cache TTL setting. Do not promise late replay after completion. Cancelled
+requests use a conservative 60-second retention window followed by explicit cache
+removal. Normal responses currently retain their reservation for that same window.
+Clients should back off on admission errors and reinitialize after session expiry.
 
 Wire limits apply before JSON parsing, including chunked responses. Row count is
 only a work limit, not an estimate of memory use. The reservations are conservative

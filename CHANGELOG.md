@@ -35,6 +35,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Bound MCP sessions, retained requests, GET/resume streams, and serialized SDK
+  messages; preserve active-request resume and clean up cancelled request caches
+  independently of HTTP clients (#22). Oversized responses return an explicit
+  `MCP_RESPONSE_TOO_LARGE` error. Completed-response replay remains unavailable
+  with the installed SDK.
+
 - Database clients can bound each HTTP response before JSON parsing; response
   bodies now share the request deadline instead of waiting indefinitely after
   headers. This supports the bounded retrieval work in #22.

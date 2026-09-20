@@ -30,9 +30,7 @@ use axum::routing::get;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-};
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -934,12 +932,14 @@ fn build_router(
         extra_dbs,
         policy.provisioning.database_prefixes.clone(),
     )?);
-    let mcp_service: StreamableHttpService<HadesMcpServer, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || Ok(HadesMcpServer::new(pools.clone(), policy.clone())),
-            Default::default(),
-            StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts),
-        );
+    let mcp_service: StreamableHttpService<
+        HadesMcpServer,
+        super::mcp_sessions::BoundedSessionManager,
+    > = StreamableHttpService::new(
+        move || Ok(HadesMcpServer::new(pools.clone(), policy.clone())),
+        Default::default(),
+        StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts),
+    );
 
     let mcp_router = Router::new()
         .nest_service("/mcp", mcp_service)
