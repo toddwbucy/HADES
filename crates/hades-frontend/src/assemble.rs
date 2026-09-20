@@ -36,10 +36,28 @@ pub async fn discover_databases(bin: &str) -> Result<Vec<String>> {
     parse_database_list(&stdout)
 }
 
+/// Validate status before any data consumer. Legacy CLI envelopes without a
+/// status field remain supported; explicit failure or a malformed discriminator
+/// never becomes usable data. Do not forward raw backend diagnostics.
+fn parse_success_envelope(bytes: &[u8], command: &str) -> Result<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .with_context(|| format!("{command}: invalid JSON envelope"))?;
+    anyhow::ensure!(
+        value.is_object(),
+        "{command}: expected JSON envelope object"
+    );
+    match value.get("success") {
+        Some(serde_json::Value::Bool(true)) | None => Ok(value),
+        Some(serde_json::Value::Bool(false)) => {
+            anyhow::bail!("{command}: backend reported failure")
+        }
+        Some(_) => anyhow::bail!("{command}: invalid backend success field"),
+    }
+}
+
 /// Parse `db databases` output (`.data.databases[]`).
 pub fn parse_database_list(bytes: &[u8]) -> Result<Vec<String>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db databases: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db databases")?;
     let arr = v
         .get("data")
         .and_then(|d| d.get("databases"))
@@ -308,8 +326,7 @@ pub struct EdgeTopology {
 
 /// Parse `db graph list` output into named graphs with edge topology.
 pub fn parse_graph_list(bytes: &[u8]) -> Result<Vec<GraphInfo>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db graph list: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db graph list")?;
     let graphs = v
         .get("data")
         .and_then(|d| d.get("graphs"))
@@ -332,8 +349,7 @@ pub fn parse_graph_list(bytes: &[u8]) -> Result<Vec<GraphInfo>> {
 
 /// Parse `db collections` output into a name -> count map.
 pub fn parse_collection_counts(bytes: &[u8]) -> Result<BTreeMap<String, usize>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db collections: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db collections")?;
     let cols = v
         .get("data")
         .and_then(|d| d.get("collections"))
@@ -354,8 +370,7 @@ pub fn parse_collection_counts(bytes: &[u8]) -> Result<BTreeMap<String, usize>> 
 /// `{edge, vertex}`) into a merge-ready delta. The edge/vertex collections are
 /// derived from their `_id` (`collection/key`).
 pub fn parse_neighbors(bytes: &[u8]) -> Result<GraphDelta> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db graph neighbors: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db graph neighbors")?;
     let results = v
         .get("data")
         .and_then(|d| d.get("results"))
@@ -383,8 +398,7 @@ pub fn parse_neighbors(bytes: &[u8]) -> Result<GraphDelta> {
 
 /// Parse `db get` output (enveloped, `.data` is the document) into a [`Node`].
 pub fn parse_single_node(bytes: &[u8]) -> Result<Option<Node>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db get: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db get")?;
     Ok(v.get("data")
         .and_then(|d| d.as_object())
         .cloned()
@@ -393,8 +407,7 @@ pub fn parse_single_node(bytes: &[u8]) -> Result<Option<Node>> {
 
 /// Parse `db aql` output whose rows are whole documents (`.data.results`).
 pub fn parse_aql_docs(bytes: &[u8]) -> Result<Vec<Doc>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db aql: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db aql")?;
     let rows = v
         .get("data")
         .and_then(|d| d.get("results"))
@@ -406,8 +419,7 @@ pub fn parse_aql_docs(bytes: &[u8]) -> Result<Vec<Doc>> {
 /// Parse `db aql` content output (enveloped, `.data.results` is the array) into
 /// ordered chunk texts.
 pub fn parse_chunk_texts(bytes: &[u8]) -> Result<Vec<ChunkText>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("db aql: invalid JSON envelope")?;
+    let v = parse_success_envelope(bytes, "db aql")?;
     let rows = v
         .get("data")
         .and_then(|d| d.get("results"))
@@ -1078,5 +1090,54 @@ mod audit_resource_probe {
         assert!(error.contains("stderr exceeded its byte limit"), "{error}");
         assert!(error.len() < 1024);
         assert!(!error.contains(&"X".repeat(1024)));
+    }
+}
+
+#[cfg(test)]
+mod envelope_status_tests {
+    use super::*;
+    #[test]
+    fn all_envelope_parsers_check_status_before_consuming_data() {
+        type Parser = fn(&[u8]) -> Result<()>;
+        let parsers: [Parser; 7] = [
+            |b| parse_database_list(b).map(|_| ()),
+            |b| parse_graph_list(b).map(|_| ()),
+            |b| parse_collection_counts(b).map(|_| ()),
+            |b| parse_neighbors(b).map(|_| ()),
+            |b| parse_single_node(b).map(|_| ()),
+            |b| parse_aql_docs(b).map(|_| ()),
+            |b| parse_chunk_texts(b).map(|_| ()),
+        ];
+        let data = serde_json::json!({
+            "graphs": [], "collections": [], "results": [], "databases": [], "_id":"n/x"
+        });
+        for parse in parsers {
+            for success in [
+                serde_json::json!(true),
+                serde_json::json!(false),
+                serde_json::json!("true"),
+                serde_json::Value::Null,
+                serde_json::json!(0),
+            ] {
+                let bytes = serde_json::to_vec(&serde_json::json!({
+                    "success": success, "data": data, "error":"private-backend-diagnostic"
+                }))
+                .unwrap();
+                let result = parse(&bytes);
+                assert_eq!(result.is_ok(), success == serde_json::json!(true));
+                if let Err(error) = result {
+                    assert!(!error.to_string().contains("private-backend-diagnostic"));
+                }
+            }
+            let legacy = serde_json::to_vec(&serde_json::json!({"data":data})).unwrap();
+            assert!(parse(&legacy).is_ok());
+            assert!(parse(b"[]").is_err());
+            assert!(parse(b"not json").is_err());
+        }
+        assert!(
+            parse_single_node(br#"{"success":true,"data":null}"#)
+                .unwrap()
+                .is_none()
+        );
     }
 }
