@@ -1,0 +1,14 @@
+{
+  "source_revision": "f525d1a35339324f09be00a70beada7aadded0fb",
+  "fixture": "private Python child, fixed 64KiB extra header and 2048 notifications with 256-byte strings",
+  "accepted_header_padding_bytes": 65536,
+  "retained_notifications_after_progress_drain": 2048,
+  "direct_child_reaped": true,
+  "test_seconds": 0.03,
+  "sha256": {
+    "crates/hades-core/src/code/lsp/client.rs": "dd2808c939fbf5ede2294450b91a1729e91aa4562d0c53de31d6146ec3ad39e5",
+    "crates/hades-core/src/code/lsp/session.rs": "7a49f1bbe660b5a976e1f84f77aa93429a2d49f728edc338e73875625fc49485",
+    "docs/audits/repros/lsp_memory.rs": "2fc5d3675d43b6e0f723335a6b975707b1fa98b95088d41cd6500fc64a1fd409"
+  },
+  "limits": "No OOM, arbitrary allocation, production service or real analyzer probe"
+}
