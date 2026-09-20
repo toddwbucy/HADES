@@ -51,6 +51,13 @@ def test_heldout_target_cannot_be_used_for_training(tmp_path):
              grpc.StatusCode.INVALID_ARGUMENT)
 
 
+def test_training_target_cannot_be_reported_as_heldout_evaluation(tmp_path):
+    service = loaded_service()
+    load(service, tmp_path, graph())
+    rejected(service, "Evaluate", pb.EvaluateRequest(edge_indices=[0], neg_src=[3], neg_dst=[0]),
+             grpc.StatusCode.INVALID_ARGUMENT)
+
+
 @pytest.mark.parametrize("bad", ["partial", "overlap", "duplicate", "bounds", "missing_edge", "float", "inverse", "duplicate_pair"])
 def test_invalid_split_preserves_existing_state(tmp_path, bad):
     service = loaded_service()

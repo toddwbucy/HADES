@@ -372,6 +372,8 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             pos_idx, neg_src, neg_dst = self._step_indices(
                 request.edge_indices, request.neg_src, request.neg_dst
             )
+            if torch.isin(pos_idx, self.train_idx).any():
+                raise ValueError("evaluation targets must belong to a held-out split")
         except ValueError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         self.model.eval()
