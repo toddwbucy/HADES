@@ -181,7 +181,7 @@ async fn oversized_response_and_aggregate_details_fail_without_partial_results()
     let mut mock = Mock::new(vec![
         Reply::page(json!({"hasMore":false,"result":[stored_vector(0)]})),
         Reply::page(
-            json!({"hasMore":false,"result":[{"parent_key":"p","text":"x".repeat(300_000)}]}),
+            json!({"hasMore":false,"result":[{"parent_key":"p","text":"x".repeat(2*1024*1024)}]}),
         ),
     ])
     .await;
@@ -223,6 +223,40 @@ async fn oversized_response_and_aggregate_details_fail_without_partial_results()
     for _ in 0..4 {
         mock.event("POST cursor/123").await;
     }
+    mock.released().await;
+    embedder.await.unwrap();
+}
+
+#[tokio::test]
+async fn detail_rows_above_vector_page_limit_fit_result_budget() {
+    let _serial = SERIAL.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("embedder.sock");
+    let embedder = start_embedder(&socket, 1).await;
+    let mut config = HadesConfig::default();
+    config.embedding.service.socket = socket.to_string_lossy().into_owned();
+    let mut mock = Mock::new(vec![
+        Reply::page(json!({"hasMore":false,"result":[stored_vector(0),stored_vector(1)]})),
+        Reply::page(json!({"id":"123","hasMore":true,"result":[{"parent_key":"p","text":"x".repeat(300_000),"score":1.0}]})),
+        Reply::page(json!({"id":"123","hasMore":false,"result":[{"parent_key":"p","text":"y".repeat(300_000),"score":1.0}]})),
+    ]).await;
+    let payload =
+        serde_json::to_vec(&json!({"command":"db.query","params":{"text":"fixture","limit":2}}))
+            .unwrap();
+    let response = handle_request(
+        &mock.pool,
+        &config,
+        ConnectionPolicy::agent_only(),
+        &payload,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(response.success, "{response:?}");
+    assert_eq!(response.data.unwrap()["result_count"], 2);
+    mock.event("POST cursor").await;
+    let detail = mock.event("POST cursor").await;
+    assert_eq!(detail["batchSize"], 1);
+    mock.event("POST cursor/123").await;
     mock.released().await;
     embedder.await.unwrap();
 }

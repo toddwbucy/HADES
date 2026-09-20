@@ -14,7 +14,8 @@ to approximate ranking when an index appears.
 | Results requested | 1–1,000 |
 | Query vector width | 1–8,192 |
 | Exact scan work | 100,000 returned embedding rows |
-| Cursor page | 4 rows, at most 256 KiB HTTP body |
+| Vector/structural cursor page | 4 rows, at most 256 KiB HTTP body |
+| Detail cursor page | 1 row, at most 1 MiB + 64 KiB cursor envelope |
 | Single-query embedding response | 256 KiB HTTP body |
 | Hydrated result data | 1 MiB total, checked again after reranking |
 | Structural vector width | 2,048 |

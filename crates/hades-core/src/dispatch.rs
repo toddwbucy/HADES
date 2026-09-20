@@ -5187,6 +5187,10 @@ mod handlers {
                 detail_bind,
                 query::FoldLimits {
                     max_rows: u64::from(limit),
+                    // A valid detail row may use the full result budget.
+                    // One row per page leaves bounded cursor-envelope headroom.
+                    batch_size: 1,
+                    response_bytes: 1024 * 1024 + 64 * 1024,
                     ..limits
                 },
                 (Vec::new(), 0_usize),

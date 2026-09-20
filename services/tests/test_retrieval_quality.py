@@ -40,3 +40,13 @@ def test_unjudged_or_unknown_positive_cannot_report_a_score():
         case["queries"][0]["relevance"] = relevance
         with pytest.raises(ValueError,match="valid judgments"):
             evaluator.score(case,documents,queries)
+
+
+def test_vector_artifact_digest_covers_exact_little_endian_float32(tmp_path):
+    import hashlib
+    import struct
+    path = tmp_path / "vectors.f32"
+    digest = evaluator.write_vector_artifact(path, np.array([[1.25, -2.5]], dtype=">f8"))
+    expected = struct.pack("<ff", 1.25, -2.5)
+    assert path.read_bytes() == expected
+    assert digest == hashlib.sha256(expected).hexdigest()

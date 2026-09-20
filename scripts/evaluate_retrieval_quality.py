@@ -16,7 +16,7 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--model", type=Path)
     source.add_argument("--vectors", type=Path, help="rescore frozen vectors without loading a model")
-    parser.add_argument("--dataset", type=Path, default=Path("evaluation/retrieval/repository-v1.json"))
+    parser.add_argument("--dataset", type=Path, default=Path("evaluation/retrieval/repository-v2.json"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -24,6 +24,11 @@ def main():
         import numpy as np
         dataset = json.loads(args.dataset.read_text())
         count = len(dataset["documents"])
+        provenance = json.loads(args.vectors.with_name("provenance.json").read_text())
+        if provenance["dataset_sha256"] != hashlib.sha256(args.dataset.read_bytes()).hexdigest():
+            raise ValueError("frozen vectors belong to a different dataset version")
+        if provenance["vectors_sha256"] != hashlib.sha256(args.vectors.read_bytes()).hexdigest():
+            raise ValueError("frozen vector artifact hash does not match provenance")
         vectors = np.fromfile(args.vectors, dtype="<f4").reshape(count + len(dataset["queries"]), 2048)
         report = score(dataset, vectors[:count], vectors[count:])
         (args.output / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -55,7 +60,7 @@ def main():
         print(f"Encoded {i+1}/{len(docs)+len(questions)}", flush=True)
     vectors = np.stack(vectors)
     np.savez_compressed(args.output / "vectors.npz", documents=vectors[:len(docs)], queries=vectors[len(docs):])
-    vectors.astype("<f4").tofile(args.output / "vectors.f32")
+    vectors_sha256 = write_vector_artifact(args.output / "vectors.f32", vectors)
     manifest = {}
     for path in sorted(args.model.rglob("*")):
         if path.is_file() and path.suffix in {".py", ".json", ".safetensors"}:
@@ -63,15 +68,23 @@ def main():
             with path.open("rb") as stream:
                 for block in iter(lambda: stream.read(4*1024*1024), b""): digest.update(block)
             manifest[str(path.relative_to(args.model))] = digest.hexdigest()
-    provenance = {"dataset_sha256":hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
+    report = score(dataset, vectors[:len(docs)], vectors[len(docs):])
+    metrics_path = args.output / "metrics.json"
+    metrics_path.write_text(json.dumps(report,indent=2)+"\n")
+    provenance = {"vectors_sha256":vectors_sha256,
+        "metrics_sha256":hashlib.sha256(metrics_path.read_bytes()).hexdigest(), "dataset_sha256":hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
         "model_files":manifest, "task":"code", "prompt":"passage", "device":"cpu", "dtype":"bfloat16",
         "max_tokens":2048, "dependencies":{name:importlib.metadata.version(name) for name in ["torch","transformers","peft","numpy","tokenizers"]},
         "seconds":time.monotonic()-started, "peak_rss_kib":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         "limitations":["Author-created seed with unjudged documents, not a production quality certification.","CPU bfloat16 differs from the active GPU precision and runtime.","Graph baseline uses source-file membership, not learned graph weights."]}
     (args.output / "provenance.json").write_text(json.dumps(provenance,indent=2)+"\n")
-    report = score(dataset, vectors[:len(docs)], vectors[len(docs):])
-    (args.output / "metrics.json").write_text(json.dumps(report,indent=2)+"\n")
     print(json.dumps(report["aggregate"],indent=2),flush=True)
+
+
+def write_vector_artifact(path, vectors):
+    """Write canonical little-endian float32 and bind provenance to those bytes."""
+    vectors.astype("<f4").tofile(path)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def score(dataset, document_vectors, query_vectors):
