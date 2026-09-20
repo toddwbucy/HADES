@@ -5,6 +5,7 @@ pub mod edges;
 pub mod go_symbols;
 pub mod gopls;
 mod preflight;
+mod process;
 pub mod rust_analyzer;
 pub mod rust_symbols;
 pub mod session;
