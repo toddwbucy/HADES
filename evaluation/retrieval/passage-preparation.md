@@ -31,6 +31,14 @@ private. These boundaries are reproducible evaluation units, **not** a claim of
 production extraction or chunking parity. A byte cap is not a tokenizer budget;
 validate actual prefixed token lengths before encoding to prevent silent truncation.
 
+A local tokenizer-only preflight, with `Passage: ` prefixes and special tokens,
+found a maximum of 1,091 tokens across these 34 passages, below the evaluator's
+2,048-token cap. It used one CPU, offline files and private caches, with no model
+inference or service access. The previously observed tokenizer regex warning
+remained; settings were not silently changed. Tokenizer-file hashes and individual
+counts are retained privately. This does not certify processor parity or retrieval
+quality, and query token lengths still need checking after questions are frozen.
+
 The output intentionally has no queries or relevance labels. Add the reviewed
 candidate questions and collect independent judgments as separately versioned
 artifacts. The strict scoring policy is declared for that later step. Preparation
