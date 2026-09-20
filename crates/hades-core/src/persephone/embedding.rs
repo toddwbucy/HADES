@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use http::header::CONTENT_TYPE;
 use http::{Method, Request, Uri};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -206,12 +206,24 @@ pub struct ProviderInfo {
 /// Speaks HTTP/1.1 JSON over Unix domain socket or TCP.
 #[derive(Clone)]
 pub struct EmbeddingClient {
+    response_limit: Option<usize>,
     config: EmbeddingClientConfig,
     unix_client: Option<Client<UnixConnector, Full<Bytes>>>,
     tcp_client: Option<Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>>,
 }
 
 impl EmbeddingClient {
+    /// Bound each HTTP response before deserializing it (for single-query search).
+    pub fn with_response_limit(mut self, bytes: usize) -> Result<Self, EmbeddingError> {
+        if bytes == 0 {
+            return Err(EmbeddingError::InvalidResponse(
+                "response limit must be positive".into(),
+            ));
+        }
+        self.response_limit = Some(bytes);
+        Ok(self)
+    }
+
     /// Connect to the embedding service.
     ///
     /// For Unix sockets, validates the socket file exists. For TCP,
@@ -236,6 +248,7 @@ impl EmbeddingClient {
                 let client = Client::unix();
                 info!("embedding client ready (Unix socket)");
                 Ok(Self {
+                    response_limit: None,
                     config,
                     unix_client: Some(client),
                     tcp_client: None,
@@ -249,6 +262,7 @@ impl EmbeddingClient {
                     .build(connector);
                 info!("embedding client ready (TCP)");
                 Ok(Self {
+                    response_limit: None,
                     config,
                     unix_client: None,
                     tcp_client: Some(client),
@@ -815,16 +829,20 @@ impl EmbeddingClient {
             ));
         };
 
-        let response = tokio::time::timeout(timeout, response_future)
+        let deadline = tokio::time::Instant::now() + timeout;
+        let response = tokio::time::timeout_at(deadline, response_future)
             .await
             .map_err(|_| EmbeddingError::Timeout(timeout.as_secs()))??;
 
         let status = response.status();
-        let resp_bytes = response
-            .into_body()
-            .collect()
+        let body = Limited::new(
+            response.into_body(),
+            self.response_limit.unwrap_or(usize::MAX),
+        );
+        let resp_bytes = tokio::time::timeout_at(deadline, body.collect())
             .await
-            .map_err(|e| EmbeddingError::Connection(e.to_string()))?
+            .map_err(|_| EmbeddingError::Timeout(timeout.as_secs()))?
+            .map_err(|e| EmbeddingError::InvalidResponse(format!("response body rejected: {e}")))?
             .to_bytes();
 
         if !status.is_success() {

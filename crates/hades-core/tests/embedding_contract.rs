@@ -277,3 +277,24 @@ async fn refuses_unspecified_model_or_vector_width() {
         assert!(EmbeddingClient::connect(config).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn response_wire_limit_is_enforced_before_parsing() {
+    let response = valid();
+    let bytes = response.to_string().len();
+    for (limit, success) in [(bytes, true), (bytes - 1, false)] {
+        let mock = Mock::new(vec![response.clone()], "test-model").await;
+        let client = mock.client.clone().with_response_limit(limit).unwrap();
+        let result = client
+            .embed(&["first".into(), "second".into()], "code", None)
+            .await;
+        assert_eq!(result.is_ok(), success);
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("length limit exceeded"),
+                "{error}"
+            );
+        }
+        mock.finish();
+    }
+}

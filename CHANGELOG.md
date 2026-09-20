@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Exact vector search folds bounded pages into top-K results with shared
+  admission and bounded embedding, detail, and structural responses (#22).
+  Invalid stored vectors and incompatible model/dimension metadata fail explicitly.
+
 - Code-file keys now include the canonical ingest root and a full path digest,
   preserving distinct dotted, underscored, Unicode, long, and multi-root paths
   (#13). Ingest rejects legacy or conflicting ownership before replacement;

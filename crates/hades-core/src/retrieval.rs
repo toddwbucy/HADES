@@ -145,6 +145,28 @@ mod tests {
         assert_eq!(items[0]["score"], 1.0);
     }
     #[test]
+    fn streamed_top_k_matches_independent_monotonic_ordering() {
+        let mut top = TopK::new(vec![1.0, 0.0], "m".into(), "parent_key", 17).unwrap();
+        let mut expected = Vec::new();
+        for i in 0..10_000 {
+            // For [x, 1] with x >= 0, cosine against [1, 0] increases
+            // strictly with x. This oracle does not use the ranking formula.
+            let x = (i * 7919) % 10007;
+            let key = format!("k{i:05}");
+            expected.push((x, key.clone()));
+            top.insert(row(&key, json!([f64::from(x) / 10007.0, 1.0])))
+                .unwrap();
+            assert!(top.heap.len() <= 17);
+        }
+        expected.sort_by_key(|a| Reverse(a.0));
+        let actual = top.into_items();
+        for (hit, (_, key)) in actual.iter().zip(expected.iter()) {
+            assert_eq!(hit["chunk_key"].as_str(), Some(key.as_str()));
+        }
+        assert_eq!(actual.len(), 17);
+    }
+
+    #[test]
     fn rejects_malformed_vectors_and_incompatible_provenance() {
         for vector in [
             json!([1, "bad"]),
