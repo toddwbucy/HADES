@@ -1,0 +1,14 @@
+{
+  "source_revision": "0f1e9345e018114a2693b87af85986079c00a258",
+  "request_timeout_ms": 20,
+  "outer_timeout_ms": 250,
+  "payload_text_bytes": 1048576,
+  "request_timeout_returned": false,
+  "outer_timeout_expired": true,
+  "owned_child_reaped": true,
+  "source_sha256": {
+    "crates/hades-core/src/code/lsp/client.rs": "a0ddb533267300fa8c67dc899df2696589daaf8d2f8b7b6f1208a5fc4e7e94f7",
+    "docs/audits/repros/lsp_write_deadline.rs": "b59434cf56f60c401ae3cd163bc1bcbbe75b02895b37a34b23ed52dbfda84862"
+  },
+  "limits": "Private non-reading Python child and real LspClient; not a real analyzer/performance/descendant-process or allocation-limit test."
+}
