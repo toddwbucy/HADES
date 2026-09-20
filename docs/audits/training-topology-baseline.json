@@ -1,0 +1,116 @@
+{
+  "fixture": "synthetic directed 8-node ring; 4 train/2 val/2 test edges",
+  "device": "cpu",
+  "torch": "2.14.0+cu130",
+  "limitations": "Synthetic regression baseline only; does not establish production quality. AUC correction tracked in #17.",
+  "results": [
+    {
+      "architecture": "rgcn",
+      "seed": 7,
+      "adjacency": "legacy_leaked",
+      "epochs": 20,
+      "test_loss": 0.11089222133159637,
+      "test_accuracy": 1.0,
+      "test_auc": 1.0
+    },
+    {
+      "architecture": "rgcn",
+      "seed": 7,
+      "adjacency": "train_only",
+      "epochs": 20,
+      "test_loss": 1.5253771543502808,
+      "test_accuracy": 0.75,
+      "test_auc": 1.0
+    },
+    {
+      "architecture": "rgcn",
+      "seed": 29,
+      "adjacency": "legacy_leaked",
+      "epochs": 20,
+      "test_loss": 0.3795148730278015,
+      "test_accuracy": 0.75,
+      "test_auc": 1.0
+    },
+    {
+      "architecture": "rgcn",
+      "seed": 29,
+      "adjacency": "train_only",
+      "epochs": 20,
+      "test_loss": 0.14245189726352692,
+      "test_accuracy": 1.0,
+      "test_auc": 1.0
+    },
+    {
+      "architecture": "rgcn",
+      "seed": 41,
+      "adjacency": "legacy_leaked",
+      "epochs": 20,
+      "test_loss": 3.0760557651519775,
+      "test_accuracy": 0.5,
+      "test_auc": 0.5
+    },
+    {
+      "architecture": "rgcn",
+      "seed": 41,
+      "adjacency": "train_only",
+      "epochs": 20,
+      "test_loss": 1.1521323919296265,
+      "test_accuracy": 0.75,
+      "test_auc": 1.0
+    },
+    {
+      "architecture": "hetero_sage",
+      "seed": 7,
+      "adjacency": "legacy_leaked",
+      "epochs": 20,
+      "test_loss": 1.4677146673202515,
+      "test_accuracy": 0.5,
+      "test_auc": 0.0
+    },
+    {
+      "architecture": "hetero_sage",
+      "seed": 7,
+      "adjacency": "train_only",
+      "epochs": 20,
+      "test_loss": 0.6696197986602783,
+      "test_accuracy": 1.0,
+      "test_auc": 1.0
+    },
+    {
+      "architecture": "hetero_sage",
+      "seed": 29,
+      "adjacency": "legacy_leaked",
+      "epochs": 20,
+      "test_loss": 1.1283810138702393,
+      "test_accuracy": 0.75,
+      "test_auc": 0.75
+    },
+    {
+      "architecture": "hetero_sage",
+      "seed": 29,
+      "adjacency": "train_only",
+      "epochs": 20,
+      "test_loss": 1.210330843925476,
+      "test_accuracy": 0.75,
+      "test_auc": 0.5
+    },
+    {
+      "architecture": "hetero_sage",
+      "seed": 41,
+      "adjacency": "legacy_leaked",
+      "epochs": 20,
+      "test_loss": 1.4220678806304932,
+      "test_accuracy": 0.25,
+      "test_auc": 0.5
+    },
+    {
+      "architecture": "hetero_sage",
+      "seed": 41,
+      "adjacency": "train_only",
+      "epochs": 20,
+      "test_loss": 1.3078724145889282,
+      "test_accuracy": 0.75,
+      "test_auc": 0.5
+    }
+  ]
+}

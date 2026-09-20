@@ -269,6 +269,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Separate training adjacency from held-out link-prediction targets (#14). Split
+  inverse and duplicate endpoint pairs together, serialize and return one shared
+  partition, and reject invalid partitions or training on held-out edges.
+
 - Training RPCs now await precondition failures and validate graph tensors, sample indices, model configuration, and checkpoint loads before replacing active state (#18). Invalid requests return explicit gRPC statuses; reinitializing a model clears the previous graph. CPU tests exercise these contracts over temporary Unix sockets.
 
 - **A partial re-ingest no longer dangles a dependent's edges** (#9). `symbol_key`

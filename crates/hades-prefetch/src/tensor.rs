@@ -24,7 +24,7 @@
 //! - `collection_names` (JSON array)
 //! - `val_ratio`, `test_ratio`, `neg_sampling_ratio`
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -199,6 +199,35 @@ pub fn split_edges(num_edges: usize, config: &SplitConfig) -> Result<EdgeSplit, 
 // ---------------------------------------------------------------------------
 // Negative sampling — rejection sampling
 // ---------------------------------------------------------------------------
+
+/// Partition unordered endpoint pairs, keeping duplicate and inverse relations
+/// together. The link decoder scores endpoints without relation types, so even
+/// differently typed edges between the same endpoints must share a split.
+pub fn split_graph_edges(
+    graph: &GraphData,
+    config: &SplitConfig,
+) -> Result<EdgeSplit, TensorError> {
+    let mut groups: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
+    for (index, (&src, &dst)) in graph.edge_src.iter().zip(&graph.edge_dst).enumerate() {
+        groups
+            .entry((src.min(dst), src.max(dst)))
+            .or_default()
+            .push(index as u32);
+    }
+    let groups: Vec<_> = groups.into_values().collect();
+    let partition = split_edges(groups.len(), config)?;
+    let expand = |indices: &[u32]| {
+        indices
+            .iter()
+            .flat_map(|&i| groups[i as usize].iter().copied())
+            .collect()
+    };
+    Ok(EdgeSplit {
+        train_idx: expand(&partition.train_idx),
+        val_idx: expand(&partition.val_idx),
+        test_idx: expand(&partition.test_idx),
+    })
+}
 
 /// Generate negative edge samples via rejection sampling.
 ///
@@ -743,20 +772,21 @@ pub fn prepare_and_serialize(
     path: &Path,
     graph: &GraphData,
     config: &SplitConfig,
-) -> Result<(), TensorError> {
+) -> Result<EdgeSplit, TensorError> {
     if !config.neg_sampling_ratio.is_finite() || config.neg_sampling_ratio < 0.0 {
         return Err(TensorError::InvalidNegSamplingRatio {
             neg: config.neg_sampling_ratio,
         });
     }
 
-    let split = split_edges(graph.num_edges, config)?;
+    let split = split_graph_edges(graph, config)?;
 
     // Negative samples: 1 per positive train edge by default
     let num_neg = (split.train_idx.len() as f64 * config.neg_sampling_ratio) as usize;
     let neg = negative_sample(graph, num_neg);
 
-    serialize_to_file(path, graph, &split, &neg, config)
+    serialize_to_file(path, graph, &split, &neg, config)?;
+    Ok(split)
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +858,53 @@ mod tests {
         assert_eq!(split.val_idx.len(), 10);
         assert_eq!(split.test_idx.len(), 10);
         assert_eq!(split.train_idx.len(), 80);
+    }
+
+    #[test]
+    fn grouped_split_keeps_inverse_and_duplicate_pairs_together() {
+        let mut graph = test_graph();
+        graph.add_edge(0, 1, 0);
+        graph.add_edge(1, 0, 1);
+        let split = split_graph_edges(&graph, &SplitConfig::default()).unwrap();
+        let mut owner = vec![usize::MAX; graph.num_edges];
+        for (group, indices) in [&split.train_idx, &split.val_idx, &split.test_idx]
+            .iter()
+            .enumerate()
+        {
+            for &index in indices.iter() {
+                assert_eq!(owner[index as usize], usize::MAX);
+                owner[index as usize] = group;
+            }
+        }
+        assert!(!owner.contains(&usize::MAX));
+        assert_eq!(owner[0], owner[graph.num_edges - 1]);
+        assert_eq!(owner[0], owner[graph.num_edges - 2]);
+    }
+
+    #[test]
+    fn prepared_split_is_exactly_the_serialized_partition() {
+        let graph = test_graph();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partition.safetensors");
+        let split = prepare_and_serialize(&path, &graph, &SplitConfig::default()).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let file = SafeTensors::deserialize(&bytes).unwrap();
+        for (name, expected) in [
+            ("train_idx", split.train_idx),
+            ("val_idx", split.val_idx),
+            ("test_idx", split.test_idx),
+        ] {
+            let actual: Vec<u32> = file
+                .tensor(name)
+                .unwrap()
+                .data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| u32::from_le_bytes(*bytes))
+                .collect();
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]

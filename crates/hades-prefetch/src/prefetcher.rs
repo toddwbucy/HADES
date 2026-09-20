@@ -37,7 +37,6 @@ use hades_core::graph::types::{GraphData, IDMap};
 
 use crate::tensor::{
     EdgeSplit, NegativeSamples, SplitConfig, TensorError, negative_sample, prepare_and_serialize,
-    split_edges,
 };
 
 // ---------------------------------------------------------------------------
@@ -344,9 +343,7 @@ pub async fn prepare_training_data(
     let path = output_path.to_path_buf();
 
     let split = tokio::task::spawn_blocking(move || -> Result<EdgeSplit, TensorError> {
-        let split = split_edges(graph_ref.num_edges, &config_clone)?;
-        prepare_and_serialize(&path, &graph_ref, &config_clone)?;
-        Ok(split)
+        prepare_and_serialize(&path, &graph_ref, &config_clone)
     })
     .await
     .expect("serialization task panicked")?;
@@ -373,6 +370,7 @@ pub async fn prepare_training_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tensor::split_edges;
 
     /// Jina V4 feature dimension — local to keep tests independent of the
     /// deleted `graph::schema` module.
