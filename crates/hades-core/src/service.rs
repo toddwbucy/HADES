@@ -425,6 +425,9 @@ pub fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+use crate::cursor_mock;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -585,8 +588,11 @@ mod tests {
     async fn agent_session_blocked_from_admin_command() {
         // Tier check fires before dispatch — no live DB needed.
         let mut config = HadesConfig::default();
-        config.database.name = Some("bident_burn".to_string());
-        let pool = ArangoPool::from_config(&config).unwrap();
+        config.database.name = Some("fixture".to_string());
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
         let payload = serde_json::to_vec(&serde_json::json!({
             "session": "agent",
@@ -596,7 +602,7 @@ mod tests {
         .unwrap();
 
         let resp = handle_request(
-            &pool,
+            &mock.pool,
             &config,
             ConnectionPolicy::local_admin(),
             &payload,
@@ -606,6 +612,10 @@ mod tests {
 
         assert!(!resp.success);
         assert_eq!(resp.error_code.as_deref(), Some("ACCESS_DENIED"));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     #[tokio::test]
@@ -614,8 +624,11 @@ mod tests {
         // the admin-tier command must still be denied. This is the exact
         // payload that reached dispatch as Admin before the A1 fix.
         let mut config = HadesConfig::default();
-        config.database.name = Some("bident_burn".to_string());
-        let pool = ArangoPool::from_config(&config).unwrap();
+        config.database.name = Some("fixture".to_string());
+        let mut mock = cursor_mock::Mock::new(vec![cursor_mock::Reply::page(
+            serde_json::json!({"result":[7],"hasMore":false}),
+        )])
+        .await;
 
         let payload = serde_json::to_vec(&serde_json::json!({
             "command": "db.aql",
@@ -624,7 +637,7 @@ mod tests {
         .unwrap();
 
         let resp = handle_request(
-            &pool,
+            &mock.pool,
             &config,
             ConnectionPolicy::agent_only(),
             &payload,
@@ -634,6 +647,10 @@ mod tests {
 
         assert!(!resp.success);
         assert_eq!(resp.error_code.as_deref(), Some("ACCESS_DENIED"));
+        assert!(
+            mock.events.try_recv().is_err(),
+            "rejected command reached database mock"
+        );
     }
 
     // ── Provisioning limits ─────────────────────────────────────────────

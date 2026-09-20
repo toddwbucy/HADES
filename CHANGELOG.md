@@ -322,6 +322,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Isolate dispatch and authorization unit tests with private cursor mocks; require
+  exact allowed-query results and no requests from rejected commands (#47).
+
 - Encode bootstrap credentials safely, keep passwords and responses in memory,
   bound Unix HTTP requests, and preserve existing user grants (#44).
 

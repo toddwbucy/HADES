@@ -1,0 +1,48 @@
+# Rust test fixture inventory (#12, #20, #47)
+
+Scope: all 25 top-level `crates/*/tests/*.rs` targets at `979fe97`, plus
+source-unit modules containing database client/pool construction. This inventory
+records resource boundaries and maintained execution, not exhaustive behavioral
+coverage of every production component.
+
+## Integration targets
+
+| Targets | Resource boundary | Maintained execution |
+|---|---|---|
+| `arango_crud`, `arango_index`, `arango_query`, `arango_transport`, `arango_cache`, `graph_loader`, `graph_contract`, `cursor_lifecycle`, `transaction` (core) | `with_temp_db`, directly or through `common::with_tasks_db`; private cursor proxies where needed. Transport's `_system` client uses the fixture socket for database listing. | Strict disposable database CI |
+| `file_identity`, `codebase_lifecycle` (CLI) | Disposable databases, temporary source trees, synthetic embedding/analyzer mocks; interruption tests kill only fixture processes. | Strict disposable database CI |
+| `retrieval_benchmark`, `search_handler_benchmark` (core) | Ignored opt-in benchmarks using disposable databases, synthetic vectors and explicit strict mode. | Runner `--benchmark` / `--handler-benchmark`; not ordinary CI performance gates |
+| `proto_types` (proto); `pipeline`, `config_integration` (core) | Serialization/configuration and service-free contracts; temporary configuration files. | Rust CI service-free targets |
+| `embedding_client`, `extraction_client`, `training_client` (core) | Types/configuration and explicitly nonexistent temporary sockets. PR #43 adds private training RPC mocks. | Rust CI service-free targets |
+| `embedding_contract`, `search_admission`, `retrieval_quality` (core) | Private mocks, synthetic responses/vectors or frozen local evaluation artifacts. | Rust CI service-free targets |
+| `ra_span_agreement`, `gopls_semantic`, `clang_cuda_probe` (core) | Temporary source fixtures; installed analyzer/toolchain prerequisites. CUDA parsing is not GPU inference. Missing prerequisites can skip; a known CUDA call-expression gap is explicitly ignored. | Workstation opt-in; not evidence of complete language coverage |
+
+The first two rows comprise all eleven database-dependent integration targets in
+the maintained normal runner. Its separate missing-socket probe requires strict
+setup failure rather than a silent pass. The runner starts a new Unix-only server,
+uses fresh data/configuration, sanitizes endpoint environment and cleans its own
+process groups. A caller manually setting `ARANGO_SOCKET` is still responsible
+for supplying a separate test server; a unique database name alone is not server
+isolation.
+
+## Source-unit fixtures
+
+- `codebase_ingest`, `codebase_persist`, `codebase_prune`, `codebase_retire` use
+  `with_temp_db` for database writes. The purge-failure fixture uses a private
+  mock. The runner executes `commands::codebase_` with strict prerequisites.
+- `dispatch` accepted-AQL fixtures previously used normal endpoint discovery and
+  accepted arbitrary backend failure. #47 changes these to deterministic private
+  cursor mocks, exact response/request assertions and bounded execution.
+- Rejected dispatch commands and `service`/`daemon` authorization fixtures now
+  use private mocks and assert no database request was received. Their safety
+  does not depend on the guard under test continuing to work.
+- `db::pool` and transport configuration/auth-header tests construct clients but
+  do not issue requests. Transport body-limit tests use private sockets.
+- MCP tests cover in-process HTTP/auth/body handling and database allowlist pool
+  selection. The reviewed allowlist paths construct cached pools; the HTTP
+  fixtures initialize MCP rather than dispatching a database tool.
+
+Remaining limits: source scanning is a reviewed snapshot, not an automated proof
+that future fixtures are isolated. Analyzer prerequisite skips and ignored probes
+must be reported separately from passing tests. This inventory does not certify
+all parser, adapter, provisioning or production ACL behavior.
