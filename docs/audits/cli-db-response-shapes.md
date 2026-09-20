@@ -32,3 +32,28 @@ cases. Streamed output may already contain earlier valid rows on a later failure
 that must terminate nonzero rather than report a complete export. This baseline
 does not establish atomic replacement of an export destination or resolve the
 remaining 80-leaf command-contract audit.
+
+
+## Remediation verification
+
+The database list now requires an array of strings. Export validates every page's
+result array, document objects, boolean pagination and safe/stable cursor ID
+before emitting that page. A missing cursor with further pages is an error;
+a changed safe ID is retained alongside the original for cleanup. Unsafe IDs
+are never interpolated into request paths. Output is flushed before reporting
+completion. Errors still trigger best-effort cleanup for known safe cursors.
+
+[Separate remediation evidence](cli-db-response-shapes-remediation.json) records
+the original five cases on the fixed binary: all three malformed responses now
+exit 1 without success output, and both valid empty controls still exit 0. The
+original baseline is unchanged. Four actual CLI contract tests pass against
+private Unix peers, covering malformed lists/pages, missing/unsafe/changing IDs,
+valid empty/multiple-page exports, partial output on later failure, and cursor
+cleanup after output failure (`/dev/full`). The new service-free target is wired
+into ordinary Rust CI; focused all-target Clippy and formatting checks pass.
+
+These contracts verify selected response handling, not every DB command, complete
+transport validation, export cancellation on process death, atomic output-file
+replacement, or a production deployment. Existing output files are still opened
+before the cursor request and streaming output can contain earlier valid pages
+when a later operation fails.

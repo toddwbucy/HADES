@@ -121,7 +121,7 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Added
 
 - Retain private CLI reproductions of malformed database-list and export responses
-  being reported as successful (epic #12; remediation pending).
+  being reported as successful, with separate remediation evidence (#118).
 
 - Retain a private real-CLI reproduction and remediation evidence for training
   session release racing normal runtime shutdown (#115).
@@ -414,6 +414,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Reject malformed CLI database-list/export responses and invalid cursor state;
+  preserve cursor cleanup and signal incomplete streamed exports (#118).
 
 - Await bounded training-session release on graph embedding CLI success and error
   paths before runtime shutdown, preserving primary operation failures (#115).
