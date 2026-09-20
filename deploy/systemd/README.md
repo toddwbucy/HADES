@@ -28,7 +28,7 @@ that card rather than a preference.
 
 ```bash
 hades-embedder-profile list     # profiles and their ceilings
-hades-embedder-profile gpu1     # switch, waits for the service to answer
+hades-embedder-profile gpu1     # switch and persist; waits for matching metadata
 hades-embedder-profile          # what is active, as the service reports it
 ```
 
@@ -36,8 +36,60 @@ hades-embedder-profile          # what is active, as the service reports it
 stop and a start, and no client configuration changes, because clients read the
 ceiling back from `GET /v1/models` (`max_seq_length`, plus `profile` and
 `physical_device`). It also means two profiles cannot be live at once, since the
-second fails to bind rather than quietly loading a second copy of the model onto
-another card.
+shared endpoint cannot host two listeners. This is not a GPU allocation guard:
+use the selector to stop the previous instance before starting another.
+
+## Persistent selection and maintenance procedure
+
+The single persistently enabled `hades-embedder@NAME.service` is the saved
+selection. The selector removes other persistent and runtime enablement links,
+including failed instances, and enables the selected profile for the next user
+manager boot. Selecting the already-active profile reconciles links without
+restarting it. A lock prevents overlapping selector runs; do not run competing
+manual `systemctl` commands during a switch. Multiple active instances cause a
+refusal requiring operator review.
+
+Switching still runs the service's normal device/VRAM preflight. The selector
+requires an active unit and matching `/v1/models` profile metadata with positive
+dimension and context limits. Metadata is **not an inference test**. Its wait is
+120 seconds by default (`HADES_PROFILE_READY_TIMEOUT=SECONDS`, 1–999); each HTTP
+attempt can add up to three seconds. Review unit journals if startup fails.
+
+A failed switch or caught interruption attempts to restore previous enablement
+and the previous active unit. Failure returns nonzero even when restoration
+succeeds. `ROLLBACK INCOMPLETE` requires manual recovery; prior inference health
+is not implied by successful `systemctl start`. If the prior boot configuration
+already enabled multiple profiles, rollback restores that known-bad snapshot:
+review and rerun the selector before rebooting. SIGKILL or power loss can interrupt
+any transition; inspect active units and enablement before recovery.
+
+For a running server, schedule and carry out these steps explicitly:
+
+1. Record current active/enabled instances using `hades-embedder-profile show`
+   and save the installed selector, template, and profile files privately. Confirm
+   the chosen card's resource budget and keep the previous profile available.
+2. Install the reviewed selector. Installing it does not change any service.
+   Pause inference-dependent work for an actual profile change; selecting the
+   already-active profile only reconciles boot enablement.
+3. Run `hades-embedder-profile NAME`. Verify exactly one active instance and one
+   persistently enabled instance. Inspect its journal for preflight failures and
+   perform an agreed small inference request before resuming clients.
+4. During a separate maintenance reboot, confirm the same single profile starts;
+   check both metadata and inference again. Mocked reboot tests establish the
+   selection logic, not this machine's full boot environment.
+5. If verification fails, select the previous profile with the reviewed selector
+   and repeat health checks. If rollback is incomplete, explicitly stop the failed
+   target before starting the prior unit; restore exactly one boot selection.
+   Preserve logs and revert the installed script/template if needed.
+
+This procedure has not been executed on the audited live server. Its observed
+active GPU2/failed-but-enabled GPU1 state remains unchanged by repository work.
+
+Run the isolated selector regressions (fake systemctl/curl, no GPU/network):
+
+```bash
+python3 -m unittest discover -s scripts/tests -p test_embedder_profile.py -v
+```
 
 **Measure the ceiling on your own hardware, with your own documents.** The
 example numbers are from olympus and two of them were wrong before they were

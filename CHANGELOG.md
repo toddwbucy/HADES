@@ -269,6 +269,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The embedder profile selector now persists exactly one enabled instance,
+  reconciles failed/runtime-enabled profiles without restarting an already-selected
+  service, validates responder identity, and attempts rollback on switch failure
+  (#19). Mocked switch/reboot/failure tests and a maintenance rollback guide cover
+  the procedure; matching metadata is explicitly not proof of inference health.
+
 - Bind graph artifacts and checkpoints to versioned semantic contracts (#15):
   relation order, collection indices, feature width/provenance, construction
   policy, and architecture. Reject incompatible or legacy unverified artifacts
