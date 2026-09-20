@@ -1,0 +1,11 @@
+# CPU-only contract tests; no model downloads or extraction/embedding services.
+# Resolve with: uv pip compile --python-version 3.12 --torch-backend cpu \
+#   --generate-hashes --no-build services/requirements-ci.in \
+#   -o services/requirements-ci.txt
+torch>=2.6,<3
+numpy>=1.24
+grpcio>=1.62
+grpcio-tools>=1.62
+protobuf>=4.25
+safetensors>=0.4
+pytest>=8

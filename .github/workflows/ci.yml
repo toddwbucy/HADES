@@ -96,34 +96,85 @@ jobs:
       - name: cargo build
         run: cargo build --workspace --verbose
 
-      # Unit tests only: lib targets AND bin targets. `--lib` alone silently
-      # excluded hades-cli entirely (a binary crate has no lib target), so none
-      # of the CLI's ~54 tests had ever run in CI — including the regression
-      # guards for the destructive codebase commands (#163). DB-backed tests
-      # inside those targets self-skip when the ArangoDB socket is absent,
-      # which is CI's case; that gap is #93's scope. Integration-test files
-      # under tests/ that require a running ArangoDB or embedder service
-      # (e.g. tests/graph_loader.rs) remain out of scope until #93 lands.
+      # Library and binary unit tests. Database fixtures run strictly in the
+      # separate resource-limited server job below.
       - name: cargo test --lib --bins
         run: cargo test --workspace --lib --bins --verbose
 
-      # Service-free tests/ targets, named explicitly. A blanket --workspace
-      # is unsafe here: the tests/ directory mixes three classes and only the
-      # arango_* + graph_loader targets self-skip when their service is
-      # absent. The other two classes would fail on a bare runner:
-      #   needs-a-service:  embedding_client, extraction_client,
-      #                     training_client (no self-skip guards)
-      #   needs-an-analyzer-binary: clang_cuda_probe (libclang),
-      #                     gopls_semantic (gopls), ra_span_agreement
-      #                     (rust-analyzer)
-      # Those remain #93's scope (uniform self-skip or a serviced runner).
-      # The three below are pure logic and run anywhere.
+      # Explicit service-free targets; analyzer/CUDA probes remain opt-in.
       - name: cargo test (service-free tests/ targets)
         run: |
           cargo test -p hades-proto --test proto_types --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
-          cargo test -p hades-core --test embedding_contract --test embedding_client --verbose
+          cargo test -p hades-core --test embedding_contract --test embedding_client --test extraction_client --test training_client --verbose
+
+  python-contracts:
+    name: Python CPU contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12.14"
+          cache: pip
+          cache-dependency-path: services/requirements-ci.txt
+      - name: Install hashed CPU test dependencies
+        run: python -m pip install --require-hashes --only-binary=:all: --extra-index-url https://download.pytorch.org/whl/cpu -r services/requirements-ci.txt
+      - name: Generate protobuf contracts and run CPU tests
+        run: |
+          python -c "import torch; assert torch.version.cuda is None"
+          make -C services proto-gen PROTO_DIR=../proto PYTHON=python
+          python -m pytest services/tests -v --junitxml=python-contracts.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: python-contract-results
+          path: python-contracts.xml
+
+  database-contracts:
+    name: Isolated database contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read the pinned toolchain
+        id: toolchain
+        run: |
+          channel=$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch locked build dependencies and pinned server image
+        run: |
+          cargo fetch --locked
+          docker pull "$(python3 -c "import runpy; print(runpy.run_path('scripts/test_isolated_database.py')['IMAGE'])")"
+      - name: Strict disposable database contracts
+        run: python3 scripts/test_isolated_database.py --docker
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: isolated-database-results
+          path: |
+            /tmp/hades-tests-*/*.log
+            /tmp/hades-tests-*/results.json
 
   # The pin fixes the drift and removes the only mechanism that ever told this
   # repository a new toolchain wanted changes, which is how CI came to be red

@@ -27,8 +27,8 @@
 //!
 //! ## Environment
 //!
-//! - `ARANGO_SOCKET` names the socket. The default is the system install's
-//!   `/run/arangodb3/arangodb.sock`, which a user-level arangod does not have.
+//! - `ARANGO_SOCKET` must explicitly name a separate test server's socket.
+//!   No default system socket is used by write fixtures.
 //! - `ARANGO_PASSWORD` is required.
 //! - `HADES_TEST_USER` is the user, default `root`. **It needs `rw` on
 //!   `_system`**, since this creates and drops databases. `root` has it, and
@@ -87,10 +87,14 @@ where
     // site rather than inside this function.
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let socket = std::path::PathBuf::from(
-        std::env::var("ARANGO_SOCKET")
-            .unwrap_or_else(|_| "/run/arangodb3/arangodb.sock".to_string()),
-    );
+    let Some(socket) = std::env::var_os("ARANGO_SOCKET").filter(|v| !v.is_empty()) else {
+        if strict() {
+            panic!("ARANGO_TESTS requires ARANGO_SOCKET for an explicitly isolated test server");
+        }
+        eprintln!("skipping: ARANGO_SOCKET must name an explicitly isolated test server");
+        return;
+    };
+    let socket = std::path::PathBuf::from(socket);
     if !socket.exists() {
         if strict() {
             panic!(
