@@ -1,22 +1,24 @@
 {
   "issue": 100,
-  "integrated_main": "d9b0aa2ab8ac02ff15f17b45eae5c949c47c1eaa",
+  "integrated_main": "9826de8d0aaae52d2f9874f3b46e2ec26c06af8a",
   "tests": {
     "descendant_integration": 7,
     "descendant_seconds": 10.03,
     "deadline_integration": 8,
-    "deadline_seconds": 10.01,
+    "deadline_seconds": 10.02,
     "memory_integration": 6,
     "memory_seconds": 0.42,
-    "owner_unwind_unit": 1
+    "owner_unwind_unit": 1,
+    "preflight_integration": 6,
+    "preflight_seconds": 10.01
   },
   "clippy": "core library and three LSP integration targets passed with -D warnings",
   "sha256": {
     "crates/hades-core/src/code/lsp/client.rs": "3efee6083d8a26b847b845da310efa5710c61df12cea24ed0182038a8088d94f",
     "crates/hades-core/src/code/lsp/process.rs": "ae9af864388cd0f2c6979f3b7cfefa1864477a468069690768c846ecf2565086",
-    "crates/hades-core/src/code/lsp/mod.rs": "16ef795ff13358fee622a24d9143eeb8feda909d0d561c6ca9a04a6480b096d8",
+    "crates/hades-core/src/code/lsp/mod.rs": "041542121698b3ad4cff6d362d7e07f84422e0d9eac5826c72e5859842b5cfa6",
     "crates/hades-core/tests/lsp_descendants.rs": "26f7c68837401f3053536aebe0d08b3b80e14049eb7cbaa3d95bf79a795f6ca0",
-    ".github/workflows/ci.yml": "47fb21a5a8a5f8790426c01f6940dc135bec43fe954e2f8b6b5dce43fa019cc3"
+    ".github/workflows/ci.yml": "ff1776b5bb87e3713761473911f920bcfd563c4ef4f01851950f16538164acb1"
   },
   "production_changed": false,
   "limits": [

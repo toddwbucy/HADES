@@ -52,3 +52,7 @@ deadline tests (10.01 seconds) and six memory tests (0.42 seconds) passed.
 Focused Clippy passed with `-D warnings`. The combined CI target retains all
 three suites. Selected final hashes are recorded in
 [lsp-descendant-remediation-result.json](lsp-descendant-remediation-result.json).
+
+After integration of preflight main `9826de8`, all 27 integration cases passed:
+six preflight, eight deadline, seven descendant and six memory cases. The four
+CI targets and both process-owner modules are preserved.
