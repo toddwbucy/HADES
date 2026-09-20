@@ -11,6 +11,8 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Adapter identity](adapter-identity.md): three real-database collision
+  reproductions, full-tuple identity remediation and legacy refusal for #109.
 - [Native CLI inventory](cli-contracts.md): isolated help-only walk of 80 visible
   leaf commands and embedding response-cap call-site trace; operational parity
   remains separate review.

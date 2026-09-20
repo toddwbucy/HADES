@@ -1,0 +1,32 @@
+{
+  "scope": "Real extractor and writer over private synthetic Markdown; database API fully stubbed. Replacement persistence is simulated, not an executed database assertion.",
+  "source_sha256": {
+    "services/adapters/weavertools/write_graph.py": "a19066c518c899b72b72676d569818e1ef7eeb9f1c1522d346931b344adccfec",
+    "services/adapters/weavertools/extractor.py": "2b23ae0df32bce1542d48fdbc286e6d857ed39e2fa5c7885f3435f860383609e",
+    "services/adapters/weavertools/records.py": "4e37bc06c906a4bb292a89f99f66c23980950679ca41b46cfe020d7b19d07b62"
+  },
+  "probe_sha256": "e4ea371740b69696c544130f7fec64f1b2939b249a059b9ccc371abdf8e8373f",
+  "cases": [
+    {
+      "case": "truncated_long_identity",
+      "exit_code": 0,
+      "distinct_edges_emitted": 2,
+      "unique_edge_keys": 1,
+      "replace_simulation_retained": 1
+    },
+    {
+      "case": "unframed_delimiter_identity",
+      "exit_code": 0,
+      "distinct_edges_emitted": 2,
+      "unique_edge_keys": 1,
+      "replace_simulation_retained": 1
+    },
+    {
+      "case": "tag_not_in_identity",
+      "exit_code": 0,
+      "distinct_edges_emitted": 2,
+      "unique_edge_keys": 1,
+      "replace_simulation_retained": 1
+    }
+  ]
+}
