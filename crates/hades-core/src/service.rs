@@ -392,6 +392,7 @@ pub fn handler_error_code(e: &HandlerError) -> &'static str {
         HandlerError::Query { source, .. } if source.is_not_found() => "NOT_FOUND",
         HandlerError::Query { .. } => "QUERY_FAILED",
         HandlerError::InsertFailed { .. } => "INSERT_FAILED",
+        HandlerError::MaterializationFailed { .. } => "MATERIALIZATION_FAILED",
         HandlerError::SearchOverloaded => "SEARCH_OVERLOADED",
         HandlerError::ServiceError(_) => "SERVICE_ERROR",
     }
@@ -880,6 +881,167 @@ mod insert_outcome_tests {
             assert!(!result.success);
             assert_eq!(result.error_code.as_deref(), Some("INVALID_PARAMS"));
             assert!(mock.events.try_recv().is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod materialization_outcome_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn page(value: Value) -> cursor_mock::Reply {
+        cursor_mock::Reply::page(value)
+    }
+    fn failure() -> cursor_mock::Reply {
+        cursor_mock::Reply {
+            status: 503,
+            body: json!({"error":true,"errorNum":503,"errorMessage":"injected failure"}),
+            gate: None,
+        }
+    }
+    fn setup(strategy: &str, existing_edge: bool) -> Vec<cursor_mock::Reply> {
+        let mut collections = vec![
+            json!({"name":"hades_schema","type":2}),
+            json!({"name":"docs","type":2}),
+        ];
+        if existing_edge {
+            collections.push(json!({"name":"edges","type":3}));
+        }
+        vec![
+            page(json!({"result":collections})),
+            page(json!({"hasMore":false,"result":[
+                {"schema_type":"schema_meta"},
+                {"schema_type":"edge_definition","name":"edges","source_field":"related","from_collections":["docs"],"to_collections":["docs"],"materialize_strategy":strategy},
+                {"schema_type":"named_graph","name":"fixture_graph","edge_definitions":["edges"]}
+            ]})),
+            page(json!({"result":collections})),
+        ]
+    }
+    async fn execute(
+        replies: Vec<cursor_mock::Reply>,
+        dry_run: bool,
+        register: bool,
+    ) -> DaemonResponse {
+        let mock = cursor_mock::Mock::new(replies).await;
+        let payload = serde_json::to_vec(&json!({"request_id":"materialize-test","command":"db.graph.materialize","params":{"dry_run":dry_run,"register":register}})).unwrap();
+        let response = handle_request(
+            &mock.pool,
+            &HadesConfig::default(),
+            ConnectionPolicy::local_admin(),
+            &payload,
+            Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(response.request_id.as_deref(), Some("materialize-test"));
+        response
+    }
+    fn report(response: DaemonResponse) -> Value {
+        assert!(!response.success, "{response:?}");
+        assert!(response.data.is_none());
+        assert_eq!(
+            response.error_code.as_deref(),
+            Some("MATERIALIZATION_FAILED")
+        );
+        let error = response.error.unwrap();
+        assert!(error.contains("earlier writes, if any, remain committed"));
+        serde_json::from_str(
+            error
+                .split_once("inspect report before retrying: ")
+                .unwrap()
+                .1,
+        )
+        .unwrap()
+    }
+    fn source() -> cursor_mock::Reply {
+        page(json!({"hasMore":false,"result":[{"_id":"docs/start","ref":"docs/end"}]}))
+    }
+    #[tokio::test]
+    async fn scan_and_strategy_errors_fail_including_dry_run() {
+        for dry_run in [false, true] {
+            let mut replies = setup("standard", true);
+            replies.push(failure());
+            let r = report(execute(replies, dry_run, false).await);
+            assert_eq!(r["dry_run"], dry_run);
+            assert_eq!(r["totals"]["collections_scanned"], 1);
+            assert_eq!(r["totals"]["errors"].as_array().unwrap().len(), 1);
+        }
+        let r = report(execute(setup("unsupported", true), false, false).await);
+        assert!(
+            r["totals"]["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("unknown materialize_strategy")
+        );
+    }
+    #[tokio::test]
+    async fn import_creation_and_registration_errors_retain_outcomes() {
+        let mut replies = setup("standard", true);
+        replies.push(source());
+        replies.push(page(json!({"created":0,"updated":0,"errors":1})));
+        let r = report(execute(replies, false, false).await);
+        assert_eq!(r["totals"]["edges_created"], 0);
+        assert!(
+            r["totals"]["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("1 of 1 documents failed")
+        );
+        let mut replies = setup("standard", false);
+        replies.extend([source(), failure(), failure()]);
+        let r = report(execute(replies, false, false).await);
+        assert_eq!(r["totals"]["errors"].as_array().unwrap().len(), 2);
+        let mut replies = setup("standard", true);
+        replies.extend([source(), page(json!({"created":1,"errors":0})), failure()]);
+        let r = report(execute(replies, false, true).await);
+        assert_eq!(r["totals"]["edges_created"], 1);
+        assert!(
+            r["totals"]["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("create graph fixture_graph")
+        );
+    }
+    #[tokio::test]
+    async fn missing_collections_and_skipped_references_are_not_execution_failures() {
+        let mut replies = setup("standard", true);
+        replies[2].body = json!({"result":[{"name":"hades_schema","type":2}]});
+        let response = execute(replies, false, false).await;
+        assert!(response.success, "{response:?}");
+        assert_eq!(response.data.unwrap()["totals"]["collections_missing"], 1);
+        let mut replies = setup("standard", true);
+        replies.push(page(
+            json!({"hasMore":false,"result":[{"_id":"docs/start","ref":"bare-key"}]}),
+        ));
+        let response = execute(replies, false, false).await;
+        assert!(response.success, "{response:?}");
+        assert_eq!(response.data.unwrap()["totals"]["edges_skipped"], 1);
+    }
+
+    #[tokio::test]
+    async fn successful_materialization_and_dry_run_preserve_report() {
+        for dry_run in [false, true] {
+            let mut replies = setup("standard", true);
+            replies.push(source());
+            if !dry_run {
+                replies.extend([
+                    page(json!({"created":1,"errors":0})),
+                    page(json!({"error":false})),
+                ]);
+            }
+            let response = execute(replies, dry_run, true).await;
+            assert!(response.success, "{response:?}");
+            let r = response.data.unwrap();
+            assert_eq!(r["totals"]["edges_created"], 1);
+            assert_eq!(r["totals"]["errors"], json!([]));
+            assert_eq!(
+                r["named_graphs_registered"],
+                if dry_run {
+                    json!([])
+                } else {
+                    json!(["fixture_graph"])
+                }
+            );
         }
     }
 }

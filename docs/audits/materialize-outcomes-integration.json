@@ -1,0 +1,20 @@
+{
+  "source_revision": "4faeb11",
+  "scope": "Post-integration response/service contracts; original lifecycle evidence remains pinned to a1e2bee",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "54ac941a7c6c99af9628371231d9eaad013a96b5b6007087eb1b46b0e423ec07",
+    "crates/hades-core/src/service.rs": "1911fb0bebfdaf42e40224b6166f56a640937c3a4376c27bc85a7d996ccaeef5",
+    "crates/hades-cli/tests/db_response_shapes.rs": "231360a16744ca3a823d65e5a13ba6652d8b14dab970d8f1d70cfba895a4a429"
+  },
+  "service_tests": {
+    "passed": 32,
+    "failed": 0,
+    "seconds": 0.01
+  },
+  "cli_response_tests": {
+    "passed": 6,
+    "failed": 0,
+    "seconds": 0.09
+  },
+  "materialization_function_unchanged_from": "a1e2bee"
+}
