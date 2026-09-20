@@ -402,6 +402,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve WeaverTools relationship identity with full-tuple versioned keys,
+  reject conflicting declarations and legacy layouts before writes, and make
+  retained stale-row semantics explicit (#109).
+
 - Reject explicit failed or malformed backend success envelopes in viewer JSON
   parsers before consuming graph data, preserving legacy omission support (#107).
 
