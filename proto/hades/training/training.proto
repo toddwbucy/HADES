@@ -32,6 +32,11 @@ package hades.training;
 
 // Training service for structural link prediction (RGCN | hetero-SAGE).
 service TrainingService {
+  // Acquire exclusive lifecycle ownership. All other RPCs require the returned
+  // token in hades-training-session metadata. Legacy unowned calls are rejected.
+  rpc AcquireSession(AcquireSessionRequest) returns (AcquireSessionResponse);
+  rpc RenewSession(SessionRequest) returns (SessionResponse);
+  rpc ReleaseSession(SessionRequest) returns (SessionResponse);
   // Initialize the model with the given architecture config.
   // Must be called before LoadGraph or TrainStep.
   rpc InitModel(InitModelRequest) returns (InitModelResponse);
@@ -267,3 +272,14 @@ message LoadCheckpointResponse {
   // Device the model was loaded onto (e.g. "cuda:0").
   string device = 3;
 }
+
+// Session tokens are opaque capabilities and must not be logged. Clients renew
+// while preparing data or between operations, and release on lifecycle exit.
+// Expiry invalidates the token and discards the prior model/graph state.
+message AcquireSessionRequest {}
+message AcquireSessionResponse {
+  string token = 1;
+  uint32 lease_seconds = 2;
+}
+message SessionRequest {}
+message SessionResponse {}
