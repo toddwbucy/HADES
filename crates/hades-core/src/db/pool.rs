@@ -3,6 +3,10 @@
 //! `ArangoPool` holds one or two `ArangoClient` instances — a reader and
 //! a writer.  When both resolve to the same socket (common in single-node
 //! setups), they share a single underlying hyper client.
+//!
+//! Reader/writer labels select endpoints, not credential identities. Both clients
+//! use the configured database username/password; a reader route is not an ACL
+//! guarantee when it reaches the same authenticated server as the writer.
 
 use std::path::Path;
 use std::time::Instant;
