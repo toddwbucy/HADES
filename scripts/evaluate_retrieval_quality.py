@@ -89,6 +89,10 @@ def write_vector_artifact(path, vectors):
 
 def score(dataset, document_vectors, query_vectors):
     import numpy as np
+    policy = dataset.get("scoring_policy", "legacy_seed")
+    if policy not in ("legacy_seed", "complete_top10"):
+        raise ValueError("unknown scoring policy")
+    strict = policy == "complete_top10"
     docs = dataset["documents"]
     ids = [d["id"] for d in docs]
     document_vectors = np.asarray(document_vectors, dtype=np.float64)
@@ -104,10 +108,13 @@ def score(dataset, document_vectors, query_vectors):
             raise ValueError("vectors must be finite and nonzero")
     for question in dataset["queries"]:
         labels = question["relevance"]
-        if (not labels or not set(labels).issubset(ids)
+        if (not isinstance(labels, dict) or not set(labels).issubset(ids)
             or any(type(v) is not int or not 0 <= v <= 3 for v in labels.values())
-            or not any(v > 0 for v in labels.values())):
-            raise ValueError("each query needs valid judgments with a relevant document")
+            or (not strict and not any(v > 0 for v in labels.values()))):
+            raise ValueError("queries need valid judgments; legacy seed queries also need a relevant document")
+    query_ids = [q["id"] for q in dataset["queries"]]
+    if len(query_ids) != len(set(query_ids)):
+        raise ValueError("evaluation requires unique query IDs")
     paths = sorted({d["source"] for d in docs})
     structural = np.eye(len(paths))[[paths.index(d["source"]) for d in docs]]
     document_vectors = document_vectors.astype(np.float64)
@@ -122,6 +129,19 @@ def score(dataset, document_vectors, query_vectors):
         fused = sorted(ranked,key=lambda i:(-(0.7*scores[i]+0.3*graph_scores[i]),ids[i]))
         for method, order in [("vector",ranked),("file_membership_graph",fused)]:
             relevance = question["relevance"]
+            missing = [ids[i] for i in order if ids[i] not in relevance]
+            coverage = {
+                "judged_results": len(order) - len(missing),
+                "returned_results": len(order),
+                "fraction": (len(order) - len(missing)) / len(order),
+                "unjudged": missing,
+            }
+            if strict and (missing or not any(v > 0 for v in relevance.values())):
+                rows.append({"query":question["id"], "method":method,
+                    "ranking":[ids[i] for i in order], "judgment_coverage":coverage,
+                    "score_status":"unjudged_top10" if missing else "no_positive_judgments",
+                    "recall_at_5":None, "mrr_at_10":None, "ndcg_at_10":None})
+                continue
             labels = [relevance.get(ids[i],0) for i in order]
             ideal = sorted(relevance.values(),reverse=True)[:10]
             dcg = lambda values: sum((2**v-1)/math.log2(i+2) for i,v in enumerate(values))
@@ -129,11 +149,22 @@ def score(dataset, document_vectors, query_vectors):
                 "recall_at_5":sum(v>0 for v in labels[:5])/sum(v>0 for v in relevance.values()),
                 "mrr_at_10":next((1/(i+1) for i,v in enumerate(labels) if v>0),0),
                 "ndcg_at_10":dcg(labels)/dcg(ideal)})
+            if strict:
+                rows[-1].update(judgment_coverage=coverage, score_status="scored")
     aggregate = {}
+    complete = not strict or all(row["score_status"] == "scored" for row in rows)
     for method in ["vector","file_membership_graph"]:
         selected = [r for r in rows if r["method"]==method]
-        aggregate[method]={metric:sum(r[metric] for r in selected)/len(selected) for metric in ["recall_at_5","mrr_at_10","ndcg_at_10"]}
-    return {"aggregate":aggregate,"per_query":rows}
+        aggregate[method]={metric:sum(r[metric] for r in selected)/len(selected) if complete else None
+            for metric in ["recall_at_5","mrr_at_10","ndcg_at_10"]}
+    report = {"aggregate":aggregate,"per_query":rows}
+    if strict:
+        fully_judged = sum(all(not row["judgment_coverage"]["unjudged"]
+            for row in rows if row["query"] == query) for query in query_ids)
+        report.update(scoring_policy=policy, metric_scope="judged_pool",
+            aggregate_status="scored" if complete else "withheld",
+            fully_judged_queries=fully_judged, total_queries=len(query_ids))
+    return report
 
 
 if __name__ == "__main__":
