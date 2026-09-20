@@ -1,0 +1,25 @@
+{
+  "issue": 102,
+  "integrated_dependency_candidate": "37716317006bf25bc83411736f9b68e0951aab0d",
+  "dependency_pr": 101,
+  "tests": {
+    "document_state_integration": 5,
+    "integrated_seconds": 0.05,
+    "operation_registry_unit": 1,
+    "unit_phase": "before dependency integration; operation implementation unchanged"
+  },
+  "clippy": "core lib and document-state integration passed with -D warnings after dependency integration",
+  "sha256": {
+    "crates/hades-core/src/code/lsp/session.rs": "6af3b5c56ba5af0370a1bf363f23bee2d571f21d411919804df3846751e8507e",
+    "crates/hades-core/tests/lsp_document_state.rs": "1d8f195609bd94e6ebf455b9c31df46ac1855a4314f19294dc5d35c21ff6c535",
+    ".github/workflows/ci.yml": "aa45c9af39688c5935f68360d03f63d0a85a0da26eedc9c59fe287d6255f536b"
+  },
+  "production_changed": false,
+  "limitations": [
+    "Underlying Tokio file worker is not forcibly preempted",
+    "Partial-frame cancellation invalidates transport",
+    "No production analyzer validation"
+  ],
+  "integrated_main": "1c1adf8962723c83535d317951a13b102c8afe59",
+  "dependency_tree_matches_merged_main": true
+}

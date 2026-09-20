@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Publish LSP document-open state only after didOpen is sent; keep failed and
+  cancelled reads retryable and order same-URI opens/closes independently (#102).
+
 - Own language-server process groups through normal exit, transport failure and
   cancelled shutdown; stop descendants before reaping the leader (#100).
 

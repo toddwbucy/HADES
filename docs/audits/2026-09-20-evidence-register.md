@@ -222,3 +222,8 @@ not contain descendants that intentionally escape their group.
 [LSP memory boundaries](lsp-memory-review.md) retains #98's bounded baseline and
 per-transport framing, notification and pending-admission remediation. This is
 not a global daemon memory budget or subprocess sandbox claim.
+
+
+[LSP document state](lsp-document-state-review.md) records #102's failed-read
+baseline and per-document open/close ownership. File-worker preemption and
+production analyzer validation remain outside these session-state tests.

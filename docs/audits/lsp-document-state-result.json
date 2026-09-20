@@ -1,0 +1,13 @@
+{
+  "source_revision": "d9b0aa2ab8ac02ff15f17b45eae5c949c47c1eaa",
+  "fixture": "real LspSession with synthetic Python JSON-RPC peer and one-byte invalid UTF-8 file",
+  "read_failed": true,
+  "valid_retry_returned_without_didOpen": true,
+  "tests_passed": 1,
+  "seconds": 0.01,
+  "sha256": {
+    "crates/hades-core/src/code/lsp/session.rs": "7a49f1bbe660b5a976e1f84f77aa93429a2d49f728edc338e73875625fc49485",
+    "docs/audits/repros/lsp_document_state.rs": "806294cfd95e39f9d6c921c21a671841af68052276bedf48a60435487c5f2397"
+  },
+  "production_changed": false
+}
