@@ -130,6 +130,8 @@ jobs:
       - name: Install hashed CPU test dependencies
         run: |
           python -m pip install --require-hashes --only-binary=:all: --extra-index-url https://download.pytorch.org/whl/cpu -r services/requirements-ci.txt
+      - name: Build and verify installed Python distributions
+        run: python scripts/test_python_distribution.py
       - name: Generate protobuf contracts and run CPU tests
         run: |
           python -c "import torch; assert torch.version.cuda is None"

@@ -322,6 +322,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Build complete Python service wheels with generated RPC bindings, trainer
+  modules and adapter resources; include canonical protos in source archives
+  and verify installed-wheel imports outside the checkout in CI (#38).
+
 - Allow detail rows up to the aggregate search result budget by paging one row
   with bounded envelope headroom; regenerate vector/metric provenance hashes and
   correct the retrieval seed's training-adjacency excerpt in version 2 (#22).
