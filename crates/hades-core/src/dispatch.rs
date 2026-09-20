@@ -2187,6 +2187,30 @@ mod handlers {
 
     // ── Graph embed handlers ──────────────────────────────────────────
 
+    fn structural_vector<'a>(
+        node_id: &str,
+        embedding: &'a serde_json::Value,
+    ) -> Result<&'a [serde_json::Value], HandlerError> {
+        let invalid = |reason: &str| HandlerError::InvalidEmbedding {
+            node_id: node_id.to_owned(),
+            reason: reason.to_owned(),
+        };
+        let values = embedding
+            .as_array()
+            .ok_or_else(|| invalid("not an array"))?;
+        if values.is_empty() {
+            return Err(invalid("empty (0 dimensions)"));
+        }
+        if values.iter().any(|value| {
+            value
+                .as_f64()
+                .is_none_or(|number| !number.is_finite() || !(number as f32).is_finite())
+        }) {
+            return Err(invalid("components must be finite float32 numbers"));
+        }
+        Ok(values)
+    }
+
     /// Look up the pre-computed structural embedding for a node.
     pub async fn graph_embed_embed(
         pool: &ArangoPool,
@@ -2218,19 +2242,7 @@ mod handlers {
                 node_id: node_id.to_string(),
             })?;
 
-        let embed_dim = embedding.as_array().map(|a| a.len()).ok_or_else(|| {
-            HandlerError::InvalidEmbedding {
-                node_id: node_id.to_string(),
-                reason: "not an array".into(),
-            }
-        })?;
-
-        if embed_dim == 0 {
-            return Err(HandlerError::InvalidEmbedding {
-                node_id: node_id.to_string(),
-                reason: "empty (0 dimensions)".into(),
-            });
-        }
+        let embed_dim = structural_vector(node_id, embedding)?.len();
 
         let label = node
             .get("title")
@@ -2276,19 +2288,7 @@ mod handlers {
             });
         }
 
-        let embed_dim = emb_value.as_array().map(|a| a.len()).ok_or_else(|| {
-            HandlerError::InvalidEmbedding {
-                node_id: node_id.to_string(),
-                reason: "not an array".into(),
-            }
-        })?;
-
-        if embed_dim == 0 {
-            return Err(HandlerError::InvalidEmbedding {
-                node_id: node_id.to_string(),
-                reason: "empty (0 dimensions)".into(),
-            });
-        }
+        let embed_dim = structural_vector(node_id, &emb_value)?.len();
 
         // Discover document collections.
         let collections: Vec<CollectionInfo> = list_collections(pool, true)
@@ -2306,10 +2306,12 @@ mod handlers {
 
         let search_aql = "LET te = @target_emb \
              FOR d IN @@col \
-               FILTER d.structural_embedding != null \
-               FILTER LENGTH(d.structural_embedding) == @dim \
+               LET candidate = IS_ARRAY(d.structural_embedding) ? d.structural_embedding : [] \
+               FILTER LENGTH(candidate) == @dim \
                FILTER d._id != @target_id \
-               LET sim = SUM(FOR i IN 0..@dim_minus_1 RETURN te[i] * d.structural_embedding[i]) \
+               LET valid_values = (FOR v IN candidate FILTER IS_NUMBER(v) AND ABS(v) <= @max_value RETURN 1) \
+               FILTER LENGTH(valid_values) == @dim \
+               LET sim = SUM(FOR i IN 0..@dim_minus_1 RETURN te[i] * candidate[i]) \
                SORT sim DESC \
                LIMIT @k \
                RETURN { \
@@ -2324,6 +2326,7 @@ mod handlers {
                 "@col": col_info.name,
                 "col_name": col_info.name,
                 "target_emb": emb_value,
+                "max_value": f32::MAX as f64,
                 "dim": embed_dim,
                 "dim_minus_1": embed_dim - 1,
                 "target_id": node_id,
