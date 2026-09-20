@@ -147,3 +147,59 @@ def test_top_ten_coverage_and_judged_pool_denominator_are_distinct():
         assert row["judgment_coverage"]["fraction"] == 1
         assert row["recall_at_5"] == 0.5
         assert row["ndcg_at_10"] == pytest.approx((7/math.log2(3)) / (7 + 3/math.log2(3)))
+
+
+def test_document_profile_uses_query_prompt_and_preserves_code_defaults():
+    dataset = {"documents":[{"text":"a passage"}], "queries":[{"text":"a question"}]}
+    profile, inputs = evaluator.encoding_plan(dataset)
+    assert profile["task"] == "code"
+    assert inputs == [("a passage", "passage"), ("a question", "passage")]
+    dataset.update(embedding_profile="document_research", workload="document_research")
+    profile, inputs = evaluator.encoding_plan(dataset)
+    assert profile["task"] == "retrieval"
+    assert inputs == [("a passage", "passage"), ("a question", "query")]
+    dataset["embedding_profile"] = "code_search"
+    with pytest.raises(ValueError, match="differ"):
+        evaluator.encoding_plan(dataset)
+
+
+def test_profile_rejects_unknown_empty_and_missing_text_inputs():
+    for dataset in [
+        {"embedding_profile":"unknown"},
+        {"documents":[],"queries":[]},
+        {"documents":[{"text":" "}],"queries":[{"text":"q"}]},
+    ]:
+        with pytest.raises(ValueError):
+            evaluator.encoding_plan(dataset)
+
+
+def test_preflight_uses_processor_prefixes_and_rejects_oversize_without_truncation():
+    class Processor:
+        text_max_length = 4
+
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"input_ids":[kwargs["text"][0].split()]}
+
+    processor = Processor()
+    result = evaluator.preflight_inputs(processor, [("one two three", "passage"), ("why", "query")])
+    assert result["input_tokens"] == [4, 2]
+    assert result["effective_max_tokens"] == 4
+    assert processor.calls == [
+        {"text":["Passage: one two three"],"padding":False,"truncation":False},
+        {"text":["Query: why"],"padding":False,"truncation":False},
+    ]
+    with pytest.raises(ValueError, match="5 tokens"):
+        evaluator.preflight_inputs(processor, [("one two three four", "query")])
+
+
+@pytest.mark.parametrize("key", ["documents", "queries"])
+@pytest.mark.parametrize("member", [None, 1, "text", []])
+def test_profile_rejects_non_object_members(key, member):
+    dataset = {"documents": [{"text": "passage"}], "queries": [{"text": "question"}]}
+    dataset[key] = [member]
+    with pytest.raises(ValueError, match="encoding inputs require nonempty text"):
+        evaluator.encoding_plan(dataset)

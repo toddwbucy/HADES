@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline, CPU-only code-retrieval seed evaluation; never contacts HADES services."""
+"""Offline, CPU-only retrieval evaluation; never contacts HADES services."""
 import argparse
 import hashlib
 import importlib.metadata
@@ -10,6 +10,46 @@ from pathlib import Path
 import resource
 import time
 
+PROFILES = {
+    "code_search": {"task": "code", "document_prompt": "passage", "query_prompt": "passage"},
+    "document_research": {"task": "retrieval", "document_prompt": "passage", "query_prompt": "query"},
+}
+MAX_TOKENS = 2048
+
+
+def encoding_plan(dataset):
+    """Resolve one adapter space and distinct document/query prompts per corpus."""
+    name = dataset.get("embedding_profile", "code_search")
+    if not isinstance(name, str) or name not in PROFILES:
+        raise ValueError("unknown embedding profile")
+    if dataset.get("workload", name) != name:
+        raise ValueError("workload and embedding profile differ")
+    profile = dict(PROFILES[name], name=name)
+    inputs = []
+    for key, prompt in [("documents", profile["document_prompt"]), ("queries", profile["query_prompt"])]:
+        if not isinstance(dataset.get(key), list) or not dataset[key]:
+            raise ValueError("encoding needs nonempty documents and queries")
+        for item in dataset[key]:
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str) or not item["text"].strip():
+                raise ValueError("encoding inputs require nonempty text")
+            inputs.append((item["text"], prompt))
+    return profile, inputs
+
+
+def preflight_inputs(processor, inputs):
+    """Count actual prefixed processor inputs without truncation before inference."""
+    limit = min(MAX_TOKENS, processor.text_max_length)
+    counts = []
+    for index, (text, prompt) in enumerate(inputs):
+        prefix = {"passage": "Passage", "query": "Query"}[prompt]
+        encoded = processor(text=[f"{prefix}: {text}"], padding=False, truncation=False)
+        count = len(encoded["input_ids"][0])
+        if not 0 < count <= limit:
+            raise ValueError(f"input {index} has {count} tokens; allowed range is 1..{limit}")
+        counts.append(count)
+    return {"effective_max_tokens": limit, "input_tokens": counts,
+        "prefixes": "Jina v4 Passage: / Query: ", "truncation": False}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -19,13 +59,17 @@ def main():
     parser.add_argument("--dataset", type=Path, default=Path("evaluation/retrieval/repository-v2.json"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    dataset_bytes = args.dataset.read_bytes()
+    evaluator_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    dataset = json.loads(dataset_bytes)
+    profile, inputs = encoding_plan(dataset)
+    validate_judgments(dataset)
     args.output.mkdir(parents=True, exist_ok=True)
     if args.vectors:
         import numpy as np
-        dataset = json.loads(args.dataset.read_text())
         count = len(dataset["documents"])
         provenance = json.loads(args.vectors.with_name("provenance.json").read_text())
-        if provenance["dataset_sha256"] != hashlib.sha256(args.dataset.read_bytes()).hexdigest():
+        if provenance["dataset_sha256"] != hashlib.sha256(dataset_bytes).hexdigest():
             raise ValueError("frozen vectors belong to a different dataset version")
         if provenance["vectors_sha256"] != hashlib.sha256(args.vectors.read_bytes()).hexdigest():
             raise ValueError("frozen vector artifact hash does not match provenance")
@@ -45,14 +89,14 @@ def main():
     from transformers import AutoModel
     assert not torch.cuda.is_available()
     torch.set_num_threads(1)
-    dataset = json.loads(args.dataset.read_text())
     docs, questions = dataset["documents"], dataset["queries"]
     started = time.monotonic()
     model = AutoModel.from_pretrained(str(args.model.resolve()), trust_remote_code=True,
         local_files_only=True, torch_dtype=torch.bfloat16, attn_implementation="sdpa").eval()
+    token_preflight = preflight_inputs(model.processor, inputs)
     vectors = []
-    for i, text in enumerate([d["text"] for d in docs] + [q["text"] for q in questions]):
-        result = model.encode_text([text], task="code", prompt_name="passage", max_length=2048,
+    for i, (text, prompt) in enumerate(inputs):
+        result = model.encode_text([text], task=profile["task"], prompt_name=prompt, max_length=MAX_TOKENS,
             batch_size=1, return_numpy=False)
         vector = torch.stack(result).detach().cpu().float().numpy()[0]
         assert vector.shape == (2048,) and np.isfinite(vector).all()
@@ -72,9 +116,11 @@ def main():
     metrics_path = args.output / "metrics.json"
     metrics_path.write_text(json.dumps(report,indent=2)+"\n")
     provenance = {"vectors_sha256":vectors_sha256,
-        "metrics_sha256":hashlib.sha256(metrics_path.read_bytes()).hexdigest(), "dataset_sha256":hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
-        "model_files":manifest, "task":"code", "prompt":"passage", "device":"cpu", "dtype":"bfloat16",
-        "max_tokens":2048, "dependencies":{name:importlib.metadata.version(name) for name in ["torch","transformers","peft","numpy","tokenizers"]},
+        "evaluator_sha256":evaluator_sha256,
+        "metrics_sha256":hashlib.sha256(metrics_path.read_bytes()).hexdigest(), "dataset_sha256":hashlib.sha256(dataset_bytes).hexdigest(),
+        "model_files":manifest, "embedding_profile":profile, "token_preflight":token_preflight,
+        "device":"cpu", "dtype":"bfloat16",
+        "max_tokens":MAX_TOKENS, "dependencies":{name:importlib.metadata.version(name) for name in ["torch","transformers","peft","numpy","tokenizers"]},
         "seconds":time.monotonic()-started, "peak_rss_kib":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         "limitations":["Author-created seed with unjudged documents, not a production quality certification.","CPU bfloat16 differs from the active GPU precision and runtime.","Graph baseline uses source-file membership, not learned graph weights."]}
     (args.output / "provenance.json").write_text(json.dumps(provenance,indent=2)+"\n")
@@ -87,18 +133,33 @@ def write_vector_artifact(path, vectors):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def score(dataset, document_vectors, query_vectors):
-    import numpy as np
+def validate_judgments(dataset):
+    """Reject malformed evaluation identities and labels before model loading."""
     policy = dataset.get("scoring_policy", "legacy_seed")
     if policy not in ("legacy_seed", "complete_top10"):
         raise ValueError("unknown scoring policy")
-    strict = policy == "complete_top10"
     docs = dataset["documents"]
     ids = [d["id"] for d in docs]
-    document_vectors = np.asarray(document_vectors, dtype=np.float64)
-    query_vectors = np.asarray(query_vectors, dtype=np.float64)
     if not docs or len(ids) != len(set(ids)) or not dataset["queries"]:
         raise ValueError("evaluation requires unique documents and nonempty queries")
+    for question in dataset["queries"]:
+        labels = question["relevance"]
+        if (not isinstance(labels, dict) or not set(labels).issubset(ids)
+            or any(type(v) is not int or not 0 <= v <= 3 for v in labels.values())
+            or (policy != "complete_top10" and not any(v > 0 for v in labels.values()))):
+            raise ValueError("queries need valid judgments; legacy seed queries also need a relevant document")
+    query_ids = [q["id"] for q in dataset["queries"]]
+    if len(query_ids) != len(set(query_ids)):
+        raise ValueError("evaluation requires unique query IDs")
+    return policy, docs, ids, query_ids
+
+
+def score(dataset, document_vectors, query_vectors):
+    import numpy as np
+    policy, docs, ids, query_ids = validate_judgments(dataset)
+    strict = policy == "complete_top10"
+    document_vectors = np.asarray(document_vectors, dtype=np.float64)
+    query_vectors = np.asarray(query_vectors, dtype=np.float64)
     if (document_vectors.ndim != 2 or query_vectors.ndim != 2
         or len(document_vectors) != len(docs) or len(query_vectors) != len(dataset["queries"])
         or document_vectors.shape[1] != query_vectors.shape[1] or document_vectors.shape[1] == 0):
@@ -106,15 +167,6 @@ def score(dataset, document_vectors, query_vectors):
     for matrix in (document_vectors, query_vectors):
         if not np.isfinite(matrix).all() or (np.linalg.norm(matrix, axis=1) == 0).any():
             raise ValueError("vectors must be finite and nonzero")
-    for question in dataset["queries"]:
-        labels = question["relevance"]
-        if (not isinstance(labels, dict) or not set(labels).issubset(ids)
-            or any(type(v) is not int or not 0 <= v <= 3 for v in labels.values())
-            or (not strict and not any(v > 0 for v in labels.values()))):
-            raise ValueError("queries need valid judgments; legacy seed queries also need a relevant document")
-    query_ids = [q["id"] for q in dataset["queries"]]
-    if len(query_ids) != len(set(query_ids)):
-        raise ValueError("evaluation requires unique query IDs")
     paths = sorted({d["source"] for d in docs})
     structural = np.eye(len(paths))[[paths.index(d["source"]) for d in docs]]
     document_vectors = document_vectors.astype(np.float64)
