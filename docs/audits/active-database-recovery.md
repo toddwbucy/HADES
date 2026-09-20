@@ -129,8 +129,8 @@ assumption allowed both exploratory and retained runs to complete.
 recorded contents. It does not establish current source coverage, scheduled
 backup success, retention/monitoring, recent-data recovery, live consistency,
 users/ACLs, named graphs, model checkpoints, all-database recovery or recovery
-after loss of this host. Issue #63 stays open. Owner RPO/RTO targets have been
-requested; deploying a production backup job still requires its own reviewed plan.
+after loss of this host. Issue #63 stays open. The owner maintenance policy below now governs pre-change protection; deploying
+a production backup job still requires its own reviewed plan.
 
 
 ### Replay evidence hardening
@@ -151,3 +151,20 @@ starting a server; it produced no passing result. Earlier staging attempts expos
 missing adjacent ICU and timezone resources and exited during server startup;
 owned-process cleanup ran and neither attempt produced a passing result. The
 recorded successful result belongs to the complete staged implementation.
+
+
+## Owner recovery policy (2026-09-20)
+
+The owner permits planned downtime to be arranged for a specific maintenance
+operation and requires a snapshot before execution whenever data loss is a risk.
+The maintenance plan must identify the downtime window, snapshot the effective
+active data dataset (`dbpool/home/todd` for the current ArangoDB directory), verify
+the snapshot identifier and coverage, and specify database consistency and
+rollback steps before a risky change. A snapshot of the legacy `dbpool/arangodb`
+dataset alone does not satisfy this requirement.
+
+This supplies the pre-change preservation policy and a process for agreeing
+planned downtime. It does not specify a numeric incident RPO/RTO or establish
+routine backup freshness, retention or failure monitoring. The audit remains
+read-only against production; no production snapshot or maintenance change was
+performed in response to this clarification.
