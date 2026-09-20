@@ -4,6 +4,32 @@ The next [representative workload plan](workload-plan.md) covers both code searc
 and evolving public-paper drafts. It distinguishes intended capabilities from
 implementation evidence; its candidate questions are not yet frozen judgments.
 
+## Representative judgment coverage
+
+New representative datasets must set `"scoring_policy": "complete_top10"`.
+In this mode the scorer reports each method's original ranking, judged/returned
+counts and unjudged result IDs. It withholds that query's metrics if any returned
+top-ten passage lacks a judgment, and withholds all method aggregates until every
+included query can be scored. Fully judged queries remain visible individually;
+they are not selectively averaged while harder queries await review. If fewer
+than ten results exist, coverage uses the actual returned count.
+
+An empty relevance map can be used to produce rankings for judgment collection.
+Explicit zero grades count as judged. A completely judged query with no positive
+passages reports `no_positive_judgments` and null metrics, since this scorer does
+not evaluate abstention. Recall and nDCG are labeled `judged_pool`: relevant
+passages outside the frozen judged pool may remain unknown. This mode enforces
+coverage, not reviewer independence or label correctness.
+
+The default `legacy_seed` policy preserves the historical version-1/version-2
+results below. Do not use it for representative acceptance. Dataset hashes bind
+the policy as well as the judgments; changing either requires a new dataset
+version and matching provenance. The evaluator's embedding task and prompts are
+still the code profile, so this change alone does not enable paper-research
+encoding or establish a learned-graph baseline.
+
+## Historical code seed
+
 `repository-v2.json` freezes 24 code-navigation questions and 24 function excerpts
 from HADES before inference. Each excerpt records its source path, revision,
 line range, content hash, and truncation status. These are author-created seed
