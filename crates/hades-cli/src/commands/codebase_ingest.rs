@@ -453,7 +453,13 @@ pub async fn run_phase(
 
     // This separate enrichment stage is all-or-nothing. File replacements
     // preceding it remain committed, but failures cannot masquerade as success.
-    super::codebase_persist::store_relationships(
+    let relationship_error = if results.iter().any(|result| !result.success) {
+        Some(
+            "relationship stage deferred because file preparation failed; retry ingestion"
+                .to_owned(),
+        )
+    } else {
+        super::codebase_persist::store_relationships(
         &db,
         std::mem::take(&mut imports.committed_revisions),
         vec![
@@ -464,7 +470,9 @@ pub async fn run_phase(
             (CODEBASE.imports_edges, structural_edges.imports.clone()),
             (CODEBASE.imports_edges, rs_import_edges.clone()),
         ],
-    ).await.context("failed to atomically store cross-file relationships; earlier file replacements remain committed")?;
+    ).await.err().map(|error| format!("failed to atomically store cross-file relationships; earlier file replacements remain committed: {error}"))
+    };
+    let stored_relationships = usize::from(relationship_error.is_none());
 
     let total_import_edges =
         py_import_edges.len() + rs_import_edges.len() + structural_edges.imports.len();
@@ -473,7 +481,10 @@ pub async fn run_phase(
     // When Rust files were ingested, optionally use rust-analyzer for richer
     // symbol extraction: qualified names, call hierarchy, impl-trait edges,
     // PyO3/FFI detection. This enrichment phase runs after the syn-based loop.
-    let ra_stats = if !rust_abs_paths.is_empty() && rust_analyzer_cmd.is_some() {
+    let ra_stats = if relationship_error.is_none()
+        && !rust_abs_paths.is_empty()
+        && rust_analyzer_cmd.is_some()
+    {
         match run_rust_analyzer_phase(&db, &base, &rust_abs_paths, rust_analyzer_cmd.as_deref())
             .await
         {
@@ -535,7 +546,10 @@ pub async fn run_phase(
         );
     }
 
-    let gopls_stats = if !go_abs_paths.is_empty() && gopls_cmd.is_some() {
+    let gopls_stats = if relationship_error.is_none()
+        && !go_abs_paths.is_empty()
+        && gopls_cmd.is_some()
+    {
         match run_gopls_phase(&db, &base, &go_abs_paths, gopls_cmd.as_deref()).await {
             Ok(stats) => {
                 info!(
@@ -732,13 +746,14 @@ pub async fn run_phase(
         // Inbound edges re-pointed onto symbols that moved without being
         // renamed (#9), as opposed to the ones above, which could not be.
         "repointed_inbound_edges": repointed,
-        "import_edges": total_import_edges,
-        "python_import_edges": py_import_edges.len(),
-        "rust_import_edges": rs_import_edges.len(),
-        "python_call_edges": py_call_edges.len(),
-        "cpp_call_edges": cpp_call_edges.len(),
-        "structural_call_edges": structural_edges.calls.len(),
-        "structural_import_edges": structural_edges.imports.len(),
+        "relationship_error": relationship_error,
+        "import_edges": total_import_edges * stored_relationships,
+        "python_import_edges": py_import_edges.len() * stored_relationships,
+        "rust_import_edges": rs_import_edges.len() * stored_relationships,
+        "python_call_edges": py_call_edges.len() * stored_relationships,
+        "cpp_call_edges": cpp_call_edges.len() * stored_relationships,
+        "structural_call_edges": structural_edges.calls.len() * stored_relationships,
+        "structural_import_edges": structural_edges.imports.len() * stored_relationships,
         "rust_analyzer": {
             "symbols": ra_stats.symbols,
             "edges": ra_stats.edges,
@@ -760,7 +775,9 @@ pub async fn run_phase(
     // The failure travels with the summary rather than replacing it, so the
     // caller can emit both. Enrichment loss outranks per-file failures because
     // it means the graph is missing a whole layer of edges.
-    let failure = if let Some(message) = enrichment_failure {
+    let failure = if let Some(message) = relationship_error {
+        Some(anyhow::anyhow!("{message}"))
+    } else if let Some(message) = enrichment_failure {
         Some(anyhow::anyhow!("{message}"))
     } else if failed > 0 {
         Some(CodebaseIngestFailure { total, failed }.into())
@@ -2096,6 +2113,7 @@ async fn ingest_file(
         // re-resolution (#183).
         "content_hash": content_hash,
         "symbol_count": primitive_count,
+        "relationships_pending": true,
         "chunk_count": num_chk,
         "embedding_count": num_embeddings_written,
         "total_lines": analysis.metrics.total_lines,
@@ -2869,12 +2887,14 @@ async fn preserve_higher_fidelity(
     match crud::get_document(db, CODEBASE.files, file_key).await {
         Ok(doc) => {
             let stored = doc["analysis_tier"].as_str().and_then(AnalysisTier::parse);
-            Ok(should_preserve_tier(
-                stored,
-                incoming,
-                allow_downgrade,
-                reenriched_this_run,
-            ))
+            let preserve =
+                should_preserve_tier(stored, incoming, allow_downgrade, reenriched_this_run);
+            if preserve && doc["relationships_pending"] == true {
+                anyhow::bail!(
+                    "relationship recovery requires the stored analyzer tier; restore its prerequisites or explicitly allow analysis downgrade"
+                );
+            }
+            Ok(preserve)
         }
         Err(e) if e.is_not_found() => Ok(false),
         Err(e) => Err(e.into()),
@@ -2884,11 +2904,10 @@ async fn preserve_higher_fidelity(
 /// Check if a file can be skipped during incremental ingest.
 ///
 /// Returns `Some(true)` if the file should be skipped:
-/// - Symbol hash matches AND (embeddings already exist OR no embedder to backfill)
+/// - Content hash matches, relationships are complete, and embeddings need no backfill
 ///
 /// Returns `Some(false)` if re-processing is needed:
-/// - Symbol hash differs, OR
-/// - Symbol hash matches but embeddings are missing and embedder is available
+/// - Content hash differs, relationships are pending, or embeddings need backfill
 ///
 /// Returns `None` if the file is not in the database (first ingest).
 async fn check_unchanged(
@@ -2899,6 +2918,10 @@ async fn check_unchanged(
 ) -> Result<Option<bool>> {
     match crud::get_document(db, CODEBASE.files, file_key).await {
         Ok(doc) => {
+            if doc["relationships_pending"] == true {
+                return Ok(Some(false));
+            }
+
             // `content_hash` and not `symbol_hash` (#7). A row written before
             // that field existed has none, so the empty string never matches a
             // real digest and the file is re-processed once to record one --
@@ -4088,6 +4111,39 @@ mod tests {
     /// Asserted at the gate rather than through a full ingest, because that is
     /// where the decision is made and a full ingest needs an embedder.
     #[tokio::test]
+    async fn pending_relationships_cannot_be_skipped_or_silently_downgraded() {
+        with_temp_db("pending_gate", Fixtures::Codebase, |pool| async move {
+            pool.writer()
+                .post(
+                    "document/codebase_files",
+                    &json!({
+                        "_key":"pending", "content_hash":"same", "analysis_tier":"semantic",
+                        "relationships_pending":true, "chunk_count":1, "embedding_count":1
+                    }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                check_unchanged(&pool, "pending", "same", true)
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
+            let error =
+                preserve_higher_fidelity(&pool, "pending", AnalysisTier::Structural, false, false)
+                    .await
+                    .unwrap_err();
+            assert!(error.to_string().contains("relationship recovery requires"));
+            assert!(
+                !preserve_higher_fidelity(&pool, "pending", AnalysisTier::Structural, true, false)
+                    .await
+                    .unwrap()
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_gate_reads_content_hash_not_symbol_hash() {
         with_temp_db("gate", Fixtures::Codebase, |pool| async move {
             let fkey = "issue7__gate__lib_rs";
@@ -4176,6 +4232,14 @@ mod tests {
                 first.error
             );
 
+            super::super::codebase_persist::store_relationships(
+                &pool,
+                std::mem::take(&mut imports.committed_revisions),
+                Vec::new(),
+            )
+            .await
+            .expect("complete fixture relationship stage");
+
             // Reproduce the pre-fix state: the old `store_lsp_extractions` stamped
             // the file node `semantic` while leaving `symbol_hash` tree-sitter's.
             upsert_merge_file_node(
@@ -4212,6 +4276,14 @@ mod tests {
              re-enrich it (error: {:?})",
                 released.error
             );
+
+            super::super::codebase_persist::store_relationships(
+                &pool,
+                std::mem::take(&mut imports.committed_revisions),
+                Vec::new(),
+            )
+            .await
+            .expect("complete fixture relationship stage");
 
             // And the guard must still hold when nothing will restore the purge —
             // re-stamp, then re-ingest with no gopls phase scheduled.

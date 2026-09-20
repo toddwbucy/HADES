@@ -71,10 +71,18 @@ preparation rejection and missing-endpoint rejection have isolated regression
 coverage. The full maintained suite passes after this change.
 
 This does **not** close #40. Earlier file replacements remain committed if the
-relationship stage fails. The current unchanged-file skip can prevent automatic
-relationship recovery on retry: an explicit incomplete-stage marker and recovery
-contract are still needed. Remaining review also includes end-to-end cancellation,
-physical source changes during
-external analysis, and additional fallback/analyzer failure coverage. The transaction protects the prepared database
+relationship stage fails. Parsed file commits carry `relationships_pending: true`;
+the successful relationship transaction clears it, even when no edges resolve.
+Pending files bypass the unchanged-source skip. A private CLI regression rejects
+a call-edge write, observes pending files and zero stored relationship counts in
+the failure envelope, removes the fault, retries without `--force`, validates the
+graph, and verifies the next repeat skips completed files. Lower-fidelity analysis
+cannot silently skip a pending higher-fidelity file. File failures defer the
+relationship stage and leave prepared files pending; language-server enrichment
+is deferred when that stage fails.
+
+Remaining review includes relationships to unchanged files absent from the
+in-memory index, explicit fallback recovery, end-to-end cancellation, physical
+source changes during external analysis, and additional analyzer failure coverage. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.

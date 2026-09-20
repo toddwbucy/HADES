@@ -324,8 +324,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   the prior graph. Remap moved symbols' inbound edges in the file transaction;
   remap failures roll back replacement and overlapping moves retain their targets.
   Store cross-file relationship batches atomically, reject stale file revisions
-  and missing endpoints, and propagate stage failures. Automatic recovery after
-  a failed relationship stage remains under audit (#40).
+  and missing endpoints, and propagate stage failures with their JSON summary.
+  Pending parsed files retry relationships without `--force`; acknowledge stage
+  completion only after its transaction commits. Further recovery and cancellation
+  coverage remains under audit (#40).
 
 - Allow detail rows up to the aggregate search result budget by paging one row
   with bounded envelope headroom; regenerate vector/metric provenance hashes and

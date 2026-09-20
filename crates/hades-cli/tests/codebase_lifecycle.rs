@@ -295,3 +295,91 @@ async fn embedding_failure_preserves_committed_graph_before_transaction() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn relationship_failure_is_retried_without_force() {
+    with_temp_db(
+        "relationship_retry",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tree.path().join("provider.py"),
+                "def target():\n    return 'quartz'\n",
+            )
+            .unwrap();
+            std::fs::write(
+                tree.path().join("consumer.py"),
+                "from provider import target\n\ndef caller():\n    return target()\n",
+            )
+            .unwrap();
+            pool.writer().put("collection/codebase_calls_edges/properties", &json!({
+            "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+        })).await.unwrap();
+            let failure = cli(
+                &pool,
+                &embedder,
+                &["ingest", tree.path().to_str().unwrap()],
+                false,
+            )
+            .await;
+            assert_eq!(failure["code"]["import_edges"], 0);
+            assert_eq!(failure["code"]["python_call_edges"], 0);
+            assert!(
+                failure["code"]["relationship_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("failed to atomically store")
+            );
+
+            for name in ["provider.py", "consumer.py"] {
+                let key = keys::scoped_file_key(tree.path().to_str().unwrap(), name);
+                assert_eq!(
+                    pool.reader()
+                        .get(&format!("document/codebase_files/{key}"))
+                        .await
+                        .unwrap()["relationships_pending"],
+                    true
+                );
+            }
+            for collection in ["codebase_imports_edges", "codebase_calls_edges"] {
+                assert_eq!(
+                    hades_core::db::crud::count_collection(&pool, collection)
+                        .await
+                        .unwrap(),
+                    0
+                );
+            }
+            pool.writer()
+                .put(
+                    "collection/codebase_calls_edges/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            let retry = ingest(&pool, &embedder, tree.path()).await;
+            assert_eq!(retry["code"]["skipped"], 0);
+            assert!(
+                retry["code"]["python_call_edges"].as_u64().unwrap() > 0,
+                "{retry}"
+            );
+            for name in ["provider.py", "consumer.py"] {
+                let key = keys::scoped_file_key(tree.path().to_str().unwrap(), name);
+                assert_eq!(
+                    pool.reader()
+                        .get(&format!("document/codebase_files/{key}"))
+                        .await
+                        .unwrap()["relationships_pending"],
+                    false
+                );
+            }
+            validate(&pool, &embedder).await;
+            assert_eq!(
+                ingest(&pool, &embedder, tree.path()).await["code"]["skipped"],
+                2
+            );
+        },
+    )
+    .await;
+}

@@ -98,7 +98,7 @@ pub(super) async fn store_relationships(
     revisions: std::collections::HashMap<String, String>,
     batches: Vec<(&'static str, Vec<Value>)>,
 ) -> Result<(), ArangoError> {
-    if batches.iter().all(|(_, docs)| docs.is_empty()) {
+    if revisions.is_empty() && batches.iter().all(|(_, docs)| docs.is_empty()) {
         return Ok(());
     }
     let collections = CODEBASE
@@ -107,8 +107,8 @@ pub(super) async fn store_relationships(
         .map(|(name, _)| name.to_string())
         .collect();
     transaction::run(pool, collections, move |client| async move {
-        for (key, expected) in revisions {
-            if revision(&client, &key).await?.as_deref() != Some(expected.as_str()) {
+        for (key, expected) in &revisions {
+            if revision(&client, key).await?.as_deref() != Some(expected.as_str()) {
                 return Err(ArangoError::Request(
                     "file changed during relationship preparation; retry ingestion".into(),
                 ));
@@ -162,6 +162,16 @@ pub(super) async fn store_relationships(
                     )));
                 }
             }
+        }
+        // A failed or cancelled stage leaves this marker true. A later ingest
+        // must rebuild relationships even when the source digest is unchanged.
+        for key in revisions.keys() {
+            client
+                .patch(
+                    &format!("document/{}/{key}", CODEBASE.files),
+                    &json!({"relationships_pending":false}),
+                )
+                .await?;
         }
         Ok(())
     })
