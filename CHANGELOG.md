@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Verify one actual historical WeaverTools backup in a private bounded restore,
+  retaining aggregate results and replay instructions with current-coverage limits (#63).
+
 - Freeze reproducible, hash-bound passages for the private paper-research corpus;
   add a bounded preparation utility and source-offset/privacy contracts (#12).
 
