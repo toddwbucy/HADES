@@ -19,5 +19,7 @@
     "Underlying Tokio file worker is not forcibly preempted",
     "Partial-frame cancellation invalidates transport",
     "No production analyzer validation"
-  ]
+  ],
+  "integrated_main": "1c1adf8962723c83535d317951a13b102c8afe59",
+  "dependency_tree_matches_merged_main": true
 }

@@ -56,7 +56,10 @@ or FIFO readers remained active after these tests.
 
 A focused operation-registry unit test passed, verifying queued cancellation,
 independent URI admission and removal of the final operation entry. After local
-integration of descendant candidate `3771631` (PR #101, not yet merged), all five
+integration of descendant candidate `3771631` (PR #101), all five
 session cases passed again in 0.05 seconds. Focused Clippy passed with warnings
 denied. Selected final hashes and the dependency boundary are recorded in
 [lsp-document-state-remediation-result.json](lsp-document-state-remediation-result.json).
+
+PR #101 subsequently merged as `1c1adf8`; its tree is identical to the validated
+`3771631` candidate. Integrating main changed no selected runtime/test/CI hashes.
