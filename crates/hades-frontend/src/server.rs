@@ -106,7 +106,21 @@ pub async fn serve(
         password: password.map(Arc::new),
         allowed_hosts: Arc::new(allowed_hosts_for(&addr)),
     };
-    let app = Router::new()
+    let app = build_router(state);
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind {addr}"))?;
+    tracing::info!(%addr, "hades-viewer serving");
+    axum::serve(crate::transport_limits::AdmittedListener(listener), app)
+        .with_graceful_shutdown(crate::backend_process::shutdown_requested())
+        .await
+        .context("server error")?;
+    Ok(())
+}
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route(
             "/",
             get(|| async { asset(INDEX_HTML, "text/html; charset=utf-8") }),
@@ -136,16 +150,7 @@ pub async fn serve(
             state.clone(),
             require_known_host,
         ))
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
-    tracing::info!(%addr, "hades-viewer serving");
-    axum::serve(crate::transport_limits::AdmittedListener(listener), app)
-        .await
-        .context("server error")?;
-    Ok(())
+        .with_state(state)
 }
 
 /// The Host header values this server answers to: the literal bind address, plus
@@ -410,5 +415,103 @@ async fn request_deadline(req: Request, next: Next) -> Response {
             "viewer request deadline exceeded",
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use std::os::unix::fs::PermissionsExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn router_enforces_host_auth_database_and_bounded_backend_errors() {
+        let _fixture = crate::backend_process::SCRIPT_FIXTURE.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("backend");
+        let marker = root.path().join("called");
+        let script = format!(
+            "#!/usr/bin/python3\nimport pathlib\npathlib.Path({}).touch()\nprint('{{\"data\":{{\"graphs\":[{{\"name\":\"fixture\",\"edge_definitions\":[]}}]}}}}')\n",
+            serde_json::to_string(marker.to_str().unwrap()).unwrap()
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let router = build_router(AppState {
+            bin: bin.to_str().unwrap().into(),
+            limit: Some(1),
+            databases: Arc::new(vec!["fixture".into()]),
+            password: Some(Arc::new("fixture-password".into())),
+            allowed_hosts: Arc::new(vec!["localhost:12345".into()]),
+        });
+        let authorization = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("u:fixture-password")
+        );
+        for (uri, host, auth, expected) in [
+            (
+                "/api/graphs",
+                "rebound.invalid",
+                authorization.as_str(),
+                StatusCode::MISDIRECTED_REQUEST,
+            ),
+            ("/", "localhost:12345", "", StatusCode::UNAUTHORIZED),
+            (
+                "/api/graphs",
+                "localhost:12345",
+                "Basic bad",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                "/api/graphs?db=outside",
+                "localhost:12345",
+                authorization.as_str(),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let request = Request::builder()
+                .uri(uri)
+                .header(header::HOST, host)
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                expected
+            );
+            assert!(!marker.exists(), "rejected route launched a backend");
+        }
+        for db in ["", "?db=fixture"] {
+            let request = Request::builder()
+                .uri(format!("/api/graphs{db}"))
+                .header(header::HOST, "localhost:12345")
+                .header(header::AUTHORIZATION, &authorization)
+                .body(Body::empty())
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                serde_json::json!({"graphs":["fixture"]})
+            );
+        }
+        assert!(marker.exists());
+        for script in [
+            "#!/usr/bin/python3\nprint('not json')\n",
+            "#!/usr/bin/python3\nimport sys\nsys.stderr.write('synthetic-private-diagnostic')\nsys.exit(1)\n",
+        ] {
+            std::fs::write(&bin, script).unwrap();
+            let request = Request::builder()
+                .uri("/api/graphs")
+                .header(header::HOST, "localhost:12345")
+                .header(header::AUTHORIZATION, &authorization)
+                .body(Body::empty())
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-private-diagnostic"));
+        }
     }
 }

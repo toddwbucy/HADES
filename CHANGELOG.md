@@ -23,6 +23,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   cancellation cleanup, and prevent child diagnostics from entering HTTP errors (#52).
 - Bound viewer graph accumulation, JSON serialization, concurrent connections
   and request/socket lifetimes (#52).
+- Handle viewer SIGINT/SIGTERM before discovery; cancel and reap owned child
+  groups on shutdown, with real private HTTP/disconnect and router contracts (#52).
 
 ### Documentation
 

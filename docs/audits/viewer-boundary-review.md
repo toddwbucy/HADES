@@ -89,3 +89,34 @@ currently exercise exact serialization boundaries and stalled I/O ownership;
 actual-router assembly/overload/disconnect tests and measured budgets remain.
 Explicit signal-driven server shutdown and private descendant cleanup during
 shutdown must be added before #52 can be considered complete.
+
+## Shutdown and router verification
+
+Signal handlers are now registered before startup discovery. SIGINT/SIGTERM
+close backend admission and broadcast cancellation to all owned children; the
+server begins graceful HTTP shutdown and main keeps the runtime alive until
+child permits have returned after reaping. An actual-binary fixture verifies both
+signals during discovery, dump and an active loopback HTTP request. It also
+verifies that disconnecting the HTTP client stops its synthetic child/grandchild
+before viewer shutdown. These fixtures never invoke an installed HADES binary,
+database or real document corpus.
+
+The actual router now has contracts for rejected Host/auth/database inputs
+(with no child launch), default/explicit allowed database requests, malformed
+backend JSON and sanitized nonzero-exit responses. A separate shutdown-broadcast
+contract verifies new child requests are refused after shutdown. Twenty-four
+unit tests, the process lifecycle target and all-target Clippy pass. CI explicitly
+runs the new service-free `process_lifecycle` target.
+
+The signal test must run in an environment that delivers signals to its private
+children. Under the restrictive local execution wrapper the registered task did
+not receive SIGINT/SIGTERM; the same actual-binary fixture passed outside that
+wrapper. Concurrent temporary-script creation also exposed `ETXTBSY`; script
+fixture lifetimes are serialized, while their internal concurrent-child tests
+retain their concurrency. Fifteen repeated unit-suite runs passed after that
+fixture correction. No production spawn failures are ignored or retried.
+
+Remaining #52 evidence includes end-to-end cumulative graph-budget cases, measured
+concurrent child/response retention and peak memory, plus final review/CI. Signal
+shutdown and router boundary checks above supersede the earlier pending items;
+this report still does not claim complete frontend acceptance.

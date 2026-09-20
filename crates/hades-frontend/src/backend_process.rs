@@ -5,9 +5,52 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::{Semaphore, oneshot, watch};
+
+static SHUTDOWN: LazyLock<watch::Sender<bool>> = LazyLock::new(|| watch::channel(false).0);
 
 static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(4)));
+
+/// Register both signals before discovery can launch a backend child.
+pub fn install_shutdown_signals() -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::spawn(async move {
+        tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+        begin_shutdown();
+    });
+    Ok(())
+}
+
+fn begin_shutdown() {
+    tracing::debug!(
+        permits = SLOTS.available_permits(),
+        "viewer shutdown requested"
+    );
+    SLOTS.close();
+    SHUTDOWN.send_replace(true);
+}
+
+pub async fn shutdown_requested() {
+    let mut receiver = SHUTDOWN.subscribe();
+    let _ = receiver.wait_for(|requested| *requested).await;
+}
+
+pub async fn shutdown_and_wait() {
+    begin_shutdown();
+    // Slots are released only after direct children are reaped. Keep the
+    // runtime alive for ownership cleanup before returning from main.
+    while SLOTS.available_permits() != 4 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// Script-writing fixtures must not overlap a concurrent fork that can briefly
+// inherit their writable descriptors before exec closes them (ETXTBSY).
+#[cfg(test)]
+pub(crate) static SCRIPT_FIXTURE: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(Clone, Copy)]
 struct Limits {
@@ -64,7 +107,11 @@ async fn observe_exit(pid: u32) -> Result<()> {
             )
         };
         if result != 0 {
-            return Err(std::io::Error::last_os_error().into());
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
         }
         // SAFETY: waitid succeeded and initialized the supplied siginfo.
         if unsafe { info.assume_init().si_pid() } != 0 {
@@ -111,6 +158,19 @@ async fn run_with(
     slots: Arc<Semaphore>,
     limits: Limits,
 ) -> Result<Vec<u8>> {
+    run_with_shutdown(bin, args, slots, limits, SHUTDOWN.subscribe()).await
+}
+
+async fn run_with_shutdown(
+    bin: &str,
+    args: &[&str],
+    slots: Arc<Semaphore>,
+    limits: Limits,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<Vec<u8>> {
+    if *shutdown.borrow() {
+        return Err(anyhow!("viewer is shutting down"));
+    }
     let permit = slots
         .try_acquire_owned()
         .map_err(|_| anyhow!("viewer backend overloaded"))?;
@@ -142,10 +202,12 @@ async fn run_with(
             };
             tokio::select! {
                 _ = send.closed() => Err(anyhow!("viewer backend request cancelled")),
+                _ = shutdown.wait_for(|requested| *requested) => Err(anyhow!("viewer is shutting down")),
                 result = tokio::time::timeout(limits.runtime, work) =>
                     result.unwrap_or_else(|_| Err(anyhow!("viewer backend deadline exceeded"))),
             }
         };
+        tracing::debug!(pid = owner.group.0, "cleaning backend process group");
         let killed = owner.group.kill();
         let status = owner
             .child
@@ -163,6 +225,7 @@ async fn run_with(
             }
             Ok(out)
         })();
+        tracing::debug!("backend process reaped");
         drop(permit);
         let _ = send.send(result);
     });
@@ -231,6 +294,7 @@ time.sleep(10)"#,
 
     #[tokio::test]
     async fn normal_exit_and_output_overflow_release_admission() {
+        let _fixture = SCRIPT_FIXTURE.lock().await;
         let root = tempfile::tempdir().unwrap();
         let slots = Arc::new(Semaphore::new(1));
         let bin = script(root.path(), "print('ok')");
@@ -249,6 +313,7 @@ time.sleep(10)"#,
 
     #[tokio::test]
     async fn deadline_kills_child_and_descendant_before_releasing_slot() {
+        let _fixture = SCRIPT_FIXTURE.lock().await;
         let root = tempfile::tempdir().unwrap();
         let slots = Arc::new(Semaphore::new(1));
         let bin = stalled(root.path());
@@ -256,12 +321,13 @@ time.sleep(10)"#,
         let error = run_with(&bin, &[pid_path.to_str().unwrap()], slots.clone(), limits())
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("deadline"));
+        assert!(error.to_string().contains("deadline"), "{error:#}");
         assert_stopped(&started(root.path()).await, &slots).await;
     }
 
     #[tokio::test]
     async fn cancelled_request_kills_group_and_releases_slot() {
+        let _fixture = SCRIPT_FIXTURE.lock().await;
         let root = tempfile::tempdir().unwrap();
         let slots = Arc::new(Semaphore::new(1));
         let bin = stalled(root.path());
@@ -293,12 +359,52 @@ time.sleep(10)"#,
 
     #[tokio::test]
     async fn spawn_failure_releases_slot() {
+        let _fixture = SCRIPT_FIXTURE.lock().await;
         let slots = Arc::new(Semaphore::new(1));
         assert!(
             run_with("/nonexistent", &[], slots.clone(), limits())
                 .await
                 .is_err()
         );
+        assert_eq!(slots.available_permits(), 1);
+    }
+    #[tokio::test]
+    async fn shutdown_broadcast_cleans_group_and_refuses_new_children() {
+        let _fixture = SCRIPT_FIXTURE.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let slots = Arc::new(Semaphore::new(1));
+        let (send, receive) = watch::channel(false);
+        let bin = stalled(root.path());
+        let path = root.path().join("pids");
+        let worker_slots = slots.clone();
+        let request = tokio::spawn(async move {
+            run_with_shutdown(
+                &bin,
+                &[path.to_str().unwrap()],
+                worker_slots,
+                Limits {
+                    runtime: Duration::from_secs(10),
+                    ..limits()
+                },
+                receive,
+            )
+            .await
+        });
+        let children = started(root.path()).await;
+        send.send_replace(true);
+        let error = request.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("shutting down"));
+        assert_stopped(&children, &slots).await;
+        let error = run_with_shutdown(
+            "/nonexistent",
+            &[],
+            slots.clone(),
+            limits(),
+            send.subscribe(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("shutting down"));
         assert_eq!(slots.available_permits(), 1);
     }
 }

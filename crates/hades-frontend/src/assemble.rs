@@ -1044,6 +1044,7 @@ mod audit_resource_probe {
 
     #[tokio::test]
     async fn backend_rejects_two_megabyte_diagnostic() {
+        let _fixture = crate::backend_process::SCRIPT_FIXTURE.lock().await;
         // Synthetic child only. No HADES binary, endpoint or corpus is used.
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

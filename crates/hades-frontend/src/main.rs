@@ -109,26 +109,32 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    match cli.command {
-        Command::Dump(args) => {
-            let snapshot = args.backend.backend().assemble(&args.graph).await?;
-            let json = if args.pretty {
-                serde_json::to_string_pretty(&snapshot)?
-            } else {
-                serde_json::to_string(&snapshot)?
-            };
-            println!("{json}");
-            Ok(())
-        }
-        Command::Serve(args) => {
-            server::serve(
-                args.hades_bin,
-                args.limit,
-                args.databases,
-                args.password,
-                &args.bind,
-            )
-            .await
+    backend_process::install_shutdown_signals()?;
+    let result = async {
+        match cli.command {
+            Command::Dump(args) => {
+                let snapshot = args.backend.backend().assemble(&args.graph).await?;
+                let json = if args.pretty {
+                    serde_json::to_string_pretty(&snapshot)?
+                } else {
+                    serde_json::to_string(&snapshot)?
+                };
+                println!("{json}");
+                Ok(())
+            }
+            Command::Serve(args) => {
+                server::serve(
+                    args.hades_bin,
+                    args.limit,
+                    args.databases,
+                    args.password,
+                    &args.bind,
+                )
+                .await
+            }
         }
     }
+    .await;
+    backend_process::shutdown_and_wait().await;
+    result
 }
