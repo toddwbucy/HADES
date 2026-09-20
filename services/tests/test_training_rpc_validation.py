@@ -149,6 +149,19 @@ def test_reinitialization_requires_loading_a_new_graph():
     rejected(service, "GetEmbeddings", pb.GetEmbeddingsRequest(), grpc.StatusCode.FAILED_PRECONDITION)
 
 
+@pytest.mark.parametrize("field", ["num_relations", "num_collection_types"])
+def test_checkpoint_changed_type_bounds_requires_graph_reload(tmp_path, field):
+    service = loaded_service()
+    setattr(service.model_config, field, 2)
+    service._build_model(6)
+    source = loaded_service()
+    path = tmp_path / "smaller.pt"
+    invoke(source, "Checkpoint", pb.CheckpointRequest(path=str(path)))
+    invoke(service, "LoadCheckpoint", pb.LoadCheckpointRequest(path=str(path), device="cpu"))
+    assert service.x is None
+    rejected(service, "GetEmbeddings", pb.GetEmbeddingsRequest(), grpc.StatusCode.FAILED_PRECONDITION)
+
+
 def test_valid_training_and_checkpoint_roundtrip(tmp_path):
     service = loaded_service()
     step = invoke(service, "TrainStep", pb.TrainStepRequest(train_edge_indices=[0], neg_src=[3], neg_dst=[0]))

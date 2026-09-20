@@ -429,7 +429,10 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
         except (ValueError, KeyError, TypeError, RuntimeError, OSError, EOFError, pickle.UnpicklingError) as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
-        if candidate.device != self.device or candidate.in_dim != self.in_dim:
+        if (candidate.device != self.device or candidate.in_dim != self.in_dim
+                or self.model_config is None
+                or candidate.model_config.num_relations != self.model_config.num_relations
+                or candidate.model_config.num_collection_types != self.model_config.num_collection_types):
             self._clear_graph()
         self.device, self.model_config, self.opt_config = (
             candidate.device, candidate.model_config, candidate.opt_config
