@@ -909,15 +909,16 @@ impl DaemonCommand {
     /// # Tier assignments
     ///
     /// **Agent** — bounded reads, task management, semantic search,
-    /// graph traversal, code smell checks:
+    /// graph traversal, recorded code smell associations:
     /// - `db.query`, `db.get`, `db.list`, `db.count`, `db.check`, `db.recent`
     /// - `db.graph.traverse`, `db.graph.neighbors`, `db.graph.shortest_path`
     /// - `embed.text`, `graph_embed.embed`, `graph_embed.neighbors`
     /// - `task.*` (all task management)
-    /// - `smell.check`, `smell.verify`, `smell.report`, `link_code_smell`
+    /// - `smell.stored_report`, `link_code_smell`
     /// - `orient`, `codebase.stats`
     ///
-    /// **Admin** — raw AQL, schema mutation, destructive operations:
+    /// **Admin** — raw AQL, schema mutation, filesystem scans, destructive operations:
+    /// - `smell.check`, `smell.verify`, `smell.report` (local filesystem access)
     /// - `db.aql` (arbitrary query injection)
     /// - `db.insert`, `db.update`, `db.delete`, `db.purge` (unbounded writes)
     /// - `db.create_collection`, `db.create_index` (schema changes)
