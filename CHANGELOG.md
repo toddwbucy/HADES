@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Record the active database authentication boundary and a private 11-case ACL
+  matrix; clarify that reader/writer routes share credentials and permissions (#74).
+
 - Freeze reproducible, hash-bound passages for the private paper-research corpus;
   add a bounded preparation utility and source-offset/privacy contracts (#12).
 
