@@ -41,7 +41,10 @@ has been sent cannot promise rollback.
 
 LSP enrichment now commits its prepared symbols, edges, success metadata and
 recomputed counts as one separate atomic stage. File revisions are captured
-before language-server work; stale preparations are rejected. A metadata-schema
+before language-server work; stale preparations are rejected. Each captured source
+must match its stored content hash before analysis and is checked again inside
+the transaction before writes and before commit. All captured inputs participate,
+including a file for which the analyzer returns no extraction. A metadata-schema
 fault after symbol insertion rolls back the entire stage, and retry succeeds.
 Structural file commits that preceded enrichment remain durable.
 
@@ -98,7 +101,9 @@ not establish process-death cleanup after a stream transaction has begun; the
 in-process cancellation/lock-release contract covers a different boundary.
 
 Remaining review includes target indexing when higher-fidelity preservation
-bypasses normal analysis, process death during persistence, physical source changes during
-external analysis, and additional analyzer failure coverage. The transaction protects the prepared database
+bypasses normal analysis, process death during persistence, and additional analyzer
+failure coverage. Source-hash checks detect observed drift but do not lock the
+filesystem: edit-and-restore races, changes after the final check, and analyzer
+inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.

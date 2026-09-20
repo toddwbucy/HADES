@@ -3178,11 +3178,34 @@ async fn run_gopls_phase(
     Ok(stats)
 }
 
+#[derive(Clone)]
+struct EnrichmentInput {
+    revision: String,
+    content_hash: String,
+    path: PathBuf,
+}
+
+impl EnrichmentInput {
+    fn verify_source(&self) -> std::result::Result<(), hades_core::db::ArangoError> {
+        let source = std::fs::read_to_string(&self.path).map_err(|error| {
+            hades_core::db::ArangoError::Request(format!(
+                "cannot recheck enrichment source: {error}"
+            ))
+        })?;
+        if code::compute_content_hash(&source) != self.content_hash {
+            return Err(hades_core::db::ArangoError::Request(
+                "source changed during enrichment; retry ingestion".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 async fn enrichment_revisions(
     db: &ArangoPool,
     base: &Path,
     files: &[PathBuf],
-) -> Result<HashMap<String, Option<String>>> {
+) -> Result<HashMap<String, EnrichmentInput>> {
     let namespace = base.to_str().context("ingest root must be valid UTF-8")?;
     let mut revisions = HashMap::new();
     for path in files {
@@ -3192,8 +3215,23 @@ async fn enrichment_revisions(
             .to_string_lossy()
             .into_owned();
         let key = keys::scoped_file_key(namespace, &relative);
-        let revision = super::codebase_persist::revision(db.writer(), &key).await?;
-        revisions.insert(relative, revision);
+        let document = db
+            .writer()
+            .get(&format!("document/{}/{key}", CODEBASE.files))
+            .await?;
+        let input = EnrichmentInput {
+            revision: document["_rev"]
+                .as_str()
+                .context("enrichment file has no revision")?
+                .to_owned(),
+            content_hash: document["content_hash"]
+                .as_str()
+                .context("enrichment file has no content hash; re-ingest it")?
+                .to_owned(),
+            path: path.clone(),
+        };
+        input.verify_source()?;
+        revisions.insert(relative, input);
     }
     Ok(revisions)
 }
@@ -3204,7 +3242,7 @@ async fn enrichment_revisions(
 async fn store_lsp_extractions(
     db: &ArangoPool,
     all_extractions: HashMap<String, FileExtraction>,
-    revisions: HashMap<String, Option<String>>,
+    revisions: HashMap<String, EnrichmentInput>,
     workspaces: usize,
     workspaces_attempted: usize,
     analyzer: &'static str,
@@ -3269,12 +3307,19 @@ async fn store_lsp_extractions(
         .into_iter()
         .map(|(name, _)| name.to_owned())
         .collect();
+    let namespace_owned = namespace.to_owned();
     let stored = hades_core::db::transaction::run(db, collections, move |client| async move {
-        for (path, key, _, _) in &file_patches {
-            let expected = revisions.get(path).ok_or_else(|| hades_core::db::ArangoError::Request("missing enrichment preparation revision".into()))?;
-            if expected.is_none() || &super::codebase_persist::revision(&client, key).await? != expected {
+        for (path, _, _, _) in &file_patches {
+            if !revisions.contains_key(path) {
+                return Err(hades_core::db::ArangoError::Request("missing enrichment preparation revision".into()));
+            }
+        }
+        for (path, expected) in &revisions {
+            let key = keys::scoped_file_key(&namespace_owned, path);
+            if super::codebase_persist::revision(&client, &key).await?.as_deref() != Some(expected.revision.as_str()) {
                 return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
             }
+            expected.verify_source()?;
         }
         let mut batches = vec![(CODEBASE.symbols, symbols)];
         for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
@@ -3298,6 +3343,9 @@ async fn store_lsp_extractions(
             "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
             json!({"fkeys":file_patches.iter().map(|(_,key,_,_)| key).collect::<Vec<_>>(),
                 "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+        for input in revisions.values() {
+            input.verify_source()?;
+        }
         Ok(())
     }).await;
     if let Err(error) = stored {
@@ -5427,13 +5475,16 @@ mod tests {
     async fn enrichment_rejects_partial_metadata_and_stale_preparation() {
         use hades_core::code::lsp::symbols::ExtractedSymbol;
         with_temp_db("enrichment_atomic", Fixtures::Codebase, |pool| async move {
-            let namespace = "/isolated";
+            let tree = tempfile::tempdir().unwrap();
+            let namespace = tree.path().to_str().unwrap();
             let path = "fixture.rs";
+            let source = "fn target() {}\n";
+            std::fs::write(tree.path().join(path), source).unwrap();
             let key = keys::scoped_file_key(namespace, path);
             pool.writer()
                 .post(
                     "document/codebase_files",
-                    &json!({"_key":key,"path":path,"symbol_count":0,"content_hash":"original"}),
+                    &json!({"_key":key,"path":path,"symbol_count":0,"content_hash":code::compute_content_hash(source)}),
                 )
                 .await
                 .unwrap();
@@ -5442,10 +5493,13 @@ mod tests {
                 .get(&format!("document/codebase_files/{key}"))
                 .await
                 .unwrap();
-            let revisions = HashMap::from([(
-                path.to_owned(),
-                Some(before["_rev"].as_str().unwrap().to_owned()),
-            )]);
+            let dependency = tree.path().join("dependency.rs");
+            std::fs::write(&dependency, "pub struct Dependency;\n").unwrap();
+            let dependency_key = keys::scoped_file_key(namespace, "dependency.rs");
+            pool.writer().post("document/codebase_files", &json!({
+                "_key":dependency_key, "content_hash":code::compute_content_hash("pub struct Dependency;\n")
+            })).await.unwrap();
+            let revisions = enrichment_revisions(&pool, tree.path(), &[tree.path().join(path), dependency.clone()]).await.unwrap();
             let mut extraction = FileExtraction::empty();
             extraction.symbols.push(ExtractedSymbol {
                 name: "target".into(),
@@ -5465,6 +5519,22 @@ mod tests {
                 calls: Vec::new(),
             });
             let extractions = HashMap::from([(path.to_owned(), extraction)]);
+            std::fs::write(tree.path().join(path), "fn newer() {}\n").unwrap();
+            assert!(enrichment_revisions(&pool, tree.path(), &[tree.path().join(path)]).await.is_err());
+            let changed = store_lsp_extractions(&pool, extractions.clone(), revisions.clone(),
+                1, 1, "fixture", "fixture", namespace).await.unwrap();
+            assert!(changed.store_failed);
+            assert_eq!(pool.writer().get(&format!("document/codebase_files/{key}")).await.unwrap(), before);
+            assert_eq!(crud::count_collection(&pool, CODEBASE.symbols).await.unwrap(), 0);
+            std::fs::write(tree.path().join(path), source).unwrap();
+            // Even a captured input without an extraction can influence another
+            // file's analyzer output, so it must participate in validation.
+            std::fs::write(&dependency, "pub struct ChangedDependency;\n").unwrap();
+            let dependency_changed = store_lsp_extractions(&pool, extractions.clone(), revisions.clone(),
+                1, 1, "fixture", "fixture", namespace).await.unwrap();
+            assert!(dependency_changed.store_failed);
+            assert_eq!(crud::count_collection(&pool, CODEBASE.symbols).await.unwrap(), 0);
+            std::fs::write(&dependency, "pub struct Dependency;\n").unwrap();
             pool.writer().put("collection/codebase_files/properties", &json!({
                 "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
             })).await.unwrap();

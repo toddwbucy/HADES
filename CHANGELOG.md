@@ -329,7 +329,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   completion only after its transaction commits. Keep unchanged analyzed files
   in relationship resolution with revision guards, and clear pending recovery
   after explicit raw-text downgrade commits. Verify CLI interruption during
-  embedding preserves the graph and permits retry. Further recovery and cancellation
+  embedding preserves the graph and permits retry. Reject LSP enrichment when
+  captured source bytes differ from the stored content hash before analysis or
+  during persistence. Further recovery and cancellation
   coverage remains under audit (#40).
 
 - Allow detail rows up to the aggregate search result budget by paging one row
