@@ -4,6 +4,7 @@ pub mod client;
 pub mod edges;
 pub mod go_symbols;
 pub mod gopls;
+mod preflight;
 pub mod rust_analyzer;
 pub mod rust_symbols;
 pub mod session;
@@ -42,5 +43,5 @@ pub type RustAnalyzerError = LspError;
 
 pub use session::{
     AnalyzerStatus, DEFAULT_INDEX_TIMEOUT_SECS, managed_tools_dir, preflight_binary,
-    resolve_and_probe, version_args_for,
+    resolve_and_probe, resolve_and_probe_async, version_args_for,
 };

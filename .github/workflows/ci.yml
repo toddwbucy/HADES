@@ -108,6 +108,7 @@ jobs:
           cargo test -p hades-cli --test daemon_shutdown --verbose
           cargo test -p hades-proto --test proto_types --verbose
           cargo test -p hades-core --test structural_vectors --verbose
+          cargo test -p hades-core --test analyzer_preflight --verbose
           cargo test -p hades-core --test lsp_deadline --test lsp_memory --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
