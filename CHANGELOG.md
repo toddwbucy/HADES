@@ -19,45 +19,18 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
-- Verify service-wide ingestion admission through the actual MCP endpoint with
-  two disposable databases, a last-slot race, actual child counts, cross-database
-  tree conflicts and shutdown outcomes in both databases (#51).
-
-- Verify that a restarted daemon reports unowned unfinished ingestion jobs as
-  requiring recovery, preserves their records and refuses admission until explicit
-  reconciliation, even when a saved PID belongs to a live fixture process; refresh
-  a stale running snapshot after ownership ends to avoid falsely reporting recovery
-  for a just-completed job (#51).
-
-- Verify successful ingestion retry after daemon restart and reap owned children
-  after a caught supervision panic before releasing admission; reject non-UTF-8
-  canonical paths before job-record serialization (#51).
-
-- Verify actual daemon shutdown with a running ingestion child against disposable
-  ArangoDB, including child reaping, persisted failure and graph preservation (#51).
-
-- Preserve the daemon's effective ingestion configuration through a bounded,
-  sealed memory-file handoff instead of reloading ambient child configuration;
-  keep credentials out of arguments and temporary files (#51).
-
-- Track ingestion startup/completion with daemon-instance ownership, bounded
-  persistence retries and conservative recovery status; stop children when PID
-  persistence fails and refuse unresolved historical work (#51).
-
-- Gate actual-daemon SIGINT/SIGTERM and pending-ingestion reservation draining
-  with private Unix-socket fixtures that fail before job insertion or spawn (#51).
-
-- Close ingestion admission on daemon shutdown, cancel owned process groups and
-  drain reservations before runtime exit; full persisted-state and actual daemon
-  ingestion lifecycle verification remains in #51.
-
-- Capture detached-ingest output through bounded pipes instead of retained
-  temporary files; terminate owned process groups on overflow, deadline or leader
-  exit. Full shutdown and persisted-state verification remains in #51.
-
-- Reserve detached-ingest admission atomically across databases and overlapping
-  trees; fail closed on admission-query errors and transfer child ownership before
-  awaiting PID persistence. Full lifecycle/output remediation remains in #51.
+- Enforce atomic detached-ingest admission across served databases and overlapping
+  source trees; fail closed on admission errors and retain slots through cleanup (#51).
+- Own ingestion process groups through startup, request disconnects, PID-write
+  failures, supervision panics and daemon shutdown; reap children before releasing
+  admission, with private concurrency and descendant-cleanup contracts (#51).
+- Capture ingestion output through bounded asynchronous pipes instead of shared
+  temporary files; fail explicitly on overflow, malformed JSON and runtime expiry (#51).
+- Persist ingestion phases with per-daemon ownership and bounded retries; report
+  unowned unfinished records as requiring reconciliation, including after restart,
+  while refreshing completed jobs to avoid a stale-status race (#51).
+- Preserve resolved ingestion configuration and credentials through bounded sealed
+  descriptors; reject invalid canonical paths before job-record serialization (#51).
 
 - Bound viewer CLI child output and runtime, retain process admission through
   cancellation cleanup, and prevent child diagnostics from entering HTTP errors (#52).

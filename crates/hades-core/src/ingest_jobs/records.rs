@@ -3,7 +3,9 @@ use super::{Reservation, process::Process};
 use crate::config::HadesConfig;
 use crate::db::{ArangoPool, crud, query};
 use crate::dispatch::HandlerError;
+use futures::FutureExt;
 use serde_json::{Value, json};
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -191,32 +193,59 @@ async fn own_start(
     let pid = child.id();
     let running =
         json!({"status":"running","pid":pid,"running_at":chrono::Utc::now().to_rfc3339()});
-    let recorded = tokio::select! {
-        biased;
-        _ = shutdown.cancelled() => false,
-        result = timeout(WRITE_TIMEOUT, crud::update_document(&pool, COLLECTION, job, &running)) => matches!(result, Ok(Ok(_))),
+    let child = match confirm_child_running(
+        child,
+        crud::update_document(&pool, COLLECTION, job, &running),
+        &shutdown,
+    )
+    .await
+    {
+        Ok(child) => child,
+        Err(()) => {
+            persist(
+                &pool,
+                job,
+                &failed("ingest stopped because running state was not confirmed"),
+            )
+            .await;
+            let _ = reply.send(Err(service(
+                "ingest running state not confirmed; child stopped",
+            )));
+            return;
+        }
     };
-    if !recorded {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let _ = child.finish(cancel).await;
-        persist(
-            &pool,
-            job,
-            &failed("ingest stopped because running state was not confirmed"),
-        )
-        .await;
-        let _ = reply.send(Err(service(
-            "ingest running state not confirmed; child stopped",
-        )));
-        return;
-    }
     let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"pid":pid,"poll":"ingest.status"})));
     let update = match child.finish(shutdown).await {
         Ok(output) => outcome(output),
         Err(error) => failed(&error.to_string()),
     };
     persist(&pool, job, &update).await;
+}
+
+async fn confirm_child_running<E>(
+    child: Process,
+    write: impl Future<Output = Result<Value, E>>,
+    shutdown: &CancellationToken,
+) -> Result<Process, ()> {
+    // Keep the spawned process outside the database future's unwind boundary.
+    // A panic must follow the same reap-before-release path as an uncertain write.
+    let recorded = AssertUnwindSafe(async {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => false,
+            result = timeout(WRITE_TIMEOUT, write) => matches!(result, Ok(Ok(_))),
+        }
+    })
+    .catch_unwind()
+    .await
+    .unwrap_or(false);
+    if recorded {
+        return Ok(child);
+    }
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let _ = child.finish(cancel).await;
+    Err(())
 }
 
 fn outcome(output: super::process::Output) -> Value {
@@ -298,6 +327,38 @@ mod tests {
     use crate::cursor_mock::{Mock, Reply};
     use std::sync::Arc;
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn panicking_pid_confirmation_reaps_before_admission_release() {
+        let admission = Arc::new(super::super::Admission::new(1));
+        let path = std::path::Path::new("/private-confirmation-fixture");
+        let reservation = admission.reserve(path).unwrap();
+        let child = Process::spawn(&mut python("import time; time.sleep(10)")).unwrap();
+        let pid = child.id();
+        let write = async {
+            tokio::task::yield_now().await;
+            panic!("private PID persistence fault");
+            #[allow(unreachable_code)]
+            Ok::<Value, std::io::Error>(json!({}))
+        };
+        assert!(
+            confirm_child_running(child, write, &reservation.shutdown())
+                .await
+                .is_err()
+        );
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(
+            admission
+                .reserve(std::path::Path::new("/another-private-fixture"))
+                .is_err()
+        );
+        drop(reservation);
+        assert!(admission.reserve(path).is_ok());
+    }
 
     fn ok() -> Reply {
         Reply::page(json!({}))

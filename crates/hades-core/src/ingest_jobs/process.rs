@@ -94,12 +94,12 @@ impl Process {
     }
 
     async fn finish_until(mut self, limits: Limits, shutdown: CancellationToken) -> Result<Output> {
-        let stdout = self.child.stdout.take().context("missing ingest stdout")?;
-        let stderr = self.child.stderr.take().context("missing ingest stderr")?;
         let pid = self.id();
         // Keep the process outside the unwind boundary so a supervisor panic
         // cannot drop it before explicit group signalling and direct reaping.
         let captured = AssertUnwindSafe(async {
+            let stdout = self.child.stdout.take().context("missing ingest stdout")?;
+            let stderr = self.child.stderr.take().context("missing ingest stderr")?;
             let capture = async {
                 tokio::try_join!(
                     read_stdout(stdout, limits.stdout),
@@ -348,6 +348,39 @@ mod tests {
 
     #[tokio::test]
     async fn exited_leader_does_not_leave_descendant_holding_pipes() {
+        const PROBE: &str = "HADES_PRIVATE_INGEST_SUBREAPER_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            // Confine the process-wide subreaper setting to a child running
+            // this one test, so parallel unit tests keep their own semantics.
+            let output = tokio::time::timeout(
+                Duration::from_secs(10),
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "ingest_jobs::process::tests::exited_leader_does_not_leave_descendant_holding_pipes",
+                        "--nocapture",
+                    ])
+                    .env(PROBE, "1")
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                "private probe did not execute: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        // SAFETY: this private probe adopts only its own orphan descendants.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
         let process = python(
             "import os,subprocess\np=subprocess.Popen(['/usr/bin/python3','-c','import time;time.sleep(10)'])\nos.write(1,str(p.pid).encode())\nos._exit(0)",
         );
@@ -359,21 +392,25 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        // Production owns/reaps the direct child; the OS adopts its descendant.
-        // Actual-server tests will use a private subreaper to assert disappearance.
+        // The supervisor must already have reaped its direct child. Adopt and
+        // reap only the reported private descendant, without signalling it here.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
-            match std::fs::read_to_string(format!("/proc/{descendant}/stat")) {
-                Ok(stat) if stat.rsplit_once(") ").unwrap().1.starts_with('Z') => break,
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Err(error) => panic!("cannot inspect private descendant: {error}"),
+            let mut status = 0;
+            // SAFETY: wait only for this probe's known adopted child PID.
+            let reaped = unsafe { libc::waitpid(descendant as i32, &mut status, libc::WNOHANG) };
+            if reaped == descendant as i32 {
+                assert!(libc::WIFSIGNALED(status));
+                assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+                break;
             }
+            assert_eq!(reaped, 0, "{}", std::io::Error::last_os_error());
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "private descendant survived cleanup"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        assert!(absent(descendant));
     }
 }

@@ -41,7 +41,11 @@ pipe EOF; overflow and runtime expiry signal the group and reap the direct child
 Three finite synthetic-child contracts cover a 1 MiB single-line diagnostic,
 stdout overflow, deadline expiry and a leader exiting while a descendant holds
 its pipes. They verify direct-child disappearance and descendant termination.
-They do not yet establish service shutdown, persisted outcomes or worst-case RSS.
+The descendant fixture runs in a dedicated subreaper test process: supervision
+must reap its direct child, and the test then reaps only the known adopted
+descendant and verifies SIGKILL and disappearance. These unit contracts alone do
+not establish persisted outcomes or worst-case RSS; daemon/database coverage is
+recorded below.
 
 ## Local shutdown wiring
 
@@ -94,7 +98,7 @@ the job record.
 
 Validation: the maintained private-database matrix passed after this fix
 (`strict-prerequisite`, `database-contracts`, `codebase`, `cli-lifecycle`), as did
-all 13 ingestion ownership unit tests. The initial lifecycle failure and the
+all 14 ingestion ownership unit tests. The initial lifecycle failure and the
 deterministic stale-snapshot regression establish why the refresh is needed.
 These results cover recovery separately from the concurrency fixture below.
 
@@ -115,25 +119,31 @@ retaining the process outside the unwind boundary, then signals its group and
 reaps the direct child. A private injected-panic contract verifies the child is
 absent while its reservation is still held, followed by readmission after release.
 This does not promise cleanup after an uncatchable process abort or SIGKILL.
+PID persistence also runs inside an unwind boundary while the child remains
+owned outside it. Error, timeout, shutdown or panic follows the same explicit
+stop-and-reap path. Its injected-panic test requires the child to be absent while
+admission remains held, then verifies readmission after reservation release.
 Canonical paths that cannot be represented as UTF-8 are rejected before admission
 or database access; a private symlink fixture prevents a serialization panic from
 replacing an ordinary invalid-parameter response.
 
-## Remaining requirements before publication or closure
+## Requirement review
 
-- Own the process group through normal completion, shutdown, panic and task
-  cancellation. Retain admission until descendants are stopped and the direct
-  child is reaped; direct-child kill-on-drop alone does not prove that invariant.
-- Verify persisted phases and output bounds against a real disposable database,
-  including ambiguous commits and response-size rejection. Existing private HTTP
-  fixtures below do not substitute for real ArangoDB semantics.
-- Verify the sealed effective-configuration handoff in the complete disposable
-  database/daemon ingestion lifecycle, retaining provisioning and root boundaries.
-- Review coverage of the private process-group, noisy-output, failure-injection
-  and multi-database concurrency fixtures against every issue requirement; complete
-  final CI before publication or closure.
+| Required outcome in #51 | Implementation and evidence |
+|---|---|
+| Atomic service-wide and per-tree admission, including request cancellation and unavailable admission state | Mutex-protected two-slot registry precedes database awaits; canonical ancestor/descendant conflicts cross database boundaries. Registry and held-handler tests exercise cancellation, poisoning and database refusal. Actual MCP last-slot contention counts the two real children across both databases. |
+| Cancellation-safe child ownership, startup/update failures, lost clients, shutdown and restart | An unexposed detached owner begins before record insertion and owns the child through explicit group signalling and reaping. Private HTTP/child tests cover uncertain insertion, cancelled insertion, spawn/PID failures and exhausted completion writes. Actual request connections close while children remain owned; daemon SIGINT/SIGTERM, restart reconciliation and successful retry are verified against disposable ArangoDB. Panic probes cover PID confirmation and capture/exit observation. |
+| Private output, byte bounds, retention/cleanup and overflow | No output files are created. Async pipes cap stdout at 8 MiB before growth and stderr at a 64 KiB tail; JSON parsing receives only the capped buffer. Invalid JSON, overflow and deadline outcomes fail explicitly. Single-line and invalid-UTF-8 tests verify tail limits. Job records retain bounded results until administrative deletion; there is no automatic TTL or cleanup of historical output files. Sealed configuration descriptors are private, bounded and closed with their owners. |
+| Selected database/configuration, provisioning/root authority and graph atomicity | Sealed resolved configuration and explicit database selection reach the actual ingestion child. Snapshot contracts cover secrets, conflicting environment and descriptor seals; actual MCP uses two databases with restricted provisioning roots. Existing service authority/path tests remain in place. The maintained database suite covers file replacement rollback, cancellation, identity and lifecycle graph validation. |
+| Private concurrency, failure, noisy-output, cleanup and retry fixtures | Maintained core ownership, CLI daemon-shutdown and database-gated lifecycle targets cover these paths; the MCP race counts actual held children, and a private subreaper verifies no surviving synthetic descendant. Failure injection uses private HTTP peers; ordinary persistence and restart use real disposable ArangoDB. No live endpoint or corpus is used. |
 
-The current local increment is deliberately not presented as completion of #51.
+The issue still requires final CI and review of the published change before
+closure. Fault-injection peers test uncertain acknowledgments and bounded response
+handling; they do not simulate an ArangoDB cluster failover. The service-wide cap
+is per daemon process, not a distributed scheduler. Unexpected process abort,
+SIGKILL and kernel-uninterruptible children are outside orderly cleanup guarantees;
+unowned unfinished records require operator reconciliation. The controlled
+held-child count is not a production stress or worst-case RSS measurement.
 No production binary, service configuration, database or GPU workload is changed.
 
 ## Local persisted-state increment
