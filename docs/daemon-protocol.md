@@ -618,7 +618,7 @@ kanban system in the configured database.
 
 ## Commands — Code Quality
 
-### `smell.check` (Agent)
+### `smell.check` (Admin)
 
 Run code smell / compliance check on a file.
 
@@ -627,7 +627,7 @@ Run code smell / compliance check on a file.
 | `path`    | `string` | required | File path to check        |
 | `verbose` | `bool`   | false    | Include detailed findings |
 
-### `smell.verify` (Agent)
+### `smell.verify` (Admin)
 
 Verify specific compliance claims.
 
@@ -636,13 +636,29 @@ Verify specific compliance claims.
 | `path`   | `string`   | required | File path to verify    |
 | `claims` | `string[]` | `[]`     | Claims to verify       |
 
-### `smell.report` (Agent)
+### `smell.report` (Admin)
 
 Generate a compliance report.
 
 | Param  | Type     | Default  | Description        |
 |--------|----------|----------|--------------------|
 | `path` | `string` | required | File path to check |
+
+### `smell.stored_report` (Agent)
+
+Read recorded file-to-smell associations from the selected database. `path` is
+an exact stored relative path or `codebase_files/<key>` ID (1–4096 bytes), never
+a local filesystem path to resolve. An existing full file ID takes precedence
+over an identical stored relative path; otherwise matching uses the stored path.
+Repeated paths across roots return distinct
+file IDs. Returns `source: "stored_graph"`, `recorded_smells`, and `truncated`;
+at most 100 associations are returned, with bounded name/enforcement fields.
+No matching associations returns an empty list, not proof that a file is clean.
+
+The MCP `smell_report` tool uses this command. Filesystem scans (`smell.check`,
+`smell.verify`, `smell.report`) now require Admin authority, including paths
+containing symlinks. Existing trusted local CLI scans retain their behavior.
+Agent callers that previously scanned files must use stored graph reports.
 
 ### `link_code_smell` (Agent)
 

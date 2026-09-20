@@ -38,3 +38,10 @@ pub mod tools;
 mod transport_limits;
 
 mod mcp_sessions;
+
+#[cfg(test)]
+use hades_core::db::{ArangoClient, ArangoPool};
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../hades-core/tests/common/cursor_mock.rs"]
+mod cursor_mock;

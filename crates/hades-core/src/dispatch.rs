@@ -833,6 +833,9 @@ pub enum DaemonCommand {
     #[serde(rename = "smell.report")]
     SmellReport(SmellReportParams),
 
+    #[serde(rename = "smell.stored_report")]
+    SmellStoredReport(SmellReportParams),
+
     #[serde(rename = "link_code_smell")]
     LinkCodeSmell(LinkCodeSmellParams),
 
@@ -908,15 +911,16 @@ impl DaemonCommand {
     /// # Tier assignments
     ///
     /// **Agent** — bounded reads, task management, semantic search,
-    /// graph traversal, code smell checks:
+    /// graph traversal, recorded code smell associations:
     /// - `db.query`, `db.get`, `db.list`, `db.count`, `db.check`, `db.recent`
     /// - `db.graph.traverse`, `db.graph.neighbors`, `db.graph.shortest_path`
     /// - `embed.text`, `graph_embed.embed`, `graph_embed.neighbors`
     /// - `task.*` (all task management)
-    /// - `smell.check`, `smell.verify`, `smell.report`, `link_code_smell`
+    /// - `smell.stored_report`, `link_code_smell`
     /// - `orient`, `codebase.stats`
     ///
-    /// **Admin** — raw AQL, schema mutation, destructive operations:
+    /// **Admin** — raw AQL, schema mutation, filesystem scans, destructive operations:
+    /// - `smell.check`, `smell.verify`, `smell.report` (local filesystem access)
     /// - `db.aql` (arbitrary query injection)
     /// - `db.insert`, `db.update`, `db.delete`, `db.purge` (unbounded writes)
     /// - `db.create_collection`, `db.create_index` (schema changes)
@@ -966,9 +970,10 @@ impl DaemonCommand {
             Self::TaskGraphIntegration(_) => AccessTier::Agent,
 
             // ── Agent: code quality ───────────────────────────────
-            Self::SmellCheck(_) => AccessTier::Agent,
-            Self::SmellVerify(_) => AccessTier::Agent,
-            Self::SmellReport(_) => AccessTier::Agent,
+            Self::SmellCheck(_) => AccessTier::Admin,
+            Self::SmellVerify(_) => AccessTier::Admin,
+            Self::SmellReport(_) => AccessTier::Admin,
+            Self::SmellStoredReport(_) => AccessTier::Agent,
             Self::LinkCodeSmell(_) => AccessTier::Agent,
 
             // ── Agent: codebase ───────────────────────────────────
@@ -1372,6 +1377,11 @@ pub async fn dispatch(
         DaemonCommand::SmellReport(params) => handlers::smell_report(pool, config, &params.path)
             .await
             .map_err(DispatchError::Handler),
+        DaemonCommand::SmellStoredReport(params) => {
+            handlers::smell_stored_report(pool, &params.path)
+                .await
+                .map_err(DispatchError::Handler)
+        }
         DaemonCommand::LinkCodeSmell(params) => handlers::link_code_smell(
             pool,
             &params.source_id,
@@ -6011,6 +6021,71 @@ mod handlers {
             "missing_from_graph": missing_from_graph,
             "unlinked_claims": unlinked_claims,
         }))
+    }
+
+    /// Read recorded file compliance associations without accessing the filesystem.
+    pub async fn smell_stored_report(pool: &ArangoPool, path: &str) -> Result<Value, HandlerError> {
+        if path.is_empty() || path.len() > 4096 {
+            return Err(HandlerError::InvalidParameter {
+                name: "path".into(),
+                reason: "use an exact stored path or codebase_files ID of 1–4096 bytes".into(),
+            });
+        }
+        // Exact database identity only: never canonicalize, stat, or read this input.
+        // Include file IDs so identical relative paths across roots remain distinct.
+        let aql = r#"
+            LET exact_id = FIRST(
+                FOR candidate IN codebase_files
+                    FILTER candidate._id == @path
+                    LIMIT 1
+                    RETURN candidate._id
+            )
+            FOR f IN codebase_files
+                FILTER exact_id != null ? f._id == exact_id : f.path == @path
+                FOR e IN compliance_edges
+                    FILTER e._from == f._id
+                    FOR s IN smell_specs
+                        FILTER s._id == e._to
+                        SORT f._id, e._key
+                        LIMIT 101
+                        RETURN {file_id: f._id, edge_id: e._id, smell_id: s._id,
+                                name: LEFT(TO_STRING(s.name), 256),
+                                enforcement: LEFT(TO_STRING(e.enforcement_type), 64)}
+        "#;
+        let (mut rows, _) = query::query_fold(
+            pool,
+            aql,
+            json!({"path": path}),
+            query::FoldLimits {
+                batch_size: 16,
+                response_bytes: 256 * 1024,
+                max_rows: 101,
+                server_memory_bytes: 32 * 1024 * 1024,
+            },
+            (Vec::<Value>::new(), 0_usize),
+            |(rows, bytes), row| {
+                *bytes += row.to_string().len();
+                if *bytes > 1024 * 1024 {
+                    return Err(crate::db::ArangoError::Request(
+                        "stored smell report exceeds byte limit".into(),
+                    ));
+                }
+                rows.push(row);
+                Ok(())
+            },
+            (),
+        )
+        .await
+        .map_err(|source| HandlerError::Query {
+            context: "failed to report recorded file smells".into(),
+            source,
+        })?;
+        let truncated = rows.len() > 100;
+        rows.truncate(100);
+        Ok(
+            json!({"path": path, "recorded_smells": rows, "truncated": truncated,
+                  "source": "stored_graph"}),
+        )
     }
 
     /// `hades smell report PATH` — combined check + verify + embedding probe.
