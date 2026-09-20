@@ -11,6 +11,14 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Provider contracts](provider-contracts.md): extraction/training gRPC versus
+  embedding HTTP, status and source-level size/admission limits, and 78 private
+  CPU cases; effective oversized-message boundaries remain to measure.
+
+- [Transport authority and response contracts](api-boundaries.md): complete
+  static daemon-tier/MCP exposure inventory, envelope/status distinctions and
+  explicit remaining CLI/provider/viewer compatibility scope.
+
 - [Embedding worker lifetime](embedding-worker-lifetime.md): handler/idle baseline
   and real-framework CPU ownership, ASGI and lifespan contracts.
 

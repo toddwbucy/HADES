@@ -1,0 +1,21 @@
+{
+  "source_revision": "66ebc4d6c6c88c41d5e5c5ba3371d3521b88aa10",
+  "tests": [
+    {
+      "command": "cargo test --offline -p hades-core --lib service::tests -- --test-threads=1",
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.0
+    },
+    {
+      "command": "cargo test --offline -p hades-cli --bin hades commands::mcp_server::tests -- --test-threads=1",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.04
+    }
+  ],
+  "isolation": "private mocks/in-process routers and temporary files; no live service/database requests, one Cargo build job, nice 10",
+  "inventory_sha256": "b97d3ff04dc47b023f5d72e4de5ff0a5d6bcc5bf6340c4cde5b77fcd48d52a34"
+}
