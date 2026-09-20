@@ -123,6 +123,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Trace seven native embedding/extraction command contracts and explicit
   provider, subprocess and output-file limits (epic #12).
 
+- Retain private actual-CLI reproductions of orientation metadata read failures
+  silently returned as empty successful results (epic #12).
+
 - Trace status, orientation and analyzer-management command contracts, including
   failure-status and installation evidence limits (epic #12).
 
@@ -434,6 +437,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Propagate orientation sample, recent-document and index read failures with
+  stage diagnostics while retaining valid empty/not-found results (#128).
 
 - Report accumulated graph materialization execution errors as failure while
   retaining partial-run diagnostics and committed-write semantics (#125).

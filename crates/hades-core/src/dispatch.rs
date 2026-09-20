@@ -3694,7 +3694,7 @@ mod handlers {
             };
 
             // Recent papers for this profile
-            let recent = recent_docs(pool, profile.metadata, 5).await;
+            let recent = recent_docs(pool, profile.metadata, 5).await?;
 
             total_docs += meta_count;
             total_chunks += chunk_count;
@@ -3739,7 +3739,7 @@ mod handlers {
         // Schema sample: first document
         let sample_aql = "FOR d IN @@col LIMIT 1 RETURN d";
         let sample_bind = json!({ "@col": collection });
-        let sample = query::query(
+        let sample = match query::query(
             pool,
             sample_aql,
             Some(&sample_bind),
@@ -3748,8 +3748,16 @@ mod handlers {
             ExecutionTarget::Reader,
         )
         .await
-        .ok()
-        .and_then(|r| r.results.into_iter().next());
+        {
+            Ok(result) => result.results.into_iter().next(),
+            Err(e) if e.is_not_found() => None,
+            Err(source) => {
+                return Err(HandlerError::Query {
+                    context: format!("orientation sample for '{collection}'"),
+                    source,
+                });
+            }
+        };
 
         // Extract field names from sample for schema overview
         let schema_fields: Vec<String> = sample
@@ -3759,12 +3767,19 @@ mod handlers {
             .unwrap_or_default();
 
         // Recent docs
-        let recent = recent_docs(pool, collection, 10).await;
+        let recent = recent_docs(pool, collection, 10).await?;
 
         // Indexes
-        let indexes = index::list_indexes(pool, collection)
-            .await
-            .unwrap_or_default();
+        let indexes = match index::list_indexes(pool, collection).await {
+            Ok(indexes) => indexes,
+            Err(e) if e.is_not_found() => Vec::new(),
+            Err(source) => {
+                return Err(HandlerError::Query {
+                    context: format!("orientation indexes for '{collection}'"),
+                    source,
+                });
+            }
+        };
         let index_info: Vec<Value> = indexes
             .into_iter()
             .map(|idx| {
@@ -3786,8 +3801,12 @@ mod handlers {
     }
 
     /// Fetch recent documents from a collection, sorted by processing_timestamp.
-    /// Silently returns empty vec if the collection doesn't exist.
-    async fn recent_docs(pool: &ArangoPool, collection: &str, limit: u32) -> Vec<Value> {
+    /// Missing collections are empty; other read failures remain errors.
+    async fn recent_docs(
+        pool: &ArangoPool,
+        collection: &str,
+        limit: u32,
+    ) -> Result<Vec<Value>, HandlerError> {
         let aql = "FOR d IN @@col \
                     SORT d.processing_timestamp DESC, d._rev DESC \
                     LIMIT @limit \
@@ -3796,10 +3815,14 @@ mod handlers {
             "@col": collection,
             "limit": limit,
         });
-        query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader)
-            .await
-            .map(|r| r.results)
-            .unwrap_or_default()
+        match query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader).await {
+            Ok(result) => Ok(result.results),
+            Err(e) if e.is_not_found() => Ok(Vec::new()),
+            Err(source) => Err(HandlerError::Query {
+                context: format!("orientation recent documents for '{collection}'"),
+                source,
+            }),
+        }
     }
 
     // ── Task handlers ──────────────────────────────────────────────
