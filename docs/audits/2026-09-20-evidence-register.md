@@ -11,6 +11,9 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Viewer envelope validation](viewer-envelope-review.md): private false-success
+  route reproduction and seven-parser status validation for #107.
+
 - [Embedding worker lifetime](embedding-worker-lifetime.md): handler/idle baseline
   and real-framework CPU ownership, ASGI and lifespan contracts.
 
