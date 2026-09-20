@@ -383,6 +383,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep training RPC computation off the provider loop and drain interrupted
+  operations before discarding their session or admitting a successor (#77).
+
 - Fail conformance adapter runs on incomplete scope, incompatible collections,
   import rejections or invalid acknowledgements; report partial persistence (#68).
 - Keep WeaverTools node and edge metadata within their own declaration records,
