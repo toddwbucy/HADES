@@ -1,6 +1,7 @@
 """CPU RPC contracts: rejected requests have a status and preserve state (#18)."""
 
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -19,11 +20,19 @@ from training.config import TrainingConfig
 from training.server import TrainingServicer
 
 
-def loaded_service():
+def fixture_contract(architecture="hetero_sage", dimension=6, relations=1, collections=1):
+    return {"version": 1, "relation_order": [f"relation_{i}" for i in range(relations)],
+        "collection_names": [f"collection_{i}" for i in range(collections)],
+        "feature_dim": dimension, "architecture": architecture,
+        "feature_policy": "node-or-codefile-mean-v1;missing=zero",
+        "feature_models": {f"collection_{i}": ["fixture:v1"] for i in range(collections)}}
+
+
+def loaded_service(architecture="hetero_sage", relations=1, collections=1):
     service = TrainingServicer(TrainingConfig())
     service.device = torch.device("cpu")
     service.model_config = pb.ModelConfig(
-        architecture="hetero_sage", num_relations=1, num_collection_types=1,
+        architecture=architecture, num_relations=relations, num_collection_types=collections,
         hidden_dim=8, embed_dim=4, num_bases=1,
     )
     service.opt_config = pb.OptimizerConfig(learning_rate=0.01)
@@ -34,6 +43,7 @@ def loaded_service():
     service.edge_dst = torch.tensor([1, 2, 3])
     service.edge_type = torch.zeros(3, dtype=torch.long)
     service.train_idx = torch.tensor([0])
+    service.model_contract = service.graph_contract = fixture_contract(architecture, 6, relations, collections)
     return service
 
 
@@ -119,7 +129,7 @@ def test_malformed_graph_does_not_replace_valid_graph(tmp_path, bad):
     else:
         tensors["node_features"][0, 0] = float("nan")
     path = tmp_path / "graph.safetensors"
-    save_file(tensors, str(path))
+    save_file(tensors, str(path), metadata={"graph_contract": json.dumps(fixture_contract())})
     rejected(loaded_service(), "LoadGraph", pb.LoadGraphRequest(safetensors_path=str(path)),
              grpc.StatusCode.INVALID_ARGUMENT)
 
@@ -155,6 +165,8 @@ def test_checkpoint_changed_type_bounds_requires_graph_reload(tmp_path, field):
     service = loaded_service()
     setattr(service.model_config, field, 2)
     service._build_model(6)
+    service.model_contract = service.graph_contract = fixture_contract(relations=service.model_config.num_relations,
+        collections=service.model_config.num_collection_types)
     source = loaded_service()
     path = tmp_path / "smaller.pt"
     invoke(source, "Checkpoint", pb.CheckpointRequest(path=str(path)))

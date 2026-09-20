@@ -39,7 +39,10 @@ async def measure(architecture, seed, legacy):
     context = Context()
     with tempfile.TemporaryDirectory(prefix="hades-topology-baseline-") as directory:
         path = str(Path(directory) / "graph.safetensors")
-        save_file(tensors, path)
+        contract = {"version": 1, "relation_order": ["ring"], "collection_names": ["fixture"],
+            "feature_dim": 6, "architecture": architecture,
+            "feature_policy": "node-or-codefile-mean-v1;missing=zero", "feature_models": {"fixture": ["synthetic:seeded-normal-v1"]}}
+        save_file(tensors, path, metadata={"graph_contract": json.dumps(contract)})
         await service.LoadGraph(pb.LoadGraphRequest(safetensors_path=path), context)
         if legacy:
             service._adjacency = lambda: (service.edge_src, service.edge_dst, service.edge_type)

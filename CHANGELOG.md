@@ -269,6 +269,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Bind graph artifacts and checkpoints to versioned semantic contracts (#15):
+  relation order, collection indices, feature width/provenance, construction
+  policy, and architecture. Reject incompatible or legacy unverified artifacts
+  before changing restored weights or graph state; only fresh initialization
+  can adapt its feature width. Reserve schema-declared collection indices and
+  reject vectors with unknown or mixed model identity. See training evaluation
+  documentation for the explicit legacy retraining procedure.
+
 - Correct tied-score ROC-AUC and reject unavailable/nonfinite training metrics
   (#17). Require nonempty splits and samples, propagate dense-graph sampling
   failures, and validate checkpoint selection. Add `graph-embed train --seed`

@@ -1,12 +1,13 @@
 """Held-out topology must be absent in both training and evaluation (#14)."""
 from unittest.mock import patch
+import json
 
 import grpc
 import pytest
 import torch
 from safetensors.torch import save_file
 
-from test_training_rpc_validation import loaded_service, invoke, rejected, pb
+from test_training_rpc_validation import loaded_service, invoke, rejected, pb, fixture_contract
 
 
 def graph():
@@ -21,15 +22,13 @@ def graph():
 
 def load(service, tmp_path, tensors):
     path = tmp_path / "graph.safetensors"
-    save_file(tensors, str(path))
+    save_file(tensors, str(path), metadata={"graph_contract": json.dumps(fixture_contract(service.model_config.architecture))})
     return invoke(service, "LoadGraph", pb.LoadGraphRequest(safetensors_path=str(path)))
 
 
 @pytest.mark.parametrize("architecture", ["rgcn", "hetero_sage"])
 def test_encoder_uses_only_training_adjacency_for_training_and_evaluation(tmp_path, architecture):
-    service = loaded_service()
-    service.model_config.architecture = architecture
-    service._build_model(6)
+    service = loaded_service(architecture=architecture)
     load(service, tmp_path, graph())
     with patch.object(service.model, "encode", wraps=service.model.encode) as spy:
         invoke(service, "TrainStep", pb.TrainStepRequest(train_edge_indices=[0], neg_src=[3], neg_dst=[0]))
@@ -79,7 +78,7 @@ def test_invalid_split_preserves_existing_state(tmp_path, bad):
     else:
         tensors["edge_src"][1], tensors["edge_dst"][1] = 0, 1
     path = tmp_path / "bad.safetensors"
-    save_file(tensors, str(path))
+    save_file(tensors, str(path), metadata={"graph_contract": json.dumps(fixture_contract(service.model_config.architecture))})
     train_idx = service.train_idx
     rejected(service, "LoadGraph", pb.LoadGraphRequest(safetensors_path=str(path)), grpc.StatusCode.INVALID_ARGUMENT)
     assert service.train_idx is train_idx

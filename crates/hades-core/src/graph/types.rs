@@ -5,7 +5,7 @@
 //! framework-specific tensors (Burn, PyTorch via IPC) happens in the
 //! serialization layer (P4.3).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -188,6 +188,71 @@ pub enum GraphDataError {
 // GraphData — the loaded graph in tensor-like form
 // ---------------------------------------------------------------------------
 
+/// Semantic identity of a graph's model inputs, persisted with checkpoints.
+/// Model identities describe stored provenance; they are not model-weight hashes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphContract {
+    pub version: u32,
+    pub relation_order: Vec<String>,
+    pub collection_names: Vec<String>,
+    pub feature_dim: usize,
+    pub architecture: String,
+    pub feature_policy: String,
+    pub feature_models: BTreeMap<String, Vec<String>>,
+}
+
+impl GraphContract {
+    pub const FEATURE_POLICY: &str = "node-or-codefile-mean-v1;missing=zero";
+
+    pub fn validate(&self, graph: &GraphData) -> Result<(), String> {
+        graph.validate().map_err(|error| error.to_string())?;
+        let unique_names = |names: &[String]| {
+            !names.is_empty()
+                && names.iter().all(|name| !name.trim().is_empty())
+                && names.iter().collect::<HashSet<_>>().len() == names.len()
+        };
+        if self.version != 1
+            || self.feature_policy != Self::FEATURE_POLICY
+            || self.feature_dim == 0
+            || self.feature_dim != graph.feature_dim
+            || self.relation_order.len() != graph.num_relations
+            || self.collection_names != graph.collection_names
+            || !unique_names(&self.relation_order)
+            || !unique_names(&self.collection_names)
+            || !super::runtime_schema::KNOWN_MODEL_TYPES.contains(&self.architecture.as_str())
+        {
+            return Err("graph contract does not match tensor schema".into());
+        }
+        if self.feature_models.len() != self.collection_names.len()
+            || self
+                .collection_names
+                .iter()
+                .any(|name| !self.feature_models.contains_key(name))
+            || self.feature_models.values().any(|models| {
+                models.len() > 1
+                    || models.iter().any(|m| m.trim().is_empty())
+                    || models.windows(2).any(|pair| pair[0] >= pair[1])
+            })
+        {
+            return Err("graph contract has incomplete or noncanonical feature provenance".into());
+        }
+        for (idx, &has_embedding) in graph.has_embedding.iter().enumerate() {
+            if has_embedding {
+                let name = self
+                    .collection_names
+                    .get(graph.node_collections[idx] as usize)
+                    .ok_or("embedded node has an invalid collection index")?;
+                if self.feature_models[name].is_empty() {
+                    return Err(format!(
+                        "embedded collection {name} has no model provenance"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Graph data loaded from ArangoDB, ready for training.
 ///
 /// Mirrors the Python `GraphLoader.load()` return value.
@@ -195,6 +260,9 @@ pub enum GraphDataError {
 /// tensor types is deferred to the serialization layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphData {
+    /// Missing on legacy/unbound graphs. Training serialization requires it.
+    #[serde(default)]
+    pub contract: Option<GraphContract>,
     /// Node feature matrix, flattened row-major: `[num_nodes × feature_dim]`.
     ///
     /// Nodes without Jina embeddings have zero vectors.
@@ -238,6 +306,7 @@ impl GraphData {
     /// Create an empty graph with the standard Jina feature dimension.
     pub fn empty() -> Self {
         Self {
+            contract: None,
             node_features: Vec::new(),
             has_embedding: Vec::new(),
             node_collections: Vec::new(),
@@ -280,6 +349,7 @@ impl GraphData {
         feature_dim: usize,
     ) -> Self {
         Self {
+            contract: None,
             node_features: vec![0.0; num_nodes * feature_dim],
             has_embedding: vec![false; num_nodes],
             node_collections: vec![u32::MAX; num_nodes],

@@ -6,7 +6,7 @@
 //!   1. Scan all 22 edge collections → build IDMap + raw edge lists.
 //!   2. Group nodes by collection → batch-fetch Jina embeddings → fill GraphData.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::json;
 use tracing::{debug, info, instrument, warn};
@@ -16,7 +16,7 @@ use crate::db::query::{self, ExecutionTarget};
 use crate::db::{ArangoError, ArangoPool};
 
 use super::runtime_schema::RuntimeSchema;
-use super::types::{GraphData, GraphDataError, IDMap};
+use super::types::{GraphContract, GraphData, GraphDataError, IDMap};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -25,6 +25,8 @@ use super::types::{GraphData, GraphDataError, IDMap};
 /// Errors returned by the graph loader.
 #[derive(Debug, thiserror::Error)]
 pub enum GraphLoaderError {
+    #[error("graph provenance is unavailable or incompatible: {0}")]
+    Provenance(String),
     #[error("ArangoDB query failed: {0}")]
     Arango(#[from] ArangoError),
 
@@ -125,10 +127,25 @@ pub async fn load(
     }
     drop(raw_edges); // free memory before loading embeddings
 
-    // Group nodes by collection and build the sorted collection_names index
+    // Reserve declared vertex types even when no current node uses a type.
     let nodes_by_col = id_map.nodes_by_collection();
-    let mut collection_names: Vec<String> = nodes_by_col.keys().map(|s| s.to_string()).collect();
-    collection_names.sort();
+    let collection_names: Vec<String> = schema
+        .edge_definitions
+        .iter()
+        .filter(|edge| relation_order.contains(&edge.name))
+        .flat_map(|edge| edge.from_collections.iter().chain(&edge.to_collections))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if nodes_by_col
+        .keys()
+        .any(|name| !collection_names.iter().any(|known| known == name))
+    {
+        return Err(GraphLoaderError::Provenance(
+            "observed vertex collection is absent from declared edge definitions".into(),
+        ));
+    }
     let col_to_idx: HashMap<&str, u32> = collection_names
         .iter()
         .enumerate()
@@ -142,7 +159,19 @@ pub async fn load(
             graph.node_collections[node_idx] = col_idx;
         }
     }
-    graph.collection_names = collection_names;
+    graph.collection_names = collection_names.clone();
+    graph.contract = Some(GraphContract {
+        version: 1,
+        relation_order: relation_order.clone(),
+        collection_names: collection_names.clone(),
+        feature_dim,
+        architecture: schema.meta.resolved_model_type().into(),
+        feature_policy: GraphContract::FEATURE_POLICY.into(),
+        feature_models: collection_names
+            .into_iter()
+            .map(|name| (name, Vec::new()))
+            .collect(),
+    });
 
     info!(
         num_collections = graph.collection_names.len(),
@@ -186,6 +215,12 @@ pub async fn load(
     );
 
     graph.validate()?;
+    graph
+        .contract
+        .as_ref()
+        .expect("loader establishes contract")
+        .validate(&graph)
+        .map_err(GraphLoaderError::Provenance)?;
 
     Ok((graph, id_map))
 }
@@ -280,7 +315,7 @@ async fn load_collection_embeddings(
         let keys: Vec<&str> = batch.iter().map(|(k, _)| *k).collect();
         let key_to_idx: HashMap<&str, usize> = batch.iter().map(|&(k, idx)| (k, idx)).collect();
 
-        let aql = "FOR d IN @@col FILTER d._key IN @keys RETURN [d._key, d.embedding]";
+        let aql = "FOR d IN @@col FILTER d._key IN @keys RETURN [d._key, d.embedding, d.model_hash, d.model, d.embedding_model]";
         let bind_vars = json!({
             "@col": col_name,
             "keys": keys,
@@ -329,7 +364,7 @@ async fn load_collection_embeddings(
             // Parse f64 JSON numbers → f32 feature vector; skip if any element is non-numeric
             let embedding: Option<Vec<f32>> = emb_arr
                 .iter()
-                .map(|v| v.as_f64().map(|f| f as f32))
+                .map(|v| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite()))
                 .collect();
             let Some(embedding) = embedding else {
                 warn!(
@@ -340,6 +375,7 @@ async fn load_collection_embeddings(
                 continue;
             };
 
+            record_model(graph, col_name, model_identity(arr)?)?;
             graph.set_node_features(node_idx, &embedding);
             total_embedded += 1;
         }
@@ -428,7 +464,10 @@ async fn load_codebase_node_features(
         .into_iter()
         .map(String::from)
         .collect();
-    let pooled = pool_chunk_embeddings(pool, &unique, feature_dim).await?;
+    let (pooled, models) = pool_chunk_embeddings(pool, &unique, feature_dim).await?;
+    for model in models {
+        record_model(graph, col_name, model)?;
+    }
 
     // 3. Assign each node its file's pooled vector.
     let mut embedded = 0;
@@ -447,12 +486,13 @@ async fn pool_chunk_embeddings(
     pool: &ArangoPool,
     file_keys: &[String],
     feature_dim: usize,
-) -> Result<HashMap<String, Vec<f32>>, GraphLoaderError> {
+) -> Result<(HashMap<String, Vec<f32>>, BTreeSet<String>), GraphLoaderError> {
     // Accumulate (sum, count) per file_key, then divide.
     let mut acc: HashMap<String, (Vec<f32>, usize)> = HashMap::new();
+    let mut models = BTreeSet::new();
 
     for batch in file_keys.chunks(EMBEDDING_BATCH_KEYS) {
-        let aql = "FOR e IN @@col FILTER e.file_key IN @fkeys RETURN [e.file_key, e.embedding]";
+        let aql = "FOR e IN @@col FILTER e.file_key IN @fkeys RETURN [e.file_key, e.embedding, e.model_hash, e.model, e.embedding_model]";
         let bind = json!({ "@col": CODEBASE.embeddings, "fkeys": batch });
         let res = query::query(
             pool,
@@ -476,8 +516,12 @@ async fn pool_chunk_embeddings(
                 Some(a) if a.len() == feature_dim => a,
                 _ => continue,
             };
-            let vec: Option<Vec<f32>> = emb.iter().map(|v| v.as_f64().map(|f| f as f32)).collect();
+            let vec: Option<Vec<f32>> = emb
+                .iter()
+                .map(|v| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite()))
+                .collect();
             let Some(vec) = vec else { continue };
+            models.insert(model_identity(arr)?);
             let entry = acc
                 .entry(fk.to_string())
                 .or_insert_with(|| (vec![0.0f32; feature_dim], 0));
@@ -488,18 +532,73 @@ async fn pool_chunk_embeddings(
         }
     }
 
-    Ok(acc
-        .into_iter()
-        .map(|(fk, (mut sum, n))| {
-            if n > 0 {
-                let inv = 1.0 / n as f32;
-                for x in sum.iter_mut() {
-                    *x *= inv;
+    Ok((
+        acc.into_iter()
+            .map(|(fk, (mut sum, n))| {
+                if n > 0 {
+                    let inv = 1.0 / n as f32;
+                    for x in sum.iter_mut() {
+                        *x *= inv;
+                    }
                 }
-            }
-            (fk, sum)
-        })
-        .collect())
+                (fk, sum)
+            })
+            .collect(),
+        models,
+    ))
+}
+
+/// Canonicalize stored model IDs. The hash identifies the name, not model weights.
+fn model_identity(row: &[serde_json::Value]) -> Result<String, GraphLoaderError> {
+    let recorded_hash = row
+        .get(2)
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty());
+    let name = row
+        .get(3)
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            row.get(4)
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty())
+        });
+    let calculated = name.map(crate::db::keys::model_hash);
+    if let (Some(recorded), Some(calculated)) = (recorded_hash, &calculated)
+        && recorded != calculated
+    {
+        return Err(GraphLoaderError::Provenance(
+            "stored model and model_hash disagree".into(),
+        ));
+    }
+    let hash = calculated.as_deref().or(recorded_hash).filter(|hash|
+        hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| GraphLoaderError::Provenance("embedded row lacks a model identity; re-embed or restore verified provenance before training".into()))?;
+    Ok(format!("model-name-sha256:{}", hash.to_ascii_lowercase()))
+}
+
+fn record_model(
+    graph: &mut GraphData,
+    collection: &str,
+    model: String,
+) -> Result<(), GraphLoaderError> {
+    let models = graph
+        .contract
+        .as_mut()
+        .and_then(|c| c.feature_models.get_mut(collection))
+        .ok_or_else(|| {
+            GraphLoaderError::Provenance("collection missing from feature contract".into())
+        })?;
+    if !models.contains(&model) {
+        models.push(model);
+        models.sort();
+    }
+    if models.len() > 1 {
+        return Err(GraphLoaderError::Provenance(format!(
+            "{collection} mixes embedding model identities; re-embed consistently"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +608,25 @@ async fn pool_chunk_embeddings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_model_provenance_must_be_known_and_consistent() {
+        let hash = crate::db::keys::model_hash("fixture-model");
+        let complete = json!([null, null, hash, "fixture-model", null]);
+        let name_only = json!([null, null, null, null, "fixture-model"]);
+        let hash_only = json!([null, null, hash, null, null]);
+        let expected = format!("model-name-sha256:{hash}");
+        for row in [complete, name_only, hash_only] {
+            assert_eq!(model_identity(row.as_array().unwrap()).unwrap(), expected);
+        }
+        for row in [
+            json!([null, null]),
+            json!([null, null, "unknown", null, null]),
+            json!([null, null, hash, "different-model", null]),
+        ] {
+            assert!(model_identity(row.as_array().unwrap()).is_err());
+        }
+    }
 
     #[test]
     fn test_error_display() {
