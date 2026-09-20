@@ -74,7 +74,8 @@ dump; directory mtime alone does not establish a newer backup. Additional older
 logical dumps exist under `/bulk-store/arangodb_dumps`. Only metadata and manifest
 fields were inspected, not raw database documents or credentials.
 
-These artifacts establish that backups exist. They do not establish the current
+This inspection establishes that backup artifacts and manifests are present.
+It does not establish their validity or completeness, nor the current
 backup schedule, coverage of recent graphs/changes, or recoverability of the
 actual artifacts. The synthetic rehearsal above must not be represented as a
 restore test of these production backups.
