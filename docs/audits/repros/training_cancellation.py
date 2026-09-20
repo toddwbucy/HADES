@@ -124,7 +124,7 @@ async def run_case(cancel):
             released.set()
             await server.stop(0)
             await service.close()
-            thread.join(timeout=1)
+            await asyncio.to_thread(thread.join, 1)
             require(not thread.is_alive(), "private client survived cleanup")
     record["private_state_removed"] = not Path(directory).exists()
     return record

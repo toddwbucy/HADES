@@ -1,7 +1,7 @@
 {
   "status": "reproduced",
   "source_sha256": {
-    "docs/audits/repros/training_cancellation.py": "b198248841e88d9fb3174249fed59d0f6a22e71be71f50333a97fadae1515e17",
+    "docs/audits/repros/training_cancellation.py": "21653b7c0f00b440c989ce33e030e5fb06aa49d565ca429f932582fdf5b73271",
     "services/training/server.py": "df4bc6aa84c2e92cef29d19295f3024920fc126972722344c1f566e00d5e7c69",
     "services/training/session.py": "8e7bbb9ea647aac84a7a146a1d5775e04734b3be0713756800d27d6e86aab2df",
     "services/tests/test_training_rpc_validation.py": "77e136fc77632de151c6f66d416c9e3739baa3e0089589517440291757a8d1d1"
@@ -12,7 +12,7 @@
     {
       "cancel_requested": false,
       "loop_callback_ran_before_step": false,
-      "optimizer_step_finished_ns": 228928547674127,
+      "optimizer_step_finished_ns": 229309948923065,
       "client_outcome": "success",
       "weights_changed": true,
       "callback_eventually_ran": true,
@@ -22,9 +22,9 @@
       "cancel_requested": true,
       "loop_callback_ran_before_step": false,
       "client_cancel_accepted": true,
-      "client_cancel_ns": 228928562316418,
+      "client_cancel_ns": 229309965213308,
       "client_outcome": "cancelled",
-      "optimizer_step_finished_ns": 228928563528882,
+      "optimizer_step_finished_ns": 229309966447283,
       "weights_changed": true,
       "callback_eventually_ran": true,
       "private_state_removed": true

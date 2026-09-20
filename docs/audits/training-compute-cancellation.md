@@ -62,7 +62,39 @@ operations need an explicit completion/recovery boundary. Moving work to a
 thread alone is insufficient: cancellation of the awaiting coroutine does not
 stop that thread.
 
-The Rust prefetch sampler boundary remains separate and unverified by this
-Python probe. No production change was made; maintenance that risks data loss
+## Rust prefetch queued-work boundary
+
+A separate [Rust probe](repros/prefetch_stop_boundary.rs) exercised the actual
+`Prefetcher::start` and `stop` at the same source revision. One finite-timeout
+gate occupies the runtime's sole blocking worker so both real sampling closures
+are queued before stop. The [result](prefetch-stop-result.json) records graph
+strong-reference counts: four before stop (caller, producer, two closures),
+three after producer abort, and one after releasing the blocking worker and
+allowing its queue to drain. The bounded test passed, and runtime teardown
+completed. The graph contains four synthetic nodes and two edges.
+
+This proves queued samplers retain their graph captures after producer abort.
+It does not measure running-sampler shutdown latency or infer throughput from
+reference counts. Static review confirms `stop`/`Drop` only abort the producer;
+they do not retain/abort/join the two blocking handles or signal cancellation
+inside `negative_sample_seeded`. The documentation suggesting an awaited
+shutdown is inaccurate because `stop(self)` is synchronous.
+
+Replay only in an isolated checkout, copying the historical probe to a temporary
+test target (remove that copy afterward):
+
+```sh
+mkdir -p crates/hades-prefetch/tests
+cp docs/audits/repros/prefetch_stop_boundary.rs \
+  crates/hades-prefetch/tests/prefetch_stop_boundary.rs
+CARGO_BUILD_JOBS=1 cargo test --offline -p hades-prefetch \
+  --test prefetch_stop_boundary -- --nocapture
+```
+
+Issue #77 also needs an explicit stop/join contract for sampling, including
+cooperative cancellation of already-running work and prevention of future
+samples. A queued-work test alone cannot certify active-work cleanup.
+
+No production change was made; maintenance that risks data loss
 must follow the owner's verified active-data snapshot and arranged downtime
 policy.
