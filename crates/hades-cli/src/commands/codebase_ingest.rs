@@ -1663,6 +1663,15 @@ async fn ingest_file(
     let content_hash = hades_core::code::compute_content_hash(&source);
     if !force && check_unchanged(db, &fkey, &content_hash, embedder.is_some()).await? == Some(true)
     {
+        // Skipping persistence must not remove a target from relationship
+        // resolution. Retain the revision observed before analysis so a
+        // concurrent replacement causes the later relationship stage to fail.
+        let observed = expected_revision
+            .clone()
+            .context("file appeared during analysis; retry ingestion")?;
+        let num_symbols = analysis.symbols.len();
+        imports.committed_revisions.insert(fkey.clone(), observed);
+        collect_relationship_symbols(imports, rel_path, lang, &mut analysis);
         debug!(
             path = rel_path,
             "unchanged (same content_hash, embeddings present), skipping"
@@ -1671,7 +1680,7 @@ async fn ingest_file(
             path: rel_path.to_string(),
             success: true,
             language: Some(lang.name().to_string()),
-            num_symbols: Some(analysis.symbols.len()),
+            num_symbols: Some(num_symbols),
             num_chunks: None,
             num_embeddings: None,
             embedding_error: None,
@@ -2146,6 +2155,37 @@ async fn ingest_file(
         .insert(fkey.clone(), stored.revision);
     imports.remapped_symbols += remapped_symbols;
 
+    collect_relationship_symbols(imports, rel_path, lang, &mut analysis);
+
+    info!(
+        path = rel_path,
+        language = lang.name(),
+        symbols = num_sym,
+        chunks = num_chk,
+        embeddings = num_embeddings_written,
+        "ingested"
+    );
+
+    Ok(FileResult {
+        path: rel_path.to_string(),
+        success: true,
+        language: Some(lang.name().to_string()),
+        num_symbols: Some(num_sym),
+        num_chunks: Some(num_chk),
+        num_embeddings: Some(num_embeddings_written),
+        embedding_error,
+        skipped: None,
+        error: None,
+        duration_ms: 0,
+    })
+}
+
+fn collect_relationship_symbols(
+    imports: &mut ImportContext,
+    rel_path: &str,
+    lang: Language,
+    analysis: &mut hades_core::code::FileAnalysis,
+) {
     // Collect Python import symbols for later edge resolution.
     if lang == Language::Python {
         let py_import_syms: Vec<Symbol> = analysis
@@ -2196,28 +2236,6 @@ async fn ingest_file(
         Language::Go => {}
         _ => {}
     }
-
-    info!(
-        path = rel_path,
-        language = lang.name(),
-        symbols = num_sym,
-        chunks = num_chk,
-        embeddings = num_embeddings_written,
-        "ingested"
-    );
-
-    Ok(FileResult {
-        path: rel_path.to_string(),
-        success: true,
-        language: Some(lang.name().to_string()),
-        num_symbols: Some(num_sym),
-        num_chunks: Some(num_chk),
-        num_embeddings: Some(num_embeddings_written),
-        embedding_error,
-        skipped: None,
-        error: None,
-        duration_ms: 0,
-    })
 }
 
 fn uses_semantic_relationship_resolver(language: Language, tier: AnalysisTier) -> bool {
@@ -2420,6 +2438,7 @@ async fn ingest_unparsed_file(
         "symbol_hash": content_hash,
         "content_hash": content_hash,
         "symbol_count": 0,
+        "relationships_pending": false,
         "chunk_count": num_chk,
         "embedding_count": num_embeddings_written,
         "total_lines": total_lines,
@@ -4110,6 +4129,122 @@ mod tests {
     ///
     /// Asserted at the gate rather than through a full ingest, because that is
     /// where the decision is made and a full ingest needs an embedder.
+    #[tokio::test]
+    async fn explicit_fallback_recovery_clears_pending_only_after_commit() {
+        with_temp_db("fallback_pending", Fixtures::Codebase, |pool| async move {
+            let config = HadesConfig::default();
+            let tree = tempfile::tempdir().unwrap();
+            let path = tree.path().join("file.py");
+            std::fs::write(&path, "def target():\n    return 1\n").unwrap();
+            let mut imports = ImportContext::default();
+            ingest_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                None,
+                &mut imports,
+                None,
+                false,
+                false,
+                false,
+                FALLBACK_WINDOW_CHARS,
+                "",
+            )
+            .await
+            .unwrap();
+            let key = keys::scoped_file_key("", "file.py");
+            let document = format!("document/codebase_files/{key}");
+            let before = pool.reader().get(&document).await.unwrap();
+            assert_eq!(before["relationships_pending"], true);
+            let rejected = ingest_unparsed_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                Some("python"),
+                "fixture analyzer unavailable",
+                false,
+                false,
+                "",
+            )
+            .await;
+            assert!(
+                rejected.is_err(),
+                "incomplete higher-fidelity data must not silently skip"
+            );
+            pool.writer().put("collection/codebase_chunks/properties", &json!({
+                "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+            })).await.unwrap();
+            assert!(
+                ingest_unparsed_file(
+                    &pool,
+                    None,
+                    &config,
+                    &path,
+                    "file.py",
+                    Some("python"),
+                    "fixture analyzer unavailable",
+                    false,
+                    true,
+                    ""
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(pool.reader().get(&document).await.unwrap(), before);
+            pool.writer()
+                .put(
+                    "collection/codebase_chunks/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            let recovered = ingest_unparsed_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                Some("python"),
+                "fixture analyzer unavailable",
+                false,
+                true,
+                "",
+            )
+            .await
+            .unwrap();
+            assert!(recovered.success && recovered.skipped != Some(true));
+            let after = pool.reader().get(&document).await.unwrap();
+            assert_eq!(after["relationships_pending"], false);
+            assert_eq!(after["analysis_tier"], "text");
+            assert_eq!(
+                crud::count_collection(&pool, CODEBASE.symbols)
+                    .await
+                    .unwrap(),
+                0
+            );
+            let repeated = ingest_unparsed_file(
+                &pool,
+                None,
+                &config,
+                &path,
+                "file.py",
+                Some("python"),
+                "fixture analyzer unavailable",
+                false,
+                true,
+                "",
+            )
+            .await
+            .unwrap();
+            assert_eq!(repeated.skipped, Some(true));
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn pending_relationships_cannot_be_skipped_or_silently_downgraded() {
         with_temp_db("pending_gate", Fixtures::Codebase, |pool| async move {

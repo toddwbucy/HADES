@@ -383,3 +383,24 @@ async fn relationship_failure_is_retried_without_force() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn changed_consumer_keeps_relationships_to_unchanged_provider() {
+    with_temp_db("unchanged_provider", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("provider.py"), "def target():\n    return 'quartz'\n").unwrap();
+        let consumer = tree.path().join("consumer.py");
+        std::fs::write(&consumer, "from provider import target\n\ndef caller():\n    return target()\n").unwrap();
+        ingest(&pool, &embedder, tree.path()).await;
+        let before = snapshot_graph(&pool).await;
+        assert!(!before["codebase_calls_edges"].as_array().unwrap().is_empty());
+        std::fs::write(&consumer, "from provider import target\n\ndef caller():\n    # revised consumer body\n    return target()\n").unwrap();
+        let updated = ingest(&pool, &embedder, tree.path()).await;
+        assert_eq!(updated["code"]["skipped"], 1);
+        let after = snapshot_graph(&pool).await;
+        assert_eq!(after["codebase_calls_edges"], before["codebase_calls_edges"], "unchanged provider must remain a resolution target");
+        assert_eq!(after["codebase_imports_edges"], before["codebase_imports_edges"]);
+        validate(&pool, &embedder).await;
+    }).await;
+}

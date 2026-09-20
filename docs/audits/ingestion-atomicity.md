@@ -81,8 +81,17 @@ cannot silently skip a pending higher-fidelity file. File failures defer the
 relationship stage and leave prepared files pending; language-server enrichment
 is deferred when that stage fails.
 
-Remaining review includes relationships to unchanged files absent from the
-in-memory index, explicit fallback recovery, end-to-end cancellation, physical
-source changes during external analysis, and additional analyzer failure coverage. The transaction protects the prepared database
+Unchanged files that pass the normal content gate now contribute analyzed symbols
+to the relationship index. Their pre-analysis file revision is verified by the
+relationship transaction, so concurrent replacements reject stale resolution.
+A CLI regression confirmed that a consumer-only body edit previously removed its
+call edge; it now retains both call and import edges to the unchanged provider.
+Explicit raw-text downgrade clears the pending marker in the fallback transaction;
+a rejected chunk write retains the old metadata and marker, and successful retry
+clears it before subsequent incremental skipping.
+
+Remaining review includes target indexing when higher-fidelity preservation
+bypasses normal analysis, end-to-end cancellation, physical source changes during
+external analysis, and additional analyzer failure coverage. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.
