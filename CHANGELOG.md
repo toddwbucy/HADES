@@ -386,6 +386,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Publish checkpoints and embedding files atomically so failed serialization or
+  pre-publication I/O preserves the previous complete artifact (#81).
+
 - Cancel and join owned prefetch sampling jobs during explicit shutdown, with
   cooperative cancellation during edge indexing and candidate generation (#77).
 

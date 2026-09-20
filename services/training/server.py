@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generated"))
 from hades.training import training_pb2, training_pb2_grpc  # noqa: E402
 
 from .session import SessionTrainingServicer
+from .artifacts import publish_artifact
 from .contract import validate_contract
 from .config import TrainingConfig  # noqa: E402
 from .rgcn_model import HadesRGCN  # noqa: E402
@@ -448,7 +449,8 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             # length check (#134). Matches the inline path's `.tobytes()`.
             import numpy as np
 
-            np.ascontiguousarray(emb.numpy(), dtype="<f4").tofile(request.output_path)
+            with publish_artifact(request.output_path) as output:
+                np.ascontiguousarray(emb.numpy(), dtype="<f4").tofile(output)
             return training_pb2.GetEmbeddingsResponse(
                 num_nodes=num_nodes, embed_dim=embed_dim, output_path=request.output_path
             )
@@ -464,27 +466,28 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         if not request.path:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "checkpoint path is required")
         Path(request.path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "graph_contract": self.model_contract,
-                "model": self.model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "in_dim": self.in_dim,
-                "model_config": {
-                    "num_relations": self.model_config.num_relations,
-                    "num_collection_types": self.model_config.num_collection_types,
-                    "hidden_dim": self.model_config.hidden_dim,
-                    "embed_dim": self.model_config.embed_dim,
-                    "num_bases": self.model_config.num_bases,
-                    "dropout": self.model_config.dropout,
-                    # Persist the architecture so LoadCheckpoint (e.g. for
-                    # `graph-embed update`) rebuilds the matching model rather
-                    # than defaulting to RGCN.
-                    "architecture": self.model_config.architecture,
+        with publish_artifact(request.path) as output:
+            torch.save(
+                {
+                    "graph_contract": self.model_contract,
+                    "model": self.model.state_dict(),
+                    "optimizer": self.optimizer.state_dict(),
+                    "in_dim": self.in_dim,
+                    "model_config": {
+                        "num_relations": self.model_config.num_relations,
+                        "num_collection_types": self.model_config.num_collection_types,
+                        "hidden_dim": self.model_config.hidden_dim,
+                        "embed_dim": self.model_config.embed_dim,
+                        "num_bases": self.model_config.num_bases,
+                        "dropout": self.model_config.dropout,
+                        # Persist the architecture so LoadCheckpoint (e.g. for
+                        # `graph-embed update`) rebuilds the matching model rather
+                        # than defaulting to RGCN.
+                        "architecture": self.model_config.architecture,
+                    },
                 },
-            },
-            request.path,
-        )
+                output,
+            )
         size = os.path.getsize(request.path)
         return training_pb2.CheckpointResponse(path=request.path, size_bytes=size)
 
