@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace status, orientation and analyzer-management command contracts, including
+  failure-status and installation evidence limits (epic #12).
+
 - Retain actual CLI/private-peer reproductions of materialization scan failures
   reported as success in normal and dry-run modes (epic #12).
 
