@@ -1,0 +1,27 @@
+{
+  "baseline_revision": "5415b52",
+  "scope": "Private Unix HTTP peers: actual CLI and shared service, no production use",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "64344dc259d601dd327942957f9d52117c1f7c245cc5e5df3578492ac4e9daf4",
+    "crates/hades-core/src/service.rs": "62fe0d776ad6c14573c903f1aa43fd58600db4f64686662724f63eecee33e8f9",
+    "crates/hades-cli/tests/db_response_shapes.rs": "2ba5093fb03d7c05c0872e41ab81c8e7ca3f4fef399c6836ca4131d2f9eb4dba",
+    "crates/hades-cli/src/commands/system.rs": "3db33ce2fe7cd0deb11336475e98f1ebb1d73422ed49360b099773c663ea9931",
+    "crates/hades-core/tests/common/cursor_mock.rs": "857b48feb1487974be6ed423ac4440d0c5b9330ffefc6def9e4f70c3e9e56c94"
+  },
+  "cli_tests": {
+    "passed": 7,
+    "failed": 0,
+    "seconds": 0.09
+  },
+  "service_tests": {
+    "passed": 3,
+    "failed": 0,
+    "seconds": 0.01
+  },
+  "asserted_behavior": [
+    "CLI malformed sample/recent/index replies each fail with empty stdout, stage diagnostics and no subsequent requests",
+    "Valid populated CLI control preserved",
+    "Daemon malformed/403/503 detail-stage and overview-recent failures report QUERY_FAILED with no data and preserved request ID",
+    "Detail and all-profile overview retain valid empty and not-found compatibility"
+  ]
+}
