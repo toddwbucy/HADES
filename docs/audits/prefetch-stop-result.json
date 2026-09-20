@@ -10,7 +10,7 @@
   "graph_strong_references": {
     "before_stop": 4,
     "after_producer_abort": 3,
-    "after_blocking_worker_released": 1
+    "after_sampler_completion": 1
   },
   "blocking_workers": 1,
   "synthetic_graph_nodes": 4,
