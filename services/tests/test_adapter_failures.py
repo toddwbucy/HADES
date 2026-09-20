@@ -100,3 +100,43 @@ def test_http_failure_cannot_claim_success(monkeypatch):
     result=w.arango('fixture','import')
     assert result['error'] is True and result['code']==503
     assert response.closed
+
+
+@pytest.mark.parametrize('failure, acknowledged', [
+    ('partial', 2), ('report', 3), ('missing-source', 4), ('missing-document', 4),
+])
+def test_failed_run_preserves_acknowledged_rows(monkeypatch, capsys, failure, acknowledged):
+    from weavertools.records import Edge
+    monkeypatch.setattr(sys, 'argv', ['writer', '--db', 'fixture', '--repo', '/unused'])
+    docs = SimpleNamespace(nodes=[Node('a', 'assertion'), Node('b', 'term'), Node('c', 'term')],
+                           edges=[], notes=[], dangling=[])
+    code = SimpleNamespace(edges=[], notes=[], dangling=[])
+    if failure == 'missing-source':
+        code.edges.append(Edge('missing.rs', 'a', 'cites', 'declared'))
+    if failure == 'missing-document':
+        docs.edges.append(Edge('a', 'missing.md', 'declared-in', 'declared'))
+    monkeypatch.setattr(w, 'ingest', lambda *args: (docs, code))
+    calls = []
+    def backend(db, path, body=None, method='POST'):
+        calls.append(path)
+        if path == 'cursor':
+            return {'result': [['fixture.md', 'fixture']], 'hasMore': False}
+        if path == 'collection':
+            return {'name': body['name'], 'type': body['type']}
+        if path.startswith('import?'):
+            partial = failure == 'partial' and 'collection=wt_terms&' in path
+            return dict(error=False, created=1 if partial else len(body), updated=0,
+                        errors=1 if partial else 0, ignored=0, empty=0)
+        if path.startswith('document/'):
+            if failure == 'report':
+                return {'error': True}
+            return {'_key': 'latest', '_id': w.REPORT + '/latest'}
+        raise AssertionError(path)
+    monkeypatch.setattr(w, 'arango', backend)
+    assert w.main() == 1
+    output = capsys.readouterr()
+    assert f'server acknowledged at least {acknowledged} imported rows' in output.err
+    assert 'earlier writes may persist; no successful run is certified' in output.err
+    assert 'plus one report' not in output.out
+    if failure == 'partial':
+        assert not any(path.startswith('document/') for path in calls)

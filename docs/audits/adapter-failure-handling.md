@@ -15,7 +15,11 @@ Imports require nonnegative integer counters, zero errors/ignored/empty rows,
 and created-plus-updated counts equal to the submitted rows. HTTP failure status
 cannot be overridden by a JSON body claiming success. Report writes need the
 expected document identity. Only acknowledged imports contribute to the final
-count. Failures exit nonzero and state that earlier writes may persist.
+count. Failures exit nonzero and state that earlier writes may persist. Valid partial
+import counters and earlier successful batches survive later failures as a
+reported lower bound on acknowledged imported rows. Lost responses may hide
+additional writes; the count is not an exact persistence inventory. Dangling
+endpoint failures also print this warning and never print the success line.
 
 This is not a whole-run transaction, a stale-record retirement algorithm or a
 change to identifier derivation. A later collection/import/report failure can
@@ -23,7 +27,7 @@ leave earlier writes committed. An earlier `latest` report may remain after a
 failed run; callers must honor the failure exit status and must not treat it as
 certification of the attempted run.
 
-The focused suite has 52 passing cases including scope, existing/wrong-type
+The focused suite has 56 passing cases including scope, existing/wrong-type
 collections, HTTP errors, partial/malformed imports, report errors, normal success
 and redirect policy. These use synthetic responses and private HTTP peers.
 The [recorded real-database result](adapter-database-result.json) also passed on

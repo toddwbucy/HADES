@@ -144,6 +144,10 @@ def arango(db: str, path: str, body=None, method="POST"):
 class AdapterError(RuntimeError):
     """A backend result cannot certify the requested adapter operation."""
 
+    def __init__(self, message, acknowledged=0):
+        super().__init__(message)
+        self.acknowledged = acknowledged
+
 
 def checked(response, stage):
     """Reject API errors and malformed envelopes without echoing backend secrets."""
@@ -215,9 +219,11 @@ def import_rows(db, name, rows):
         value = response.get(field)
         if type(value) is not int or value < 0:
             raise AdapterError("malformed import counters")
-    if response["errors"] or response["ignored"] or response["empty"]:
-        raise AdapterError("import rejected or skipped rows; partial writes may persist")
     accepted = response["created"] + response["updated"]
+    if accepted > len(rows):
+        raise AdapterError("import acknowledgement exceeds submitted rows")
+    if response["errors"] or response["ignored"] or response["empty"]:
+        raise AdapterError("import rejected or skipped rows; partial writes may persist", accepted)
     if accepted != len(rows):
         raise AdapterError("import acknowledgement count differs from submitted rows")
     return accepted
@@ -361,56 +367,63 @@ def _main() -> int:
         return 0
 
     accepted = 0
-    for name, rows in sorted(by_collection.items()):
-        accepted += import_rows(args.db, name, rows)
+    try:
+        for name, rows in sorted(by_collection.items()):
+            accepted += import_rows(args.db, name, rows)
 
-    # What the extraction could not vouch for, written where a query can find it.
-    # overwriteMode=replace, because a fixed `_key` POSTs into a 409 on every run
-    # after the first and this function returns the error body rather than
-    # raising, so the second run would have silently kept the first run's notes.
-    report = arango(args.db, f"document/{REPORT}?overwriteMode=replace", {
-        "_key": "latest",
-        "repo": args.repo,
-        "document_notes": docs.notes,
-        "code_notes": code.notes,
-        "dangling_documents": [vars(e) for e in docs.dangling],
-        "dangling_code": [vars(e) for e in code.dangling],
-        "cites_sources_with_no_file_node": missing_sources,
-        "declared_in_targets_with_no_document_row": sorted(set(missing_documents)),
-        "warning": "counts in *_notes describe claims the extraction could not "
-                   "resolve. A coverage query that ignores them will read "
-                   "unenforced claims as enforced.",
-    })
-    report = checked(report, "report write")
-    if report.get("_key") != "latest" or report.get("_id") != f"{REPORT}/latest":
-        raise AdapterError("malformed report write acknowledgement")
-    if missing_sources:
-        print(
-            f"\n{len(missing_sources)} cites edge(s) name a file with no graph node, "
-            f"so they dangle. Ingest those files first, e.g. with --unparsed-ext:",
-            file=sys.stderr,
-        )
-        for src in sorted(set(missing_sources))[:10]:
-            print(f"    {src}", file=sys.stderr)
-    if missing_documents:
-        print(
-            f"\n{len(set(missing_documents))} declared-in edge(s) name a markdown file "
-            f"with no `documents` row, so they dangle. Run the ingest over the tree "
-            f"first:",
-            file=sys.stderr,
-        )
-        for rel in sorted(set(missing_documents))[:10]:
-            print(f"    {rel}", file=sys.stderr)
-    print(f"\nserver acknowledged {accepted:,} imported rows plus one report")
-    return 1 if missing_sources or missing_documents or report.get("error") else 0
+        # What the extraction could not vouch for, written where a query can find it.
+        # overwriteMode=replace, because a fixed `_key` POSTs into a 409 on every run
+        # after the first and this function returns the error body rather than
+        # raising, so the second run would have silently kept the first run's notes.
+        report = arango(args.db, f"document/{REPORT}?overwriteMode=replace", {
+            "_key": "latest",
+            "repo": args.repo,
+            "document_notes": docs.notes,
+            "code_notes": code.notes,
+            "dangling_documents": [vars(e) for e in docs.dangling],
+            "dangling_code": [vars(e) for e in code.dangling],
+            "cites_sources_with_no_file_node": missing_sources,
+            "declared_in_targets_with_no_document_row": sorted(set(missing_documents)),
+            "warning": "counts in *_notes describe claims the extraction could not "
+                       "resolve. A coverage query that ignores them will read "
+                       "unenforced claims as enforced.",
+        })
+        report = checked(report, "report write")
+        if report.get("_key") != "latest" or report.get("_id") != f"{REPORT}/latest":
+            raise AdapterError("malformed report write acknowledgement")
+        if missing_sources:
+            print(
+                f"\n{len(missing_sources)} cites edge(s) name a file with no graph node, "
+                f"so they dangle. Ingest those files first, e.g. with --unparsed-ext:",
+                file=sys.stderr,
+            )
+            for src in sorted(set(missing_sources))[:10]:
+                print(f"    {src}", file=sys.stderr)
+        if missing_documents:
+            print(
+                f"\n{len(set(missing_documents))} declared-in edge(s) name a markdown file "
+                f"with no `documents` row, so they dangle. Run the ingest over the tree "
+                f"first:",
+                file=sys.stderr,
+            )
+            for rel in sorted(set(missing_documents))[:10]:
+                print(f"    {rel}", file=sys.stderr)
+        if missing_sources or missing_documents:
+            raise AdapterError("imported edges have missing endpoints")
+        print(f"\nserver acknowledged {accepted:,} imported rows plus one report")
+        return 0
+    except (AdapterError, OSError, ValueError) as error:
+        raise AdapterError("write stage failed", accepted + getattr(error, "acknowledged", 0)) from error
 
 
 def main() -> int:
     """Fail the CLI on backend failures without claiming a whole-run transaction."""
     try:
         return _main()
-    except (AdapterError, OSError, ValueError):
-        print("adapter run failed; earlier writes may persist; no successful run is certified", file=sys.stderr)
+    except (AdapterError, OSError, ValueError) as error:
+        acknowledged = getattr(error, "acknowledged", 0)
+        print(f"adapter run failed; server acknowledged at least {acknowledged:,} imported rows; "
+              "earlier writes may persist; no successful run is certified", file=sys.stderr)
         return 1
 
 
