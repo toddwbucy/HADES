@@ -1,11 +1,11 @@
 {
-  "source_revision": "32b9bee1d8b476faa2c8989d1384e4ec90a78224",
+  "source_revision": "64f06860dc362dcdcfe1f5738d6259dd3879fd2e",
   "scope": "Static execution wiring, not runtime or behavioral coverage certification",
   "rust_targets": [
     {
       "path": "crates/hades-cli/tests/codebase_lifecycle.rs",
       "execution": "disposable database CI",
-      "sha256": "d0b1658041fab7ffdbf0179ddf4bcaa4bfe908bec583cdb291961f2411f77937"
+      "sha256": "dfd971dd11f507cc7a5e06f74f4cba1fc4e0dec84ade9bd11879b421038d6a34"
     },
     {
       "path": "crates/hades-cli/tests/daemon_shutdown.rs",
@@ -232,6 +232,6 @@
   ],
   "execution_source_sha256": {
     ".github/workflows/ci.yml": "aa45c9af39688c5935f68360d03f63d0a85a0da26eedc9c59fe287d6255f536b",
-    "scripts/test_isolated_database.py": "f592ff12ea67a2ae78610c9c0e836c29fdd4eada52ba35c2bb396db2a50fac29"
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131"
   }
 }

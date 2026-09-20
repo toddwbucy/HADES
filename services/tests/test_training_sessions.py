@@ -146,12 +146,29 @@ def test_cancelled_operation_drains_then_discards_owner():
                 await finish.wait()
                 return pb.InitModelResponse(device="cpu")
         async with provider(SlowBackend) as (service, a, b):
+            handler = None
+            invoke = service._invoke
+
+            async def observe_handler(name, request, context):
+                nonlocal handler
+                handler = asyncio.current_task()
+                return await invoke(name, request, context)
+
+            service._invoke = observe_handler
             owner = await acquire(a)
             pending = a.InitModel(pb.InitModelRequest(), metadata=owner, timeout=3)
             await asyncio.wait_for(started.wait(), 2)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await pending
+            # Client cancellation completes locally before the server must
+            # receive it. Keep the backend blocked until cancellation reaches
+            # the actual handler, otherwise normal completion can win the race.
+            async def server_cancelled():
+                while handler is None or not handler.cancelling():
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(server_cancelled(), 2)
+            assert not handler.done()
             assert service._backend is not None
             finish.set()
             async def discarded():

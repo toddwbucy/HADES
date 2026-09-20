@@ -1,6 +1,6 @@
 # Rust test fixture inventory (#12, #20, #47)
 
-Scope refreshed at `32b9bee`: all **39** top-level `crates/*/tests/*.rs`
+Scope refreshed at `64f0686`: all **39** top-level `crates/*/tests/*.rs`
 targets, plus the maintained Python/script test entry points. The prior 28-target
 snapshot remains in Git history. [The exact target manifest](test-fixture-inventory.json)
 binds paths, classifications and hashes to this source revision. Counts describe
@@ -101,3 +101,7 @@ automatically maintained CI suite.
 The source manifest enumerates all test-file paths and the CI/runner hashes used
 for this mapping. It does not convert ignored tests, missing prerequisites,
 synthetic peers, or historical one-off runs into passing production contracts.
+
+The `64f0686` cut also includes the changed-text retention fixture inside
+`codebase_lifecycle` and its optional `--cli-lifecycle` runner entry point. That
+helper file is part of the existing target, not a fortieth top-level target.

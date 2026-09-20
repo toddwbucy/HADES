@@ -1,0 +1,38 @@
+{
+  "runtime_base": "8932dac213e578235c95666d64c44435d381a2e8",
+  "server_version": "3.12.11",
+  "runner_result": {
+    "cli-lifecycle": {
+      "passed": true,
+      "exit_code": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hades-cli",
+        "--test",
+        "codebase_lifecycle",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ]
+    }
+  },
+  "test_summary": "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 65.62s",
+  "retention_evidence": [
+    "test changed_text_has_path_specific_structural_vector_retention ... Changed text verified: parsed file/symbol vectors removed; parser-free file vector retained; both content hashes and chunks refreshed."
+  ],
+  "private_server_exit_code": 0,
+  "source_sha256": {
+    "crates/hades-cli/tests/fixtures/ingest_vector_freshness.rs": "338c61e98c32db2e5c654c2b22ba1e75e4aec06d5cbaf1fd8fc75dc7061f84e7",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "dfd971dd11f507cc7a5e06f74f4cba1fc4e0dec84ade9bd11879b421038d6a34",
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131",
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/codebase.rs": "ccd807c7a0e03eab907f8dbccb365daf54b73a3eb0bdb1705918eeb3b8d9fc97",
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "f43c1e641a07aee6f519abc6b3935254598c7e58810be64b74622f2065ce5ab1",
+    "crates/hades-cli/src/commands/codebase_persist.rs": "fd409f09a383be9aef92406bef73fd5798621e0168a6f243478fc5e001c0c14f",
+    "crates/hades-core/src/db/crud.rs": "cf59d100fa8b7211d2bf9920285f0c2476ef8b14adbc9e70cd72114538ee8b1d"
+  }
+}

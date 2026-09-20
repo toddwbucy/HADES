@@ -123,6 +123,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Refresh the audit fixture inventory with all 39 Rust integration targets and
   explicit Python, script, opt-in and workstation execution boundaries (epic #12).
 
+- Verify structural-vector retention after changed parsed and parser-free source
+  text using real CLI ingestion and private fixtures (epic #12).
 - Record private checkpoint/graph generation and partially persisted export
   experiments for the structural-vector audit (epic #12).
 
@@ -407,6 +409,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   those drift apart rather than agree.
 
 ### Fixed
+
+- Synchronize the training cancellation fixture with server-side cancellation
+  before releasing its worker, preventing a client/server completion race in CI.
 
 - Preserve WeaverTools relationship identity with full-tuple versioned keys,
   reject conflicting declarations and legacy layouts before writes, and make
