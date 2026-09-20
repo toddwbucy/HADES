@@ -128,19 +128,23 @@ recent Debian-family distro). You will need root.
 The short version for Debian/Ubuntu:
 
 ```bash
-echo 'deb https://download.arangodb.com/arangodb312/DEBIAN/ /' \
+# Stop if fetching, converting, or authenticating the repository fails.
+set -e
+key_file=$(mktemp)
+curl -fsSL https://download.arangodb.com/arangodb312/DEBIAN/Release.key -o "$key_file"
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/arangodb.gpg "$key_file"
+rm -f "$key_file"
+sudo chmod 0644 /etc/apt/keyrings/arangodb.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/arangodb.gpg] https://download.arangodb.com/arangodb312/DEBIAN/ /' \
   | sudo tee /etc/apt/sources.list.d/arangodb.list
-curl -fsSL https://download.arangodb.com/arangodb312/DEBIAN/Release.key \
-  | sudo gpg --dearmor -o /usr/share/keyrings/arangodb.gpg
-sudo apt-get update && sudo apt-get install -y arangodb3
+sudo apt-get -o APT::Update::Error-Mode=any update && sudo apt-get install -y arangodb3
 ```
 
-> **Note (2026-05):** ArangoDB's signing key on their `arangodb312` deb
-> repo is currently expired (`EXPKEYSIG`). If `apt-get update` fails
-> with that error, either fetch the latest key from the ArangoDB
-> downloads page, or temporarily set `deb [trusted=yes] ...` in the
-> sources line as a workaround. Their key rotation is out of HADES's
-> control.
+If APT reports an expired, missing, or invalid signing key, stop and consult
+ArangoDB's current download instructions for the supported repository and key.
+Do not disable signature verification to continue an installation. The keyring
+must be readable by APT and explicitly selected by the source's `signed-by` option.
 
 During `apt-get install` you'll be prompted to set a root password
 for ArangoDB — note it, you'll use it in step 2.
