@@ -392,6 +392,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Own language-server process groups through normal exit, transport failure and
   cancelled shutdown; stop descendants before reaping the leader (#100).
 
+- Bound analyzer version probes to ten seconds and 64 KiB per output stream;
+  keep ingestion probes off the async executor and clean owned process groups
+  through timeout or cancellation (#96).
+
 - Bound LSP headers, frame serialization, notification retention and pending
   admission; fail closed on inbound overflow and reject oversized sends before
   writing protocol bytes (#98).
