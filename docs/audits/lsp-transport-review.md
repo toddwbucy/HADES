@@ -48,7 +48,7 @@ The stream is conservatively invalidated even if interruption occurs before the
 first byte after acquiring the writer; framing is never assumed recoverable.
 
 Executed on private Python child peers: eight integration contracts passed
-(10.01 seconds), including blocked request/notification/server-reply writes,
+(10.02 seconds after integrating `b0d14f0`), including blocked request/notification/server-reply writes,
 response cancellation, malformed responses, final-response draining, peer exit
 and unresponsive shutdown. Four focused unit tests passed, including direct
 pending-map checks for queued timeout/cancellation and partial-write cancellation
@@ -58,3 +58,6 @@ service-free tests. No real analyzer, live service or database was contacted.
 Frame/notification memory bounds, preflight subprocess limits and descendant
 ownership remain separate unresolved audit scope. These tests establish the
 direct-child transport contract only, not full analyzer readiness.
+
+Selected final source/test/CI hashes are retained in
+[lsp-deadline-remediation-result.json](lsp-deadline-remediation-result.json).
