@@ -8,18 +8,27 @@ use hades_core::db::{ArangoPool, keys};
 use hades_core::test_support::{Fixtures, with_temp_db};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 const MODEL: &str = "jinaai/jina-embeddings-v4";
 
 struct Embedder {
+    fail: Arc<AtomicBool>,
+    hold: Arc<AtomicBool>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
     socket: PathBuf,
     task: JoinHandle<()>,
     _directory: tempfile::TempDir,
 }
 impl Drop for Embedder {
     fn drop(&mut self) {
+        self.release.notify_one();
         self.task.abort();
     }
 }
@@ -28,11 +37,29 @@ impl Embedder {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("embedder.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let fail = Arc::new(AtomicBool::new(false));
+        let fault = fail.clone();
+        let hold = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold_request = hold.clone();
+        let entered_request = entered.clone();
+        let release_request = release.clone();
         let app = Router::new()
             .route("/v1/models", get(|| async {
                 Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]}))
             }))
-            .route("/v1/embeddings", post(|Json(body): Json<Value>| async move {
+            .route("/v1/embeddings", post(move |Json(body): Json<Value>| {
+                let fault = fault.clone();
+                let hold = hold_request.clone();
+                let entered = entered_request.clone();
+                let release = release_request.clone();
+                async move {
+                if hold.load(Ordering::SeqCst) {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+                if fault.load(Ordering::SeqCst) { return Json(json!({"error":"injected embedding failure"})); }
                 assert_eq!(body["task"], "code", "code ingest/query must agree on the adapter");
                 let inputs = body["input"].as_array().unwrap();
                 let mut data = Vec::new();
@@ -51,11 +78,15 @@ impl Embedder {
                     }
                 }
                 Json(json!({"model":MODEL,"data":data}))
-            }));
+            }}));
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
+            fail,
+            hold,
+            entered,
+            release,
             socket,
             task,
             _directory: directory,
@@ -75,8 +106,9 @@ fn vector(text: &str) -> Vec<f32> {
     vector
 }
 
-async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: bool) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_hades"))
+fn cli_command(pool: &ArangoPool, embedder: &Embedder, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hades"));
+    command
         .args(["--db", pool.database()])
         .args(args)
         .env("HADES_EMBEDDER_SOCKET", &embedder.socket)
@@ -86,10 +118,12 @@ async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: boo
         )
         .env_remove("HADES_DISABLE_LATE_CHUNKING")
         .env_remove("HADES_DEFAULT_COLLECTION")
-        .kill_on_drop(true)
-        .output()
-        .await
-        .unwrap();
+        .kill_on_drop(true);
+    command
+}
+
+async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: bool) -> Value {
+    let output = cli_command(pool, embedder, args).output().await.unwrap();
     assert_eq!(
         output.status.success(),
         success,
@@ -199,4 +233,633 @@ async fn ingest_query_modify_move_delete_and_partial_failure_recover() {
             assert_eq!(hades_core::db::crud::count_collection(&pool, collection).await.unwrap(), 0);
         }
     }).await;
+}
+
+#[tokio::test]
+async fn failed_chunk_replacement_preserves_previous_file_graph() {
+    with_temp_db("failed_replace", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let file = tree.path().join("provider.py");
+        std::fs::write(&file, "def target():\n    return 'quartz_original'\n").unwrap();
+        std::fs::write(tree.path().join("consumer.py"), "from provider import target\n\ndef caller():\n    return target()\n").unwrap();
+        ingest(&pool, &embedder, tree.path()).await;
+        let before = snapshot_graph(&pool).await;
+        let before_chunks = hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap();
+        let before_symbols = hades_core::db::crud::count_collection(&pool, "codebase_symbols").await.unwrap();
+        assert!(before_chunks > 0 && before_symbols > 0);
+        pool.writer().put("collection/codebase_chunks/properties", &json!({
+            "schema": {"level":"strict", "message":"isolated replacement rejection", "rule": {
+                "type":"object", "required":["audit_required_marker"]
+            }}
+        })).await.unwrap();
+        std::fs::write(&file, "# shifted\n\ndef target():\n    return 'sapphire_revised'\n").unwrap();
+        let failed = cli(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()], false).await;
+        let after_chunks = hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap();
+        let after_symbols = hades_core::db::crud::count_collection(&pool, "codebase_symbols").await.unwrap();
+        println!("FAILED_REPLACEMENT_EVIDENCE {}", json!({"before_chunks":before_chunks,"before_symbols":before_symbols,"after_chunks":after_chunks,"after_symbols":after_symbols,"report":failed}));
+        assert_eq!(after_chunks, before_chunks, "failed replacement must preserve committed chunks");
+        assert_eq!(after_symbols, before_symbols, "failed replacement must preserve committed symbols");
+        assert_eq!(snapshot_graph(&pool).await, before, "failed replacement must preserve full graph contents");
+        pool.writer().put("collection/codebase_chunks/properties", &json!({"schema": null})).await.unwrap();
+        ingest(&pool, &embedder, tree.path()).await;
+        validate(&pool, &embedder).await;
+        let key = keys::scoped_file_key(tree.path().to_str().unwrap(), "provider.py");
+        assert_hit(&search(&pool, &embedder, "sapphire").await, &key, "sapphire_revised");
+    }).await;
+}
+
+async fn snapshot_graph(pool: &ArangoPool) -> Value {
+    let mut snapshot = serde_json::Map::new();
+    for (collection, _) in hades_core::db::collections::CODEBASE.all_collections() {
+        let result = hades_core::db::query::query(
+            pool,
+            "FOR d IN @@collection SORT d._key RETURN UNSET(d, '_rev')",
+            Some(&json!({"@collection":collection})),
+            None,
+            false,
+            hades_core::db::query::ExecutionTarget::Writer,
+        )
+        .await
+        .unwrap();
+        snapshot.insert(collection.into(), json!(result.results));
+    }
+    Value::Object(snapshot)
+}
+
+#[tokio::test]
+async fn embedding_failure_preserves_committed_graph_before_transaction() {
+    with_temp_db(
+        "embedding_rollback",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            let file = tree.path().join("provider.py");
+            std::fs::write(&file, "def target():\n    return 'quartz_original'\n").unwrap();
+            ingest(&pool, &embedder, tree.path()).await;
+            let before = snapshot_graph(&pool).await;
+            std::fs::write(&file, "def target():\n    return 'sapphire_revised'\n").unwrap();
+            embedder.fail.store(true, Ordering::SeqCst);
+            let failed = cli(
+                &pool,
+                &embedder,
+                &["ingest", tree.path().to_str().unwrap()],
+                false,
+            )
+            .await;
+            assert_eq!(
+                failed["code"]["embedding"]["files_with_embedding_failures"],
+                1
+            );
+            assert_eq!(snapshot_graph(&pool).await, before);
+            embedder.fail.store(false, Ordering::SeqCst);
+            ingest(&pool, &embedder, tree.path()).await;
+            validate(&pool, &embedder).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn relationship_failure_is_retried_without_force() {
+    with_temp_db(
+        "relationship_retry",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tree.path().join("provider.py"),
+                "def target():\n    return 'quartz'\n",
+            )
+            .unwrap();
+            std::fs::write(
+                tree.path().join("consumer.py"),
+                "from provider import target\n\ndef caller():\n    return target()\n",
+            )
+            .unwrap();
+            pool.writer().put("collection/codebase_calls_edges/properties", &json!({
+            "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
+        })).await.unwrap();
+            let failure = cli(
+                &pool,
+                &embedder,
+                &["ingest", tree.path().to_str().unwrap()],
+                false,
+            )
+            .await;
+            assert_eq!(failure["code"]["import_edges"], 0);
+            assert_eq!(failure["code"]["python_call_edges"], 0);
+            assert!(
+                failure["code"]["relationship_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("failed to atomically store")
+            );
+
+            for name in ["provider.py", "consumer.py"] {
+                let key = keys::scoped_file_key(tree.path().to_str().unwrap(), name);
+                assert_eq!(
+                    pool.reader()
+                        .get(&format!("document/codebase_files/{key}"))
+                        .await
+                        .unwrap()["relationships_pending"],
+                    true
+                );
+            }
+            for collection in ["codebase_imports_edges", "codebase_calls_edges"] {
+                assert_eq!(
+                    hades_core::db::crud::count_collection(&pool, collection)
+                        .await
+                        .unwrap(),
+                    0
+                );
+            }
+            pool.writer()
+                .put(
+                    "collection/codebase_calls_edges/properties",
+                    &json!({"schema":null}),
+                )
+                .await
+                .unwrap();
+            let retry = ingest(&pool, &embedder, tree.path()).await;
+            assert_eq!(retry["code"]["skipped"], 0);
+            assert!(
+                retry["code"]["python_call_edges"].as_u64().unwrap() > 0,
+                "{retry}"
+            );
+            for name in ["provider.py", "consumer.py"] {
+                let key = keys::scoped_file_key(tree.path().to_str().unwrap(), name);
+                assert_eq!(
+                    pool.reader()
+                        .get(&format!("document/codebase_files/{key}"))
+                        .await
+                        .unwrap()["relationships_pending"],
+                    false
+                );
+            }
+            validate(&pool, &embedder).await;
+            assert_eq!(
+                ingest(&pool, &embedder, tree.path()).await["code"]["skipped"],
+                2
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn changed_consumer_keeps_relationships_to_unchanged_provider() {
+    with_temp_db("unchanged_provider", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("provider.py"), "def target():\n    return 'quartz'\n").unwrap();
+        let consumer = tree.path().join("consumer.py");
+        std::fs::write(&consumer, "from provider import target\n\ndef caller():\n    return target()\n").unwrap();
+        ingest(&pool, &embedder, tree.path()).await;
+        let before = snapshot_graph(&pool).await;
+        assert!(!before["codebase_calls_edges"].as_array().unwrap().is_empty());
+        std::fs::write(&consumer, "from provider import target\n\ndef caller():\n    # revised consumer body\n    return target()\n").unwrap();
+        let updated = ingest(&pool, &embedder, tree.path()).await;
+        assert_eq!(updated["code"]["skipped"], 1);
+        let after = snapshot_graph(&pool).await;
+        assert_eq!(after["codebase_calls_edges"], before["codebase_calls_edges"], "unchanged provider must remain a resolution target");
+        assert_eq!(after["codebase_imports_edges"], before["codebase_imports_edges"]);
+        validate(&pool, &embedder).await;
+    }).await;
+}
+
+#[tokio::test]
+async fn killed_cli_during_embedding_preserves_graph_and_retries() {
+    with_temp_db(
+        "killed_preparation",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            let file = tree.path().join("provider.py");
+            std::fs::write(&file, "def target():\n    return 'quartz'\n").unwrap();
+            ingest(&pool, &embedder, tree.path()).await;
+            let before = snapshot_graph(&pool).await;
+            std::fs::write(&file, "# move\ndef target():\n    return 'sapphire'\n").unwrap();
+            embedder.hold.store(true, Ordering::SeqCst);
+            let mut child =
+                cli_command(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                embedder.entered.notified(),
+            )
+            .await
+            .expect("CLI never reached the controlled embedding request");
+            child.start_kill().unwrap();
+            let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                .await
+                .expect("test CLI did not exit")
+                .unwrap();
+            assert!(!status.success());
+            assert_eq!(
+                snapshot_graph(&pool).await,
+                before,
+                "process interruption during preparation must preserve all collections"
+            );
+            embedder.hold.store(false, Ordering::SeqCst);
+            embedder.release.notify_one();
+            let retry = ingest(&pool, &embedder, tree.path()).await;
+            assert_eq!(retry["code"]["failed"], 0);
+            validate(&pool, &embedder).await;
+            let key = keys::scoped_file_key(tree.path().to_str().unwrap(), "provider.py");
+            assert_hit(
+                &search(&pool, &embedder, "sapphire").await,
+                &key,
+                "sapphire",
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn explicitly_unparsed_provider_preserves_registered_language_targets() {
+    with_temp_db("unparsed_target", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path().to_str().unwrap();
+        std::fs::write(
+            tree.path().join("provider.legacy"),
+            "def target():\n    return 'quartz'\n",
+        )
+        .unwrap();
+        let consumer = tree.path().join("consumer.py");
+        std::fs::write(
+            &consumer,
+            "from provider import target\n\ndef caller():\n    return target()\n",
+        )
+        .unwrap();
+        cli(
+            &pool,
+            &embedder,
+            &[
+                "codebase",
+                "ingest",
+                tree.path().join("provider.legacy").to_str().unwrap(),
+                "--language",
+                "python",
+            ],
+            true,
+        )
+        .await;
+        cli(
+            &pool,
+            &embedder,
+            &["codebase", "ingest", root, "--unparsed-ext", "legacy"],
+            true,
+        )
+        .await;
+        let before = snapshot_graph(&pool).await;
+        assert!(
+            !before["codebase_calls_edges"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::write(
+            &consumer,
+            "from provider import target\n\ndef caller():\n    # changed\n    return target()\n",
+        )
+        .unwrap();
+        let result = cli(
+            &pool,
+            &embedder,
+            &["codebase", "ingest", root, "--unparsed-ext", "legacy"],
+            true,
+        )
+        .await;
+        assert_eq!(result["skipped"], 1);
+        let after = snapshot_graph(&pool).await;
+        assert_eq!(
+            after["codebase_calls_edges"],
+            before["codebase_calls_edges"]
+        );
+        assert_eq!(
+            after["codebase_imports_edges"],
+            before["codebase_imports_edges"]
+        );
+        let key = keys::scoped_file_key(root, "provider.legacy");
+        let provider = pool
+            .reader()
+            .get(&format!("document/codebase_files/{key}"))
+            .await
+            .unwrap();
+        assert_eq!(provider["analysis_tier"], "semantic");
+        assert_eq!(provider["language"], "Python");
+        validate(&pool, &embedder).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn analyzer_failure_retains_summary_and_failure_envelope() {
+    use std::os::unix::fs::PermissionsExt;
+    with_temp_db("analyzer_failure", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tree.path().join("src")).unwrap();
+        std::fs::write(tree.path().join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n").unwrap();
+        std::fs::write(tree.path().join("src/lib.rs"), "pub fn target() -> u32 { 7 }\n").unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let analyzer = tools.path().join("failing-analyzer");
+        std::fs::write(&analyzer, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'rust-analyzer fixture'; exit 0; fi\nexit 1\n").unwrap();
+        std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for direct in [true, false] {
+            let root = tree.path().to_str().unwrap();
+            let args = if direct { vec!["codebase", "ingest", root] } else { vec!["ingest", root] };
+            let output = tokio::time::timeout(std::time::Duration::from_secs(30),
+                cli_command(&pool, &embedder, &args).env("HADES_RUST_ANALYZER_PATH", &analyzer).output())
+                .await.expect("failing analyzer did not terminate promptly").unwrap();
+            assert!(!output.status.success());
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| panic!("missing JSON summary: {error}; stderr={}", String::from_utf8_lossy(&output.stderr)));
+            assert_eq!(report["success"], false, "{report}");
+            let code = if direct { &report["data"] } else { &report["data"]["code"] };
+            assert_eq!(code["completed"], 1, "file commit must remain visible: {report}");
+            assert!(code["enrichment_error"].as_str().unwrap().contains("rust-analyzer"), "{report}");
+            assert_eq!(code["rust_analyzer"]["crates_analyzed"], 0);
+        }
+        assert!(hades_core::db::crud::count_collection(&pool, "codebase_chunks").await.unwrap() > 0);
+        validate(&pool, &embedder).await;
+    }).await;
+}
+
+#[tokio::test]
+async fn partial_extraction_failure_is_not_marked_as_empty_success() {
+    use std::os::unix::fs::PermissionsExt;
+    with_temp_db(
+        "partial_extraction",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tree.path().join("src")).unwrap();
+            std::fs::write(
+                tree.path().join("Cargo.toml"),
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .unwrap();
+            std::fs::write(tree.path().join("src/lib.rs"), "mod broken;\n").unwrap();
+            std::fs::write(
+                tree.path().join("src/broken.rs"),
+                "pub fn target() -> u32 { 7 }\n",
+            )
+            .unwrap();
+            let scripts = tempfile::tempdir().unwrap();
+            let analyzer = scripts.path().join("partial-analyzer");
+            std::fs::write(&analyzer, include_str!("fixtures/partial_analyzer.py")).unwrap();
+            std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let root = tree.path().to_str().unwrap();
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                cli_command(&pool, &embedder, &["codebase", "ingest", root])
+                    .env("HADES_RUST_ANALYZER_PATH", &analyzer)
+                    .output(),
+            )
+            .await
+            .expect("partial analyzer fixture timed out")
+            .unwrap();
+            assert!(
+                !output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["success"], false);
+            let data = &report["data"];
+            assert_eq!(data["completed"], 2);
+            assert_eq!(data["rust_analyzer"]["crates_analyzed"], 1);
+            assert_eq!(
+                data["rust_analyzer"]["failed_files"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(
+                data["enrichment_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("src/broken.rs")
+            );
+            for (path, expected) in [("src/lib.rs", json!(true)), ("src/broken.rs", Value::Null)] {
+                let key = keys::scoped_file_key(root, path);
+                assert_eq!(
+                    pool.reader()
+                        .get(&format!("document/codebase_files/{key}"))
+                        .await
+                        .unwrap()["ra_analyzed"],
+                    expected
+                );
+            }
+            validate(&pool, &embedder).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn failed_workspace_is_not_hidden_by_another_successful_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    with_temp_db("partial_workspace", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        for name in ["successful", "failed"] {
+            let root = tree.path().join(name);
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+            )
+            .unwrap();
+            std::fs::write(root.join("src/lib.rs"), "pub fn target() -> u32 { 7 }\n").unwrap();
+        }
+        let scripts = tempfile::tempdir().unwrap();
+        let analyzer = scripts.path().join("partial-analyzer");
+        std::fs::write(&analyzer, include_str!("fixtures/partial_analyzer.py")).unwrap();
+        std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = tree.path().to_str().unwrap();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            cli_command(&pool, &embedder, &["codebase", "ingest", root])
+                .env("HADES_RUST_ANALYZER_PATH", &analyzer)
+                .output(),
+        )
+        .await
+        .expect("workspace fixture timed out")
+        .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!output.status.success(), "{report}");
+        assert_eq!(report["success"], false);
+        let data = &report["data"];
+        assert_eq!(data["completed"], 2);
+        assert_eq!(data["rust_analyzer"]["crates_analyzed"], 1);
+        assert_eq!(
+            data["rust_analyzer"]["failed_workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            data["enrichment_error"]
+                .as_str()
+                .unwrap()
+                .contains("failed/src/lib.rs")
+        );
+        validate(&pool, &embedder).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn killed_cli_after_transactional_chunk_write_rolls_back_and_retries() {
+    with_temp_db(
+        "cli_transaction_death",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            let file = tree.path().join("provider.py");
+            std::fs::write(&file, "def target():\n    return 'quartz'\n").unwrap();
+            std::fs::write(
+                tree.path().join("consumer.py"),
+                "from provider import target\n\ndef caller():\n    return target()\n",
+            )
+            .unwrap();
+            ingest(&pool, &embedder, tree.path()).await;
+            let before = snapshot_graph(&pool).await;
+            std::fs::write(&file, "# moved\ndef target():\n    return 'sapphire'\n").unwrap();
+
+            // Transparent private UDS proxy: forward transaction headers unchanged,
+            // but withhold one response after ArangoDB acknowledges replacement chunks.
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("database.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .unix_socket(pool.writer().socket_path().unwrap().to_path_buf())
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let paused = Arc::new(AtomicBool::new(false));
+            let signal = entered.clone();
+            let gate = release.clone();
+            let app = Router::new().fallback(move |request: axum::extract::Request| {
+                let client = client.clone();
+                let signal = signal.clone();
+                let gate = gate.clone();
+                let paused = paused.clone();
+                async move {
+                    let (parts, body) = request.into_parts();
+                    let intercept = parts.method == axum::http::Method::POST
+                        && parts.uri.path().ends_with("/document/codebase_chunks")
+                        && parts.headers.contains_key("x-arango-trx-id");
+                    let body = axum::body::to_bytes(body, 32 * 1024 * 1024).await.unwrap();
+                    let response = client
+                        .request(
+                            parts.method,
+                            format!("http://localhost{}", parts.uri.path_and_query().unwrap()),
+                        )
+                        .headers(parts.headers)
+                        .body(body)
+                        .send()
+                        .await
+                        .unwrap();
+                    let status = response.status();
+                    let headers = response.headers().clone();
+                    let bytes = response.bytes().await.unwrap();
+                    if intercept && !paused.swap(true, Ordering::SeqCst) {
+                        assert!(status.is_success());
+                        let rows: Value = serde_json::from_slice(&bytes).unwrap();
+                        assert!(
+                            rows.as_array()
+                                .unwrap()
+                                .iter()
+                                .all(|row| row["error"] != true)
+                        );
+                        signal.notify_one();
+                        gate.notified().await;
+                    }
+                    let mut response = axum::http::Response::new(axum::body::Body::from(bytes));
+                    *response.status_mut() = status;
+                    *response.headers_mut() = headers;
+                    response
+                }
+            });
+            let proxy = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let mut child =
+                cli_command(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()])
+                    .env("ARANGO_RO_SOCKET", &socket)
+                    .env("ARANGO_RW_SOCKET", &socket)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(15), entered.notified())
+                .await
+                .expect("CLI never reached an acknowledged transactional chunk write");
+            child.start_kill().unwrap();
+            assert!(
+                !tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+            release.notify_one();
+            proxy.abort();
+            let _ = proxy.await;
+
+            // No ingestion cleanup task survives the process. Acquisition of all
+            // collection locks proves the abandoned transaction has released them.
+            tokio::time::timeout(std::time::Duration::from_secs(100), async {
+                loop {
+                    let collections = hades_core::db::collections::CODEBASE
+                        .all_collections()
+                        .iter()
+                        .map(|(name, _)| name.to_string())
+                        .collect();
+                    if hades_core::db::transaction::run(&pool, collections, |_| async { Ok(()) })
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .expect("abandoned CLI transaction did not release its locks");
+            assert_eq!(
+                snapshot_graph(&pool).await,
+                before,
+                "all collections must survive process death during replacement"
+            );
+            ingest(&pool, &embedder, tree.path()).await;
+            validate(&pool, &embedder).await;
+            let key = keys::scoped_file_key(tree.path().to_str().unwrap(), "provider.py");
+            assert_hit(
+                &search(&pool, &embedder, "sapphire").await,
+                &key,
+                "sapphire",
+            );
+        },
+    )
+    .await;
 }
