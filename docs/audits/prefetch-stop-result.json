@@ -1,0 +1,23 @@
+{
+  "status": "reproduced",
+  "source_revision": "b1031bd6953d047636522beb1ac1d7b1d1b002e7",
+  "source_sha256": {
+    "docs/audits/repros/prefetch_stop_boundary.rs": "2e3adc5f5cbc6ca61d4a6d4bc55592aaaf6101dbb8067e83913e8fa08080e531",
+    "crates/hades-prefetch/src/prefetcher.rs": "026ef8eb866de07a6707ae342ee091cf96423fd845cb18465c801e03c9892253",
+    "crates/hades-prefetch/src/tensor.rs": "addba1947db3602c40d980cbef1c4ff24065075413a07dcb553758da357546d5"
+  },
+  "probe": "stopped_prefetch_retains_queued_sampling_graphs",
+  "graph_strong_references": {
+    "before_stop": 4,
+    "after_producer_abort": 3,
+    "after_sampler_completion": 1
+  },
+  "blocking_workers": 1,
+  "synthetic_graph_nodes": 4,
+  "synthetic_graph_edges": 2,
+  "tests_passed": 1,
+  "limitations": [
+    "Queued task capture lifetime; not a measured running-sampler cancellation latency.",
+    "Hash binding covers selected source files, not the complete compiler or dependency environment."
+  ]
+}

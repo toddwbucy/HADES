@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Record private CPU training cancellation and queued-prefetch cleanup
+  reproductions, with explicit outcome and scheduling limits (#77).
+
 - Freeze a revision-bound code-search corpus and candidate questions, with private
   Git snapshot contracts, lossless passages and token-budget preflight evidence (#12).
 
@@ -385,6 +388,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Keep training RPC computation off the provider loop and drain interrupted
   operations before discarding their session or admitting a successor (#77).
+
+- Cancel and join owned prefetch sampling jobs during explicit shutdown, with
+  cooperative cancellation during edge indexing and candidate generation (#77).
 
 - Fail conformance adapter runs on incomplete scope, incompatible collections,
   import rejections or invalid acknowledgements; report partial persistence (#68).

@@ -43,6 +43,9 @@ use hades_core::graph::types::GraphData;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TensorError {
+    #[error("negative sampling cancelled")]
+    Cancelled,
+
     #[error("safetensors error: {0}")]
     SafeTensors(#[from] safetensors::SafeTensorError),
 
@@ -274,6 +277,25 @@ pub fn negative_sample_seeded(
     num_neg: usize,
     seed: u64,
 ) -> Result<NegativeSamples, TensorError> {
+    negative_sample_cancellable(graph, num_neg, seed, || false)
+}
+
+/// Cancellation is checked before allocation, during edge indexing and between
+/// candidate batches. Allocator calls themselves are not preemptible.
+pub(crate) fn negative_sample_cancellable(
+    graph: &GraphData,
+    num_neg: usize,
+    seed: u64,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<NegativeSamples, TensorError> {
+    let mut check = || {
+        if cancelled() {
+            Err(TensorError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
     if num_neg == 0 {
         return Ok(NegativeSamples {
             src: Vec::new(),
@@ -293,15 +315,20 @@ pub fn negative_sample_seeded(
 
     // Build existing edge set for O(1) lookup
     let mut existing: HashSet<(u32, u32)> = HashSet::with_capacity(graph.num_edges);
-    for (&s, &d) in graph.edge_src.iter().zip(&graph.edge_dst) {
+    for (index, (&s, &d)) in graph.edge_src.iter().zip(&graph.edge_dst).enumerate() {
+        if index % 1024 == 0 {
+            check()?;
+        }
         existing.insert((s, d));
         existing.insert((d, s));
     }
 
+    check()?;
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut neg_src = Vec::new();
     let mut neg_dst = Vec::new();
     for values in [&mut neg_src, &mut neg_dst] {
+        check()?;
         values
             .try_reserve_exact(num_neg)
             .map_err(|error| TensorError::ValidationFailed {
@@ -313,6 +340,7 @@ pub fn negative_sample_seeded(
     let num_nodes = graph.num_nodes as u32;
 
     while neg_src.len() < num_neg && attempts < max_attempts {
+        check()?;
         // Generate candidates in batches for efficiency
         let batch_size = num_neg.min(1024).min(max_attempts - attempts);
         for _ in 0..batch_size {
@@ -329,6 +357,7 @@ pub fn negative_sample_seeded(
         attempts += batch_size;
     }
 
+    check()?;
     if neg_src.len() != num_neg {
         return Err(TensorError::ValidationFailed {
             message: format!(
@@ -931,6 +960,72 @@ mod tests {
         });
 
         graph
+    }
+
+    #[test]
+    fn running_sampler_observes_cross_thread_cancellation() {
+        let graph = std::sync::Arc::new(test_graph());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let worker_graph = graph.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut checks = 0;
+            negative_sample_cancellable(&worker_graph, 3000, 19, || {
+                checks += 1;
+                if checks == 3 {
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                }
+                worker_cancel.is_cancelled()
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        cancel.cancel();
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(TensorError::Cancelled)
+        ));
+        assert_eq!(std::sync::Arc::strong_count(&graph), 1);
+    }
+
+    #[test]
+    fn sampling_cancellation_before_allocation_and_during_work() {
+        let graph = test_graph();
+        assert!(matches!(
+            negative_sample_cancellable(&graph, usize::MAX, 0, || true),
+            Err(TensorError::Cancelled)
+        ));
+        // Cancel at each checkpoint reached by a complete run, exercising edge
+        // indexing, vector reservation and candidate generation without sleeps.
+        let mut checks = 0;
+        let reference = negative_sample_cancellable(&graph, 3000, 19, || {
+            checks += 1;
+            false
+        })
+        .unwrap();
+        let seeded = negative_sample_seeded(&graph, 3000, 19).unwrap();
+        assert_eq!(reference.src, seeded.src);
+        assert_eq!(reference.dst, seeded.dst);
+        assert!(checks > 6);
+        for stop_at in 1..=checks {
+            let mut calls = 0;
+            let result = negative_sample_cancellable(&graph, 3000, 19, || {
+                calls += 1;
+                calls == stop_at
+            });
+            assert!(
+                matches!(result, Err(TensorError::Cancelled)),
+                "checkpoint {stop_at}"
+            );
+            assert_eq!(calls, stop_at);
+        }
     }
 
     #[test]
