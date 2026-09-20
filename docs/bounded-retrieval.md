@@ -42,6 +42,12 @@ response stream. Session slots return only after the worker has exited and both
 manager maps are cleaned. These counts are provisional capacity controls pending
 full-handler measurements, not RSS guarantees.
 
+MCP request bodies are collected through an explicit 16 MiB byte limit before
+SDK parsing, including chunked bodies with no Content-Length. Body reads have a
+15-second deadline and a process-wide cap of 64 simultaneous admitted requests.
+Bearer authorization runs first. This explicit middleware is required because
+the SDK does not use Axum's body extractors.
+
 Messages entering MCP SDK queues are limited to 2 MiB of serialized JSON, measured
 without allocating an extra serialized copy. Oversized responses become terminal
 `MCP_RESPONSE_TOO_LARGE` errors with their original request IDs; oversized

@@ -816,3 +816,7 @@ mod tests {
         assert!(*rx.borrow());
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_memory_benchmark.rs"]
+mod memory_benchmark;

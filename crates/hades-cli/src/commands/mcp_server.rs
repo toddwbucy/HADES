@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -914,6 +914,44 @@ impl ServerHandler for HadesMcpServer {
 // Router / serve
 // ---------------------------------------------------------------------------
 
+/// The SDK collects the raw body itself, so Axum extractor-only limits do not apply.
+pub(super) async fn enforce_body_limit(request: Request, next: Next) -> Response {
+    static BODIES: std::sync::LazyLock<tokio::sync::Semaphore> =
+        std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(64));
+    let Ok(_permit) = BODIES.try_acquire() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MCP request capacity is full",
+        )
+            .into_response();
+    };
+    let (parts, body) = request.into_parts();
+    let bytes = match tokio::time::timeout(
+        Duration::from_secs(15),
+        axum::body::to_bytes(body, MAX_BODY),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            use std::error::Error;
+            if error
+                .source()
+                .is_some_and(|source| source.is::<http_body_util::LengthLimitError>())
+            {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "MCP request exceeds 16 MiB")
+                    .into_response();
+            }
+            return (StatusCode::BAD_REQUEST, "failed to read MCP request body").into_response();
+        }
+        Err(_) => {
+            return (StatusCode::REQUEST_TIMEOUT, "MCP request body timed out").into_response();
+        }
+    };
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await
+}
+
 /// Build the axum application: bearer-gated `/mcp`, open `/healthz`.
 ///
 /// `allowed_hosts` feeds the transport's Host-header validation (MCP
@@ -943,8 +981,8 @@ fn build_router(
 
     let mcp_router = Router::new()
         .nest_service("/mcp", mcp_service)
-        .layer(middleware::from_fn_with_state(tokens, require_bearer))
-        .layer(DefaultBodyLimit::max(MAX_BODY));
+        .layer(middleware::from_fn(enforce_body_limit))
+        .layer(middleware::from_fn_with_state(tokens, require_bearer));
 
     Ok(Router::new()
         .route(
@@ -1163,6 +1201,27 @@ mod tests {
                 "task_update",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn chunked_body_limit_applies_before_sdk_collection() {
+        let chunks = futures::stream::iter(
+            (0..17).map(|_| Ok::<_, std::io::Error>(" ".repeat(1024 * 1024))),
+        );
+        let response = test_router()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer tok")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from_stream(chunks))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     // --- http surface ------------------------------------------------------

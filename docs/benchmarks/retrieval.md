@@ -58,3 +58,24 @@ the private server exited cleanly. Sixteen trials and a shared allocator make
 these allocation pilots, not stable tail-latency estimates or an RSS guarantee.
 Corpus scaling and transport retention still require separate validation before
 finalizing the provisional search and MCP budgets.
+
+The [4,096-row repeat](search-handler-pilot-4096x2048.json) retained similar client
+memory: 31.3 MiB at concurrency one and 70.0 MiB at four, with medians 4.02 s and
+15.32 s. It used the same maximum result count, query size, and structural width;
+only the scanned corpus grew. Both private database runs completed and shut down.
+
+## MCP slow-reader allocation pilot
+
+Run `python3 scripts/benchmark_transport_memory.py` with the same isolated Cargo
+target/settings. This separate runner applies one CPU, nice 10, an 8 GiB
+address-space cap, and a 180-second timeout; it owns and cleans up its subprocess
+group. An ephemeral loopback server exposes only a synthetic fixture tool.
+
+[Captured near-limit pilot](mcp-slow-readers-pilot.json): 64 responses containing
+2,096,128 text bytes each were held unread for two seconds. Peak process RSS was
+273.0 MiB, including both HTTP clients and server. Production session, connection,
+stream, serialized-message, and request-body controls were exercised. It excludes
+search/inference work and does not saturate all common notification caches or
+maximum input bodies. Kernel socket buffers are outside the RSS measurement.
+These separate pilots cannot be added together as a measured combined-process
+ceiling; allocator behavior, input parsing, and other handlers remain separate.

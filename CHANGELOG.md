@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Enforce MCP's 16 MiB body limit before SDK parsing, including chunked requests;
+  cap concurrent body handling and apply a 15-second body-read deadline (#22).
+  The previous Axum extractor limit did not cover the SDK's raw body collector.
+
 - Share a 64-connection cap across Unix daemon and MCP sockets, limit Unix
   response writes to 15 seconds, and expire MCP TCP connections after five minutes
   without deleting their resumable sessions (#22).
@@ -34,6 +38,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and rollback procedure in `docs/code-file-identities.md`.
 
 ### Added
+
+- Record the larger full-handler allocation pilot and near-limit MCP slow-reader
+  memory measurement, using resource-limited isolated fixtures (#22).
 
 - Add an opt-in disposable-database full-search-handler memory benchmark, including
   maximum result count/query text, hybrid/structural reranking, and serialization;
