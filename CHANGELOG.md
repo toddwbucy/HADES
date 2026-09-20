@@ -51,6 +51,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Document structural-vector provenance and refresh boundaries, including
+  ingestion retention differences and remaining audit verification (#12).
+
 - Record private CPU training cancellation and queued-prefetch cleanup
   reproductions, with explicit outcome and scheduling limits (#77).
 
@@ -388,6 +391,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Store document metadata, chunks and embeddings in one transaction so rejected
   replacement writes preserve the prior document (#88).
+
+- Reject malformed stored structural vectors in lookup and neighbor requests;
+  exclude invalid candidates before neighbor scoring (#85).
 
 - Fail structural embedding export on rejected or incomplete batches, report
   acknowledged progress and reject invalid export inputs before writes (#83).

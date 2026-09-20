@@ -6,6 +6,10 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 
 ## Evidence locations
 
+- [Structural-vector provenance](structural-vector-provenance.md): source trace
+  of checkpoint identity, ingestion retention and missing-only/full refresh;
+  explicit limits without a production freshness or quality claim.
+
 - [Training active-compute cancellation](training-compute-cancellation.md): private
   CPU ordering reproduction for #77; cancelled client outcomes can include a
   completed model update, and the valid step does not yield to its event loop.

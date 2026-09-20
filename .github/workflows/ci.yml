@@ -107,6 +107,7 @@ jobs:
           cargo test -p hades-frontend --test process_lifecycle --verbose
           cargo test -p hades-cli --test daemon_shutdown --verbose
           cargo test -p hades-proto --test proto_types --verbose
+          cargo test -p hades-core --test structural_vectors --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
           cargo test -p hades-core --test embedding_contract --test search_admission --test retrieval_quality --test embedding_client --test extraction_client --test training_client --test filesystem_policy --test structural_export --verbose

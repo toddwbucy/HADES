@@ -34,7 +34,7 @@ and legacy foreign-key cleanup, duplicate rejection, cancellation and concurrent
 replacement contracts, with explicit commit-response ambiguity. The reproduction
 alone does not close that issue.
 
-## Transactional remediation in progress
+## Transactional remediation
 
 Prepared metadata, chunks and vectors now enter one existing `transaction::run`
 operation with exclusive locks on the three profile collections. Deletes use
@@ -49,8 +49,7 @@ rows, including revisions; unrelated rows survive; overwrite=false rejects an
 existing document and preserves its metadata revision. The source document may
 have changed during preparation: this is atomic last-committer replacement,
 not source-revision conflict detection. Exclusive collection locks serialize
-writes at storage time. The cancellation fixture described below passes; a concurrent-writer pipeline
-fixture remains required before the issue can close.
+writes at storage time. The cancellation and concurrent-writer pipeline fixtures described below pass.
 
 The shared transaction owner bounds lock acquisition to five seconds, operations
 to 60 seconds and server transaction size to 32 MiB. Oversized replacements fail
@@ -74,4 +73,21 @@ The first test build revealed that transaction scoping is crate-private; the
 fixture was corrected to forward HTTP headers instead of widening the library
 API. The complete two-test replay passed on a new disposable ArangoDB 3.12.11
 instance and stopped its server with exit zero. Focused Clippy with warnings
-denied also passed. Concurrent replacement remains unverified by this fixture.
+denied also passed. The separate concurrent-writer fixture below covers overlapping replacements.
+
+## Executed concurrent replacement
+
+Two real pipelines use separate private extraction/embedding peers and database
+proxies. The first writes `first text` and a vector on axis 0; the second writes
+`second text` and a vector on axis 1. The first transaction is held after an
+acknowledged chunk write. The second proxy observes a transaction-begin request
+before the first is released. After the first commits, the second is held at
+its own acknowledged chunk write. Ordinary database reads still return the
+complete first text/vector generation; after releasing the second response and
+committing, all rows match the complete second generation. These controlled
+observations test atomic publication, not throughput or source-revision ordering.
+The first writer uses overwrite=false on an absent document and succeeds.
+
+All three database fixtures pass together. They are included in the default
+strict CI database contract list. No live database or ML service was contacted.
+Final CI and review remain required before merge.
