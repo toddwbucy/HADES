@@ -38,7 +38,8 @@ creation and pagination, query timeout, and a stalled deletion response using
 private Unix socket mocks. Split-endpoint tests give the reader an absent socket
 so an accidental reader request fails.
 
-The same target includes a disposable-database contract. A private proxy delays
+`cargo test -p hades-core --test cursor_lifecycle` runs the separate
+disposable-database contract. A private proxy delays
 creation or continuation, the caller is cancelled, and direct requests to the
 separate ArangoDB instance must report the captured cursor ID missing after
 cleanup. Use only a resource-limited test server, `ARANGO_SOCKET` pointing at its
