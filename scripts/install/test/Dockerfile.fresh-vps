@@ -48,7 +48,7 @@ ENV TZ=UTC
 # the same binaries shipped on a real Ubuntu VPS; the README install
 # procedure invokes them directly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gpg sudo procps less vim-tiny \
+        ca-certificates curl gpg sudo procps less vim-tiny python3 \
         systemd-standalone-sysusers systemd-standalone-tmpfiles \
     && mkdir -p /etc/sysusers.d /etc/tmpfiles.d \
     && rm -rf /var/lib/apt/lists/*

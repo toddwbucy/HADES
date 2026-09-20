@@ -177,11 +177,9 @@ fi
 
 echo
 echo "=== Step 8: Verify daemon is reachable ==="
-# `hades db stats` opens its own ArangoDB connection (not via the daemon
-# socket), so the CLI needs ARANGO_PASSWORD in its env. On a real VPS
-# this is something the operator exports in their shell; here we pass it
-# through from HADES_PASSWORD which we set in step 2.
-ARANGO_PASSWORD="$HADES_PASSWORD" hades --db _system db stats 2>&1 | head -10
+# Check the real socket as the service identity; db stats bypasses the daemon.
+sudo -u hades python3 scripts/check_daemon_ready.py \
+    --socket /run/hades/hades.sock --database _system --timeout 30
 
 echo
 echo "================================================================"
