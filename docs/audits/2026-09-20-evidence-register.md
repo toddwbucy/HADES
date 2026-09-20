@@ -42,9 +42,10 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | LaTeX/archive expansion | #35, PR #36, merge `74ff141`; 13 byte/header/count regressions | Not deployed |
 | Incomplete Python distributions | #38, PR #39 merged `5c82e95`; installed wheel/sdist and isolated build contracts | Not deployed |
 | Failed file replacement loses committed graph | #40, PR #41 merged `26e71ea`; all five requirements mapped to rollback, revision, timeout/cancellation and retry fixtures | Not deployed |
-| Shared trainer state crosses client lifecycles | P1 #42, PR #43; two-channel CPU reproduction and expiring ownership contracts | Review/final-head gates pending; not deployed |
+| Shared trainer state crosses client lifecycles | P1 #42, PR #43 merged `4fdad18`; two-channel CPU reproduction, 16 CPU session and 10 Rust client contracts; final CI `35506989556` passed | Not deployed; lease expiry is not compute preemption |
 | Unsafe installer credential/response handling | #44, PR #45 merged `979fe97`; malformed-password reproduction and six private Unix HTTP contracts | Not deployed |
-| Ambient database endpoints in unit fixtures | #47; accepted-AQL unit tests use normal endpoint discovery and accept backend errors | Private-mock remediation in progress; no live reproduction |
+| Ambient database endpoints in unit fixtures | #47, PR #48; accepted-AQL unit tests used normal endpoint discovery and accepted backend errors | Private-mock remediation and fixture inventory awaiting integrated-head CI; no live reproduction |
+| Agent filesystem access through smell reports | #49; private service fixture returned a matching synthetic line without permitted roots | Admin scan / database-only report separation in isolated development; not deployed |
 
 ## Workstream coverage and explicit gaps
 
@@ -60,7 +61,7 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Tests/CI | Rust, Python CPU and disposable ArangoDB gates | Full write-fixture inventory; broader failure injection beyond the selected end-to-end contract |
 | Retrieval evaluation | 24 author-judged queries, frozen CPU Jina vectors, file-membership comparator | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
 | Packaging/operations | Manifest and launch scripts inspected | Fresh installation beyond verified wheel/sdist contracts, health/readiness, upgrade/rollback and isolated restore rehearsal |
-| Findings/remediation | Ten approved issues plus seven additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
+| Findings/remediation | Ten approved issues plus eight additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
 
 ## Deployment boundary
 
@@ -122,3 +123,15 @@ replaces this with in-memory standard-library HTTP/JSON handling.
 Six private contracts cover special passwords, existing grants, sanitized HTTP
 and transport failures, argv/interruption behavior and the real request deadline.
 This does not prove fresh-host installation or production ACL correctness.
+
+## Representative retrieval workload decision
+
+The user selected **both code search and document research**. Build balanced
+coverage and report quality separately for each workload as well as in aggregate.
+Code queries should include implementation lookup, behavior, debugging and change
+impact; document queries should include factual, conceptual and cross-document
+evidence retrieval. Freeze representative relevance judgments before scoring.
+Compare vector-only and graph-assisted retrieval with recall@k, MRR/nDCG, latency
+and memory, distinguishing learned structural embeddings from file membership.
+The existing 24-query seed remains preliminary. Representative judgments, measured
+results and baseline-derived regression thresholds are still outstanding.
