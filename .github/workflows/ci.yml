@@ -90,6 +90,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Embedder profile selection (isolated systemd mocks)
+        run: python3 -m unittest discover -s scripts/tests -p test_embedder_profile.py -v
+
       - name: cargo build
         run: cargo build --workspace --verbose
 

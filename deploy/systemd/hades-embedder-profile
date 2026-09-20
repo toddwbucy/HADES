@@ -1,54 +1,53 @@
 #!/usr/bin/env bash
-# Switch the HADES embedder between per-GPU load profiles.
-#
-# Every profile binds the same port, so switching cards changes nothing for any
-# client: they re-read the ceiling from /v1/models. Two profiles cannot be live
-# at once, because the second would fail to bind rather than quietly loading a
-# second 9 GiB copy of the model onto another card.
-#
-# Usage:
-#   hades-embedder-profile              show the active profile
-#   hades-embedder-profile list         list available profiles and their ceilings
-#   hades-embedder-profile <name>       switch to that profile
+# Select one active and persistently enabled HADES embedder profile.
+# Usage: hades-embedder-profile [show|list|PROFILE]
 set -euo pipefail
 
 PROFILE_DIR="${HOME}/.config/hades/embedder-profiles"
 UNIT_PREFIX="hades-embedder@"
 ENDPOINT="http://127.0.0.1:8087/v1/models"
+READY_TIMEOUT="${HADES_PROFILE_READY_TIMEOUT:-120}"
 
-# Kept as a variable rather than inlined: nesting shell quotes inside a python
-# -c inside a function was how the first version silently printed the fallback.
+# Metadata confirms which profile answers, not that inference has succeeded.
 PARSE_MODELS='
 import json, sys
-d = json.load(sys.stdin)["data"][0]
-card = d.get("physical_device") or d.get("device") or "?"
-print("  reported: profile=%s card=%s max_seq_length=%s dimension=%s"
-      % (d.get("profile") or "?", card, format(d["max_seq_length"], ","), d["dimension"]))
+item = json.load(sys.stdin)["data"][0]
+if len(sys.argv) > 1:
+    if item.get("profile") != sys.argv[1]:
+        raise ValueError("wrong profile")
+    for key in ("max_seq_length", "dimension"):
+        if type(item.get(key)) is not int or item[key] <= 0:
+            raise ValueError(key)
+print("  metadata: profile=%s card=%s max_seq_length=%s dimension=%s (inference not tested)"
+      % (item.get("profile", "?"), item.get("physical_device") or item.get("device", "?"),
+         item.get("max_seq_length", "?"), item.get("dimension", "?")))
 '
 
+active_units() {
+  systemctl --user list-units --state=active,activating,deactivating,reloading \
+    --plain --no-legend "${UNIT_PREFIX}*.service" | awk '{print $1}'
+}
 
-active_instance() {
-  systemctl --user list-units --state=active --plain --no-legend "${UNIT_PREFIX}*" 2>/dev/null \
-    | awk '{print $1}' | sed -n "s/^${UNIT_PREFIX}\(.*\)\.service$/\1/p" | head -1
+enabled_units() {
+  systemctl --user list-unit-files --state=enabled,enabled-runtime \
+    --no-legend "${UNIT_PREFIX}*.service" | awk '{print $1, $2}'
 }
 
 show_active() {
-  local instance
-  instance="$(active_instance || true)"
-  if [ -z "$instance" ]; then
-    echo "no embedder profile is active"
-    return 0
+  local active enabled
+  active="$(active_units)"
+  enabled="$(enabled_units)"
+  printf 'active profiles:\n%s\npersistent/runtime enablement:\n%s\n' "${active:-none}" "${enabled:-none}"
+  if [[ -n "$active" ]]; then
+    curl -sf -m 3 "$ENDPOINT" | python3 -c "$PARSE_MODELS" \
+      || echo '  metadata unavailable; inspect the selected unit journal'
   fi
-  echo "active profile: $instance"
-  curl -s -m 10 "$ENDPOINT" | python3 -c "$PARSE_MODELS" 2>/dev/null \
-    || echo "  service is starting or not answering yet"
 }
 
 case "${1:-show}" in
-  show)
-    show_active
-    ;;
+  show) show_active; exit ;;
   list)
+    shopt -s nullglob
     for conf in "$PROFILE_DIR"/*.conf; do
       name="$(basename "$conf" .conf)"
       card="$(sed -n 's/^CUDA_VISIBLE_DEVICES=//p' "$conf")"
@@ -56,43 +55,128 @@ case "${1:-show}" in
       batch="$(sed -n 's/^HADES_EMBEDDER_BATCH_SIZE=//p' "$conf")"
       printf '%-6s card=%s ceiling=%s batch=%s\n' "$name" "$card" "$ceiling" "$batch"
     done
-    ;;
-  *)
-    target="$1"
-    conf="${PROFILE_DIR}/${target}.conf"
-    if [ ! -f "$conf" ]; then
-      echo "no such profile: ${target}" >&2
-      echo "available: $(ls "$PROFILE_DIR" | sed 's/\.conf$//' | tr '\n' ' ')" >&2
-      exit 1
-    fi
-    # Stop every instance first. Starting the new one while the old holds the
-    # port would fail at bind, which is a safe failure but a confusing one.
-    for unit in $(systemctl --user list-units --state=active --plain --no-legend "${UNIT_PREFIX}*" 2>/dev/null | awk '{print $1}'); do
-      echo "stopping ${unit}"
-      systemctl --user stop "$unit"
-    done
-    # Switching profiles is inherently restart-heavy, and the unit carries
-    # StartLimitBurst=3 to stop a crash-looping service from thrashing a GPU.
-    # Clearing the counter first keeps a deliberate switch from being refused
-    # for looking like a loop.
-    systemctl --user reset-failed "${UNIT_PREFIX}${target}" 2>/dev/null || true
-    echo "starting ${UNIT_PREFIX}${target}"
-    systemctl --user start "${UNIT_PREFIX}${target}"
-    # --fail so a 4xx or 5xx is not mistaken for readiness, and a real verdict at
-    # the end: without it the loop ended on any response and show_active returned
-    # 0 even when nothing had come up, so a failed switch looked like a successful
-    # one and the next command ran against no embedder.
-    ready=false
-    for _ in $(seq 1 30); do
-      if curl -sf -m 3 "$ENDPOINT" >/dev/null 2>&1; then ready=true; break; fi
-      sleep 1
-    done
-    if [ "$ready" != true ]; then
-      echo "profile ${target} did not become ready within 30s" >&2
-      systemctl --user is-active "${UNIT_PREFIX}${target}" >&2 || true
-      journalctl --user -u "${UNIT_PREFIX}${target}" -n 5 --no-pager >&2 || true
-      exit 1
-    fi
-    show_active
-    ;;
+    exit ;;
 esac
+
+if [[ $# != 1 || ! "$1" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo 'usage: hades-embedder-profile [show|list|PROFILE]; profile names use letters, digits, _ or -' >&2
+  exit 2
+fi
+target="$1"
+unit="${UNIT_PREFIX}${target}.service"
+if [[ ! -f "${PROFILE_DIR}/${target}.conf" ]]; then
+  echo "no such profile: $target; use hades-embedder-profile list" >&2
+  exit 1
+fi
+if [[ ! "$READY_TIMEOUT" =~ ^[1-9][0-9]{0,2}$ ]]; then
+  echo 'HADES_PROFILE_READY_TIMEOUT must be an integer from 1 to 999 seconds' >&2
+  exit 2
+fi
+# Validate dependencies and serialize selectors before any service mutation.
+for dependency in systemctl curl python3 flock; do command -v "$dependency" >/dev/null; done
+lock_dir="${XDG_RUNTIME_DIR:-${HOME}/.local/state}/hades"
+mkdir -p "$lock_dir"
+exec 9>"${lock_dir}/embedder-profile.lock"
+if ! flock -n 9; then
+  echo 'another embedder profile switch is in progress' >&2
+  exit 1
+fi
+before_active="$(active_units)"
+before_enabled="$(enabled_units)"
+# A pre-existing multi-active state is ambiguous; do not guess a rollback target.
+if [[ $(printf '%s\n' "$before_active" | awk 'NF {n++} END {print n+0}') -gt 1 ]]; then
+  echo 'multiple embedder profiles are active; reconcile them in a maintenance window first' >&2
+  exit 1
+fi
+
+rollback() {
+  local failed=0 can_restart=true current current_enabled old state
+  echo 'switch failed; restoring prior active profile and boot enablement' >&2
+  current="$(active_units)" || { failed=1; can_restart=false; }
+  while read -r old; do
+    [[ -z "$old" || "$old" == "$before_active" ]] && continue
+    systemctl --user stop "$old" || { failed=1; can_restart=false; }
+  done <<< "$current"
+  current_enabled="$(enabled_units)" || failed=1
+  while read -r old state; do
+    [[ -z "$old" ]] && continue
+    systemctl --user disable "$old" || failed=1
+    systemctl --user disable --runtime "$old" || failed=1
+  done <<< "$current_enabled"
+  while read -r old state; do
+    [[ -z "$old" ]] && continue
+    if [[ "$state" == enabled-runtime ]]; then
+      systemctl --user enable --runtime "$old" || failed=1
+    else
+      systemctl --user enable "$old" || failed=1
+    fi
+  done <<< "$before_enabled"
+  if [[ -n "$before_active" && "$can_restart" == true ]]; then
+    systemctl --user reset-failed "$before_active" || failed=1
+    systemctl --user start "$before_active" || failed=1
+  fi
+  current="$(active_units)" || failed=1
+  current_enabled="$(enabled_units)" || failed=1
+  if [[ "$current" != "$before_active" || "$current_enabled" != "$before_enabled" ]]; then
+    failed=1
+  fi
+  if (( failed )); then
+    echo 'ROLLBACK INCOMPLETE: inspect user units and journals before further switching' >&2
+  else
+    echo 'prior unit/enablement state restored; inference health still requires verification' >&2
+  fi
+}
+# ERR is not sufficient for signals; every unsuccessful exit after this point
+# attempts rollback. SIGKILL/power loss cannot be trapped (see deployment guide).
+finish() {
+  local status=$?
+  trap - EXIT INT TERM
+  if (( status != 0 )); then rollback; fi
+  exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Reconcile persistent and runtime links, including failed-but-enabled instances.
+# Selecting the already-active profile leaves its process running.
+while read -r old state; do
+  [[ -z "$old" ]] && continue
+  if [[ "$old" != "$unit" ]]; then systemctl --user disable "$old"; fi
+  systemctl --user disable --runtime "$old"
+done <<< "$before_enabled"
+systemctl --user enable "$unit"
+if [[ -n "$before_active" && "$before_active" != "$unit" ]]; then
+  systemctl --user stop "$before_active"
+fi
+if [[ "$before_active" != "$unit" ]]; then
+  systemctl --user reset-failed "$unit"
+  systemctl --user start "$unit"
+fi
+
+# The service still performs its VRAM/device preflight. Never bypass it here.
+# Bound the wait and require the requested profile, not any responder on the port.
+deadline=$((SECONDS + READY_TIMEOUT))
+ready=false
+while (( SECONDS < deadline )); do
+  if systemctl --user is-active --quiet "$unit" && \
+      curl -sf -m 3 "$ENDPOINT" | python3 -c "$PARSE_MODELS" "$target" >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$ready" != true ]]; then
+  echo "profile $target did not provide matching metadata within ${READY_TIMEOUT}s; inspect its journal for preflight/startup failure" >&2
+  exit 1
+fi
+# Boot enablement is the persisted selection; there is no second state file.
+after_enabled="$(enabled_units)"
+after_active="$(active_units)"
+if [[ "$after_enabled" != "$unit enabled" || "$after_active" != "$unit" ]]; then
+  echo 'profile selection did not converge to exactly one active, persistently enabled instance' >&2
+  exit 1
+fi
+trap - EXIT INT TERM
+printf 'selected profile: %s (active and enabled for boot)\n' "$target"
+echo 'matching metadata received; inference has not been tested'

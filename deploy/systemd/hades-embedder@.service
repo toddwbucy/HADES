@@ -18,8 +18,8 @@ Type=simple
 #
 # All profiles bind the SAME port, which is the point: switching cards is a
 # stop and a start, and no client configuration changes. It also means two
-# profiles cannot be live at once, because the second fails to bind rather
-# than quietly loading a second 9 GiB copy of the model onto another card.
+# listeners cannot bind at once. Use hades-embedder-profile to serialize GPU
+# startup and persist exactly one boot selection; binding alone is not a VRAM guard.
 WorkingDirectory=@SERVICES_DIR@
 EnvironmentFile=%h/.config/hades/embedder-profiles/%i.conf
 ExecStart=@SERVICES_DIR@/.venv/bin/python -m embedding.http_server
