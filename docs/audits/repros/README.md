@@ -1,65 +1,95 @@
-# Audit Reproductions
+# Historical Audit Reproductions
 
-These are investigation artifacts for epic #12, not production fixes. The contract probes assert intended behavior and **fail on revision a71d73b**. Do not interpret their failures as a failed setup when they match the audit report.
+These probes assert intended behavior and **fail on audited revision
+`a71d73bfe988e17d487a2db1d35dadf3a18f0664`**. They are historical evidence,
+not the current regression suite. Use `scripts/test_isolated_database.py` for
+maintained database contracts. The historical runner now shares its memory and
+process cleanup controls with that maintained runner.
 
-Use the existing dependency environments. Do not install packages into the running services' environment or run the repository's blanket database/smoke tests against a live instance.
+## Required source checkout
+
+Keep the probe files in this current checkout and create a separate, clean
+worktree for the code under test. Run the following commands from the current
+repository root. Set `AUDIT_PYTHON` to an existing dedicated test interpreter
+with CPU test dependencies; never install into a running service environment.
+
+```bash
+git worktree add --detach /tmp/hades-historical-source a71d73bfe988e17d487a2db1d35dadf3a18f0664
+export HADES_AUDIT_SOURCE=/tmp/hades-historical-source
+export AUDIT_PYTHON=/path/to/test/python
+python3 docs/audits/repros/historical_source.py
+```
+
+The validator rejects another commit or tracked modifications. Python/database
+probes invoke it before executing the historical source. Generated bindings and
+build outputs are untracked; keep this worktree dedicated to historical probes.
 
 ## Python CPU contracts
 
-From the repository root:
-
 ```bash
+make -C "$HADES_AUDIT_SOURCE/services" proto-gen PROTO_DIR=../proto PYTHON="$AUDIT_PYTHON"
 env CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  timeout 120s nice -n 10 services/.venv/bin/python -m pytest \
+  timeout 120s nice -n 10 "$AUDIT_PYTHON" -m pytest \
   -p no:cacheprovider docs/audits/repros/test_training_contracts.py -q --tb=short
 ```
 
-Expected on the audited revision: five failures (AUC ties, held-out adjacency, async abort, checkpoint dimension compatibility, empty split). Tests use tiny tensors, temporary files and a mock context; they do not contact a server.
+Expected: five failures (AUC ties, held-out adjacency, async abort, checkpoint
+dimension compatibility, empty split). Tiny tensors, temporary files and mock
+contexts are used; no server is contacted.
 
-## Rust file-key and mock-embedding contracts
+## Rust key and mock-embedding contracts
 
-Create a temporary Cargo package, keeping build output outside the working service tree:
+Generate an isolated manifest only after validating the historical source:
 
 ```bash
-mkdir -p /tmp/hades-audit-rust
-cat > /tmp/hades-audit-rust/Cargo.toml <<'EOF'
-[package]
+python3 - <<'PY'
+import json, os, pathlib, shutil, subprocess
+repo = pathlib.Path.cwd()
+source = pathlib.Path(subprocess.check_output(
+    ['python3', 'docs/audits/repros/historical_source.py'], text=True).strip())
+root = pathlib.Path('/tmp/hades-audit-rust')
+root.mkdir(exist_ok=True)
+(root / 'Cargo.toml').write_text('''[package]
 name = "hades-audit-contracts"
 version = "0.0.0"
 edition = "2024"
-
 [workspace]
-
 [lib]
-path = "/opt/HADES/docs/audits/repros/rust_contracts.rs"
-
+path = %s
 [dependencies]
-hades-core = { path = "/opt/HADES/crates/hades-core" }
+hades-core = { path = %s }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
-EOF
-cp Cargo.lock /tmp/hades-audit-rust/Cargo.lock
+''' % (json.dumps(str(repo / 'docs/audits/repros/rust_contracts.rs')),
+       json.dumps(str(source / 'crates/hades-core'))))
+shutil.copyfile(source / 'Cargo.lock', root / 'Cargo.lock')
+PY
 env CARGO_TARGET_DIR=/tmp/hades-audit-target CARGO_BUILD_JOBS=1 \
   CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
   timeout 300s nice -n 10 cargo test --offline \
   --manifest-path /tmp/hades-audit-rust/Cargo.toml -- --test-threads=1
 ```
 
-Adjust the two absolute source paths for another checkout. The copied lockfile preserves the repository's existing versions while Cargo adds the audit package locally. Expected: three contract failures. Socket-restricting sandboxes require approval for temporary Unix socket creation; the mocks never contact the actual embedder.
+Expected: three contract failures. Temporary Unix mocks do not contact the
+actual embedder. Use a disposable build environment with sufficient capacity.
 
 ## Disposable database and ingest fixture
 
-After checking resource headroom, use an existing ArangoDB executable:
-
 ```bash
 python3 docs/audits/repros/run_isolated_database.py \
-  --arangod /home/todd/git/arangodb/build/bin/arangod --codebase-tests
+  --source-root "$HADES_AUDIT_SOURCE" --arangod /path/to/test/arangod --codebase-tests
 ```
 
-The runner creates a fresh mode-0700 directory under `/tmp/hades-audit-db-*`, a separate data store and a Unix-only listener. It clears inherited HADES/Arango settings, disables CUDA visibility, fixes both database sockets to that instance, and directs ML endpoints to nonexistent sockets. ArangoDB and child commands use one CPU at reduced priority. The server uses small RocksDB caches; this is not a complete cgroup memory cap.
+The runner validates the historical commit before starting anything. It creates
+its own private directory, store and Unix-only endpoint, clears inherited HADES
+and Arango settings, hides CUDA and points ML endpoints at nonexistent sockets.
+Children use one CPU, reduced priority and an 8 GiB address-space ceiling. Each
+command and server owns a private process group; cleanup includes descendants
+on timeout, error and normal completion. This is not a cgroup-wide memory cap.
 
-It runs cache tests, builds a temporary debug CLI, ingests the two colliding Python paths, prints the resulting rows, and optionally runs the 60 codebase tests in strict mode. Expected on the audited revision: ordinary tests pass, both ingests report success, but only one file record survives. The collision observation is printed rather than used as the runner's exit status. Command failures raise an error.
-
-The runner terminates only the server process it created, even after an exception. It retains logs/data for inspection; do not commit those temporary artifacts. No production sockets, databases, service units, binaries or model files are modified.
-
+It runs cache tests and optionally codebase contracts, builds a temporary CLI,
+and ingests two colliding Python paths. Expected: both ingests report success,
+but only one file remains. This historical observation is printed, not encoded
+in the runner exit status. Logs/data remain under its printed temporary path.
+No live endpoint, database, service unit, installed binary or model is modified.

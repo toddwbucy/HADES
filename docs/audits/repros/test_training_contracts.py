@@ -14,7 +14,9 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-SERVICES = Path(__file__).resolve().parents[3] / "services"
+from historical_source import source_root
+
+SERVICES = source_root() / "services"
 sys.path.insert(0, str(SERVICES))
 sys.path.insert(0, str(SERVICES / "generated"))
 

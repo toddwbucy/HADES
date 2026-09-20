@@ -12,21 +12,23 @@ from pathlib import Path
 import socket
 import subprocess
 import tempfile
+import sys
 import time
 
-REPO = Path(__file__).resolve().parents[3]
+from historical_source import source_root
 
-
-def lower_priority():
-    os.nice(10)
-    os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
+# Reuse the maintained runner's tested address-space and process-group controls.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+from test_isolated_database import bounded_process, stop_group
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--arangod", required=True)
     parser.add_argument("--codebase-tests", action="store_true")
+    parser.add_argument("--source-root", type=Path)
     args = parser.parse_args()
+    repo = source_root(args.source_root)
     root = Path(tempfile.mkdtemp(prefix="hades-audit-db-"))
     print(f"Audit directory: {root}", flush=True)
     sock = root / "arango.sock"
@@ -64,10 +66,14 @@ def main():
 
     def command(name, argv, timeout=600):
         with (root / f"{name}.log").open("w") as log:
-            result = subprocess.run(argv, cwd=REPO, env=env, stdout=log,
-                stderr=subprocess.STDOUT, timeout=timeout, preexec_fn=lower_priority)
-        print(f"{name}: exit={result.returncode}; log={root / (name + '.log')}", flush=True)
-        return result.returncode
+            child_command = subprocess.Popen(argv, cwd=repo, env=env, stdout=log,
+                stderr=subprocess.STDOUT, preexec_fn=bounded_process, start_new_session=True)
+            try:
+                code = child_command.wait(timeout=timeout)
+            finally:
+                stop_group(child_command)
+        print(f"{name}: exit={code}; log={root / (name + '.log')}", flush=True)
+        return code
 
     with (root / "arangod.log").open("w") as log:
         child = subprocess.Popen([args.arangod, "--configuration", "none",
@@ -81,7 +87,7 @@ def main():
             "--rocksdb.total-write-buffer-size", "67108864",
             "--rocksdb.write-buffer-size", "16777216", "--rocksdb.max-background-jobs", "2",
             "--arangosearch.threads", "1", "--arangosearch.threads-limit", "1"],
-            cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, preexec_fn=lower_priority)
+            cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, preexec_fn=bounded_process, start_new_session=True)
         try:
             for _ in range(100):
                 if child.poll() is not None:
@@ -118,13 +124,7 @@ def main():
                     "--bin", "hades", "commands::codebase_", "--", "--test-threads=1", "--nocapture"]):
                     raise RuntimeError("Isolated codebase tests failed; inspect their log")
         finally:
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait(timeout=10)
+            stop_group(child)
             print(f"Isolated server stopped; exit={child.returncode}", flush=True)
 
 
