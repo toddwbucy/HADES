@@ -101,6 +101,9 @@ def main():
                                      start_new_session=True, preexec_fn=bounded_process)
             try:
                 code = child.wait(timeout=args.command_timeout)
+            except (subprocess.TimeoutExpired, RuntimeError) as error:
+                results[name] = {"passed": False, "command": argv, "error": str(error)}
+                raise
             finally:
                 stop_group(child)
         if expect_missing_socket:
