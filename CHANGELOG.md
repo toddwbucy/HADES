@@ -343,6 +343,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   replaying their outgoing calls, including explicitly unparsed files whose
   stored language identifies the retained analysis. Preserve JSON summaries on
   Rust enrichment failure and report direct codebase-ingest failure accurately.
+  Distinguish failed extraction from empty success and report rewritten files
+  affected by partial workspace or file-level enrichment failure.
   Further recovery and cancellation
   coverage remains under audit (#40).
 

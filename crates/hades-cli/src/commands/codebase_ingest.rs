@@ -644,22 +644,14 @@ pub async fn run_phase(
     // the graph and there is nothing to report. Bailing there would assert a
     // loss that did not happen, on the common case of re-running ingest over an
     // unchanged tree with one perpetually-unhappy module.
-    let rewritten_go_under_failed_module: Vec<&str> = if gopls_stats.failed_workspaces.is_empty() {
-        Vec::new()
-    } else {
-        results
-            .iter()
-            .filter(|r| !r.skipped.unwrap_or(false) && r.success && r.path.ends_with(".go"))
-            .filter(|r| {
-                let absolute = base.join(&r.path);
-                gopls_stats
-                    .failed_workspaces
-                    .iter()
-                    .any(|root| absolute.starts_with(root))
-            })
-            .map(|r| r.path.as_str())
-            .collect()
-    };
+    let rewritten_go_under_failed_module = failed_enrichment_paths(&base, &results, &gopls_stats);
+    let rewritten_rust_under_failure = failed_enrichment_paths(&base, &results, &ra_stats);
+    if !allow_analysis_downgrade && !rewritten_rust_under_failure.is_empty() {
+        enrichment_failure.get_or_insert_with(|| format!(
+            "rust-analyzer enrichment incomplete for rewritten files: {}; retry ingestion or explicitly allow analysis downgrade",
+            rewritten_rust_under_failure.join(", ")
+        ));
+    }
 
     if relationship_error.is_none()
         && !go_abs_paths.is_empty()
@@ -678,7 +670,7 @@ pub async fn run_phase(
         } else if !rewritten_go_under_failed_module.is_empty() {
             enrichment_failure.get_or_insert_with(|| {
                 format!(
-                    "gopls analyzed {} of {} Go module(s); {} failed to start a session \
+                    "gopls analyzed {} of {} Go module(s); {} workspace/file failures \
                  (see the warnings above). {} file(s) under the failed module(s) were \
                  re-ingested this run, so their gopls symbols and calls/implements \
                  edges are gone — the fidelity guard stands aside for Go on the \
@@ -687,7 +679,7 @@ pub async fn run_phase(
                  the loss explicitly.",
                     gopls_stats.workspaces,
                     gopls_stats.workspaces_attempted,
-                    gopls_stats.failed_workspaces.len(),
+                    gopls_stats.failed_workspaces.len() + gopls_stats.failed_files.len(),
                     rewritten_go_under_failed_module.len()
                 )
             });
@@ -798,6 +790,8 @@ pub async fn run_phase(
             "symbols": ra_stats.symbols,
             "edges": ra_stats.edges,
             "crates_analyzed": ra_stats.workspaces,
+            "failed_workspaces": ra_stats.failed_workspaces,
+            "failed_files": ra_stats.failed_files,
             "store_errors": ra_stats.store_errors,
             "store_failed": ra_stats.store_failed,
         },
@@ -805,6 +799,8 @@ pub async fn run_phase(
             "symbols": gopls_stats.symbols,
             "edges": gopls_stats.edges,
             "modules_analyzed": gopls_stats.workspaces,
+            "failed_workspaces": gopls_stats.failed_workspaces,
+            "failed_files": gopls_stats.failed_files,
             "store_errors": gopls_stats.store_errors,
             "store_failed": gopls_stats.store_failed,
         },
@@ -3205,6 +3201,29 @@ struct SemanticLspStats {
     /// files were handed to the phase but never enriched, so the caller needs
     /// them to decide whether this run destroyed anything (#194 review).
     failed_workspaces: Vec<PathBuf>,
+    failed_files: Vec<PathBuf>,
+}
+
+/// Report affected rewritten files regardless of extension: --language can
+/// schedule an analyzer for a file whose suffix is not .rs or .go.
+fn failed_enrichment_paths<'a>(
+    base: &Path,
+    results: &'a [FileResult],
+    stats: &SemanticLspStats,
+) -> Vec<&'a str> {
+    results
+        .iter()
+        .filter(|result| result.success && result.skipped != Some(true))
+        .filter(|result| {
+            let path = base.join(&result.path);
+            stats.failed_files.contains(&path)
+                || stats
+                    .failed_workspaces
+                    .iter()
+                    .any(|root| path.starts_with(root))
+        })
+        .map(|result| result.path.as_str())
+        .collect()
 }
 
 /// Run rust-analyzer over ingested Rust files to produce rich symbols and edges.
@@ -3236,6 +3255,8 @@ async fn run_rust_analyzer_phase(
 
     let mut all_extractions = HashMap::new();
     let mut crates_analyzed = 0;
+    let mut failed_workspaces = Vec::new();
+    let mut failed_files = Vec::new();
 
     for (crate_root, crate_files) in &groups {
         info!(
@@ -3260,6 +3281,7 @@ async fn run_rust_analyzer_phase(
                     error = %e,
                     "failed to start rust-analyzer session, skipping crate"
                 );
+                failed_workspaces.push(crate_root.clone());
                 continue;
             }
         };
@@ -3267,6 +3289,12 @@ async fn run_rust_analyzer_phase(
         let extractor = RustSymbolExtractor::new(&session, true).with_path_root(base);
         let file_refs: Vec<&Path> = crate_files.iter().map(|p| p.as_path()).collect();
         let extractions = extractor.extract_crate(&file_refs).await;
+        failed_files.extend(
+            crate_files
+                .iter()
+                .filter(|path| !extractions.contains_key(path.to_string_lossy().as_ref()))
+                .cloned(),
+        );
 
         // Convert absolute path keys to relative paths (matching file_key convention).
         for (abs_path_str, extraction) in extractions {
@@ -3287,7 +3315,7 @@ async fn run_rust_analyzer_phase(
         }
     }
 
-    store_lsp_extractions(
+    let mut stats = store_lsp_extractions(
         db,
         all_extractions,
         revisions,
@@ -3297,7 +3325,10 @@ async fn run_rust_analyzer_phase(
         "ra",
         base.to_str().context("ingest root must be valid UTF-8")?,
     )
-    .await
+    .await?;
+    stats.failed_workspaces = failed_workspaces;
+    stats.failed_files = failed_files;
+    Ok(stats)
 }
 
 /// Run gopls over each discovered Go module. Tree-sitter artifacts remain in
@@ -3321,6 +3352,7 @@ async fn run_gopls_phase(
     );
     let mut all_extractions = HashMap::new();
     let mut modules_analyzed = 0;
+    let mut failed_files = Vec::new();
     let mut failed_modules: Vec<PathBuf> = Vec::new();
     for (module_root, module_files) in &groups {
         let session = match GoplsSession::start_with_options(
@@ -3343,7 +3375,14 @@ async fn run_gopls_phase(
         };
         let extractor = GoSymbolExtractor::new(&session, true).with_path_root(base);
         let file_refs: Vec<&Path> = module_files.iter().map(PathBuf::as_path).collect();
-        for (absolute, extraction) in extractor.extract_module(&file_refs).await {
+        let extractions = extractor.extract_module(&file_refs).await;
+        failed_files.extend(
+            module_files
+                .iter()
+                .filter(|path| !extractions.contains_key(path.to_string_lossy().as_ref()))
+                .cloned(),
+        );
+        for (absolute, extraction) in extractions {
             let absolute = Path::new(&absolute);
             let relative = absolute
                 .strip_prefix(base)
@@ -3369,6 +3408,7 @@ async fn run_gopls_phase(
     )
     .await?;
     stats.failed_workspaces = failed_modules;
+    stats.failed_files = failed_files;
     Ok(stats)
 }
 

@@ -593,3 +593,131 @@ async fn analyzer_failure_retains_summary_and_failure_envelope() {
         validate(&pool, &embedder).await;
     }).await;
 }
+
+#[tokio::test]
+async fn partial_extraction_failure_is_not_marked_as_empty_success() {
+    use std::os::unix::fs::PermissionsExt;
+    with_temp_db(
+        "partial_extraction",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tree.path().join("src")).unwrap();
+            std::fs::write(
+                tree.path().join("Cargo.toml"),
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .unwrap();
+            std::fs::write(tree.path().join("src/lib.rs"), "mod broken;\n").unwrap();
+            std::fs::write(
+                tree.path().join("src/broken.rs"),
+                "pub fn target() -> u32 { 7 }\n",
+            )
+            .unwrap();
+            let scripts = tempfile::tempdir().unwrap();
+            let analyzer = scripts.path().join("partial-analyzer");
+            std::fs::write(&analyzer, include_str!("fixtures/partial_analyzer.py")).unwrap();
+            std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let root = tree.path().to_str().unwrap();
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                cli_command(&pool, &embedder, &["codebase", "ingest", root])
+                    .env("HADES_RUST_ANALYZER_PATH", &analyzer)
+                    .output(),
+            )
+            .await
+            .expect("partial analyzer fixture timed out")
+            .unwrap();
+            assert!(
+                !output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["success"], false);
+            let data = &report["data"];
+            assert_eq!(data["completed"], 2);
+            assert_eq!(data["rust_analyzer"]["crates_analyzed"], 1);
+            assert_eq!(
+                data["rust_analyzer"]["failed_files"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(
+                data["enrichment_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("src/broken.rs")
+            );
+            for (path, expected) in [("src/lib.rs", json!(true)), ("src/broken.rs", Value::Null)] {
+                let key = keys::scoped_file_key(root, path);
+                assert_eq!(
+                    pool.reader()
+                        .get(&format!("document/codebase_files/{key}"))
+                        .await
+                        .unwrap()["ra_analyzed"],
+                    expected
+                );
+            }
+            validate(&pool, &embedder).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn failed_workspace_is_not_hidden_by_another_successful_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    with_temp_db("partial_workspace", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        for name in ["successful", "failed"] {
+            let root = tree.path().join(name);
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+            )
+            .unwrap();
+            std::fs::write(root.join("src/lib.rs"), "pub fn target() -> u32 { 7 }\n").unwrap();
+        }
+        let scripts = tempfile::tempdir().unwrap();
+        let analyzer = scripts.path().join("partial-analyzer");
+        std::fs::write(&analyzer, include_str!("fixtures/partial_analyzer.py")).unwrap();
+        std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = tree.path().to_str().unwrap();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            cli_command(&pool, &embedder, &["codebase", "ingest", root])
+                .env("HADES_RUST_ANALYZER_PATH", &analyzer)
+                .output(),
+        )
+        .await
+        .expect("workspace fixture timed out")
+        .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!output.status.success(), "{report}");
+        assert_eq!(report["success"], false);
+        let data = &report["data"];
+        assert_eq!(data["completed"], 2);
+        assert_eq!(data["rust_analyzer"]["crates_analyzed"], 1);
+        assert_eq!(
+            data["rust_analyzer"]["failed_workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            data["enrichment_error"]
+                .as_str()
+                .unwrap()
+                .contains("failed/src/lib.rs")
+        );
+        validate(&pool, &embedder).await;
+    })
+    .await;
+}

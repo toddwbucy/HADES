@@ -129,8 +129,19 @@ success flag. Both entry points expose `enrichment_error`. A synthetic analyzer
 passes preflight then exits during startup; direct and unified CLI fixtures verify
 nonzero exit, `success: false`, visible file completion, and preserved chunks.
 
-Remaining review includes full-ingest process death during persistence, partial
-analyzer failures, and concurrency across the separate stages. Source-hash checks detect observed drift but do not lock the
+Partial failures now remain explicit: Rust extraction errors are omitted from
+the successful extraction map instead of becoming empty success records. Both
+language-server phases report failed files; Rust also tracks failed workspaces.
+Rewritten files under those failures make ingestion fail unless downgrade was
+explicitly allowed. Skipped files retain their prior graph and are not counted as
+newly lost enrichment. The summary includes failed-file/workspace paths.
+
+Synthetic LSP CLI fixtures verify that a failed document-symbol request does not
+stamp an analyzed marker, and that one successful crate cannot hide another
+crate's startup failure. Committed file summaries remain visible in both cases.
+
+Remaining review includes full-ingest process death during persistence and
+concurrency across the separate stages. Source-hash checks detect observed drift but do not lock the
 filesystem: edit-and-restore races, changes after the final check, and analyzer
 inputs outside the captured source list are not excluded by this contract. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
