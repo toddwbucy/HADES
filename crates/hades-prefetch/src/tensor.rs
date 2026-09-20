@@ -363,6 +363,20 @@ fn as_bytes<T>(slice: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, std::mem::size_of_val(slice)) }
 }
 
+fn graph_contract_json(graph: &GraphData) -> Result<String, TensorError> {
+    let contract = graph
+        .contract
+        .as_ref()
+        .ok_or_else(|| TensorError::ValidationFailed {
+            message: "graph has no semantic contract; reload through the schema-aware loader"
+                .into(),
+        })?;
+    contract
+        .validate(graph)
+        .map_err(|message| TensorError::ValidationFailed { message })?;
+    Ok(serde_json::to_string(contract)?)
+}
+
 /// Serialize a graph with edge splits and negative samples to safetensors format.
 ///
 /// Returns the serialized bytes. Use [`serialize_to_file`] to write directly
@@ -483,6 +497,7 @@ pub fn serialize_graph(
 
     // Metadata: scalars + collection_names as JSON in the header
     let mut metadata = HashMap::new();
+    metadata.insert("graph_contract".into(), graph_contract_json(graph)?);
     metadata.insert("num_nodes".into(), graph.num_nodes.to_string());
     metadata.insert("num_edges".into(), graph.num_edges.to_string());
     metadata.insert("num_relations".into(), graph.num_relations.to_string());
@@ -552,6 +567,7 @@ pub fn serialize_graph_for_inference(graph: &GraphData) -> Result<Vec<u8>, Tenso
     ];
 
     let mut metadata = HashMap::new();
+    metadata.insert("graph_contract".into(), graph_contract_json(graph)?);
     metadata.insert("num_nodes".into(), graph.num_nodes.to_string());
     metadata.insert("num_edges".into(), graph.num_edges.to_string());
     metadata.insert("num_relations".into(), graph.num_relations.to_string());
@@ -898,6 +914,21 @@ mod tests {
         graph.set_node_features(0, &emb);
         graph.set_node_features(3, &emb);
         graph.set_node_features(7, &emb);
+        graph.contract = Some(hades_core::graph::types::GraphContract {
+            version: 1,
+            relation_order: (0..graph.num_relations)
+                .map(|i| format!("fixture_rel_{i}"))
+                .collect(),
+            collection_names: graph.collection_names.clone(),
+            feature_dim: graph.feature_dim,
+            architecture: "rgcn".into(),
+            feature_policy: hades_core::graph::types::GraphContract::FEATURE_POLICY.into(),
+            feature_models: graph
+                .collection_names
+                .iter()
+                .map(|name| (name.clone(), vec!["fixture:v1".into()]))
+                .collect(),
+        });
 
         graph
     }
@@ -1062,6 +1093,34 @@ mod tests {
         let neg = negative_sample(&graph, 0).unwrap();
         assert!(neg.src.is_empty());
         assert!(neg.dst.is_empty());
+    }
+
+    #[test]
+    fn semantic_contract_survives_both_serialization_modes() {
+        let graph = test_graph();
+        let split = split_graph_edges(&graph, &SplitConfig::default()).unwrap();
+        let negatives = negative_sample(&graph, 10).unwrap();
+        let train = serialize_graph(&graph, &split, &negatives, &SplitConfig::default()).unwrap();
+        let inference = serialize_graph_for_inference(&graph).unwrap();
+        for bytes in [train, inference] {
+            let (_, meta) = SafeTensors::read_metadata(&bytes).unwrap();
+            let contract: hades_core::graph::types::GraphContract =
+                serde_json::from_str(&meta.metadata().as_ref().unwrap()["graph_contract"]).unwrap();
+            assert_eq!(Some(contract), graph.contract);
+        }
+    }
+
+    #[test]
+    fn refuses_serialization_without_verified_contract() {
+        let mut graph = test_graph();
+        graph.contract = None;
+        assert!(serialize_graph_for_inference(&graph).is_err());
+        let mut graph = test_graph();
+        graph.contract.as_mut().unwrap().collection_names.reverse();
+        assert!(serialize_graph_for_inference(&graph).is_err());
+        let mut graph = test_graph();
+        graph.contract.as_mut().unwrap().feature_models.clear();
+        assert!(serialize_graph_for_inference(&graph).is_err());
     }
 
     #[test]

@@ -15,6 +15,7 @@ HADES-owned compute service (not the Persephone PM system); decoupled from the
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -34,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generated"))
 
 from hades.training import training_pb2, training_pb2_grpc  # noqa: E402
 
+from .contract import validate_contract
 from .config import TrainingConfig  # noqa: E402
 from .rgcn_model import HadesRGCN  # noqa: E402
 from .sage_model import HadesHeteroSAGE  # noqa: E402
@@ -104,6 +106,8 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         self.edge_dst = None
         self.edge_type = None
         self.train_idx = None  # None denotes an inference-only graph.
+        self.model_contract = None  # Bound after first graph load or checkpoint restore.
+        self.graph_contract = None
 
     # -- helpers ----------------------------------------------------------
     def _build_model(self, in_dim: int) -> int:
@@ -158,6 +162,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         self.x = self.node_collections = None
         self.edge_src = self.edge_dst = self.edge_type = None
         self.train_idx = None
+        self.graph_contract = None
 
     def _training_split(self, tensors):
         """Validate the partition on CPU, including reverse/duplicate leakage."""
@@ -185,7 +190,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             pair = (min(src, dst), max(src, dst))
             if pairs.setdefault(pair, group) != group:
                 raise ValueError("duplicate/inverse endpoint pairs must share one split")
-        return tensors["train_idx"].long().to(self.device)
+        return tensors["train_idx"].long()
 
     def _adjacency(self):
         if self.train_idx is None:
@@ -219,7 +224,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         ):
             if ((values < 0) | (values >= upper)).any():
                 raise ValueError(f"{name} contains an out-of-range index")
-        return tuple(t.to(self.device) for t in (x, nc, src, dst, rel))
+        return x, nc, src, dst, rel
 
     def _step_indices(self, edge_indices, neg_src, neg_dst):
         """Reject invalid loss inputs before changing model mode or gradients."""
@@ -261,24 +266,41 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         )
         self.in_dim, self.model, self.optimizer = candidate.in_dim, candidate.model, candidate.optimizer
         self._clear_graph()
+        self.model_contract = None
         logger.info("InitModel: %d params on %s", num_params, device)
         return training_pb2.InitModelResponse(num_parameters=num_params, device=device)
 
     async def LoadGraph(self, request, context):
         await self._require_model(context)
-        from safetensors.torch import load_file
-        from safetensors import SafetensorError
+        from safetensors import safe_open, SafetensorError
 
         try:
-            t = load_file(request.safetensors_path)
+            with safe_open(request.safetensors_path, framework="pt", device="cpu") as file:
+                t = {name: file.get_tensor(name) for name in file.keys()}
+                metadata = file.metadata() or {}
+            if "graph_contract" not in metadata:
+                raise ValueError("graph has no semantic contract; rebuild it with the schema-aware loader")
             x, nc, src, dst, rel = self._graph_tensors(t)
             train_idx = self._training_split(t)
+            contract = validate_contract(json.loads(metadata["graph_contract"]), self.model_config, x.size(1))
+            if self.model_contract is not None and contract != self.model_contract:
+                raise ValueError("graph contract differs from the bound model/checkpoint; initialize and train a new model")
+            for index, name in enumerate(contract["collection_names"]):
+                if not contract["feature_models"][name] and torch.any(x[nc == index] != 0):
+                    raise ValueError(f"collection {name} has features without model provenance")
+            # Reject incompatible metadata entirely on CPU before allocating
+            # a second graph on the model's device.
+            x, nc, src, dst, rel = (tensor.to(self.device) for tensor in (x, nc, src, dst, rel))
+            if train_idx is not None:
+                train_idx = train_idx.to(self.device)
         except FileNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
-        except (ValueError, KeyError, OSError, SafetensorError) as exc:
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError, SafetensorError) as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         feature_dim = x.size(1)
         if feature_dim != self.in_dim:
+            if self.model_contract is not None:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "checkpoint feature dimension is incompatible")
             logger.info("rebuilding model for feature_dim=%d (was %d)", feature_dim, self.in_dim)
             self._build_model(feature_dim)
 
@@ -286,6 +308,7 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
         self.node_collections = nc
         self.edge_src, self.edge_dst, self.edge_type = src, dst, rel
         self.train_idx = train_idx
+        self.model_contract = self.graph_contract = contract
 
         num_nodes = self.x.size(0)
         num_edges = self.edge_src.size(0)
@@ -435,11 +458,14 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
 
     async def Checkpoint(self, request, context):
         await self._require_model(context)
+        if self.model_contract is None:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "load a graph with verified provenance before saving a checkpoint")
         if not request.path:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "checkpoint path is required")
         Path(request.path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
+                "graph_contract": self.model_contract,
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "in_dim": self.in_dim,
@@ -478,6 +504,9 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             candidate.device = torch.device(device)
             ckpt = torch.load(request.path, map_location=candidate.device, weights_only=True)
             candidate.model_config = training_pb2.ModelConfig(**ckpt["model_config"])
+            if "graph_contract" not in ckpt:
+                raise ValueError("legacy checkpoint lacks semantic provenance; retrain with a versioned graph contract")
+            candidate.model_contract = validate_contract(ckpt["graph_contract"], candidate.model_config, ckpt["in_dim"])
             candidate.opt_config = self.opt_config or training_pb2.OptimizerConfig()
             num_params = candidate._build_model(ckpt.get("in_dim", DEFAULT_FEATURE_DIM))
             candidate.model.load_state_dict(ckpt["model"])
@@ -487,11 +516,9 @@ class TrainingServicer(training_pb2_grpc.TrainingServiceServicer):
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
         except (ValueError, KeyError, TypeError, RuntimeError, OSError, EOFError, pickle.UnpicklingError) as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
-        if (candidate.device != self.device or candidate.in_dim != self.in_dim
-                or self.model_config is None
-                or candidate.model_config.num_relations != self.model_config.num_relations
-                or candidate.model_config.num_collection_types != self.model_config.num_collection_types):
+        if candidate.device != self.device or candidate.model_contract != self.graph_contract:
             self._clear_graph()
+        self.model_contract = candidate.model_contract
         self.device, self.model_config, self.opt_config = (
             candidate.device, candidate.model_config, candidate.opt_config
         )

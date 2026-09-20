@@ -63,3 +63,50 @@ or empty sample. Failures propagate through prefetching to the orchestrator.
 Early stopping saves only finite improving validation losses, leaves the best
 checkpoint unchanged on ties, and restores that checkpoint before test scoring.
 Nonfinite metrics or failure to produce a checkpoint abort the run.
+
+## Checkpoint and feature compatibility
+
+Every new graph artifact and checkpoint carries a versioned `graph_contract`:
+ordered relation names, collection-name/index mapping, feature width, encoder
+architecture, feature-construction policy, and recorded model identity per
+collection. Collection indices come from all declared vertex types in the
+active relation definitions, including currently absent types. Unknown vertex
+types fail schema validation. Duplicate names and unsupported contracts fail.
+
+Fresh `InitModel` may adapt to the first graph's feature width. Once a graph has
+bound the model, or after `LoadCheckpoint`, a different contract is rejected
+before replacing weights, optimizer, or graph state. Same-sized reordered
+relations/collections are incompatible too. Restoring a compatible checkpoint
+keeps the active graph; restoring a different valid contract clears it and
+requires a matching graph load before inference.
+
+Node features use direct stored embeddings, or code-file chunk means for code
+nodes; missing features use zero vectors. A collection must not mix model
+identities. The loader verifies stored `model`/`embedding_model` names against
+`model_hash` when both exist. Contract identities are SHA-256 of the stored model
+name, **not hashes of model weight files**: changing weights under an unchanged
+name cannot be detected from existing vector records. Use immutable model names
+or revisions when producing embeddings. A nonempty vector without any known
+model identity is rejected, not labelled as the current configured model.
+
+Legacy artifacts without a contract are rejected. Do not infer a mapping from
+counts or attach guessed metadata to an old checkpoint. Preserve legacy files,
+rebuild the graph from a verified schema and vector provenance in isolation,
+re-embed records whose provenance cannot be verified, then train a fresh
+checkpoint. Keep any deployed embeddings/checkpoint unchanged until a separate
+migration plan has backups, quality checks, rollback, and deployment approval.
+Adding relation types or changing previously all-zero feature types requires
+retraining under a new contract.
+
+The Rust-to-Python contract smoke check needs no database, model download, GPU,
+or running service:
+
+```bash
+cargo run -p hades-prefetch --example checkpoint_fixture -- /tmp/contract.safetensors
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 python scripts/verify_checkpoint_contract.py /tmp/contract.safetensors
+python -m pytest services/tests/test_checkpoint_contract.py
+```
+
+Use a private temporary directory for real runs. The smoke check loads the
+Rust-produced tensors, trains on CPU, saves/restores the checkpoint, and verifies
+that reloading a compatible graph preserves parameters and embedding bytes.
