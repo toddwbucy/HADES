@@ -98,3 +98,7 @@ async fn test_connect_nonexistent_socket_fails() {
         "expected connection error for nonexistent socket"
     );
 }
+
+#[cfg(unix)]
+#[path = "common/training_session.rs"]
+mod session;

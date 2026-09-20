@@ -7,12 +7,17 @@
 //! entirely separate from the Persephone PM system) — see issue #106.
 
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use hades_proto::training::training_service_client::TrainingServiceClient;
 use hades_proto::training::{
-    CheckpointRequest, EvaluateRequest, GetEmbeddingsRequest, InitModelRequest,
-    LoadCheckpointRequest, LoadGraphRequest, ModelConfig, OptimizerConfig, TrainStepRequest,
+    AcquireSessionRequest, CheckpointRequest, EvaluateRequest, GetEmbeddingsRequest,
+    InitModelRequest, LoadCheckpointRequest, LoadGraphRequest, ModelConfig, OptimizerConfig,
+    SessionRequest, TrainStepRequest,
 };
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -186,6 +191,36 @@ fn path_to_string(path: &Path) -> Result<String, TrainingError> {
 pub struct TrainingClient {
     inner: TrainingServiceClient<Channel>,
     config: TrainingClientConfig,
+    session: Arc<TrainingSession>,
+}
+
+const SESSION_HEADER: &str = "hades-training-session";
+
+/// Shared by client clones; dropping the last handle stops renewal and makes a
+/// bounded release attempt. Server expiry is the fallback if the process dies.
+struct TrainingSession {
+    token: tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
+    lost: Arc<AtomicBool>,
+    heartbeat: tokio::task::JoinHandle<()>,
+    inner: TrainingServiceClient<Channel>,
+}
+
+impl Drop for TrainingSession {
+    fn drop(&mut self) {
+        self.heartbeat.abort();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let mut inner = self.inner.clone();
+            let token = self.token.clone();
+            runtime.spawn(async move {
+                let mut request = tonic::Request::new(SessionRequest {});
+                request.metadata_mut().insert(SESSION_HEADER, token);
+                request.set_timeout(Duration::from_secs(5));
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(5), inner.release_session(request))
+                        .await;
+            });
+        }
+    }
 }
 
 impl TrainingClient {
@@ -203,10 +238,55 @@ impl TrainingClient {
             }
         };
 
-        let inner = TrainingServiceClient::new(channel);
-        info!("connected to training service");
-
-        Ok(Self { inner, config })
+        let mut inner = TrainingServiceClient::new(channel);
+        let mut request = tonic::Request::new(AcquireSessionRequest {});
+        request.set_timeout(config.connect_timeout);
+        let acquired = inner.acquire_session(request).await?.into_inner();
+        if acquired.token.is_empty() || !(1..=3600).contains(&acquired.lease_seconds) {
+            return Err(TrainingError::InvalidResponse(
+                "invalid training session lease".into(),
+            ));
+        }
+        let token: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = acquired
+            .token
+            .parse()
+            .map_err(|_| TrainingError::InvalidResponse("invalid training session token".into()))?;
+        let lost = Arc::new(AtomicBool::new(false));
+        let mut renewal_client = inner.clone();
+        let renewal_token = token.clone();
+        let renewal_lost = lost.clone();
+        // The provider serializes renewal with model work. A lease-interval
+        // timeout would invalidate healthy operations that hold ownership past
+        // that interval. Bound renewal by the longest permitted operation;
+        // expired tokens are still fenced by the provider on every state RPC.
+        let renewal_timeout = config.slow_timeout.max(config.timeout);
+        let interval = Duration::from_secs(u64::from(acquired.lease_seconds)) / 3;
+        let heartbeat = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let mut request = tonic::Request::new(SessionRequest {});
+                request
+                    .metadata_mut()
+                    .insert(SESSION_HEADER, renewal_token.clone());
+                request.set_timeout(renewal_timeout);
+                if renewal_client.renew_session(request).await.is_err() {
+                    renewal_lost.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        });
+        let session = Arc::new(TrainingSession {
+            token,
+            lost,
+            heartbeat,
+            inner: inner.clone(),
+        });
+        info!("acquired exclusive training session");
+        Ok(Self {
+            inner,
+            config,
+            session,
+        })
     }
 
     /// Connect with default configuration.
@@ -248,8 +328,7 @@ impl TrainingClient {
             device: device.to_string(),
         };
 
-        let mut req = tonic::Request::new(request);
-        req.set_timeout(self.config.slow_timeout);
+        let req = self.owned_request(request, self.config.slow_timeout)?;
 
         let response = self.inner.clone().init_model(req).await?.into_inner();
 
@@ -276,8 +355,7 @@ impl TrainingClient {
             safetensors_path: path_to_string(safetensors_path.as_ref())?,
         };
 
-        let mut req = tonic::Request::new(request);
-        req.set_timeout(self.config.slow_timeout);
+        let req = self.owned_request(request, self.config.slow_timeout)?;
 
         let response = self.inner.clone().load_graph(req).await?.into_inner();
 
@@ -312,7 +390,12 @@ impl TrainingClient {
             neg_dst,
         };
 
-        let response = self.inner.clone().train_step(request).await?.into_inner();
+        let response = self
+            .inner
+            .clone()
+            .train_step(self.owned_request(request, self.config.timeout)?)
+            .await?
+            .into_inner();
 
         Ok(StepResult {
             loss: response.loss,
@@ -335,7 +418,12 @@ impl TrainingClient {
             neg_dst,
         };
 
-        let response = self.inner.clone().evaluate(request).await?.into_inner();
+        let response = self
+            .inner
+            .clone()
+            .evaluate(self.owned_request(request, self.config.timeout)?)
+            .await?
+            .into_inner();
 
         debug!(
             loss = response.loss,
@@ -380,8 +468,7 @@ impl TrainingClient {
             node_indices: node_indices.to_vec(),
         };
 
-        let mut req = tonic::Request::new(request);
-        req.set_timeout(self.config.slow_timeout);
+        let req = self.owned_request(request, self.config.slow_timeout)?;
 
         let response = self.inner.clone().get_embeddings(req).await?.into_inner();
 
@@ -411,8 +498,7 @@ impl TrainingClient {
             path: path_to_string(path.as_ref())?,
         };
 
-        let mut req = tonic::Request::new(request);
-        req.set_timeout(self.config.slow_timeout);
+        let req = self.owned_request(request, self.config.slow_timeout)?;
 
         let response = self.inner.clone().checkpoint(req).await?.into_inner();
 
@@ -440,8 +526,7 @@ impl TrainingClient {
             device: device.unwrap_or_default().to_string(),
         };
 
-        let mut req = tonic::Request::new(request);
-        req.set_timeout(self.config.slow_timeout);
+        let req = self.owned_request(request, self.config.slow_timeout)?;
 
         let response = self.inner.clone().load_checkpoint(req).await?.into_inner();
 
@@ -470,6 +555,25 @@ impl TrainingClient {
         })
     }
 
+    fn owned_request<T>(
+        &self,
+        message: T,
+        timeout: Duration,
+    ) -> Result<tonic::Request<T>, TrainingError> {
+        if self.session.lost.load(Ordering::Acquire) {
+            return Err(tonic::Status::failed_precondition(
+                "training session renewal failed; start a new lifecycle",
+            )
+            .into());
+        }
+        let mut request = tonic::Request::new(message);
+        request
+            .metadata_mut()
+            .insert(SESSION_HEADER, self.session.token.clone());
+        request.set_timeout(timeout);
+        Ok(request)
+    }
+
     /// Get the configured endpoint.
     pub fn endpoint(&self) -> &TrainingEndpoint {
         &self.config.endpoint
@@ -486,7 +590,6 @@ impl TrainingClient {
         let path = path.to_path_buf();
 
         let channel = Endpoint::from_static("http://[::]:50052")
-            .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)
             .connect_with_connector(service_fn(move |_: Uri| {
                 let path = path.clone();
@@ -505,7 +608,6 @@ impl TrainingClient {
         config: &TrainingClientConfig,
     ) -> Result<Channel, tonic::transport::Error> {
         let channel = Endpoint::from_shared(addr.to_string())?
-            .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)
             .connect()
             .await?;
