@@ -25,6 +25,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and request/socket lifetimes (#52).
 - Handle viewer SIGINT/SIGTERM before discovery; cancel and reap owned child
   groups on shutdown, with real private HTTP/disconnect and router contracts (#52).
+- Verify viewer cumulative graph budgets, HTTP 503 admission/readmission and
+  whole-request deadlines; preserve a resource-limited slow-reader measurement (#52).
 - Require Admin authority for filesystem smell scans; route the MCP smell report
   to bounded, database-only recorded associations (#49).
 

@@ -1,0 +1,38 @@
+{
+  "passed": true,
+  "scenario": "16 stalled HTTP/1 readers with synthetic graph names",
+  "payload_bytes_per_response": 8387584,
+  "cargo_lock_sha256": "08794f5b87b08bbe19413e44dfc87c5436f8777cbcdf3997de1626b84df7ca1b",
+  "sample_interval_ms": 10,
+  "viewer_sha256": "54e0d2fcc4d753ed875fd6ddd5ed39693d997c4db285bc36c3924374ce43bd17",
+  "viewer_cpu_affinity_count": 1,
+  "viewer_address_space_limit_bytes": 2147483648,
+  "excludes": [
+    "kernel socket buffers",
+    "production corpora",
+    "GPU",
+    "real HADES CLI/DB"
+  ],
+  "source_sha256": {
+    "crates/hades-frontend/src/assemble.rs": "ad3a1a88e9a5778c09ec9d1cc3cfef34a87214f9171b0764f7c951bc611cd195",
+    "crates/hades-frontend/src/backend_process.rs": "6440a8352417d589b42f7433168fffbbfdd7be0fbe36b9a784358032ce5660da",
+    "crates/hades-frontend/src/contract.rs": "6fa277465b299177cee8b716f6e6bd9e68759dfdd7eecba1f8407c042fe4c14a",
+    "crates/hades-frontend/src/main.rs": "10d65b81f1c5e7a8766d1b3afba0f434c5dc75bef96d6d5d4da8822a06582819",
+    "crates/hades-frontend/src/payload.rs": "c08cf1084e26347505f17457170c9d38d0b16ac57399f2897a6825baff41aa0f",
+    "crates/hades-frontend/src/server.rs": "31f9e86d313a29c64a0462b83f64e64a068cf8cd1ccdf1fc94a56d1ce73ed44a",
+    "crates/hades-frontend/src/transport_limits.rs": "2dc67dcc3d87188a1dd5f06c15c95c2266d9edf5fcbc41744bf8a3e2fe361c3c"
+  },
+  "synthetic_backend_sha256": "ad698fd8b30e31ffc9700f53520d05bbca3d503a5987b18b992903d1731bac05",
+  "baseline_viewer_rss_kib": 9376,
+  "held_clients": 16,
+  "steady_viewer_rss_kib": 196488,
+  "seventeenth_connection_refused": true,
+  "released_connection_readmitted": true,
+  "viewer_exit_code": 0,
+  "elapsed_seconds": 3.495,
+  "peak": {
+    "viewer_rss_kib": 196488,
+    "viewer_hwm_kib": 196488,
+    "backend_sum_rss_kib": 30724
+  }
+}

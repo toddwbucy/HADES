@@ -52,6 +52,15 @@ pub async fn shutdown_and_wait() {
 pub(crate) static SCRIPT_FIXTURE: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+#[derive(Debug)]
+pub struct Overloaded;
+impl std::fmt::Display for Overloaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("viewer backend overloaded")
+    }
+}
+impl std::error::Error for Overloaded {}
+
 #[derive(Clone, Copy)]
 struct Limits {
     stdout: usize,
@@ -171,9 +180,7 @@ async fn run_with_shutdown(
     if *shutdown.borrow() {
         return Err(anyhow!("viewer is shutting down"));
     }
-    let permit = slots
-        .try_acquire_owned()
-        .map_err(|_| anyhow!("viewer backend overloaded"))?;
+    let permit = slots.try_acquire_owned().map_err(|_| anyhow!(Overloaded))?;
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::null())

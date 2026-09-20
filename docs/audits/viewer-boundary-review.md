@@ -120,3 +120,36 @@ Remaining #52 evidence includes end-to-end cumulative graph-budget cases, measur
 concurrent child/response retention and peak memory, plus final review/CI. Signal
 shutdown and router boundary checks above supersede the earlier pending items;
 this report still does not claim complete frontend acceptance.
+
+## Resource acceptance evidence
+
+The graph route now has synthetic-backend contracts for 33 vertex collections,
+two individually acceptable 30,000-document exports, and two individually
+acceptable exports slightly above 4 MiB. Each fails its cumulative budget before
+further backend work. Eight concurrent route requests launch exactly four gated
+children and return four HTTP 503 overload responses without extra children;
+after cleanup a new request succeeds. The whole-request deadline is tested across
+multiple individually short child invocations, including cancellation/reaping.
+
+The [resource contract and retained-response pilot](../viewer-limits.md) record
+all policy limits and measurement qualifications. Sixteen stalled loopback readers
+near the CLI byte cap produced a 191.9 MiB viewer high-water mark; the seventeenth
+socket was refused and a released slot was readmitted. The benchmark is repeatable
+with an explicit isolated viewer binary and never calls the installed HADES CLI.
+The workspace feature tree currently enables Axum HTTP/1 without HTTP/2.
+
+### Issue #52 requirement review
+
+| Requirement | Evidence |
+|---|---|
+| Aggregate admission, lifetimes and byte limits | Four-child route contract; process/connection owners; cumulative graph and streaming serialization limits; documented measured pilot and policy defaults |
+| Bounded capture and diagnostics | Both streams read concurrently with caps; noisy-child regression; HTTP errors do not reflect stderr |
+| Cancellation, timeout, shutdown and discovery ownership | Private child/grandchild fixtures; actual viewer SIGINT/SIGTERM during discovery, dump and HTTP; actual client disconnect; request deadline across calls |
+| Preserve architecture and authority | No HADES crate dependency; actual router Host/auth/database rejection and valid/default requests; existing argument and partial-snapshot contracts |
+| Noisy/stalled/concurrent/malformed/oversize fixtures and resources | Maintained unit/process tests; real child-count admission assertions; private slow-reader artifact with provenance and explicit exclusions |
+
+Local tests and measurements establish the implementation evidence above. Final
+PR review and integrated CI are still required before the finding is closed.
+Broader frontend review of paper/implementation semantics, browser/vendor behavior
+and deployment/credential transport remains part of epic #12, not certified by
+these resource contracts.
