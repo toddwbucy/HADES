@@ -6,6 +6,45 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 struct Daemon(Child);
+
+#[tokio::test]
+async fn sealed_configuration_bypasses_ambient_loading_only_for_ingestion() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = hades_core::config::HadesConfig::with_database("private_snapshot");
+    config.database.password = Some("synthetic-snapshot-secret".into());
+    for (subcommand, expected) in [
+        ("ingest", "no inputs provided"),
+        (
+            "status",
+            "resolved configuration is only accepted for ingestion",
+        ),
+    ] {
+        let snapshot = hades_core::config::snapshot::Snapshot::new(&config).unwrap();
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_hades"));
+        command
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", root.path())
+            .env("HADES_CONFIG", root.path().join("does-not-exist"))
+            .env("HADES_DATABASE", "wrong")
+            .env("ARANGO_PASSWORD", "wrong")
+            .env("TOKIO_WORKER_THREADS", "2");
+        let fd = snapshot.inherit(&mut command);
+        command
+            .args(["--resolved-config-fd", &fd.to_string(), subcommand])
+            .kill_on_drop(true);
+        assert!(!format!("{command:?}").contains("synthetic-snapshot-secret"));
+        let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("synthetic-snapshot-secret"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-snapshot-secret"));
+    }
+}
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.kill();

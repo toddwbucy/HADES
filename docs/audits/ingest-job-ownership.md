@@ -76,8 +76,8 @@ persisted job outcomes remains required.
 - Verify persisted phases and output bounds against a real disposable database,
   including ambiguous commits and response-size rejection. Existing private HTTP
   fixtures below do not substitute for real ArangoDB semantics.
-- Preserve the effective selected configuration as well as the database in the
-  spawned command; verify provisioning and root boundaries remain intact.
+- Verify the sealed effective-configuration handoff in the complete disposable
+  database/daemon ingestion lifecycle, retaining provisioning and root boundaries.
 - Add actual synthetic-child/process-group, noisy-output, failure-injection and
   real disposable-database fixtures, including simultaneous starts across databases
   and actual peak live-child counts. Complete review and final CI.
@@ -110,3 +110,26 @@ persistence with verified reaping, malformed JSON, non-UTF-8 diagnostic tails,
 three exhausted completion attempts, unowned-row admission refusal and invalid
 job IDs with no database traffic. A stale row naming the fixture process's live
 PID still reports unknown ownership. These are local, not deployment evidence.
+
+## Local effective-configuration handoff
+
+The child receives the daemon's resolved configuration in a Linux memfd capped at
+64 KiB during serialization, with mode 0600 and write/grow/shrink/seal seals. Only
+the selected child's pre-exec hook clears CLOEXEC. The inherited descriptor is
+above the stdio range, and the loader restores CLOEXEC before later analyzer execs.
+Positional reads avoid a shared file-offset race. Memory-file ownership is retained
+by the command/child and ends with those owners; no snapshot path is created.
+
+The internal `--resolved-config-fd` option is accepted only for ingestion. It
+loads the snapshot without reapplying ambient configuration or environment
+overrides, followed by explicit CLI overrides. Password and CUDA visibility are
+preserved separately from fields skipped in ordinary configuration serialization;
+CUDA visibility is also aligned in the child's environment. Ordinary CLI loading
+and password exclusion from YAML remain unchanged. No credential bytes enter argv.
+
+Private contracts check full configuration round trips, skipped fields, seal
+enforcement, size/descriptor rejection, a child with conflicting environment, and
+closed-stdin allocation. Actual CLI tests verify the missing ambient config is
+bypassed for empty ingestion (which stops before service access), while unrelated
+commands reject the internal option. A real startup command fixture reads the
+inherited snapshot and returns only preservation booleans, never credentials.

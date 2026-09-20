@@ -76,6 +76,17 @@ async fn start_with(
     }
 
     let job = format!("{:032x}", rand::random::<u128>());
+    let snapshot = crate::config::snapshot::Snapshot::new(config).map_err(service)?;
+    let fd = snapshot.inherit(&mut command);
+    command.arg("--resolved-config-fd").arg(fd.to_string());
+    match &config.gpu.cuda_visible_devices {
+        Some(mask) => {
+            command.env("CUDA_VISIBLE_DEVICES", mask);
+        }
+        None => {
+            command.env_remove("CUDA_VISIBLE_DEVICES");
+        }
+    }
     reservation.identify(&database, &job).map_err(service)?;
     let row = json!({"_key":job,"status":"starting","owner_instance":super::instance(),
         "database":database,"path":resolved,"force":force,"started_at":chrono::Utc::now().to_rfc3339(),
@@ -349,6 +360,37 @@ mod tests {
             released(job).await;
             assert!(mock.events.try_recv().is_err());
         }
+
+        // Exercise the actual startup command's handoff, not only snapshot
+        // serialization. Return booleans so no credential enters the job result.
+        let mut effective = config.clone();
+        effective.database.password = Some("fixture-snapshot-secret".into());
+        effective.embedding.service.socket = "/private/selected-embed.sock".into();
+        effective.gpu.enabled = false;
+        effective.gpu.cuda_visible_devices = Some("fixture-mask".into());
+        let mut command = python(
+            "import json,os,sys\nfd=int(sys.argv[sys.argv.index('--resolved-config-fd')+1])\ns=json.loads(os.pread(fd,65536,0))\nprint(json.dumps({'preserved':s['password']=='fixture-snapshot-secret' and s['config']['database']['name']=='fixture' and s['config']['embedding']['service']['socket']=='/private/selected-embed.sock' and not s['config']['gpu']['enabled'] and os.environ.get('CUDA_VISIBLE_DEVICES')=='fixture-mask'}))",
+        );
+        command
+            .env("CUDA_VISIBLE_DEVICES", "wrong")
+            .env("HADES_CONFIG", "/nonexistent/fixture");
+        let mut replies = admission();
+        replies.extend([ok(), ok(), ok()]);
+        let mut mock = Mock::new(replies).await;
+        start_with(&mock.pool, &effective, path, false, command)
+            .await
+            .unwrap();
+        let row = inserted(&mut mock).await;
+        let job = row["_key"].as_str().unwrap();
+        mock.event(&format!("PATCH document/{COLLECTION}/{job}"))
+            .await;
+        let done = mock
+            .event(&format!("PATCH document/{COLLECTION}/{job}"))
+            .await;
+        assert_eq!(done["status"], "completed");
+        assert_eq!(done["result"], json!({"preserved":true}));
+        assert!(!done.to_string().contains("fixture-snapshot-secret"));
+        released(job).await;
 
         // A failed spawn receives a terminal record before returning its error.
         let mut replies = admission();

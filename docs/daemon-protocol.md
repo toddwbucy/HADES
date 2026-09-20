@@ -163,6 +163,11 @@ Stdout is limited to 8 MiB; stderr retains its last 64 KiB and reports truncatio
 The provisional runtime ceiling is six hours, followed by group cleanup and
 direct-child reaping. The global two-job limit spans this daemon's databases.
 
+Ingestion children inherit a sealed, size-limited memory snapshot of the daemon's
+effective configuration, including selected service endpoints and credentials.
+They do not reload ambient configuration. The internal descriptor option is
+ingestion-only; it places no credentials in command arguments or temporary files.
+
 ## Error Codes
 
 | Code                | Meaning                                             |

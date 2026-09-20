@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Preserve the daemon's effective ingestion configuration through a bounded,
+  sealed memory-file handoff instead of reloading ambient child configuration;
+  keep credentials out of arguments and temporary files (#51).
+
 - Track ingestion startup/completion with daemon-instance ownership, bounded
   persistence retries and conservative recovery status; stop children when PID
   persistence fails and refuse unresolved historical work (#51).

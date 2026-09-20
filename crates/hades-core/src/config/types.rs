@@ -6,7 +6,7 @@
 use std::env;
 
 use anyhow::bail;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 // ---------------------------------------------------------------------------
@@ -16,7 +16,7 @@ use tracing::warn;
 /// Top-level HADES configuration.
 ///
 /// Maps 1:1 to the structure of `hades.yaml`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HadesConfig {
     pub database: DatabaseConfig,
@@ -201,7 +201,7 @@ impl HadesConfig {
 // Database
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
     pub host: String,
@@ -235,7 +235,7 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SocketConfig {
     pub readonly: Option<String>,
@@ -246,7 +246,7 @@ pub struct SocketConfig {
 // Embedding
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
     pub service: EmbeddingServiceConfig,
@@ -255,7 +255,7 @@ pub struct EmbeddingConfig {
     pub chunking: ChunkingConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EmbeddingServiceConfig {
     pub socket: String,
@@ -291,13 +291,13 @@ impl Default for EmbeddingServiceConfig {
 /// `document_phase_error: failed to connect to extraction service`, having
 /// silently had nowhere to send 83 documents. The embedder's endpoint has always
 /// been configurable; this is the same setting for the other service.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExtractionConfig {
     pub service: ExtractionServiceConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExtractionServiceConfig {
     /// Unix socket path, `unix:///path`, or `http://host:port`. Absolute paths
@@ -316,7 +316,7 @@ impl Default for ExtractionServiceConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EmbeddingModelConfig {
     pub name: String,
@@ -338,7 +338,7 @@ impl Default for EmbeddingModelConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BatchConfig {
     pub size: u32,
@@ -354,7 +354,7 @@ impl Default for BatchConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ChunkingConfig {
     pub size_tokens: u32,
@@ -374,7 +374,7 @@ impl Default for ChunkingConfig {
 // GPU
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GpuConfig {
     pub device: String,
@@ -398,7 +398,7 @@ impl Default for GpuConfig {
 // Vector index
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VectorIndexConfig {
     pub default_n_probe: u32,
@@ -420,7 +420,7 @@ impl Default for VectorIndexConfig {
 // Search
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SearchConfig {
     pub limit: u32,
@@ -438,7 +438,7 @@ impl Default for SearchConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HybridConfig {
     pub vector_weight: f64,
@@ -458,7 +458,7 @@ impl Default for HybridConfig {
 // Rocchio
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RocchioConfig {
     pub alpha: f64,
@@ -480,7 +480,7 @@ impl Default for RocchioConfig {
 // Sync
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SyncConfig {
     pub default_lookback_days: u32,
@@ -503,7 +503,7 @@ impl Default for SyncConfig {
 // ---------------------------------------------------------------------------
 
 /// Batch processing configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BatchProcessingConfig {
     /// Maximum concurrent items in flight.
@@ -531,7 +531,7 @@ impl Default for BatchProcessingConfig {
 // Logging
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LoggingConfig {
     pub level: String,
