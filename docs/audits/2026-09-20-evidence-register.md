@@ -19,7 +19,7 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
   passed before merge. No production endpoint was used.
 - PR #32: bounded retrieval and transport changes, indexed/streaming experiments,
   handler and MCP memory pilots, frozen retrieval judgments and model vectors.
-  Pending review completion; use the PR's final artifacts for measured limits.
+  Merged as `16c4f7d`; use its final artifacts for measured limits.
 
 ## Confirmed findings and disposition
 
@@ -34,10 +34,11 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Competing boot profiles | #19, PR #29; persistent selection tests | Both profiles still enabled at last inspection |
 | Unsafe/missing CI database coverage | #20, PR #31; strict disposable database and Python gates | CI active; no live database tests |
 | Cancellation cursor leaks | #21, PR #30; private delayed-cursor contracts | Not deployed |
-| Search/transport retention | #22, PR #32; review and final evidence pending | Not deployed |
+| Search/transport retention | #22, PR #32, merge `16c4f7d`; final CI gates passed | Not deployed |
 | bfloat16 NumPy conversion | #33, PR #34, merge `d464c9d`; ten CPU contracts | Not deployed |
-| LaTeX/archive expansion | #35, PR #36; byte/header/count regressions | Review pending; not deployed |
-| Incomplete Python distributions | #38; clean and proto-generated wheel ZIP inspection | Remediation pending; live environment unchanged |
+| LaTeX/archive expansion | #35, PR #36, merge `74ff141`; 13 byte/header/count regressions | Not deployed |
+| Incomplete Python distributions | #38, PR #39; installed wheel/sdist and isolated build contracts | Review pending; live environment unchanged |
+| Failed file replacement loses committed graph | P1 #40; schema-rejection fixture changes chunk/symbol counts from 1/1 to 0/0 | Remediation pending; isolated discovery only |
 
 ## Workstream coverage and explicit gaps
 
@@ -47,13 +48,13 @@ Repository status sampled on 2026-09-20. Epic #12 remains open.
 | Architecture/API | Shared dispatch, authorization and service contracts reviewed in affected paths | Complete component inventory and review of frontend, analyzers, adapters and remaining API boundaries |
 | Security/isolation | Authentication rejection baseline; isolated tests; body, cursor, archive limits under review | Database ACL matrix, provisioning/path handling, subprocess/parser limits and dependency review |
 | Ingestion/graph integrity | Collision and modify/move/delete regression coverage | Concurrent writers, partial failures, transaction/retry semantics and document/adaptor pipelines |
-| Retrieval/embedding | Model/dimension validation; versioned exact-ranking parity | Final #22 gates, stale model/task provenance, broader independently reviewed quality set |
+| Retrieval/embedding | Model/dimension validation; versioned exact-ranking parity | Stale model/task provenance, broader independently reviewed quality set |
 | Training | Leakage, split metrics, aborts and checkpoint schema fixes | Concurrent sessions, cancellation, graph alignment and trained structural baseline |
-| Performance/reliability | Isolated engine, handler and transport pilots | Final calibrated #22 artifacts; remaining non-search queue/time-out paths |
-| Tests/CI | Rust, Python CPU and disposable ArangoDB gates | End-to-end acceptance scope including partial failures and all write-fixture inventory |
+| Performance/reliability | Isolated engine, handler and transport pilots | Remaining non-search queue/time-out paths |
+| Tests/CI | Rust, Python CPU and disposable ArangoDB gates | Full write-fixture inventory; broader failure injection beyond the selected end-to-end contract |
 | Retrieval evaluation | 24 author-judged queries, frozen CPU Jina vectors, file-membership comparator | Representative independent judgments and learned graph comparison; seed results cannot certify production relevance |
 | Packaging/operations | Manifest and launch scripts inspected | Fresh installation/protobuf packaging, health/readiness, upgrade/rollback and isolated restore rehearsal |
-| Findings/remediation | Ten approved issues plus three additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
+| Findings/remediation | Ten approved issues plus four additional confirmed findings | Complete severity-ranked dispositions, linked evidence and owner acceptance for unresolved high-severity findings |
 
 ## Deployment boundary
 
@@ -80,3 +81,19 @@ generated files; training, adapters and `schema.yaml` were still absent. #38 tra
 build prerequisites, distribution scope, generated/runtime version compatibility,
 and installed-wheel verification outside the source directory. Source/editable
 launches are not evidence that a wheel can run the declared services.
+
+## Ingestion failure boundaries
+
+The maintained CLI lifecycle fixture covers ingest/query, text/vector modification,
+definition-line movement, rename with explicit retirement, graph validation,
+document-phase failure after successful code persistence, idempotent retry and
+final deletion. This is evidence for the selected end-to-end acceptance fixture;
+it does not establish atomicity of each file replacement.
+
+A separate fault fixture against `16c4f7d` configured only its disposable database
+to reject new chunk documents by schema. After an existing file was changed,
+replacement failed with the expected CLI error, but both previously committed
+chunk and symbol counts fell from one to zero. The private server exited cleanly.
+P1 #40 tracks transactional replacement, purge-error propagation, concurrency,
+cancellation and equivalent guarantees for fallback/enrichment paths. Production
+was not used to reproduce this failure.
