@@ -200,3 +200,8 @@ source-to-backup mismatch and snapshot inventory. P1 #63 remains open pending
 alternate-backup evidence and recovery objectives. A small synthetic logical
 restore passed with matching documents, edges, graph, schema and indexes; its
 explicit limits are recorded in that review.
+
+
+[LSP transport deadlines](lsp-transport-review.md) retains the historical blocked
+write reproduction and the #94 private-peer remediation tests. Analyzer memory,
+preflight and descendant boundaries remain outside that verification.

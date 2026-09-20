@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Apply LSP request deadlines across writer admission, transmission and response;
+  clean pending requests on cancellation and close interrupted frames before reuse (#94).
+
 - Keep extraction input files and worker ownership until executor work drains
   after cancellation; reject shutdown admission and defer model cleanup (#90).
 
