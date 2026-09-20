@@ -1,0 +1,33 @@
+{
+  "source_revision": "92584154b1272072e81d8cc3946e583aea114a2f",
+  "scope": "Source trace of all 18 task leaves, not complete runtime validation",
+  "leaves": [
+    "create",
+    "list",
+    "show",
+    "update",
+    "close",
+    "start",
+    "review",
+    "approve",
+    "block",
+    "unblock",
+    "handoff",
+    "handoff-show",
+    "context",
+    "log",
+    "sessions",
+    "dep",
+    "usage",
+    "graph-integration"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/task.rs": "5976da7a02f6116f36c26dadac71ab0a9404f4287efc5f43fdab7367124b647c",
+    "crates/hades-cli/src/commands/task_mgmt.rs": "0e4102b06901dd12a062517c3efb086c7a74114a9af9ecda8c15bea9f7037bc0",
+    "crates/hades-cli/src/commands/output.rs": "28469b8f0e81d4e0bdd03026d6ba52f492c76c675ef826f60c046bfeb65235c8",
+    "crates/hades-core/src/dispatch.rs": "54ac941a7c6c99af9628371231d9eaad013a96b5b6007087eb1b46b0e423ec07",
+    "crates/hades-core/src/db/crud.rs": "cf59d100fa8b7211d2bf9920285f0c2476ef8b14adbc9e70cd72114538ee8b1d",
+    "crates/hades-core/src/db/query.rs": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109"
+  }
+}

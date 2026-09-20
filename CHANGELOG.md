@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace all 18 task command contracts, including workflow, partial-write and
+  session/reviewer limitations (epic #12).
+
 - Retain actual CLI/private-peer reproductions of materialization scan failures
   reported as success in normal and dry-run modes (epic #12).
 
