@@ -194,3 +194,12 @@ def test_preflight_uses_processor_prefixes_and_rejects_oversize_without_truncati
     ]
     with pytest.raises(ValueError, match="5 tokens"):
         evaluator.preflight_inputs(processor, [("one two three four", "query")])
+
+
+@pytest.mark.parametrize("key", ["documents", "queries"])
+@pytest.mark.parametrize("member", [None, 1, "text", []])
+def test_profile_rejects_non_object_members(key, member):
+    dataset = {"documents": [{"text": "passage"}], "queries": [{"text": "question"}]}
+    dataset[key] = [member]
+    with pytest.raises(ValueError, match="encoding inputs require nonempty text"):
+        evaluator.encoding_plan(dataset)

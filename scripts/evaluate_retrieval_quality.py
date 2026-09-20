@@ -30,7 +30,7 @@ def encoding_plan(dataset):
         if not isinstance(dataset.get(key), list) or not dataset[key]:
             raise ValueError("encoding needs nonempty documents and queries")
         for item in dataset[key]:
-            if not isinstance(item.get("text"), str) or not item["text"].strip():
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str) or not item["text"].strip():
                 raise ValueError("encoding inputs require nonempty text")
             inputs.append((item["text"], prompt))
     return profile, inputs
