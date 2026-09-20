@@ -836,6 +836,7 @@ dependencies = [
  "hades-prefetch",
  "http-body-util",
  "ignore",
+ "libc",
  "reqwest",
  "rmcp",
  "schemars",

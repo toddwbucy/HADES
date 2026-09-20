@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Gate actual-daemon SIGINT/SIGTERM and pending-ingestion reservation draining
+  with private Unix-socket fixtures that fail before job insertion or spawn (#51).
+
 - Close ingestion admission on daemon shutdown, cancel owned process groups and
   drain reservations before runtime exit; full persisted-state and actual daemon
   ingestion lifecycle verification remains in #51.

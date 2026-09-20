@@ -53,8 +53,17 @@ reaps its leader before releasing the reservation on this normal cleanup path.
 
 Private tests verify admission stays closed, drain waits for an outstanding
 reservation, and an already-cancelled or newly-cancelled owner reaps its synthetic
-child before returning its reservation. Actual daemon signal/ingestion fixtures
-remain required; these lower-level contracts do not prove the full service path.
+child before returning its reservation.
+
+The actual `daemon_shutdown` CLI fixture verifies SIGINT and SIGTERM both idle
+and with a pending ingestion reservation. A gated private database response keeps
+the reservation occupied after the signal; the daemon must remain alive until
+the gate releases and admission fails closed. It then exits successfully and
+removes its socket. The mock asserts exactly collection/admission requests and no
+job insertion or child spawn. The fixture runs in service-free CI with a cleared
+environment and explicit existing private database sockets to prevent discovery
+of ambient endpoints. Actual daemon shutdown with a running ingestion child and
+persisted job outcomes remains required.
 
 ## Remaining requirements before publication or closure
 

@@ -105,6 +105,7 @@ jobs:
       - name: cargo test (service-free tests/ targets)
         run: |
           cargo test -p hades-frontend --test process_lifecycle --verbose
+          cargo test -p hades-cli --test daemon_shutdown --verbose
           cargo test -p hades-proto --test proto_types --verbose
           cargo test -p hades-core --test pipeline --verbose
           cargo test -p hades-core --test config_integration --verbose
