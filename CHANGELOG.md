@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Capture detached-ingest output through bounded pipes instead of retained
+  temporary files; terminate owned process groups on overflow, deadline or leader
+  exit. Full shutdown and persisted-state verification remains in #51.
+
 - Reserve detached-ingest admission atomically across databases and overlapping
   trees; fail closed on admission-query errors and transfer child ownership before
   awaiting PID persistence. Full lifecycle/output remediation remains in #51.

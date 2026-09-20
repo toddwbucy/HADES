@@ -19,6 +19,29 @@ different database configurations before spawn, proves subsequent starts perform
 no database work, then tests cancellation, admission-query failures and retries.
 These are admission contracts, not measurements of actual live child count.
 
+## Local output and process-group increment
+
+The child now owns a fresh process group. Output is drained asynchronously through
+pipes: stdout is capped at 8 MiB before buffer growth; stderr retains only its last
+64 KiB while counting consumed bytes. The stored diagnostic text is also capped
+after UTF-8 replacement. Overflow or a provisional six-hour runtime limit fails
+the job. A successful process returning malformed JSON is reported as failed.
+
+There are no new output files: `log_path` and `stderr_path` are null and
+`output_storage` is `bounded_job_record`. Completed job records retain the bounded
+result and, on failure, bounded diagnostics. Truncation and byte counts are explicit;
+capture failures record unknown counts as null. This removes the shared-temp-file
+creation and unbounded disk-growth path rather than retaining full logs privately.
+Historical output files are not touched by this audit or automatically cleaned up.
+
+Exit observation uses Linux `waitid(WNOWAIT)` so the leader cannot be reused before
+group signalling. Normal exit signals lingering descendants before waiting for
+pipe EOF; overflow and runtime expiry signal the group and reap the direct child.
+Three finite synthetic-child contracts cover a 1 MiB single-line diagnostic,
+stdout overflow, deadline expiry and a leader exiting while a descendant holds
+its pipes. They verify direct-child disappearance and descendant termination.
+They do not yet establish service shutdown, persisted outcomes or worst-case RSS.
+
 ## Remaining requirements before publication or closure
 
 - Replace the legacy database/PID-existence heuristic with explicit owner identity
@@ -29,8 +52,9 @@ These are admission contracts, not measurements of actual live child count.
   child is reaped; direct-child kill-on-drop alone does not prove that invariant.
 - Make starting/running/failed/orphaned states truthful across insertion, spawn,
   PID-update and completion-recording failures. Bound persistence/retry work.
-- Capture stdout/stderr within byte budgets before disk growth or full-file
-  allocation, create private artifacts exclusively, and define cleanup/retention.
+- Verify bounded output and truthful persisted outcome fields through actual
+  handler/database fixtures, including non-UTF-8 diagnostics and malformed JSON.
+  Document compatibility of replacing retained log paths with bounded job records.
 - Preserve the effective selected configuration as well as the database in the
   spawned command; verify provisioning and root boundaries remain intact.
 - Add actual synthetic-child/process-group, noisy-output, failure-injection and

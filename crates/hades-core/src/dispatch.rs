@@ -1503,8 +1503,6 @@ mod handlers {
         path: &str,
         force: bool,
     ) -> Result<Value, HandlerError> {
-        use std::process::Stdio;
-
         let database = config
             .effective_database()
             .map_err(|e| HandlerError::InvalidParameter {
@@ -1592,13 +1590,6 @@ mod handlers {
         crud::create_collection(pool, INGEST_JOBS, Some(2))
             .await
             .ok();
-        let log_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.json"));
-        // Kept rather than discarded. The child writes its envelope to stdout and
-        // everything diagnostic to stderr, so sending stderr to /dev/null left a
-        // failed job reporting only "exit status 1" with the reason gone: an
-        // analyzer preflight refusal, a missing database, a panic. The tail of
-        // this file goes into the job row when the child fails.
-        let err_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.log"));
         let row = json!({
             "_key": &job_id,
             "status": "running",
@@ -1606,53 +1597,32 @@ mod handlers {
             "path": resolved.display().to_string(),
             "force": force,
             "started_at": started.to_rfc3339(),
-            "log_path": log_path.display().to_string(),
-            "stderr_path": err_path.display().to_string(),
+            "output_storage": "bounded_job_record",
+            "log_path": null,
+            "stderr_path": null,
         });
         crud::insert_document(pool, INGEST_JOBS, &row)
             .await
             .map_err(|e| HandlerError::ServiceError(format!("failed to record job: {e}")))?;
 
-        let log = std::fs::File::create(&log_path).map_err(|e| {
-            HandlerError::ServiceError(format!("cannot open job log {}: {e}", log_path.display()))
-        })?;
-
-        let errlog = std::fs::File::create(&err_path).map_err(|e| {
-            HandlerError::ServiceError(format!(
-                "cannot open job stderr log {}: {e}",
-                err_path.display()
-            ))
-        })?;
-
         let mut cmd = tokio::process::Command::new(exe);
-        cmd.arg("--db")
-            .arg(&database)
-            .arg("ingest")
-            .arg(&resolved)
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(errlog))
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
+        cmd.arg("--db").arg(&database).arg("ingest").arg(&resolved);
         if force {
             cmd.arg("--force");
         }
-        let child = cmd
-            .spawn()
-            .map_err(|e| HandlerError::ServiceError(format!("failed to start ingest: {e}")))?;
-        let pid = child.id();
+        let child = crate::ingest_jobs::process::Process::spawn(&mut cmd)
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+        let pid = Some(child.id());
 
         // Watch the child and write the outcome back. If the daemon dies first
         // the row stays `running`, which `ingest_status` reports as orphaned
         // rather than as progress.
         let pool_for_task = pool.clone();
         let job_for_task = job_id.clone();
-        let log_for_task = log_path.clone();
-        let err_for_task = err_path.clone();
         tokio::spawn(async move {
             // Transfer ownership before the handler can be cancelled at any
             // await after spawn. Detached jobs outlive the requesting client.
             let _reservation = reservation;
-            let mut child = child;
             if let Some(pid) = pid
                 && let Err(error) = crud::update_document(
                     &pool_for_task,
@@ -1664,37 +1634,53 @@ mod handlers {
             {
                 tracing::error!(job = %job_for_task, %error, "failed to record ingest pid");
             }
-            let outcome = child.wait().await;
-            let envelope = std::fs::read_to_string(&log_for_task)
-                .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-            // The tail of stderr, so a failure says why rather than only that it
-            // happened. Bounded because an ingest can emit a great deal.
-            let stderr_tail = |limit: usize| -> Option<String> {
-                let text = std::fs::read_to_string(&err_for_task).ok()?;
-                let tail: Vec<&str> = text.lines().rev().take(limit).collect();
-                if tail.is_empty() {
-                    None
-                } else {
-                    Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
-                }
-            };
-            let (status, detail) = match outcome {
-                Ok(code) if code.success() => ("completed", None),
-                Ok(code) => (
-                    "failed",
-                    Some(match stderr_tail(40) {
-                        Some(tail) => format!("exit status {code}\n{tail}"),
-                        None => format!("exit status {code}"),
-                    }),
-                ),
-                Err(e) => ("failed", Some(format!("could not wait on child: {e}"))),
-            };
+            let (status, detail, envelope, stderr_bytes, stderr_truncated) =
+                match child.finish().await {
+                    Ok(output) => {
+                        let parsed = serde_json::from_slice::<Value>(&output.stdout);
+                        // UTF-8 replacement can expand invalid bytes. Bound the
+                        // final diagnostic string, not only its raw pipe buffer.
+                        let mut diagnostic =
+                            String::from_utf8_lossy(&output.stderr_tail).into_owned();
+                        let mut start = diagnostic.len().saturating_sub(64 * 1024);
+                        while !diagnostic.is_char_boundary(start) {
+                            start += 1;
+                        }
+                        let truncated =
+                            start != 0 || output.stderr_bytes > output.stderr_tail.len() as u64;
+                        diagnostic.drain(..start);
+                        if output.status.success() && parsed.is_ok() {
+                            (
+                                "completed",
+                                None,
+                                parsed.ok(),
+                                Some(output.stderr_bytes),
+                                Some(truncated),
+                            )
+                        } else {
+                            let reason = if output.status.success() {
+                                "ingest returned malformed JSON".to_owned()
+                            } else {
+                                format!("exit status {}", output.status)
+                            };
+                            (
+                                "failed",
+                                Some(format!("{reason}\n{diagnostic}")),
+                                parsed.ok(),
+                                Some(output.stderr_bytes),
+                                Some(truncated),
+                            )
+                        }
+                    }
+                    Err(error) => ("failed", Some(error.to_string()), None, None, None),
+                };
             let update = json!({
                 "status": status,
                 "finished_at": chrono::Utc::now().to_rfc3339(),
                 "detail": detail,
                 "result": envelope,
+                "stderr_bytes": stderr_bytes,
+                "stderr_truncated": stderr_truncated,
             });
             if let Err(e) =
                 crud::update_document(&pool_for_task, INGEST_JOBS, &job_for_task, &update).await

@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
+pub(crate) mod process;
+
 const MAX_CONCURRENT: usize = 2;
 static ADMISSION: LazyLock<Arc<Admission>> =
     LazyLock::new(|| Arc::new(Admission::new(MAX_CONCURRENT)));
