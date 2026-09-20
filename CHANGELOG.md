@@ -389,6 +389,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Publish LSP document-open state only after didOpen is sent; keep failed and
+  cancelled reads retryable and order same-URI opens/closes independently (#102).
+
 - Bound LSP headers, frame serialization, notification retention and pending
   admission; fail closed on inbound overflow and reject oversized sends before
   writing protocol bytes (#98).

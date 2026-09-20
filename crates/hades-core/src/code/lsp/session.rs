@@ -1,8 +1,9 @@
 //! Generic language-server lifecycle and common semantic requests.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as SyncMutex, Weak};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -40,13 +41,58 @@ pub trait LanguageServer: Send + Sync + 'static {
     }
 }
 
+#[derive(Default)]
+struct DocumentState {
+    opened: HashSet<String>,
+    operations: HashMap<String, Weak<Mutex<()>>>,
+}
+
+impl DocumentState {
+    fn operation<'a>(registry: &'a SyncMutex<Self>, uri: &str) -> DocumentOperation<'a> {
+        let mut state = registry.lock().unwrap();
+        let lock = state
+            .operations
+            .get(uri)
+            .and_then(Weak::upgrade)
+            .unwrap_or_else(|| {
+                let lock = Arc::new(Mutex::new(()));
+                state
+                    .operations
+                    .insert(uri.to_owned(), Arc::downgrade(&lock));
+                lock
+            });
+        DocumentOperation {
+            state: registry,
+            uri: uri.to_owned(),
+            lock,
+        }
+    }
+}
+
+/// Retains a URI's operation lock until completion/cancellation, removing the
+/// registry entry when the last admitted operation leaves. Registry locking also
+/// protects the strong-count check from racing with a new operation admission.
+struct DocumentOperation<'a> {
+    state: &'a SyncMutex<DocumentState>,
+    uri: String,
+    lock: Arc<Mutex<()>>,
+}
+impl Drop for DocumentOperation<'_> {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        if Arc::strong_count(&self.lock) == 1 {
+            state.operations.remove(&self.uri);
+        }
+    }
+}
+
 /// One initialized language-server process for a workspace root.
 pub struct LspSession<S: LanguageServer> {
     client: LspClient,
     root: PathBuf,
     ready: bool,
     request_timeout: Duration,
-    open_documents: Mutex<HashSet<String>>,
+    open_documents: SyncMutex<DocumentState>,
     _server: PhantomData<S>,
 }
 
@@ -70,7 +116,7 @@ impl<S: LanguageServer> LspSession<S> {
             root,
             ready: false,
             request_timeout: Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS),
-            open_documents: Mutex::new(HashSet::new()),
+            open_documents: SyncMutex::new(DocumentState::default()),
             _server: PhantomData,
         };
         session.initialize().await?;
@@ -96,12 +142,13 @@ impl<S: LanguageServer> LspSession<S> {
         };
         let abs_path = abs_path.canonicalize()?;
         let uri = path_to_uri(&abs_path)?;
-        if !self.open_documents.lock().await.insert(uri.clone()) {
+        let operation = DocumentState::operation(&self.open_documents, &uri);
+        let _guard = operation.lock.lock().await;
+        if self.open_documents.lock().unwrap().opened.contains(&uri) {
             return Ok(uri);
         }
         let content = tokio::fs::read_to_string(&abs_path).await?;
-        if let Err(error) = self
-            .client
+        self.client
             .notify(
                 "textDocument/didOpen",
                 serde_json::json!({
@@ -113,22 +160,29 @@ impl<S: LanguageServer> LspSession<S> {
                     }
                 }),
             )
-            .await
-        {
-            self.open_documents.lock().await.remove(&uri);
-            return Err(error);
-        }
+            .await?;
+        // No await between the complete frame and publication of local state.
+        self.open_documents
+            .lock()
+            .unwrap()
+            .opened
+            .insert(uri.clone());
         Ok(uri)
     }
 
     pub async fn close_file(&self, uri: &str) -> Result<(), LspError> {
+        let operation = DocumentState::operation(&self.open_documents, uri);
+        let _guard = operation.lock.lock().await;
+        if !self.open_documents.lock().unwrap().opened.contains(uri) {
+            return Ok(());
+        }
         self.client
             .notify(
                 "textDocument/didClose",
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
             .await?;
-        self.open_documents.lock().await.remove(uri);
+        self.open_documents.lock().unwrap().opened.remove(uri);
         Ok(())
     }
 
@@ -645,5 +699,31 @@ mod preflight_tests {
         assert!(pinned.configured && pinned.source == "config/env" && pinned.outcome.is_err());
         let path = resolve_and_probe("rustc", None, std::path::Path::new("/tmp"));
         assert!(!path.configured && path.source == "PATH" && path.outcome.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod document_operation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn operation_registry_releases_cancelled_waiters_and_completed_owners() {
+        let state = SyncMutex::new(DocumentState::default());
+        let first = DocumentState::operation(&state, "same");
+        let held = first.lock.lock().await;
+        let mut waiter = Box::pin(async {
+            let next = DocumentState::operation(&state, "same");
+            let _guard = next.lock.lock().await;
+        });
+        assert!(futures::poll!(waiter.as_mut()).is_pending());
+        let independent = DocumentState::operation(&state, "other");
+        assert!(independent.lock.try_lock().is_ok());
+        assert_eq!(state.lock().unwrap().operations.len(), 2);
+        drop(waiter);
+        drop(independent);
+        assert_eq!(state.lock().unwrap().operations.len(), 1);
+        drop(held);
+        drop(first);
+        assert!(state.lock().unwrap().operations.is_empty());
     }
 }
