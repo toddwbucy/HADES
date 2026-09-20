@@ -26,3 +26,29 @@ automatically. Verify daemon envelopes, successful controls and failure branches
 including a disposable-database partial-write case before claiming persistence
 coverage. Missing collections and deliberately skipped references need separate
 semantics from execution errors.
+
+## Remediation
+
+Shared materialization now returns MaterializationFailed when accumulated
+execution errors are nonempty, retaining the complete per-definition/totals
+report in the diagnostic. The daemon maps this to MATERIALIZATION_FAILED with
+success:false; the CLI exits nonzero and writes diagnostics to stderr. The
+report retains dry-run state and completed registrations. Successful output is
+unchanged. Missing collections and skipped references remain reported counters,
+not execution errors. No automatic retry or rollback is introduced; earlier
+writes, if any, remain committed.
+
+Private peer contracts exercise scan, unknown-strategy, collection creation,
+import and registration errors, successful registration, dry-run suppression,
+and missing/skipped inputs. A separate disposable-database fixture exercises
+partial edge import with persisted-state read-back. [Remediation evidence](materialize-outcomes-remediation.json) records seven
+source/probe hashes, four passing shared-service tests, five passing CLI response
+tests and all 16 passing disposable-database lifecycle tests (62.53 seconds).
+The private ArangoDB 3.12.11 server stopped with exit zero.
+
+The persistence fixture imports two derived edges: one valid key and one overlong
+key derived from valid source-document keys. Exactly one edge remains committed;
+read-back verifies its endpoints, total edge count one and source-document count
+three. CLI exit is one with empty stdout and retained report: one edge created,
+one of two import items failed. This proves reporting and preservation for this
+partial-import case, not atomic materialization or every backend failure mode.

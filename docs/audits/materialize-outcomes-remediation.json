@@ -1,0 +1,33 @@
+{
+  "baseline_revision": "a62ae7c",
+  "scope": "Private Unix HTTP peers and owned disposable ArangoDB 3.12.11; no production deployment",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "e2bfc809a1b282a5234ea235856c9e928bb928d52c55f048ee4ce2a56b56c983",
+    "crates/hades-core/src/service.rs": "deaafc98a95b137fb6df396b6b3511736ff0cd7aa4be2df5e6eec3b9e3be0403",
+    "crates/hades-cli/src/commands/db_graph.rs": "77a2d9c8c823d5156ae7038c9dba4e7371e1c061bb93727466d8c11b709f9daa",
+    "crates/hades-cli/tests/db_response_shapes.rs": "76894efdacd4061facc63a82a4698ffaeb288705d88e2bc372a7e074f2abfd1c",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "e818378297f22804d3d15190093d72b0b1358a495c53d8d7623c09cb7849ba96",
+    "crates/hades-cli/tests/fixtures/materialize_outcomes.rs": "11cff3b7efac9e50d5f80958c4c703be6df57e156b3ba8f36850b25820a52f0a",
+    "scripts/test_isolated_database.py": "9efa223b8b83f361b148649ecd4fa5852fa4578adfe1254182dfb9bbd2f4f131"
+  },
+  "observed_partial_import": {
+    "committed_edge_count": 1,
+    "exit": 1,
+    "source_document_count": 3,
+    "stderr": "\u001b[2m2026-09-20T23:12:23.771894Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mhades_core::dispatch::handlers\u001b[0m\u001b[2m:\u001b[0m materializing \u001b[3mdefinition\u001b[0m\u001b[2m=\u001b[0medges:related\n\u001b[2m2026-09-20T23:12:23.773161Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[1mupsert_documents\u001b[0m\u001b[1m{\u001b[0m\u001b[3mcollection\u001b[0m\u001b[2m=\u001b[0m\"edges\" \u001b[3mdb\u001b[0m\u001b[2m=\u001b[0mhades_test_materialize_outcomes_300448_12 \u001b[3mcount\u001b[0m\u001b[2m=\u001b[0m2\u001b[1m}\u001b[0m\u001b[2m:\u001b[0m \u001b[2mhades_core::db::crud\u001b[0m\u001b[2m:\u001b[0m upsert partial failure \u2014 some documents were not written \u001b[3mcollection\u001b[0m\u001b[2m=\u001b[0m\"edges\" \u001b[3mcreated\u001b[0m\u001b[2m=\u001b[0m1 \u001b[3mupdated\u001b[0m\u001b[2m=\u001b[0m0 \u001b[3merrors\u001b[0m\u001b[2m=\u001b[0m1\nError: materialization incomplete; earlier writes, if any, remain committed; inspect report before retrying: {\"definitions\":{\"edges:related\":{\"collections_missing\":0,\"collections_scanned\":1,\"edges_created\":1,\"edges_skipped\":0,\"errors\":[\"import edges: 1 of 2 documents failed\"]}},\"dry_run\":false,\"named_graphs_registered\":[],\"schema_source\":\"hades_schema\",\"totals\":{\"collections_missing\":0,\"collections_scanned\":1,\"duration_ms\":1,\"edges_created\":1,\"edges_skipped\":0,\"errors\":[\"import edges: 1 of 2 documents failed\"]}}\n",
+    "stdout": "",
+    "valid_edge_endpoints_verified": true
+  },
+  "lifecycle_summary": "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 62.53s",
+  "private_server_exit": 0,
+  "cli_response_contracts": {
+    "passed": 5,
+    "failed": 0,
+    "seconds": 0.09
+  },
+  "shared_service_contracts": {
+    "passed": 4,
+    "failed": 0,
+    "seconds": 0.01
+  }
+}

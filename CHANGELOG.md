@@ -426,6 +426,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Report accumulated graph materialization execution errors as failure while
+  retaining partial-run diagnostics and committed-write semantics (#125).
+
 - Report per-document insert failures through shared CLI/daemon dispatch, with
   partial-completion diagnostics and uncertain-response handling (#120).
 - Reject malformed CLI database-list/export responses and invalid cursor state;
