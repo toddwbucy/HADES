@@ -19,12 +19,16 @@ const MODEL: &str = "jinaai/jina-embeddings-v4";
 
 struct Embedder {
     fail: Arc<AtomicBool>,
+    hold: Arc<AtomicBool>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
     socket: PathBuf,
     task: JoinHandle<()>,
     _directory: tempfile::TempDir,
 }
 impl Drop for Embedder {
     fn drop(&mut self) {
+        self.release.notify_one();
         self.task.abort();
     }
 }
@@ -35,11 +39,26 @@ impl Embedder {
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let fail = Arc::new(AtomicBool::new(false));
         let fault = fail.clone();
+        let hold = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold_request = hold.clone();
+        let entered_request = entered.clone();
+        let release_request = release.clone();
         let app = Router::new()
             .route("/v1/models", get(|| async {
                 Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]}))
             }))
-            .route("/v1/embeddings", post(move |Json(body): Json<Value>| { let fault = fault.clone(); async move {
+            .route("/v1/embeddings", post(move |Json(body): Json<Value>| {
+                let fault = fault.clone();
+                let hold = hold_request.clone();
+                let entered = entered_request.clone();
+                let release = release_request.clone();
+                async move {
+                if hold.load(Ordering::SeqCst) {
+                    entered.notify_one();
+                    release.notified().await;
+                }
                 if fault.load(Ordering::SeqCst) { return Json(json!({"error":"injected embedding failure"})); }
                 assert_eq!(body["task"], "code", "code ingest/query must agree on the adapter");
                 let inputs = body["input"].as_array().unwrap();
@@ -65,6 +84,9 @@ impl Embedder {
         });
         Self {
             fail,
+            hold,
+            entered,
+            release,
             socket,
             task,
             _directory: directory,
@@ -84,8 +106,9 @@ fn vector(text: &str) -> Vec<f32> {
     vector
 }
 
-async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: bool) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_hades"))
+fn cli_command(pool: &ArangoPool, embedder: &Embedder, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hades"));
+    command
         .args(["--db", pool.database()])
         .args(args)
         .env("HADES_EMBEDDER_SOCKET", &embedder.socket)
@@ -95,10 +118,12 @@ async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: boo
         )
         .env_remove("HADES_DISABLE_LATE_CHUNKING")
         .env_remove("HADES_DEFAULT_COLLECTION")
-        .kill_on_drop(true)
-        .output()
-        .await
-        .unwrap();
+        .kill_on_drop(true);
+    command
+}
+
+async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: bool) -> Value {
+    let output = cli_command(pool, embedder, args).output().await.unwrap();
     assert_eq!(
         output.status.success(),
         success,
@@ -403,4 +428,57 @@ async fn changed_consumer_keeps_relationships_to_unchanged_provider() {
         assert_eq!(after["codebase_imports_edges"], before["codebase_imports_edges"]);
         validate(&pool, &embedder).await;
     }).await;
+}
+
+#[tokio::test]
+async fn killed_cli_during_embedding_preserves_graph_and_retries() {
+    with_temp_db(
+        "killed_preparation",
+        Fixtures::Codebase,
+        |pool| async move {
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            let file = tree.path().join("provider.py");
+            std::fs::write(&file, "def target():\n    return 'quartz'\n").unwrap();
+            ingest(&pool, &embedder, tree.path()).await;
+            let before = snapshot_graph(&pool).await;
+            std::fs::write(&file, "# move\ndef target():\n    return 'sapphire'\n").unwrap();
+            embedder.hold.store(true, Ordering::SeqCst);
+            let mut child =
+                cli_command(&pool, &embedder, &["ingest", tree.path().to_str().unwrap()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                embedder.entered.notified(),
+            )
+            .await
+            .expect("CLI never reached the controlled embedding request");
+            child.start_kill().unwrap();
+            let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                .await
+                .expect("test CLI did not exit")
+                .unwrap();
+            assert!(!status.success());
+            assert_eq!(
+                snapshot_graph(&pool).await,
+                before,
+                "process interruption during preparation must preserve all collections"
+            );
+            embedder.hold.store(false, Ordering::SeqCst);
+            embedder.release.notify_one();
+            let retry = ingest(&pool, &embedder, tree.path()).await;
+            assert_eq!(retry["code"]["failed"], 0);
+            validate(&pool, &embedder).await;
+            let key = keys::scoped_file_key(tree.path().to_str().unwrap(), "provider.py");
+            assert_hit(
+                &search(&pool, &embedder, "sapphire").await,
+                &key,
+                "sapphire",
+            );
+        },
+    )
+    .await;
 }

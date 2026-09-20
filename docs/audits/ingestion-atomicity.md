@@ -90,8 +90,15 @@ Explicit raw-text downgrade clears the pending marker in the fallback transactio
 a rejected chunk write retains the old metadata and marker, and successful retry
 clears it before subsequent incremental skipping.
 
+A process-level CLI test blocks a replacement embedding request on a private mock,
+kills and reaps only that CLI process, compares all eight graph collections to
+their prior contents, then retries and validates retrieval of the changed text.
+This proves interruption during preparation preserves committed data. It does
+not establish process-death cleanup after a stream transaction has begun; the
+in-process cancellation/lock-release contract covers a different boundary.
+
 Remaining review includes target indexing when higher-fidelity preservation
-bypasses normal analysis, end-to-end cancellation, physical source changes during
+bypasses normal analysis, process death during persistence, physical source changes during
 external analysis, and additional analyzer failure coverage. The transaction protects the prepared database
 replacement, not filesystem reads or the entire multi-file ingest job. No live
 service, database or installed binary has been changed.
