@@ -1432,21 +1432,6 @@ mod handlers {
 
     // ── Provisioning handlers ───────────────────────────────────────
 
-    /// How many ingest jobs may run at once.
-    ///
-    /// Two rather than one, so a small tree is not blocked behind a large one, and
-    /// not more because every job contends for the same GPU through the embedder's
-    /// inference lock and for the same rust-analyzer working directory. Parallel
-    /// ingests do not finish sooner, they only multiply the failure modes.
-    pub(super) const MAX_CONCURRENT_INGESTS: usize = 2;
-
-    /// Collection holding ingest job rows, created on demand.
-    ///
-    /// Lives in the database being ingested rather than in a central one, so a
-    /// job is visible to exactly the readers who can already see the graph it
-    /// builds, and so it survives a daemon restart.
-    pub(super) const INGEST_JOBS: &str = "hades_ingest_jobs";
-
     /// Create a database.
     ///
     /// ArangoDB's `POST /_api/database` only answers in the `_system` context,
@@ -1503,235 +1488,11 @@ mod handlers {
         path: &str,
         force: bool,
     ) -> Result<Value, HandlerError> {
-        use std::process::Stdio;
-
-        let database = config
-            .effective_database()
-            .map_err(|e| HandlerError::InvalidParameter {
-                name: "database".into(),
-                reason: e.to_string(),
-            })?
-            .to_string();
-
-        let resolved = std::fs::canonicalize(path).map_err(|e| HandlerError::InvalidParameter {
-            name: "path".into(),
-            reason: format!("'{path}' not usable: {e}"),
-        })?;
-
-        let exe = std::env::current_exe()
-            .map_err(|e| HandlerError::ServiceError(format!("cannot locate own binary: {e}")))?;
-
-        // Refuse a second job for the same tree, and cap the total.
-        //
-        // Nothing here was bounded: a provisioned token could call `ingest.start`
-        // in a loop and get one full ingest process per call, each running
-        // analyzers and a language server over the same tree, writing the same
-        // keys. A row whose process is gone does not count, because a daemon
-        // restart leaves rows saying `running` forever and those would otherwise
-        // block every later job.
-        crud::create_collection(pool, INGEST_JOBS, Some(2))
-            .await
-            .ok();
-        let running = query::query(
-            pool,
-            &format!(
-                "FOR j IN {INGEST_JOBS} FILTER j.status == 'running' \
-                 RETURN {{path: j.path, pid: j.pid}}"
-            ),
-            None,
-            None,
-            false,
-            ExecutionTarget::Writer,
-        )
-        .await
-        .map(|r| r.results)
-        .unwrap_or_default();
-        let live: Vec<&Value> = running
-            .iter()
-            .filter(|row| match row.get("pid").and_then(|p| p.as_u64()) {
-                // Linux-specific and deliberate: this daemon already assumes
-                // /proc elsewhere, and a liveness check beats a timeout guess.
-                Some(pid) => std::path::Path::new(&format!("/proc/{pid}")).exists(),
-                None => false,
-            })
-            .collect();
-        if let Some(dup) = live.iter().find(|row| {
-            row.get("path").and_then(|p| p.as_str()) == Some(&resolved.display().to_string())
-        }) {
-            return Err(HandlerError::InvalidParameter {
-                name: "path".into(),
-                reason: format!(
-                    "an ingest of '{}' is already running (pid {}). Poll ingest.status \
-                     rather than starting a second one over the same tree.",
-                    resolved.display(),
-                    dup.get("pid").and_then(|p| p.as_u64()).unwrap_or(0)
-                ),
-            });
-        }
-        if live.len() >= MAX_CONCURRENT_INGESTS {
-            return Err(HandlerError::ServiceError(format!(
-                "{} ingest jobs are already running, which is the limit. Each one \
-                 drives analyzers, a language server and the embedder, so they do \
-                 not get faster in parallel. Wait for one to finish.",
-                live.len()
-            )));
-        }
-
-        // Job id from the clock and the path, so two concurrent jobs on one tree
-        // cannot collide and the id says nothing an operator has to decode.
-        let started = chrono::Utc::now();
-        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
-        sha2::Digest::update(&mut hasher, started.to_rfc3339().as_bytes());
-        sha2::Digest::update(&mut hasher, resolved.as_os_str().as_encoded_bytes());
-        let digest = sha2::Digest::finalize(hasher);
-        let job_id: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-
-        // The job row lands before the child starts, so a crash between the two
-        // leaves a row saying `running` with no output rather than a job nobody
-        // knows about.
-        crud::create_collection(pool, INGEST_JOBS, Some(2))
-            .await
-            .ok();
-        let log_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.json"));
-        // Kept rather than discarded. The child writes its envelope to stdout and
-        // everything diagnostic to stderr, so sending stderr to /dev/null left a
-        // failed job reporting only "exit status 1" with the reason gone: an
-        // analyzer preflight refusal, a missing database, a panic. The tail of
-        // this file goes into the job row when the child fails.
-        let err_path = std::env::temp_dir().join(format!("hades-ingest-{job_id}.log"));
-        let row = json!({
-            "_key": &job_id,
-            "status": "running",
-            "database": &database,
-            "path": resolved.display().to_string(),
-            "force": force,
-            "started_at": started.to_rfc3339(),
-            "log_path": log_path.display().to_string(),
-            "stderr_path": err_path.display().to_string(),
-        });
-        crud::insert_document(pool, INGEST_JOBS, &row)
-            .await
-            .map_err(|e| HandlerError::ServiceError(format!("failed to record job: {e}")))?;
-
-        let log = std::fs::File::create(&log_path).map_err(|e| {
-            HandlerError::ServiceError(format!("cannot open job log {}: {e}", log_path.display()))
-        })?;
-
-        let errlog = std::fs::File::create(&err_path).map_err(|e| {
-            HandlerError::ServiceError(format!(
-                "cannot open job stderr log {}: {e}",
-                err_path.display()
-            ))
-        })?;
-
-        let mut cmd = tokio::process::Command::new(exe);
-        cmd.arg("--db")
-            .arg(&database)
-            .arg("ingest")
-            .arg(&resolved)
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(errlog))
-            .stdin(Stdio::null());
-        if force {
-            cmd.arg("--force");
-        }
-        let child = cmd
-            .spawn()
-            .map_err(|e| HandlerError::ServiceError(format!("failed to start ingest: {e}")))?;
-        let pid = child.id();
-
-        // Watch the child and write the outcome back. If the daemon dies first
-        // the row stays `running`, which `ingest_status` reports as orphaned
-        // rather than as progress.
-        if let Some(pid) = pid {
-            let _ = crud::update_document(pool, INGEST_JOBS, &job_id, &json!({ "pid": pid })).await;
-        }
-
-        let pool_for_task = pool.clone();
-        let job_for_task = job_id.clone();
-        let log_for_task = log_path.clone();
-        let err_for_task = err_path.clone();
-        tokio::spawn(async move {
-            let mut child = child;
-            let outcome = child.wait().await;
-            let envelope = std::fs::read_to_string(&log_for_task)
-                .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-            // The tail of stderr, so a failure says why rather than only that it
-            // happened. Bounded because an ingest can emit a great deal.
-            let stderr_tail = |limit: usize| -> Option<String> {
-                let text = std::fs::read_to_string(&err_for_task).ok()?;
-                let tail: Vec<&str> = text.lines().rev().take(limit).collect();
-                if tail.is_empty() {
-                    None
-                } else {
-                    Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
-                }
-            };
-            let (status, detail) = match outcome {
-                Ok(code) if code.success() => ("completed", None),
-                Ok(code) => (
-                    "failed",
-                    Some(match stderr_tail(40) {
-                        Some(tail) => format!("exit status {code}\n{tail}"),
-                        None => format!("exit status {code}"),
-                    }),
-                ),
-                Err(e) => ("failed", Some(format!("could not wait on child: {e}"))),
-            };
-            let update = json!({
-                "status": status,
-                "finished_at": chrono::Utc::now().to_rfc3339(),
-                "detail": detail,
-                "result": envelope,
-            });
-            if let Err(e) =
-                crud::update_document(&pool_for_task, INGEST_JOBS, &job_for_task, &update).await
-            {
-                tracing::error!(job = %job_for_task, error = %e, "failed to record ingest outcome");
-            }
-        });
-
-        Ok(json!({
-            "job_id": job_id,
-            "status": "running",
-            "database": database,
-            "path": resolved.display().to_string(),
-            "pid": pid,
-            "poll": "ingest.status",
-        }))
+        crate::ingest_jobs::records::start(pool, config, path, force).await
     }
 
-    /// Read one ingest job's row.
     pub async fn ingest_status(pool: &ArangoPool, job_id: &str) -> Result<Value, HandlerError> {
-        let mut doc = crud::get_document(pool, INGEST_JOBS, job_id)
-            .await
-            .map_err(|e| {
-                if e.is_not_found() {
-                    HandlerError::DocumentNotFound {
-                        collection: INGEST_JOBS.to_string(),
-                        key: job_id.to_string(),
-                    }
-                } else {
-                    HandlerError::ServiceError(e.to_string())
-                }
-            })?;
-
-        // A row still saying `running` after the daemon restarted describes a
-        // process that no longer exists. Saying so beats reporting progress that
-        // will never arrive.
-        if doc.get("status").and_then(|v| v.as_str()) == Some("running")
-            && let Some(obj) = doc.as_object_mut()
-        {
-            obj.insert(
-                "note".into(),
-                json!(
-                    "still running, or orphaned by a daemon restart. \
-                     A job whose row never leaves `running` was interrupted."
-                ),
-            );
-        }
-        Ok(doc)
+        crate::ingest_jobs::records::status(pool, job_id).await
     }
 
     // ── Database read handlers ──────────────────────────────────────
@@ -6788,6 +6549,78 @@ mod tests {
         assert_eq!(result, serde_json::json!({"results":[7],"count":1}));
         assert_eq!(mock.event("POST cursor").await["query"], aql);
         assert!(mock.events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn ingest_admission_precedes_database_work_and_fails_closed() {
+        let _test = crate::ingest_jobs::TEST_LOCK.lock().await;
+        use cursor_mock::{Mock, Reply};
+        use serde_json::json;
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        let roots = tempfile::tempdir().unwrap();
+        let mut tasks = Vec::new();
+        let mut mocks = Vec::new();
+        for index in 0..2 {
+            let path = roots.path().join(format!("tree-{index}"));
+            std::fs::create_dir(&path).unwrap();
+            let mut mock =
+                Mock::new(vec![Reply::blocked(json!({}), Arc::new(Notify::new()))]).await;
+            let pool = mock.pool.clone();
+            tasks.push(tokio::spawn(async move {
+                handlers::ingest_start(
+                    &pool,
+                    &HadesConfig::with_database(&format!("database-{index}")),
+                    path.to_str().unwrap(),
+                    false,
+                )
+                .await
+            }));
+            mock.event("POST collection").await;
+            mocks.push(mock);
+        }
+        let mut rejected = Mock::new(vec![]).await;
+        let config = HadesConfig::with_database("database-three");
+        let fresh = roots.path().join("fresh");
+        std::fs::create_dir(&fresh).unwrap();
+        for path in [roots.path().join("tree-0"), fresh.clone()] {
+            let error =
+                handlers::ingest_start(&rejected.pool, &config, path.to_str().unwrap(), false)
+                    .await
+                    .unwrap_err();
+            assert!(error.to_string().contains("already"), "{error}");
+        }
+        assert!(rejected.events.try_recv().is_err());
+        for task in tasks {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        }
+        drop(mocks);
+
+        // Both cancellation and admission-query failure release the slot. Two
+        // sequential retries reach the database, but neither inserts or spawns.
+        for _ in 0..2 {
+            let mut mock = Mock::new(vec![
+                Reply::page(json!({})),
+                Reply {
+                    status: 503,
+                    body: json!({"error":true,"errorMessage":"private fixture unavailable"}),
+                    gate: None,
+                },
+            ])
+            .await;
+            let error = handlers::ingest_start(&mock.pool, &config, fresh.to_str().unwrap(), false)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("cannot verify ingest admission"),
+                "{error}"
+            );
+            mock.event("POST collection").await;
+            mock.event("POST cursor").await;
+            assert!(mock.events.try_recv().is_err());
+        }
     }
 
     /// The documented wire names must deserialize, since docs/daemon-protocol.md

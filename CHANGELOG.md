@@ -19,6 +19,19 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Enforce atomic detached-ingest admission across served databases and overlapping
+  source trees; fail closed on admission errors and retain slots through cleanup (#51).
+- Own ingestion process groups through startup, request disconnects, PID-write
+  failures, supervision panics and daemon shutdown; reap children before releasing
+  admission, with private concurrency and descendant-cleanup contracts (#51).
+- Capture ingestion output through bounded asynchronous pipes instead of shared
+  temporary files; fail explicitly on overflow, malformed JSON and runtime expiry (#51).
+- Persist ingestion phases with per-daemon ownership and bounded retries; report
+  unowned unfinished records as requiring reconciliation, including after restart,
+  while refreshing completed jobs to avoid a stale-status race (#51).
+- Preserve resolved ingestion configuration and credentials through bounded sealed
+  descriptors; reject invalid canonical paths before job-record serialization (#51).
+
 - Bound viewer CLI child output and runtime, retain process admission through
   cancellation cleanup, and prevent child diagnostics from entering HTTP errors (#52).
 - Bound viewer graph accumulation, JSON serialization, concurrent connections

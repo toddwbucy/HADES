@@ -7,6 +7,7 @@
 //!   3. YAML config file (`hades.yaml`)
 //!   4. Compiled-in defaults
 
+pub mod snapshot;
 mod types;
 
 pub use types::*;
