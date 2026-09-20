@@ -1,6 +1,6 @@
 {
   "source_revision": "e17303571bc84c272f63de8118a016004668e247",
-  "scope": "Source trace of 22 non-graph/non-schema DB leaves; not complete runtime validation",
+  "scope": "Source trace of all 33 DB leaves; not complete runtime validation",
   "leaves": [
     "query",
     "aql",
@@ -23,7 +23,18 @@
     "update",
     "export",
     "create-index",
-    "index-status"
+    "index-status",
+    "graph create",
+    "graph list",
+    "graph drop",
+    "graph traverse",
+    "graph shortest-path",
+    "graph neighbors",
+    "graph materialize",
+    "schema init",
+    "schema list",
+    "schema show",
+    "schema version"
   ],
   "source_sha256": {
     "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
@@ -38,6 +49,9 @@
     "crates/hades-core/src/db/query.rs": "553daa04d58d7edf0bf92b389d81278c4a2f500405d97ea1d9ebc5c600556109",
     "crates/hades-core/src/db/index.rs": "70e439b83395e1c1b8f00389b003afa267aae824933f6ad5fc6a5ab0a0108794",
     "crates/hades-core/src/db/collections.rs": "08e0054fda279cd956456907509b460057eff814c842b1dffb783054aabb84a2",
-    "crates/hades-core/src/db/transport.rs": "b3d5777b20ee38df1327c44df60bea5e8e2ac2cf57c505a0c42448a63599107a"
+    "crates/hades-core/src/db/transport.rs": "b3d5777b20ee38df1327c44df60bea5e8e2ac2cf57c505a0c42448a63599107a",
+    "crates/hades-cli/src/commands/db_graph.rs": "77a2d9c8c823d5156ae7038c9dba4e7371e1c061bb93727466d8c11b709f9daa",
+    "crates/hades-cli/src/commands/db_schema.rs": "7bc118eed208b5bb64f2c183c61717b8425a928797291c1913010fc34cfb8555",
+    "crates/hades-core/src/graph/runtime_schema.rs": "799182ac099b7856821108fef3228268b34d201c2b38fba010fb2a0afa5a63d2"
   }
 }

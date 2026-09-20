@@ -120,7 +120,7 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
-- Trace all 22 non-graph/schema database CLI leaves through defaults, routing,
+- Trace all 33 database CLI leaves through defaults, routing,
   result semantics and explicit validation limits (epic #12).
 
 - Retain an actual CLI/disposable-ArangoDB partial-insert false-success

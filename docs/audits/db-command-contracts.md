@@ -1,11 +1,11 @@
 # Native database command contracts
 
-Source cut: `e17303571bc84c272f63de8118a016004668e247` (PR #121 pending).
-This source review traces the **22 non-graph/non-schema `db` leaves** through
+Source cut: `e17303571bc84c272f63de8118a016004668e247` (PR #121, merged as `a563d84`).
+This source review traces the **all 33 `db` leaves** through
 Clap, `main.rs`, CLI adapters and the selected shared handlers/CRUD boundaries.
 The [manifest](db-command-contracts.json) records every leaf and inspected source
-hash. It is not a claim that all 22 commands have end-to-end runtime coverage.
-The seven `db graph` and four `db schema` leaves remain outside this table.
+hash. It is not a claim that all 33 commands have end-to-end runtime coverage.
+The top-level `schema apply` command is separate from these database leaves.
 
 ## Common return and authority rules
 
@@ -60,6 +60,39 @@ executed against a live database for this review.
 | drop-collection | Collection; requires --force/-y. Direct CRUD. | Removes collection; same static warning policy; reports dropped/collection/schema_referenced/response. |
 | create-index | Optional collection defaults to default-profile embeddings; dimension required by adapter; metric cosine by default, aliases l2/euclidean and dotproduct/innerProduct. Shared DbCreateIndex. | Vector index on embedding; auto nLists=max(1,count/15), defaultNProbe=10. Index metadata returned. Collection-name interpolation in the preliminary count query needs separate adversarial review; this table does not certify that input boundary. |
 
+## Graph commands
+
+All seven routes use shared dispatch and fixed JSON output. Main discards the
+format strings declared for traverse, shortest-path, neighbors and list; even an
+unsupported format string reaches the adapter without format validation.
+Traversal directions accept exactly outbound/inbound/any. Vertex handles are
+validated. An omitted graph resolves only when exactly one named graph exists;
+zero or multiple graphs cause an error. Explicit graph names go to the query.
+
+| Leaf | Inputs/defaults and routing | Result/error semantics |
+|---|---|---|
+| graph traverse | Start; direction outbound; depth 1–3; optional graph. Shared DbGraphTraverse, CLI supplies no limit. | Default 100 rows; shared limit capped at 1000. Maximum depth clamped to 20; minimum above 20 or above effective maximum rejected. Returns vertex/edge results, start, resolved graph and direction. |
+| graph shortest-path | Source/target; optional graph. Shared DbGraphShortestPath; CLI hardcodes direction any. | Returns vertex/edge results, from/to, resolved graph and direction. No CLI result limit. |
+| graph neighbors | Vertex; direction any; limit 20, capped at 1000; optional graph. Shared DbGraphNeighbors. | Depth-one traversal results, vertex and direction; resolved graph is omitted from this result. |
+| graph list | Shared DbGraphList, Gharial reader request. | Graph names and edge definitions. Missing/non-array graphs becomes empty; missing names become unknown. Malformed-response handling needs a focused contract. |
+| graph create | Name; optional JSON edge-definitions. Shared DbGraphCreate. | Name must be nonempty ASCII alphanumeric/underscore/hyphen. Explicit definitions must be an array; item shape is delegated to backend. Otherwise loads named definition from runtime schema. HTTP success reports created=true; payload outcome validation remains separate. |
+| graph drop | Name; drop-collections=false; force required by both CLI and dispatch. Shared DbGraphDrop. | Same name validation; Gharial deletion with dropCollections flag. Returns dropped and collections_dropped. No transaction or recovery guarantee established here. |
+| graph materialize | Optional edge filter; dry-run=false, register=false. Shared DbGraphMaterialize. | Loads runtime definitions; standard/lineage/cross_paper strategies; upserts chunks of 5000. Reports per-definition/totals counts and errors. Many scan/import/registration failures accumulate inside a successful result; earlier writes remain. Dry-run counts candidates and suppresses writes/registration. Unknown edge filter errors; requested registration tolerates graph-already-exists. |
+
+## Database schema commands
+
+These four routes use shared dispatch and fixed JSON. RuntimeSchema::load requires
+an existing, nonempty hades_schema collection and metadata, checks relation
+count/checksum and graph references, and has no static fallback. Legacy fallback
+strings remain in callers but do not describe a successful load at this source cut.
+
+| Leaf | Inputs/defaults and routing | Result/error semantics |
+|---|---|---|
+| schema init | Required --seed; only empty accepted. Shared DbSchemaInit. | Creates hades_schema if absent, then truncates it and inserts one metadata document (zero relations, feature_dim 2048). Existing definitions are reset without a force flag; truncate and insert are separate operations. Import errors fail but do not restore prior schema. Requires a focused reset/failure/recovery contract. |
+| schema list | Shared DbSchemaList. | Edge-definition summaries, named-graph summaries and source=database. Loader failures propagate. |
+| schema show | Required name; shared DbSchemaShow. | All matching edge definitions take precedence over a named graph with the same name. Unknown name errors. |
+| schema version | Shared DbSchemaVersion. | Version, relation-order checksum, seed name, relation count and feature dimension. This is metadata inspection, not deployed binary/model provenance proof. |
+
 ## Evidence and remaining scope
 
 [Response-shape contracts](cli-db-response-shapes.md) and
@@ -74,5 +107,5 @@ single default profile; query verbose is accepted without a handler argument.
 These are documented source limitations, not production incidents or resolved
 behavioral changes. Format semantics, zero limits for list/recent/AQL, concurrent
 purge behavior, index-name handling and other write-response validation remain
-candidates for focused operational contracts. The other 58 native leaves and
+candidates for focused operational contracts. The other 47 native leaves and
 full daemon/MCP/viewer parity remain separate audit scope.
