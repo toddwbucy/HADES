@@ -123,6 +123,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Trace seven native embedding/extraction command contracts and explicit
   provider, subprocess and output-file limits (epic #12).
 
+- Trace status, orientation and analyzer-management command contracts, including
+  failure-status and installation evidence limits (epic #12).
+
 - Retain actual CLI/private-peer reproductions of materialization scan failures
   reported as success in normal and dry-run modes (epic #12).
 
