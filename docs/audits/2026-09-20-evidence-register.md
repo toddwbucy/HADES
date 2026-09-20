@@ -11,6 +11,9 @@ historical evidence boundaries, and adds read-only deployment metadata.
 
 ## Evidence locations
 
+- [Graph generations](graph-generation-boundaries.md): real CPU checkpoint replay,
+  changed tensor inputs and partial export persistence; no relevance score claim.
+
 - [Training alignment](training-alignment.md): private Rust/Python/database feature
   and full/subset export identity contract; generation freshness remains separate.
 

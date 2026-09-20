@@ -120,6 +120,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Record private checkpoint/graph generation and partially persisted export
+  experiments for the structural-vector audit (epic #12).
+
 - Add an opt-in private database/CPU training/export alignment contract with
   qualified node identities and reversed subset verification (epic #12).
 

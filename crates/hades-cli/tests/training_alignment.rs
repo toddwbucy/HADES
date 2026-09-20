@@ -86,6 +86,24 @@ async fn training_rows_remain_attached_to_qualified_node_ids() {
             )
             .unwrap();
             let names: Vec<_> = (0..3).map(|i| ids.get_arango_id(i).unwrap()).collect();
+            // Preserve the complete node order while varying one input at a time.
+            let mut changed_features = graph.clone();
+            changed_features.set_node_features(ids.get_index("papers/same").unwrap(), &[9., -3.]);
+            hades_prefetch::serialize_graph_for_inference_to_file(
+                &root.path().join("features.safetensors"),
+                &changed_features,
+            )
+            .unwrap();
+            let mut changed_neighbors = graph.clone();
+            changed_neighbors.edge_src.clear();
+            changed_neighbors.edge_dst.clear();
+            changed_neighbors.edge_type.clear();
+            changed_neighbors.num_edges = 0;
+            hades_prefetch::serialize_graph_for_inference_to_file(
+                &root.path().join("neighbors.safetensors"),
+                &changed_neighbors,
+            )
+            .unwrap();
             let features: Vec<[f32; 2]> = names
                 .iter()
                 .map(|id| match *id {
@@ -151,6 +169,10 @@ async fn training_rows_remain_attached_to_qualified_node_ids() {
                 "CPU peer failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            println!(
+                "CPU generation evidence: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
             let expected: Value =
                 serde_json::from_slice(&std::fs::read(root.path().join("expected.json")).unwrap())
                     .unwrap();
@@ -193,6 +215,28 @@ async fn training_rows_remain_attached_to_qualified_node_ids() {
                     serde_json::from_value(expected[generation][*id].clone()).unwrap();
                 assert_eq!(actual, wanted, "subset export identity {id}");
             }
+            // Reset to one generation, then fail a later batch after one real
+            // new-checkpoint vector is acknowledged. Same collection makes
+            // the batch ordering explicit rather than HashMap-dependent.
+            graph::export_embeddings(&pool, &ids, &full, 4, &ExportConfig { chunk_size: 1 })
+                .await.unwrap();
+            let mut interrupted_ids = graph::IDMap::new();
+            interrupted_ids.get_or_create("papers/same");
+            interrupted_ids.get_or_create("papers/absent");
+            let new_vector: Vec<f32> = serde_json::from_value(expected["after"]["papers/same"].clone()).unwrap();
+            let attempted = [new_vector.clone(), new_vector].concat();
+            let failure = graph::export_embeddings(&pool, &interrupted_ids, &attempted, 4,
+                &ExportConfig { chunk_size: 1 }).await.unwrap_err();
+            assert!(matches!(failure, graph::ExportError::BatchFailed { acknowledged: 1, .. }));
+            for id in &names {
+                let (collection, key) = id.split_once('/').unwrap();
+                let row = crud::get_document(&pool, collection, key).await.unwrap();
+                let generation = if *id == "papers/same" { "after" } else { "before" };
+                let actual: Vec<f32> = serde_json::from_value(row["structural_embedding"].clone()).unwrap();
+                let wanted: Vec<f32> = serde_json::from_value(expected[generation][*id].clone()).unwrap();
+                assert_eq!(actual, wanted, "failed refresh generation {id}");
+            }
+            println!("Failed refresh: one acknowledged new-checkpoint vector; two old-checkpoint vectors retained; explicit export error.");
         },
     )
     .await;

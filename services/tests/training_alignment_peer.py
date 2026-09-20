@@ -32,6 +32,7 @@ def main(directory):
     assert (first.num_nodes, first.embed_dim) == (3, 4)
     before = torch.frombuffer(bytearray((root / "full.bin").read_bytes()),
                               dtype=torch.float32).reshape(3, 4).clone()
+    invoke(service, "Checkpoint", pb.CheckpointRequest(path=str(root / "before.pt")))
     # Exercise a real optimizer step, then request a deliberately reversed,
     # non-contiguous subset. No stubbed encoder or hand-made output vectors.
     invoke(service, "TrainStep", pb.TrainStepRequest(
@@ -39,12 +40,39 @@ def main(directory):
     complete = invoke(service, "GetEmbeddings", pb.GetEmbeddingsRequest())
     after = torch.frombuffer(bytearray(complete.embeddings), dtype=torch.float32).reshape(3, 4)
     assert not torch.equal(before, after), "optimizer step did not change embeddings"
+    invoke(service, "Checkpoint", pb.CheckpointRequest(path=str(root / "after.pt")))
+    saved_before = torch.load(root / "before.pt", map_location="cpu", weights_only=True)
+    saved_after = torch.load(root / "after.pt", map_location="cpu", weights_only=True)
+    assert saved_before["graph_contract"] == saved_after["graph_contract"]
+    assert any(not torch.equal(weight, saved_after["model"][key])
+               for key, weight in saved_before["model"].items())
+    for name, expected in (("before", before), ("after", after)):
+        invoke(service, "LoadCheckpoint", pb.LoadCheckpointRequest(
+            path=str(root / f"{name}.pt"), device="cpu"))
+        restored = invoke(service, "GetEmbeddings", pb.GetEmbeddingsRequest())
+        actual = torch.frombuffer(bytearray(restored.embeddings), dtype=torch.float32).reshape(3, 4)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     subset = invoke(service, "GetEmbeddings", pb.GetEmbeddingsRequest(
         node_indices=[2, 0], output_path=str(root / "subset.bin")))
     assert (subset.num_nodes, subset.embed_dim) == (2, 4)
     compact = torch.frombuffer(bytearray((root / "subset.bin").read_bytes()),
                               dtype=torch.float32).reshape(2, 4)
     torch.testing.assert_close(compact, after[[2, 0]])
+    # Changed features and adjacency retain the same semantic graph contract.
+    # Both are real Rust-serialized variants, using the original ID ordering.
+    changes = {}
+    for variant in ("features", "neighbors"):
+        invoke(service, "LoadGraph", pb.LoadGraphRequest(
+            safetensors_path=str(root / f"{variant}.safetensors")))
+        assert service.graph_contract == saved_after["graph_contract"]
+        changed = invoke(service, "GetEmbeddings", pb.GetEmbeddingsRequest())
+        vectors = torch.frombuffer(bytearray(changed.embeddings), dtype=torch.float32).reshape(3, 4)
+        changed_ids = [ident for ident, old, new in zip(manifest["ids"], after, vectors)
+                       if not torch.equal(old, new)]
+        assert changed_ids, f"{variant} mutation did not change any output"
+        changes[variant] = changed_ids
+    print(json.dumps({"compatible_checkpoints_with_distinct_weights": True,
+                      "exact_checkpoint_replay": True, "changed_output_ids": changes}), flush=True)
     (root / "expected.json").write_text(json.dumps({
         "before": dict(zip(manifest["ids"], before.tolist())),
         "after": dict(zip(manifest["ids"], after.tolist())),
