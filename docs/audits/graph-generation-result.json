@@ -1,0 +1,37 @@
+{
+  "runtime_base": "bd2aefa1fd81ea7ae5bdd5dbf28bc4a0450ef2e2",
+  "fixture_base": "76fd09bc1a12fa6d7781d55861f4324b98ef3df8",
+  "server_version": "3.12.11",
+  "runner_result": {
+    "training-alignment": {
+      "passed": true,
+      "exit_code": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hades-cli",
+        "--test",
+        "training_alignment",
+        "--",
+        "--test-threads=1",
+        "--nocapture",
+        "--ignored"
+      ]
+    }
+  },
+  "test_log": "   Compiling hades-cli v0.3.0 (/tmp/hades-graph-generations/crates/hades-cli)\n    Finished `test` profile [unoptimized] target(s) in 1.32s\n     Running tests/training_alignment.rs (/tmp/hades-audit-target/debug/deps/training_alignment-8ee12f9464ed13b9)\n\nrunning 1 test\ntest training_rows_remain_attached_to_qualified_node_ids ... CPU generation evidence: {\"compatible_checkpoints_with_distinct_weights\": true, \"exact_checkpoint_replay\": true, \"changed_output_ids\": {\"features\": [\"papers/same\", \"concepts/same\"], \"neighbors\": [\"concepts/same\"]}}\n\nFailed refresh: one acknowledged new-checkpoint vector; two old-checkpoint vectors retained; explicit export error.\nCLI missing-only: changed database features plus mixed existing vectors produce no-op with exact row/revision preservation; full mode and a null vector require the absent checkpoint. Live training socket and GPU devices hidden.\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.60s\n\n",
+  "private_server_exit_code": 0,
+  "source_sha256": {
+    "crates/hades-cli/tests/training_alignment.rs": "b6e6543631873173253a0858aeb4437ae11624927067fdd1c59cf340af785bdf",
+    "services/tests/training_alignment_peer.py": "68980d99117c2fad120ef3b11dd67aae3c92d7baac7ce749deeb4dbcb5582042",
+    "scripts/test_isolated_database.py": "f592ff12ea67a2ae78610c9c0e836c29fdd4eada52ba35c2bb396db2a50fac29",
+    "crates/hades-core/src/graph/loader.rs": "0feb282a57af0d568a7682b99a0c1d1d4f2ed43e73348e1e1edd4ddeb1cf9066",
+    "crates/hades-core/src/graph/export.rs": "ff243a956d8cf3e5456cd8d1a2b9e47359e68a59618be2ffd5fa9b3a5496f7fc",
+    "crates/hades-prefetch/src/tensor.rs": "793c738aeddf8d0695789a2dec39d93ea91bc3b8bbada35be198872848bf42f7",
+    "services/training/server.py": "bfbe55ac82d5f88a3881a9e4e7acd424ba06ed69a6c9454d0cfed87bbd0ac9ef",
+    "services/tests/test_training_rpc_validation.py": "77e136fc77632de151c6f66d416c9e3739baa3e0089589517440291757a8d1d1"
+  }
+}
