@@ -45,6 +45,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Freeze reproducible, hash-bound passages for the private paper-research corpus;
+  add a bounded preparation utility and source-offset/privacy contracts (#12).
+
 - Confirm `Bastion/` as the paper-research audit corpus and record the private,
   versioned snapshot protocol without publishing draft contents (#12).
 
