@@ -56,6 +56,22 @@ class CodeSnapshotTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             freeze(self.repo, revision, first, self.queries)
 
+    def test_failed_preparation_removes_only_new_output(self):
+        from unittest.mock import patch
+        out = self.root / 'out'
+        with self.assertRaises(ValueError):
+            freeze(self.repo, 'HEAD', out, self.queries, max_bytes=1)
+        self.assertFalse(out.exists())
+        with patch('prepare_code_retrieval.prepare', side_effect=RuntimeError('injected failure')):
+            with self.assertRaisesRegex(RuntimeError, 'injected failure'):
+                freeze(self.repo, 'HEAD', out, self.queries)
+        self.assertFalse(out.exists())
+        freeze(self.repo, 'HEAD', out, self.queries)
+        manifest = (out / 'manifest.json').read_bytes()
+        with self.assertRaises(FileExistsError):
+            freeze(self.repo, 'HEAD', out, self.queries, max_bytes=1)
+        self.assertEqual((out / 'manifest.json').read_bytes(), manifest)
+
     def test_selected_symlink_is_rejected_without_reading_target(self):
         os.symlink('../private.md', self.repo / 'crates/linked.rs')
         self.commit()

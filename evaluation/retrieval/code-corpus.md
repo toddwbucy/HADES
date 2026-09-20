@@ -46,14 +46,19 @@ Actual model-loaded preflight still runs before encoding.
 
 The revised dataset SHA-256 is
 `03967fe26ffff45efe54056fef00273e6e282f5e1f60468df12f8b4af86026cf`.
-Its artifact also binds the builder and passage-preparer source hashes. Later
+This is the frozen run artifact produced by builder commit `178095e`; a later
+cleanup-only builder fix changes its builder hash when replayed, while source
+and passage content remain identical. Its artifact binds both the builder and
+passage-preparer source hashes. Later
 source, query or passage-policy changes require a new snapshot and new judgments.
 
 ## Evidence limits and next stage
 
-Three private Git-fixture contracts verify reproducibility, exclusion of working
+Four private Git-fixture contracts verify reproducibility, exclusion of working
 changes/untracked files, output permissions, refusal to overwrite, rejection of
-selected symlinks and rejection of prefilled/duplicate judgments. These run in
+selected symlinks, rejection of prefilled/duplicate judgments and cleanup of
+newly created incomplete snapshots after failed preparation. Existing outputs
+are preserved. These run in
 the existing operational unittest gate.
 
 An offline encoding run uses a frozen evaluator copy, the existing local model,

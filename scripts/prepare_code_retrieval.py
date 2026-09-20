@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path, PurePosixPath
 import subprocess
 
@@ -61,32 +62,38 @@ def freeze(repo, revision, output, queries, max_bytes=4096):
         raise ValueError('duplicate query ID')
     output = Path(output)
     output.mkdir(mode=0o700)  # Refuse to replace an earlier snapshot.
-    documents = output / 'documents'
-    documents.mkdir(mode=0o700)
-    manifest = {'version': 1, 'commit': commit, 'policy': {
-        'roots': sorted(ROOTS), 'suffixes': sorted(SUFFIXES), 'root_files': sorted(ROOT_FILES),
-        'source': 'regular tracked Git blobs; no working-tree files or submodules'}, 'documents': []}
-    for name, oid, size in entries:
-        raw = git(repo, 'cat-file', 'blob', oid)
-        if len(raw) != size:
-            raise ValueError('Git blob size mismatch')
-        raw.decode('utf-8')
-        path = documents / name
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with path.open('xb') as stream:
-            os.chmod(path, 0o600)
-            stream.write(raw)
-        manifest['documents'].append({'path': name, 'git_blob': oid, 'bytes': size,
-                                      'sha256': hashlib.sha256(raw).hexdigest()})
-    write_private(output / 'manifest.json', manifest)
-    artifact = prepare(output, max_bytes)
-    artifact.update(workload='code_search', embedding_profile='code_search',
-                    source_commit=commit, queries=queries,
-                    snapshot_builder_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
-    write_private(output / 'code-candidates-v1.json', artifact)
-    return {'commit': commit, 'files': len(entries), 'bytes': total,
-            'passages': len(artifact['documents']), 'queries': len(queries),
-            'dataset_sha256': hashlib.sha256((output / 'code-candidates-v1.json').read_bytes()).hexdigest()}
+    try:
+        documents = output / 'documents'
+        documents.mkdir(mode=0o700)
+        manifest = {'version': 1, 'commit': commit, 'policy': {
+            'roots': sorted(ROOTS), 'suffixes': sorted(SUFFIXES), 'root_files': sorted(ROOT_FILES),
+            'source': 'regular tracked Git blobs; no working-tree files or submodules'}, 'documents': []}
+        for name, oid, size in entries:
+            raw = git(repo, 'cat-file', 'blob', oid)
+            if len(raw) != size:
+                raise ValueError('Git blob size mismatch')
+            raw.decode('utf-8')
+            path = documents / name
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with path.open('xb') as stream:
+                os.chmod(path, 0o600)
+                stream.write(raw)
+            manifest['documents'].append({'path': name, 'git_blob': oid, 'bytes': size,
+                                          'sha256': hashlib.sha256(raw).hexdigest()})
+        write_private(output / 'manifest.json', manifest)
+        artifact = prepare(output, max_bytes)
+        artifact.update(workload='code_search', embedding_profile='code_search',
+                        source_commit=commit, queries=queries,
+                        snapshot_builder_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+        write_private(output / 'code-candidates-v1.json', artifact)
+        return {'commit': commit, 'files': len(entries), 'bytes': total,
+                'passages': len(artifact['documents']), 'queries': len(queries),
+                'dataset_sha256': hashlib.sha256((output / 'code-candidates-v1.json').read_bytes()).hexdigest()}
+    except BaseException:
+        # mkdir above succeeded: this invocation owns the incomplete directory.
+        # Existing outputs fail before this block and must never be removed.
+        shutil.rmtree(output)
+        raise
 
 
 def main():
