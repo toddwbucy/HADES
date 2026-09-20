@@ -24,15 +24,20 @@ with tempfile.TemporaryDirectory(prefix='hades-help-only-') as home:
     env = {'PATH':'/usr/bin:/bin', 'HOME':home, 'LANG':'C.UTF-8', 'NO_COLOR':'1'}
     while pending:
         path = pending.pop(0)
-        assert path not in seen
+        if path in seen:
+            raise RuntimeError(f"revisited path: {path}")
         seen.add(path)
-        assert len(seen) <= 256 and len(path) <= 8
+        if len(seen) > 256 or len(path) > 8:
+            raise RuntimeError(f"walk bounds exceeded: {path}")
         # Each path comes only from a command declaration in a prior help response.
-        assert all(re.fullmatch(r'[a-z][a-z0-9-]*', part) for part in path)
+        if not all(re.fullmatch(r"[a-z][a-z0-9-]*", part) for part in path):
+            raise RuntimeError(f"unexpected path token: {path}")
         result = subprocess.run([str(binary), *path, '--help'], cwd=home,
                                 env=env, capture_output=True, timeout=5)
-        assert result.returncode == 0, (path, result.stderr[:200])
-        assert len(result.stdout) <= 65536 and not result.stderr, path
+        if result.returncode != 0:
+            raise RuntimeError(f"non-zero help exit: {path}")
+        if len(result.stdout) > 65536 or result.stderr:
+            raise RuntimeError(f"unexpected help response: {path}")
         text = result.stdout.decode('utf-8')
         commands = []
         if '\nCommands:\n' in text:
