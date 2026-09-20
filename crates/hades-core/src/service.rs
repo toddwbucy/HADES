@@ -883,3 +883,90 @@ mod insert_outcome_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod graph_response_tests {
+    use super::*;
+    use serde_json::json;
+
+    async fn request(
+        command: &str,
+        params: Value,
+        replies: Vec<Value>,
+    ) -> (DaemonResponse, cursor_mock::Mock) {
+        let mock =
+            cursor_mock::Mock::new(replies.into_iter().map(cursor_mock::Reply::page).collect())
+                .await;
+        let payload = serde_json::to_vec(
+            &json!({"request_id":"graph-test", "command":command,"params":params}),
+        )
+        .unwrap();
+        let response = handle_request(
+            &mock.pool,
+            &HadesConfig::default(),
+            ConnectionPolicy::local_admin(),
+            &payload,
+            Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(response.request_id.as_deref(), Some("graph-test"));
+        (response, mock)
+    }
+
+    #[tokio::test]
+    async fn malformed_graph_metadata_fails_listing_and_automatic_resolution() {
+        for command in ["db.graph.list", "db.graph.neighbors"] {
+            let (response, mut mock) = request(
+                command,
+                json!({"vertex":"docs/start","direction":"any"}),
+                vec![json!({})],
+            )
+            .await;
+            assert!(!response.success, "{response:?}");
+            assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
+            assert!(response.data.is_none());
+            assert!(response.error.unwrap().contains("graphs must be an array"));
+            mock.event("GET gharial").await;
+            assert!(
+                mock.events.try_recv().is_err(),
+                "malformed discovery must not issue a traversal"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn automatic_graph_selection_preserves_absence_ambiguity_and_single_graph() {
+        for (graphs, message) in [
+            (json!([]), "no named graph"),
+            (
+                json!([{"_key":"one","edgeDefinitions":[]},{"_key":"two","edgeDefinitions":[]}]),
+                "2 named graphs",
+            ),
+        ] {
+            let (response, mut mock) = request(
+                "db.graph.neighbors",
+                json!({"vertex":"docs/start","direction":"any"}),
+                vec![json!({"graphs":graphs})],
+            )
+            .await;
+            assert!(!response.success, "{response:?}");
+            assert!(response.error.unwrap().contains(message));
+            mock.event("GET gharial").await;
+            assert!(mock.events.try_recv().is_err());
+        }
+        let (response, mut mock) = request(
+            "db.graph.neighbors",
+            json!({"vertex":"docs/start","direction":"any"}),
+            vec![
+                json!({"graphs":[{"_key":"only_graph","edgeDefinitions":[]}]}),
+                json!({"result":[],"hasMore":false}),
+            ],
+        )
+        .await;
+        assert!(response.success, "{response:?}");
+        mock.event("GET gharial").await;
+        let query = mock.event("POST cursor").await;
+        assert_eq!(query["bindVars"]["graph"], "only_graph");
+        assert!(mock.events.try_recv().is_err());
+    }
+}

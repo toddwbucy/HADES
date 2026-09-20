@@ -423,6 +423,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Reject malformed graph-list metadata in shared dispatch rather than reporting
+  empty success; preserve valid graph discovery and surface CLI/daemon errors (#123).
+
 - Report per-document insert failures through shared CLI/daemon dispatch, with
   partial-completion diagnostics and uncertain-response handling (#120).
 - Reject malformed CLI database-list/export responses and invalid cursor state;

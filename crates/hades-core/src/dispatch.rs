@@ -2866,25 +2866,51 @@ mod handlers {
                 source: e,
             })?;
 
+        let invalid = |reason: String| HandlerError::Query {
+            context: "invalid graph-list response".into(),
+            source: crate::db::ArangoError::Request(reason),
+        };
         let graphs = resp
             .get("graphs")
-            .and_then(|g| g.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let mapped: Vec<Value> = graphs
-            .into_iter()
-            .map(|g| {
-                json!({
-                    "name": g.get("_key").or_else(|| g.get("name"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown"),
-                    "edge_definitions": g.get("edgeDefinitions")
-                        .cloned()
-                        .unwrap_or(json!([])),
-                })
-            })
-            .collect();
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("graphs must be an array".into()))?;
+        let mut mapped = Vec::with_capacity(graphs.len());
+        for (index, graph) in graphs.iter().enumerate() {
+            let name = graph
+                .get("_key")
+                .or_else(|| graph.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| invalid(format!("graphs[{index}] requires a nonempty name")))?;
+            let definitions = graph
+                .get("edgeDefinitions")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    invalid(format!("graphs[{index}].edgeDefinitions must be an array"))
+                })?;
+            for (edge_index, definition) in definitions.iter().enumerate() {
+                let collection_valid = definition
+                    .get("collection")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| !name.is_empty());
+                let endpoints_valid = ["from", "to"].iter().all(|field| {
+                    definition
+                        .get(*field)
+                        .and_then(Value::as_array)
+                        .is_some_and(|names| {
+                            names
+                                .iter()
+                                .all(|name| name.as_str().is_some_and(|s| !s.is_empty()))
+                        })
+                });
+                if !collection_valid || !endpoints_valid {
+                    return Err(invalid(format!(
+                        "graphs[{index}].edgeDefinitions[{edge_index}] requires a collection and from/to string arrays"
+                    )));
+                }
+            }
+            mapped.push(json!({"name": name, "edge_definitions": definitions}));
+        }
 
         Ok(json!({ "graphs": mapped }))
     }
