@@ -1,0 +1,19 @@
+{
+  "source_revision": "09ddd5f208f9e25c0a309068fc7a46857b9d1d9b",
+  "scope": "Source trace of four native compliance/link leaves; not runtime certification",
+  "leaves": [
+    "smell check",
+    "smell verify",
+    "smell report",
+    "link"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/smell.rs": "b8e2037aad4e7b73384916f08a4ba843130f82fbb150cfd2021a571ab8fb3df4",
+    "crates/hades-cli/src/commands/smell_mgmt.rs": "8e521bda365fb62047aff51ff7237ee8ebb7e1ad171ca4ada146fcae6b663265",
+    "crates/hades-cli/src/commands/output.rs": "28469b8f0e81d4e0bdd03026d6ba52f492c76c675ef826f60c046bfeb65235c8",
+    "crates/hades-core/src/dispatch.rs": "54ac941a7c6c99af9628371231d9eaad013a96b5b6007087eb1b46b0e423ec07",
+    "crates/hades-core/src/db/keys.rs": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+    "crates/hades-core/src/persephone/embedding.rs": "f57939e39265e77f0a5ba46036daeaf58cf30d74daffab0f97e0f275c89712ab"
+  }
+}

@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Document four compliance and linking command contracts, including verdict,
+  filesystem, and partial-write limitations for the full audit (#12).
+
 ### Security
 
 - Reject WeaverTools adapter HTTP redirects before forwarding credentials or
