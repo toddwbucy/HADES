@@ -50,3 +50,18 @@ queue admission. The worker keeps ownership through cleanup; cancellation may
 return to the caller before the worker finishes. Descendants that deliberately
 leave the process group are not contained, and descendants killed after leader
 exit can await reaping by the system's adopter. No production deployment.
+
+
+Validation: six maintained private-peer integration tests passed after integrating
+`f525d1a` (10.00 seconds), and all eight LSP deadline regressions passed (10.01
+seconds). Both stream caps include exact-64-KiB acceptance and 2-MiB overflow
+rejection. Six existing preflight unit tests passed for missing/working binaries,
+argument forms and resolution precedence. One CLI unit test passed for strict
+failure, explicit downgrade and successful command selection. A current-thread
+async gate proves the executor can release the child while its probe is pending;
+cancellation and leader-exit cases verify direct-child reap and no running owned
+descendant. The ten-second test exercises the production timeout value.
+
+Focused Core/integration and CLI Clippy checks passed with `-D warnings`.
+Selected final hashes are retained in
+[analyzer-preflight-remediation-result.json](analyzer-preflight-remediation-result.json).
