@@ -1,0 +1,42 @@
+{
+  "base_revision": "2bb0e6a13cdc705d6708010047d487cd37dbc911",
+  "baseline_commit": "eff54cf",
+  "source_sha256": {
+    "crates/hades-core/src/batch/processor.rs": "7ceb518337a054a6b1c19a5fb0235b9721b35031ea1956513a5881f337540893",
+    "crates/hades-core/src/batch/state.rs": "21d6c61b5e51bb48a80af4de09c403e9d0ca0289d28e56427260b90e91f85366",
+    "crates/hades-core/src/batch/progress.rs": "ca32e531147ca9daa5f092c6c2cc561f462ef7fdf32745a64d25b71467bbb4ec"
+  },
+  "batch_tests": {
+    "passed": 28,
+    "failed": 0
+  },
+  "observations": [
+    {
+      "checkpoint_exists": true,
+      "completed": 1,
+      "failed": 1,
+      "panic_id": "first",
+      "panic_recorded_in_checkpoint": true,
+      "result_count": 2,
+      "result_ids": [
+        "first",
+        "last"
+      ],
+      "total": 2
+    },
+    {
+      "checkpoint_exists": true,
+      "completed": 1,
+      "failed": 1,
+      "panic_id": "last",
+      "panic_recorded_in_checkpoint": true,
+      "result_count": 2,
+      "result_ids": [
+        "first",
+        "last"
+      ],
+      "total": 2
+    }
+  ],
+  "resume": "Both cases retry exactly the failed item, skip one completed neighbor, succeed and remove the checkpoint."
+}

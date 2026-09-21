@@ -22,10 +22,15 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Trace daemon startup, transport authority, admission and shutdown boundaries
   with remaining private-fixture requirements for epic #12.
 
+- Trace ingestion and schema-application contracts, including checkpoint,
+  identity, transaction and acknowledgment limitations (epic #12).
 - Document four compliance and linking command contracts, including verdict,
   filesystem, and partial-write limitations for the full audit (#12).
 
 ### Fixed
+
+- Preserve batch task panics in results, failure progress, and resume checkpoints
+  regardless of when the task completes (#141).
 
 - Publish the private LSP deadline test PID marker atomically so CI cannot read
   an empty readiness file before the child writes its identity.
