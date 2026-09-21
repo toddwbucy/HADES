@@ -29,6 +29,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Fail retirement when authored-edge deletion fails or returns an invalid count,
+  and disclose potentially committed earlier deletions (#147).
+
 - Reject incomplete, malformed, or mismatched graph-update destination selections
   instead of treating them as successful missing-only no-ops (#144).
 - Preserve batch task panics in results, failure progress, and resume checkpoints
