@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Map all seven codebase command contracts and their ingestion, transaction and
+  management limitations, completing the native CLI source inventory (#12).
+
 - Trace daemon startup, transport authority, admission and shutdown boundaries
   with remaining private-fixture requirements for epic #12.
 
