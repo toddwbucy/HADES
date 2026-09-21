@@ -3898,6 +3898,7 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+    include!("codebase_embedding_retry_tests.rs");
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
     use std::collections::HashSet;
