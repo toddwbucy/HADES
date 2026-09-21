@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Record the scratch rebuild rehearsal commands, schema-comparison limits, and
+  unexecuted cutover/rollback prerequisites in a bounded operator runbook.
+
 - Store document embedding model, model hash, and dimension for strict semantic search
   validation; distinguish missing metadata from incompatible metadata and invalid vectors.
   Existing rows are not upgraded automatically: ordinary ingestion skips unchanged files.
