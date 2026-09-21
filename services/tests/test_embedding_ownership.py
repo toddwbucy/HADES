@@ -221,3 +221,48 @@ def test_actual_lifespan_drains_worker_before_unloading(server, monkeypatch):
             await asyncio.gather(task, shutdown, return_exceptions=True)
             await state.close()
     asyncio.run(run())
+
+
+def test_specification_error_envelopes(server):
+    """PE-API v1.1 errors carry structured fields, not framework detail strings."""
+    async def run():
+        state = state_for(server)
+        state.embedder.release.set()
+        observations = []
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url='http://fixture') as client:
+                for label, request, expected_code in [
+                    ('task', dict(body(), task='invalid'), 'PE_INVALID_TASK'),
+                    ('encoding', dict(body(), encoding_format='base64'), 'PE_UNSUPPORTED_ENCODING_FORMAT'),
+                    ('images', dict(body(), images=['synthetic']), 'PE_MULTIMODAL_UNSUPPORTED'),
+                    ('empty_input', dict(body(), input=[]), None),
+                    ('invalid_shape', {'input': 'synthetic'}, None),
+                ]:
+                    response = await client.post('/v1/embeddings', json=request)
+                    payload = response.json()
+                    error = payload.get('error', {})
+                    valid = (
+                        400 <= response.status_code < 500
+                        and isinstance(error, dict)
+                        and isinstance(error.get('message'), str)
+                        and error.get('type') == 'invalid_request_error'
+                        and 'param' in error and 'code' in error
+                        and (expected_code is None or error['code'] == expected_code)
+                    )
+                    observations.append({'case': label, 'status': response.status_code,
+                                         'body': payload, 'conforms': valid})
+                state.embedder.failure = RuntimeError('synthetic inference failure')
+                response = await client.post('/v1/embeddings', json=body())
+                payload = response.json()
+                error = payload.get('error', {})
+                observations.append({'case': 'backend_failure', 'status': response.status_code,
+                                     'body': payload, 'conforms': response.status_code == 500
+                                     and error.get('type') == 'server_error'
+                                     and isinstance(error.get('message'), str)
+                                     and 'param' in error and 'code' in error})
+        finally:
+            await state.close()
+        import json
+        print('PE_ERROR_BASELINE ' + json.dumps(observations, sort_keys=True))
+        assert all(item['conforms'] for item in observations), observations
+    asyncio.run(run())

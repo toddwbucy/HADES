@@ -1,0 +1,78 @@
+{
+  "source_revision": "67a8fb27097e8be39c475120d0dff78ae8b12b88",
+  "authority": {
+    "path": "docs/persephone-embedding-api.md",
+    "revision": "a71d73bfe988e17d487a2db1d35dadf3a18f0664",
+    "sha256": "b4a3e4bf0b3df7d351f43f3258f02798abaf9286f97ae63e45c1d792d1f9f8c5",
+    "requirement": "Error handling: error object with message,type,param,code; task/encoding/images codes specified"
+  },
+  "scope": "Actual FastAPI ASGI requests; inference stubbed; no model, GPU, network endpoint or production writes",
+  "exit_code": 1,
+  "observations": [
+    {
+      "body": {
+        "detail": "unknown task 'invalid'; supported: retrieval.passage"
+      },
+      "case": "task",
+      "conforms": false,
+      "status": 400
+    },
+    {
+      "body": {
+        "detail": "PE_UNSUPPORTED_ENCODING_FORMAT: encoding_format 'base64' is not supported, only 'float'"
+      },
+      "case": "encoding",
+      "conforms": false,
+      "status": 400
+    },
+    {
+      "body": {
+        "detail": "PE_MULTIMODAL_UNSUPPORTED: this backend serves text only. Refusing rather than returning text-only embeddings for a request that supplied images."
+      },
+      "case": "images",
+      "conforms": false,
+      "status": 400
+    },
+    {
+      "body": {
+        "detail": "`input` must be non-empty"
+      },
+      "case": "empty_input",
+      "conforms": false,
+      "status": 400
+    },
+    {
+      "body": {
+        "detail": [
+          {
+            "input": {
+              "input": "synthetic"
+            },
+            "loc": [
+              "body",
+              "model"
+            ],
+            "msg": "Field required",
+            "type": "missing"
+          }
+        ]
+      },
+      "case": "invalid_shape",
+      "conforms": false,
+      "status": 422
+    },
+    {
+      "body": {
+        "detail": "embedding failed: synthetic inference failure"
+      },
+      "case": "backend_failure",
+      "conforms": false,
+      "status": 500
+    }
+  ],
+  "files_sha256": {
+    "services/embedding/http_server.py": "498f2fa57612be5144a12ee5743b8e11e2894a7b21f3483d1755a623bbccbf16",
+    "services/tests/test_embedding_ownership.py": "01395ead0e343e97631874666a86568d5c47c32833087078be2aad1d637bcb46"
+  },
+  "first_attempt": "Restricted run interrupted after blocked executor/event-loop wait; not counted as pass/fail. Unrestricted private ASGI repeat terminated with expected assertion failure."
+}
