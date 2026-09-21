@@ -26,12 +26,17 @@ async fn recovered_embedding_windows_determine_file_outcome() {
                     return (axum::http::StatusCode::SERVICE_UNAVAILABLE,
                         Json(json!({"error":{"message":"controlled window failure"}}))).into_response();
                 }
-                let bounds = body["late_chunk"]["boundaries"].as_array().expect("late windows");
-                let data: Vec<Value> = bounds.iter().enumerate().map(|(i, b)| {
-                    json!({"index":0,"chunk_index":i,"char_start":b[0],"char_end":b[1],
-                        "embedding":if mode == 3 && call == 4 {vec![1.0]} else {vec![1.0, 0.0]}})
-                }).collect();
-                Json(json!({"model":if mode == 4 && call == 4 {"/fixture/jinaai--jina-embeddings-v4"} else {"jinaai/jina-embeddings-v4"},"data":data})).into_response()
+                let late = body["late_chunk"]["boundaries"].as_array();
+                let data: Vec<Value> = if let Some(bounds) = late {
+                    bounds.iter().enumerate().map(|(i, b)| {
+                        json!({"index":0,"chunk_index":i,"char_start":b[0],"char_end":b[1],
+                            "embedding":if mode == 3 && call == 4 {vec![1.0]} else {vec![1.0, 0.0]}})
+                    }).collect()
+                } else {
+                    vec![json!({"index":0,"embedding":[1.0,0.0]})]
+                };
+                let changed_identity = (mode == 4 && call == 4) || (mode == 5 && late.is_none());
+                Json(json!({"model":if changed_identity {"/fixture/jinaai--jina-embeddings-v4"} else {"jinaai/jina-embeddings-v4"},"data":data})).into_response()
             }
         }));
         let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -42,12 +47,15 @@ async fn recovered_embedding_windows_determine_file_outcome() {
         let config = HadesConfig::default();
         let namespace = tree.path().to_str().unwrap();
         let mut violations = Vec::new();
-        for (mode, case) in [(0,"initial_success"),(1,"complete_recovery"),(2,"terminal_retry_failure"),(3,"invalid_retry_vector"),(4,"changed_retry_model")] {
+        for (mode, case) in [(0,"initial_success"),(1,"complete_recovery"),(2,"terminal_retry_failure"),(3,"invalid_retry_vector"),(4,"changed_retry_model"),(1,"complete_recovery_with_oversized"),(5,"changed_oversized_model")] {
             let rel = format!("{case}.py");
             let path = tree.path().join(&rel);
-            let body: String = (0..120).map(|i| format!(
+            let mut body: String = (0..120).map(|i| format!(
                 "# Documentation for generated function {i}: {}\ndef function_{i}():\n    return {i}\n\n",
                 "private fixture padding ".repeat(7))).collect();
+            if case.contains("oversized") {
+                body.push_str(&format!("# {}\n", "oversized padding ".repeat(650)));
+            }
             fs::write(&path, &body).unwrap();
             *state.lock().unwrap() = (0,0);
             let mut imports = ImportContext::default();

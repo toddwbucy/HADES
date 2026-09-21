@@ -2098,6 +2098,11 @@ async fn ingest_file(
                             if model.is_empty() {
                                 model = r.model.clone();
                                 dimension = r.dimension;
+                            } else if model != r.model || dimension != r.dimension {
+                                first_error.get_or_insert_with(|| {
+                                    "model identity or dimension changed in oversized chunk recovery".into()
+                                });
+                                continue;
                             }
                             by_index.insert(i, v);
                         }
