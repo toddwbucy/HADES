@@ -66,7 +66,7 @@ impl TopK {
     }
     pub fn insert(&mut self, row: Value) -> Result<(), ArangoError> {
         let invalid = || {
-            ArangoError::Request("stored embedding has invalid keys, model, dimension, or vector; reingest the corpus".into())
+            ArangoError::Request("stored embedding has invalid keys or vector; verify stored row keys, vector length, and finite nonzero vector values".into())
         };
         let key = |name| {
             row.get(name)
@@ -76,10 +76,19 @@ impl TopK {
         };
         let chunk = key("chunk_key")?;
         let parent = key(self.foreign_key)?;
+        if row.get("model").is_none_or(Value::is_null)
+            || row.get("dimension").is_none_or(Value::is_null)
+        {
+            return Err(ArangoError::Request(
+                "stored embedding is missing model or dimension metadata; if the rows predate metadata recording, an owner-authorized corpus rebuild with a corrected writer is required (hades ingest --force); ordinary ingestion skips unchanged files".into(),
+            ));
+        }
         if row["model"].as_str() != Some(self.model.as_str())
             || row["dimension"].as_u64() != Some(self.query.len() as u64)
         {
-            return Err(invalid());
+            return Err(ArangoError::Request(
+                "stored embedding model or dimension is invalid or incompatible with the query; verify the stored metadata and query model and dimension before choosing a rebuild".into(),
+            ));
         }
         let vector = row["embedding"]
             .as_array()
