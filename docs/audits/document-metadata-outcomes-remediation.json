@@ -1,0 +1,30 @@
+{
+  "baseline_revision": "9e735dd",
+  "scope": "Private ArangoDB3.12.11 and synthetic Unix ML peers; actual CLI and checkpoint readback",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/ingest.rs": "9f5cb604faa7d31feb09d326facab4c9cf390ee6f95a0ef56f1fe1c236f12c3b",
+    "crates/hades-core/src/batch/state.rs": "21d6c61b5e51bb48a80af4de09c403e9d0ca0289d28e56427260b90e91f85366",
+    "crates/hades-core/src/batch/processor.rs": "67f8cc7ebfea920eac0c938cba1993c5bd202e962f43790317538441197fe678",
+    "crates/hades-cli/tests/fixtures/document_metadata_outcomes.rs": "8d02f1574a5c59159932c89e5788f1b31fa3c802fa2b4027fcfdf900ad100b8a",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "1e4f920edb5120547574c6ce4470676ab8b2c8ee2eaeec728394799b24b220ff"
+  },
+  "batch_tests": {
+    "passed": 27,
+    "failed": 0,
+    "seconds": 0.15
+  },
+  "database_lifecycle": {
+    "passed": 17,
+    "failed": 0,
+    "seconds": 63.15,
+    "private_server_stop_exit": 0
+  },
+  "asserted": [
+    "Rejected metadata PATCH yields item false, outer false, failed1 and exit1",
+    "Already committed pipeline content disclosed",
+    "Mixed batch retains successful control and failed item in checkpoint",
+    "Resume retries failed item while rejection remains",
+    "Resume after removing rejection persists source_path/content_hash, retains exact chunk/vector counts, and clears checkpoint"
+  ],
+  "source_revision": "766e7a852f1e4852cb989b3e899a0d47fca49bc2"
+}

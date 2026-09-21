@@ -87,24 +87,25 @@ impl BatchState {
 
     /// Record a successful item.
     pub fn mark_completed(&mut self, item_id: String) {
-        self.completed.push(item_id);
+        self.failed.remove(&item_id);
+        if !self.completed.contains(&item_id) {
+            self.completed.push(item_id);
+        }
     }
 
     /// Record a failed item.
     pub fn mark_failed(&mut self, item_id: String, error: String) {
+        self.completed.retain(|id| id != &item_id);
         self.failed.insert(item_id, error);
     }
 
-    /// Build a set of item IDs to skip (completed + failed).
+    /// Only completed items may be skipped; failed items must be retried.
     pub fn skip_set(&self) -> HashSet<&str> {
-        let mut set = HashSet::with_capacity(self.completed.len() + self.failed.len());
-        for id in &self.completed {
-            set.insert(id.as_str());
-        }
-        for id in self.failed.keys() {
-            set.insert(id.as_str());
-        }
-        set
+        self.completed
+            .iter()
+            .filter(|id| !self.failed.contains_key(*id))
+            .map(String::as_str)
+            .collect()
     }
 }
 
@@ -213,9 +214,9 @@ mod tests {
         state.mark_failed("c".into(), "err".into());
 
         let skip = state.skip_set();
-        assert_eq!(skip.len(), 3);
+        assert_eq!(skip.len(), 2);
         assert!(skip.contains("a"));
         assert!(skip.contains("b"));
-        assert!(skip.contains("c"));
+        assert!(!skip.contains("c"));
     }
 }

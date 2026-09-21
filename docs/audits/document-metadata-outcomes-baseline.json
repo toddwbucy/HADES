@@ -1,0 +1,42 @@
+{
+  "source_revision": "3dd1990628959c8f2db378240563e037cf2e33ff",
+  "scope": "Actual CLI, private extraction/embedding peers, disposable ArangoDB3.12.11 collection validation",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/ingest.rs": "fc7772523412823ef3e38558dd69c7d8e0b7829863d3c29182e1fb0aa4087eae",
+    "crates/hades-core/src/pipeline/orchestrator.rs": "470056f446de38a7437c787ef135816a0e6aaf43d6db50f8aa15709cca051b2f",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "1e4f920edb5120547574c6ce4470676ab8b2c8ee2eaeec728394799b24b220ff",
+    "crates/hades-cli/tests/fixtures/document_metadata_outcomes.rs": "4ac1500cb90dc8aa0ee01246e27d60eb7c68774d1bc1865e524870eb0bfa83fe",
+    "crates/hades-cli/Cargo.toml": "d5962dd9bbf1bb4c036e82778490cf90f1fa6d5bfee1ae2c28e73288a13ad087",
+    "Cargo.lock": "d698f199684566fe5841a3a995c78a075975a5f5c37e0ab0ea40fe47ba0c3a87"
+  },
+  "observation": {
+    "chunks_including_control": 2,
+    "content_hash_present": false,
+    "embeddings_including_control": 2,
+    "exit": 0,
+    "pipeline_document_persisted": true,
+    "source_path_present": false,
+    "response": {
+      "command": "ingest",
+      "data": {
+        "completed": 1,
+        "failed": 0,
+        "results": [
+          {
+            "input": "<private-fixture>/rejected.md",
+            "num_chunks": 1,
+            "success": true
+          }
+        ],
+        "skipped": 0,
+        "total": 1
+      },
+      "success": true
+    },
+    "database_error": {
+      "http_status": 400,
+      "error_number": 1620,
+      "message": "private source metadata rejection"
+    }
+  }
+}
