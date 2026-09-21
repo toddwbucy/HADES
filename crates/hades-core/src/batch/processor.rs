@@ -348,6 +348,53 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
+    async fn panicked_items_remain_in_summary_and_checkpoint() {
+        let mut incorrect = 0;
+        for panic_id in ["first", "last"] {
+            let root = TempDir::new().unwrap();
+            let checkpoint = root.path().join("state.json");
+            let processor = BatchProcessor::new(BatchProcessorConfig {
+                concurrency: 1,
+                state_file: Some(checkpoint.clone()),
+                ..Default::default()
+            });
+            let summary = tokio::time::timeout(
+                Duration::from_secs(2),
+                processor.process(
+                    vec![("first".into(), ()), ("last".into(), ())],
+                    move |id, _| async move {
+                        assert_ne!(id, panic_id, "injected item panic");
+                        Ok(Value::Null)
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let state = BatchState::load(&checkpoint).unwrap();
+            let recorded = state
+                .as_ref()
+                .is_some_and(|s| s.failed.contains_key(panic_id));
+            println!(
+                "PANIC_OUTCOME {}",
+                serde_json::json!({
+                    "panic_id":panic_id,"total":summary.total,"completed":summary.completed,
+                    "failed":summary.failed,"result_count":summary.results.len(),
+                    "result_ids":summary.results.iter().map(|r| &r.item_id).collect::<Vec<_>>(),
+                    "checkpoint_exists":state.is_some(),"panic_recorded_in_checkpoint":recorded
+                })
+            );
+            if summary.failed != 1 || summary.results.len() != 2 || !recorded {
+                incorrect += 1;
+            }
+        }
+        assert_eq!(
+            incorrect, 0,
+            "every panicked item needs a failed result and checkpoint entry"
+        );
+    }
+
+    #[tokio::test]
     async fn test_batch_empty() {
         let processor = BatchProcessor::new(BatchProcessorConfig {
             state_file: None,
