@@ -519,6 +519,7 @@ fn embedding_doc(
         "doc_key": doc_key,
         "embedding": embedding,
         "model": model,
+        "model_hash": keys::model_hash(model),
         "dimension": dimension,
     });
     set_foreign_key(&mut doc, profile, doc_key);
@@ -574,6 +575,7 @@ mod tests {
         let profile = CollectionProfile::get("default").unwrap();
         let row = embedding_doc(profile, "docA", 0, &[0.1, 0.2], "served-model", 2);
         assert_eq!(row["model"], "served-model");
+        assert_eq!(row["model_hash"], keys::model_hash("served-model"));
         assert_eq!(row["dimension"], 2);
         let ranker = || {
             crate::retrieval::TopK::new(
@@ -589,8 +591,12 @@ mod tests {
             let mut missing = row.clone();
             missing.as_object_mut().unwrap().remove(field);
             let error = ranker().insert(missing).unwrap_err().to_string();
-            assert!(error.contains("stored embedding"), "{field}: {error}");
-            assert!(!error.contains("reingest"), "{field}: {error}");
+            assert!(
+                error.contains("missing model or dimension metadata"),
+                "{field}: {error}"
+            );
+            assert!(error.contains("corrected writer"), "{field}: {error}");
+            assert!(error.contains("hades ingest --force"), "{field}: {error}");
         }
     }
 
@@ -608,6 +614,7 @@ mod tests {
             "chunk_key",
             "embedding",
             "model",
+            "model_hash",
             "dimension",
         ];
         for name in ["default", "codebase"] {

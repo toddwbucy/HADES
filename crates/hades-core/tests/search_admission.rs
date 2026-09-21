@@ -145,16 +145,32 @@ async fn invalid_stored_vectors_fail_without_partial_results() {
     let _serial = SERIAL.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("embedder.sock");
-    let embedder = start_embedder(&socket, 3).await;
+    let embedder = start_embedder(&socket, 7).await;
     let mut config = HadesConfig::default();
     config.embedding.service.socket = socket.to_string_lossy().into_owned();
-    for field in ["model", "dimension", "embedding"] {
+    for field in [
+        "model",
+        "dimension",
+        "embedding",
+        "missing_model",
+        "missing_dimension",
+        "null_model",
+        "null_dimension",
+    ] {
         let mut invalid = stored_vector(1);
-        invalid[field] = match field {
-            "model" => json!("different-model"),
-            "dimension" => json!(128),
-            _ => json!([1, "bad"]),
-        };
+        match field {
+            "model" => invalid[field] = json!("different-model"),
+            "dimension" => invalid[field] = json!(128),
+            "missing_model" => {
+                invalid.as_object_mut().unwrap().remove("model");
+            }
+            "missing_dimension" => {
+                invalid.as_object_mut().unwrap().remove("dimension");
+            }
+            "null_model" => invalid["model"] = json!(null),
+            "null_dimension" => invalid["dimension"] = json!(null),
+            _ => invalid[field] = json!([1, "bad"]),
+        }
         let mut mock = Mock::new(vec![Reply::page(
             json!({"id":"123","hasMore":true,"result":[stored_vector(0),invalid]}),
         )])
@@ -163,8 +179,17 @@ async fn invalid_stored_vectors_fail_without_partial_results() {
         assert!(!response.success);
         assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
         let error = response.error.unwrap();
-        assert!(error.contains("verify stored row metadata"));
-        assert!(!error.contains("reingest"));
+        if field.starts_with("missing_") || field.starts_with("null_") {
+            assert!(error.contains("missing model or dimension metadata"));
+            assert!(error.contains("corrected writer"));
+            assert!(error.contains("hades ingest --force"));
+        } else if field == "embedding" {
+            assert!(error.contains("invalid keys or vector"));
+            assert!(!error.contains("--force"));
+        } else {
+            assert!(error.contains("incompatible with the query"));
+            assert!(!error.contains("--force"));
+        }
         assert!(response.data.is_none());
         mock.event("POST cursor").await;
         mock.released().await;

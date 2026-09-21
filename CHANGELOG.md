@@ -32,8 +32,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
-- Store document embedding model and dimension for strict semantic search validation,
-  and replace unconditional reingestion advice with metadata and compatibility diagnostics.
+- Store document embedding model, model hash, and dimension for strict semantic search
+  validation; distinguish missing metadata from incompatible metadata and invalid vectors.
+  Existing rows are not upgraded automatically: ordinary ingestion skips unchanged files.
+  After upgrading the writer, an owner-authorized rebuild must cover the entire affected
+  corpus (for example, `hades --db <database> ingest <corpus-path> --force`), since any
+  remaining row without metadata causes search to fail. Corpus rebuilds remain a separate
+  operator action; this change performs no migration or backfill.
 
 - Accept complete validated embedding-window retry recovery while retaining
   terminal failures and atomic file-replacement protections (#157).
