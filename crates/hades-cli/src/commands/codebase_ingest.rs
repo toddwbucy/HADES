@@ -5419,6 +5419,43 @@ mod tests {
     }
 
     #[test]
+    fn python_import_target_must_belong_to_requested_module() {
+        let namespace = "/fixture/repository";
+        let mut observations = Vec::new();
+        for (module, defines_requested, expected_target) in [
+            ("external_package", false, None),
+            ("config", false, Some(("config.py", false))),
+            ("config", true, Some(("config.py", true))),
+        ] {
+            let imports = HashMap::from([(
+                "app.py".to_owned(),
+                vec![make_import_sym("Config", "from_import", module)],
+            )]);
+            let mut files = HashMap::from([
+                ("app.py".to_owned(), vec![]),
+                ("unrelated.py".to_owned(), vec![make_def_sym("Config", SymbolKind::Class)]),
+                ("config.py".to_owned(), vec![]),
+            ]);
+            if defines_requested {
+                files.get_mut("config.py").unwrap().push(make_def_sym("Config", SymbolKind::Class));
+            }
+            let index = build_python_symbol_index_scoped(&files, namespace);
+            let edges = resolve_python_imports_scoped(&imports, &files, &index, namespace);
+            let valid = match expected_target {
+                None => edges.is_empty(),
+                Some((path, resolved)) => edges.len() == 1
+                    && edges[0]["target_path"] == path
+                    && edges[0]["resolved"] == resolved,
+            };
+            observations.push(json!({"module":module,"defines_requested":defines_requested,
+                "valid":valid,"edges":edges}));
+        }
+        println!("{}", serde_json::to_string_pretty(&observations).unwrap());
+        assert!(observations.iter().all(|row| row["valid"] == true),
+            "import resolution invented a target outside the requested module");
+    }
+
+    #[test]
     fn test_resolve_python_imports_basic() {
         // core/models.py does `from core.utils import helper`
         let mut imports = HashMap::new();

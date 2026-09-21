@@ -1,0 +1,62 @@
+{
+  "source_revision": "6984f125ae6158dec30bdfa6e106ec84e1c3d173",
+  "scope": "Actual resolver unit test; synthetic symbols; no CLI, database, model or production calls",
+  "test_exit_code": 101,
+  "fixture_source_sha256": "86fa4385eeb9a26bc51e84fd6fc5f4db30d0d4be32fbb4a9dc0f5bee1761c6e9",
+  "observations": [
+    {
+      "defines_requested": false,
+      "edges": [
+        {
+          "_from": "codebase_files/f2_app_py__d0ac38b6782ba993df4ce398fa1c067a9b462b1c67eca3383ce9400367ade3c2",
+          "_key": "f2_app_py__d0ac38b67__imports__f2_unrelated_py__1cc__8d06c399",
+          "_to": "codebase_symbols/f2_unrelated_py__1cc4a776c355ff752ea50e41489df59339bb7743758f49ca02a677880064584b__Config__b4aa6ba2",
+          "module_path": "external_package",
+          "resolved": true,
+          "source_path": "app.py",
+          "style": "from_import",
+          "symbol_name": "Config",
+          "target_path": "unrelated.py"
+        }
+      ],
+      "module": "external_package",
+      "valid": false
+    },
+    {
+      "defines_requested": false,
+      "edges": [
+        {
+          "_from": "codebase_files/f2_app_py__d0ac38b6782ba993df4ce398fa1c067a9b462b1c67eca3383ce9400367ade3c2",
+          "_key": "f2_app_py__d0ac38b67__imports__f2_unrelated_py__1cc__8d06c399",
+          "_to": "codebase_symbols/f2_unrelated_py__1cc4a776c355ff752ea50e41489df59339bb7743758f49ca02a677880064584b__Config__b4aa6ba2",
+          "module_path": "config",
+          "resolved": true,
+          "source_path": "app.py",
+          "style": "from_import",
+          "symbol_name": "Config",
+          "target_path": "unrelated.py"
+        }
+      ],
+      "module": "config",
+      "valid": false
+    },
+    {
+      "defines_requested": true,
+      "edges": [
+        {
+          "_from": "codebase_files/f2_app_py__d0ac38b6782ba993df4ce398fa1c067a9b462b1c67eca3383ce9400367ade3c2",
+          "_key": "f2_app_py__d0ac38b67__imports__f2_config_py__773285__90e62b17",
+          "_to": "codebase_symbols/f2_config_py__773285393d2c851e2f104702d450655b379610b95d60796ac24de3805e53bf9b__Config__b4aa6ba2",
+          "module_path": "config",
+          "resolved": true,
+          "source_path": "app.py",
+          "style": "from_import",
+          "symbol_name": "Config",
+          "target_path": "config.py"
+        }
+      ],
+      "module": "config",
+      "valid": true
+    }
+  ]
+}
