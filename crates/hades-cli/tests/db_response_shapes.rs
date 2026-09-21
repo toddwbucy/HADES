@@ -352,3 +352,49 @@ async fn orientation_does_not_hide_metadata_read_failures() {
         "metadata read failures must not become successful empty data"
     );
 }
+
+#[tokio::test]
+async fn schema_apply_requires_confirmed_metadata_import() {
+    let root = tempfile::tempdir().unwrap();
+    let schema = root.path().join("schema.yaml");
+    std::fs::write(&schema, "{}\n").unwrap();
+    let args = ["schema", "apply", schema.to_str().unwrap()];
+    let acknowledged =
+        json!({"error":false,"created":1,"updated":0,"errors":0,"ignored":0,"empty":0});
+    let (control, calls) = run_root(&args, vec![json!({}), acknowledged]).await;
+    assert!(control.status.success(), "{control:?}");
+    assert_eq!(
+        calls,
+        [
+            "POST /_db/fixture/_api/collection",
+            "POST /_db/fixture/_api/import"
+        ]
+    );
+    let mut incorrect_successes = 0;
+    for (case, reply) in [
+        (
+            "reported_errors",
+            json!({"error":false,"created":0,"updated":0,"errors":1,"ignored":0,"empty":0}),
+        ),
+        ("missing_counts", json!({})),
+        (
+            "unaccounted_document",
+            json!({"error":false,"created":0,"updated":0,"errors":0,"ignored":0,"empty":0}),
+        ),
+    ] {
+        let (output, calls) = run_root(&args, vec![json!({}), reply]).await;
+        println!(
+            "schema_case={case} observed={}",
+            json!({"exit_code":output.status.code(),
+            "stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"calls":calls})
+        );
+        assert_eq!(calls.len(), 2);
+        if output.status.success() {
+            incorrect_successes += 1;
+        }
+    }
+    assert_eq!(
+        incorrect_successes, 0,
+        "unconfirmed schema metadata must not be reported applied"
+    );
+}

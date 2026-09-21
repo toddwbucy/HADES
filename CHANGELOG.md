@@ -17,6 +17,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Preserve private schema-apply acknowledgment failure reproductions (#135).
+
 ### Security
 
 - Reject WeaverTools adapter HTTP redirects before forwarding credentials or
