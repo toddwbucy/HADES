@@ -1,0 +1,103 @@
+{
+  "source_revision": "b5fec8c1672194e036ff09ff98aa479e7ebc89db",
+  "scope": "Actual CLI against private Unix database and HTTP 503 embedding fixtures; no live services",
+  "source_sha256": {
+    "crates/hades-cli/tests/db_response_shapes.rs": "b0291d7ee25deacd8875fd8349a8f9604818416707c16407dcea0174e6de4c0d",
+    "crates/hades-core/src/dispatch.rs": "64344dc259d601dd327942957f9d52117c1f7c245cc5e5df3578492ac4e9daf4",
+    "crates/hades-cli/src/commands/smell_mgmt.rs": "8e521bda365fb62047aff51ff7237ee8ebb7e1ad171ca4ada146fcae6b663265",
+    "crates/hades-core/src/persephone/embedding.rs": "f57939e39265e77f0a5ba46036daeaf58cf30d74daffab0f97e0f275c89712ab"
+  },
+  "test_result": {
+    "passed": 0,
+    "failed": 1,
+    "expected_failure": true,
+    "seconds": 0.02,
+    "assertion": "incorrect_passes was 2, expected 0"
+  },
+  "observations": [
+    {
+      "case": "missing_definition",
+      "exit_code": 0,
+      "response": {
+        "command": "smell.report",
+        "data": {
+          "embedding_probe": [],
+          "has_unlinked_claims": false,
+          "passed": true,
+          "path": "<private-fixture>/claim.rs",
+          "ref_verification": {
+            "missing_from_graph": [
+              {
+                "cs_id": "CS-32",
+                "file": "<private-fixture>/claim.rs",
+                "lines": [
+                  1
+                ],
+                "reason": "smell node not found in graph"
+              }
+            ],
+            "refs_found": 1,
+            "unlinked_claims": [],
+            "verified_refs": []
+          },
+          "static_check": {
+            "files_checked": 1,
+            "passed": true,
+            "violation_count": 0,
+            "violations": []
+          }
+        },
+        "success": true
+      }
+    },
+    {
+      "case": "unavailable_probe",
+      "exit_code": 0,
+      "response": {
+        "command": "smell.report",
+        "data": {
+          "embedding_probe": [
+            {
+              "cs_id": "CS-32",
+              "error": "service error (HTTP 503): private fixture unavailable",
+              "file": "<private-fixture>/claim.rs",
+              "pass": null,
+              "smell_name": "CS-32: example"
+            }
+          ],
+          "has_unlinked_claims": false,
+          "passed": true,
+          "path": "<private-fixture>/claim.rs",
+          "ref_verification": {
+            "missing_from_graph": [],
+            "refs_found": 1,
+            "unlinked_claims": [],
+            "verified_refs": [
+              {
+                "cs_id": "CS-32",
+                "edge": {
+                  "claim_summary": null,
+                  "claiming_methods": null,
+                  "enforcement_type": "static"
+                },
+                "file": "<private-fixture>/claim.rs",
+                "lines": [
+                  1
+                ],
+                "smell_key": "smell-032-test",
+                "smell_name": "CS-32: example"
+              }
+            ]
+          },
+          "static_check": {
+            "files_checked": 1,
+            "passed": true,
+            "violation_count": 0,
+            "violations": []
+          }
+        },
+        "success": true
+      }
+    }
+  ]
+}

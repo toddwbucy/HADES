@@ -75,3 +75,8 @@ The historical injected HTTP-success/error reply remains a client-boundary test;
 it is not represented as normal backend behavior. Baseline JSON is preserved.
 Guard exemptions, schema reconciliation, collection/graph mismatch checks and
 broader recovery readiness remain outside this fix. Nothing was deployed.
+
+Integration with the compliance fix preserves all twelve CLI response tests.
+Historical backend/remediation hashes remain pinned to 64d5e18; the combined
+fixture hashes are recorded separately in the integration artifact. Runtime schema
+code and the real-backend fixture are unchanged by integration.
