@@ -633,11 +633,12 @@ async fn ingest_file(
     merge_extra_metadata(&mut file_meta, extra_metadata);
     file_meta["_key"] = json!(doc_key);
 
-    if let Err(e) =
-        hades_core::db::crud::update_document(db, profile.metadata, &doc_key, &file_meta).await
-    {
-        warn!(doc_key, error = %e, "failed to update file metadata");
-    }
+    hades_core::db::crud::update_document(db, profile.metadata, &doc_key, &file_meta)
+        .await
+        .map_err(|e| anyhow::anyhow!(
+            "failed to persist source metadata for {}/{doc_key}: {e}; document content, chunks and embeddings have already committed; inspect state before retrying",
+            profile.metadata
+        ))?;
 
     Ok(json!({
         "num_chunks": result.chunk_count,

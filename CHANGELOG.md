@@ -24,11 +24,21 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Publish the private LSP deadline test PID marker atomically so CI cannot read
+  an empty readiness file before the child writes its identity.
+- Fail document ingestion when source metadata cannot be persisted, and retry
+  failed checkpoint entries on explicit batch resume (#137).
+- Require complete, valid import acknowledgments at every schema application
+  stage and disclose potentially committed earlier operations on failure (#135).
 - Prevent compliance reports from passing when smell definitions are missing or
   required embedding probes fail; retain evidence diagnostics (#133).
 
 ### Added
 
+- Record a real private-database reproduction of ingestion reporting success
+  after its source metadata patch is rejected (epic #12).
+
+- Preserve private schema-apply acknowledgment failure reproductions (#135).
 - Record isolated CLI reproductions of passing compliance reports with missing
   definitions or failed embedding probes (#12).
 

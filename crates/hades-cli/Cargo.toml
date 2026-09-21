@@ -35,6 +35,8 @@ futures.workspace = true
 http-body-util.workspace = true
 
 [dev-dependencies]
+hades-proto = { path = "../hades-proto" }
+tonic.workspace = true
 libc.workspace = true
 # The throwaway-database harness, which the write tests in `commands/` use.
 hades-core = { path = "../hades-core", features = ["test-support"] }

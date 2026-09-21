@@ -1,0 +1,86 @@
+{
+  "source_revision": "d250666bd674256ad61531c50f2d15529e469587",
+  "scope": "Actual CLI, private Unix HTTP replies; no live ArangoDB or persistence assertion",
+  "source_sha256": {
+    "crates/hades-cli/tests/db_response_shapes.rs": "62c08c2d1281b31f8a26d1c50dc770159e3a644cd2725224c7efa9696a8e4652",
+    "crates/hades-cli/src/commands/schema.rs": "7b03f04accbda50c122a608ffa516d1cbfcabcea93503924a2fd6f239e15277f",
+    "crates/hades-core/src/schema_apply.rs": "04bd4471d28c045be91250a8385e7081230fd68e50c13d2ac4346f5a3f2d8963",
+    "crates/hades-core/src/db/crud.rs": "cf59d100fa8b7211d2bf9920285f0c2476ef8b14adbc9e70cd72114538ee8b1d"
+  },
+  "expected_failure": {
+    "incorrect_successes": 3,
+    "seconds": 0.03
+  },
+  "valid_control": "created=1 updated=0 errors=0 succeeds",
+  "observations": [
+    {
+      "calls": [
+        "POST /_db/fixture/_api/collection",
+        "POST /_db/fixture/_api/import"
+      ],
+      "exit_code": 0,
+      "case": "reported_errors",
+      "response": {
+        "command": "schema.apply",
+        "data": {
+          "applied": true,
+          "result": {
+            "collections_created": 1,
+            "collections_skipped_existing": 0,
+            "documents_upserted": 0,
+            "edge_definitions_registered": 0,
+            "named_graphs_created": 0,
+            "named_graphs_skipped_existing": 0
+          }
+        },
+        "success": true
+      }
+    },
+    {
+      "calls": [
+        "POST /_db/fixture/_api/collection",
+        "POST /_db/fixture/_api/import"
+      ],
+      "exit_code": 0,
+      "case": "missing_counts",
+      "response": {
+        "command": "schema.apply",
+        "data": {
+          "applied": true,
+          "result": {
+            "collections_created": 1,
+            "collections_skipped_existing": 0,
+            "documents_upserted": 0,
+            "edge_definitions_registered": 0,
+            "named_graphs_created": 0,
+            "named_graphs_skipped_existing": 0
+          }
+        },
+        "success": true
+      }
+    },
+    {
+      "calls": [
+        "POST /_db/fixture/_api/collection",
+        "POST /_db/fixture/_api/import"
+      ],
+      "exit_code": 0,
+      "case": "unaccounted_document",
+      "response": {
+        "command": "schema.apply",
+        "data": {
+          "applied": true,
+          "result": {
+            "collections_created": 1,
+            "collections_skipped_existing": 0,
+            "documents_upserted": 0,
+            "edge_definitions_registered": 0,
+            "named_graphs_created": 0,
+            "named_graphs_skipped_existing": 0
+          }
+        },
+        "success": true
+      }
+    }
+  ]
+}
