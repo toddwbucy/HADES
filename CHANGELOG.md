@@ -35,6 +35,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace graph-embedding command contracts, export/session boundaries, and remaining
+  runtime verification gaps for epic #12.
+
 - Record a real private-database reproduction of ingestion reporting success
   after its source metadata patch is rejected (epic #12).
 
