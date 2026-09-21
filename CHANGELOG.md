@@ -29,6 +29,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Correct codebase ingest and drift help to describe content-hash skipping,
+  embedding backfill, and guarded Go enrichment instead of stale symbol-hash rules (#12).
+
 - Reject incomplete, malformed, or mismatched graph-update destination selections
   instead of treating them as successful missing-only no-ops (#144).
 - Preserve batch task panics in results, failure progress, and resume checkpoints
