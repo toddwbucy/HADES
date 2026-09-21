@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Correct codebase ingest and drift help to describe content-hash skipping,
+  embedding backfill, and guarded Go enrichment instead of stale symbol-hash rules (#12).
+
 - Restrict Python import symbol targets to the requested local module, preventing
   unrelated same-name definitions from becoming resolved graph edges (#149).
 - Fail retirement when authored-edge deletion fails or returns an invalid count,
