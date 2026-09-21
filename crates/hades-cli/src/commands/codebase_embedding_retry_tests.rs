@@ -31,18 +31,18 @@ async fn recovered_embedding_windows_determine_file_outcome() {
                     json!({"index":0,"chunk_index":i,"char_start":b[0],"char_end":b[1],
                         "embedding":if mode == 3 && call == 4 {vec![1.0]} else {vec![1.0, 0.0]}})
                 }).collect();
-                Json(json!({"model":"fixture-model","data":data})).into_response()
+                Json(json!({"model":if mode == 4 && call == 4 {"/fixture/jinaai--jina-embeddings-v4"} else {"jinaai/jina-embeddings-v4"},"data":data})).into_response()
             }
         }));
         let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let embedder = EmbeddingClient::connect(EmbeddingClientConfig {
-            endpoint: EmbeddingEndpoint::Unix(socket), model:"fixture-model".into(),
+            endpoint: EmbeddingEndpoint::Unix(socket), model:"jinaai/jina-embeddings-v4".into(),
             expected_dimension:2, timeout:Duration::from_secs(3), connect_timeout:Duration::from_secs(1),
         }).await.unwrap();
         let config = HadesConfig::default();
         let namespace = tree.path().to_str().unwrap();
         let mut violations = Vec::new();
-        for (mode, case) in [(0,"initial_success"),(1,"complete_recovery"),(2,"terminal_retry_failure"),(3,"invalid_retry_vector")] {
+        for (mode, case) in [(0,"initial_success"),(1,"complete_recovery"),(2,"terminal_retry_failure"),(3,"invalid_retry_vector"),(4,"changed_retry_model")] {
             let rel = format!("{case}.py");
             let path = tree.path().join(&rel);
             let body: String = (0..120).map(|i| format!(
