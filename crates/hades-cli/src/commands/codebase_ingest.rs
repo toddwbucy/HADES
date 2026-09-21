@@ -2000,7 +2000,16 @@ async fn ingest_file(
                         offset: usize,
                         by_index: &mut std::collections::BTreeMap<usize, Vec<f32>>,
                         model: &mut String,
-                        dimension: &mut u32| {
+                        dimension: &mut u32,
+                        first_error: &mut Option<String>| {
+                // Separate retries must retain the batched client's invariant:
+                // one served model identity and vector width across windows.
+                if !model.is_empty() && (*model != result.model || *dimension != result.dimension) {
+                    first_error.get_or_insert_with(|| {
+                        "model identity or dimension changed across recovered windows".into()
+                    });
+                    return;
+                }
                 *model = result.model.clone();
                 *dimension = result.dimension;
                 for (w, vecs) in result.per_input.iter().enumerate() {
@@ -2027,20 +2036,29 @@ async fn ingest_file(
 
             if !windows.is_empty() {
                 match emb.embed_late_chunked(&texts, "code", &bounds).await {
-                    Ok(result) => take(result, 0, &mut by_index, &mut model, &mut dimension),
+                    Ok(result) => take(
+                        result,
+                        0,
+                        &mut by_index,
+                        &mut model,
+                        &mut dimension,
+                        &mut first_error,
+                    ),
                     Err(e) => {
                         // The batched call returns on its first failing window and
                         // discards the vectors of every window that already
                         // succeeded, so a 500-window file that trips on window 400
                         // used to be stored with nothing. Retried one window at a
-                        // time, a bad window costs its own chunks.
+                        // time, every window must recover before replacement.
                         warn!(
                             path = rel_path,
                             error = %e,
                             windows = windows.len(),
                             "batched late-chunk embed failed, retrying window by window"
                         );
-                        first_error = Some(e.to_string());
+                        // The initial failure remains diagnostic. Only a
+                        // terminal retry failure or incomplete/invalid recovery
+                        // prevents the file's later atomic replacement.
                         for (w, (text, bound)) in texts.iter().zip(bounds.iter()).enumerate() {
                             match emb
                                 .embed_late_chunked(
@@ -2050,15 +2068,19 @@ async fn ingest_file(
                                 )
                                 .await
                             {
-                                Ok(result) => {
-                                    take(result, w, &mut by_index, &mut model, &mut dimension)
-                                }
-                                Err(e) => warn!(
-                                    path = rel_path,
-                                    window = w,
-                                    error = %e,
-                                    "window failed on retry, its chunks keep no vector"
+                                Ok(result) => take(
+                                    result,
+                                    w,
+                                    &mut by_index,
+                                    &mut model,
+                                    &mut dimension,
+                                    &mut first_error,
                                 ),
+                                Err(e) => {
+                                    warn!(path = rel_path, window = w, error = %e,
+                                        "window failed on retry; retaining committed file graph");
+                                    first_error.get_or_insert_with(|| e.to_string());
+                                }
                             }
                         }
                     }
@@ -2076,6 +2098,11 @@ async fn ingest_file(
                             if model.is_empty() {
                                 model = r.model.clone();
                                 dimension = r.dimension;
+                            } else if model != r.model || dimension != r.dimension {
+                                first_error.get_or_insert_with(|| {
+                                    "model identity or dimension changed in oversized chunk recovery".into()
+                                });
+                                continue;
                             }
                             by_index.insert(i, v);
                         }
@@ -2099,7 +2126,7 @@ async fn ingest_file(
                     path = rel_path,
                     chunks = chunks.len(),
                     vectors = by_index.len(),
-                    "fewer vectors than chunks, storing what was produced"
+                    "fewer vectors than chunks; rejecting file replacement"
                 );
                 if first_error.is_none() {
                     first_error = Some(format!(
@@ -3898,6 +3925,7 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+    include!("codebase_embedding_retry_tests.rs");
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
     use std::collections::HashSet;

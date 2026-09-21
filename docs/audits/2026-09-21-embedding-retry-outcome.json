@@ -1,0 +1,110 @@
+{
+  "item": "M04.01",
+  "classification": "CONFIRMED",
+  "baseline_revision": "b810c7bec2296d83e7b77c9fb05ca01d16f29c25",
+  "baseline_fixture_revision": "f98d9cfe424aec550d30bb67fa8a0196e7a06f5c",
+  "production_path": "CLI run_ingest -> ingest_file -> EmbeddingClient::embed_late_chunked -> validated vectors -> PreparedFile::store",
+  "outcomes": {
+    "baseline": [
+      {
+        "calls": 4,
+        "case": "initial_success",
+        "chunks": 240,
+        "embedding_error": null,
+        "embeddings": 240,
+        "graph_unchanged": false,
+        "success": true,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "complete_recovery",
+        "chunks": null,
+        "embedding_error": "service error (HTTP 503): {\"error\":{\"message\":\"controlled window failure\"}}",
+        "embeddings": null,
+        "graph_unchanged": true,
+        "success": false,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "terminal_retry_failure",
+        "chunks": null,
+        "embedding_error": "service error (HTTP 503): {\"error\":{\"message\":\"controlled window failure\"}}",
+        "embeddings": null,
+        "graph_unchanged": true,
+        "success": false,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "invalid_retry_vector",
+        "chunks": null,
+        "embedding_error": "service error (HTTP 503): {\"error\":{\"message\":\"controlled window failure\"}}",
+        "embeddings": null,
+        "graph_unchanged": true,
+        "success": false,
+        "windows": 4
+      }
+    ],
+    "corrected": [
+      {
+        "calls": 4,
+        "case": "initial_success",
+        "chunks": 240,
+        "embedding_error": null,
+        "embeddings": 240,
+        "graph_unchanged": false,
+        "success": true,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "complete_recovery",
+        "chunks": 240,
+        "embedding_error": null,
+        "embeddings": 240,
+        "graph_unchanged": false,
+        "success": true,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "terminal_retry_failure",
+        "chunks": null,
+        "embedding_error": "service error (HTTP 503): {\"error\":{\"message\":\"controlled window failure\"}}",
+        "embeddings": null,
+        "graph_unchanged": true,
+        "success": false,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "invalid_retry_vector",
+        "chunks": null,
+        "embedding_error": "invalid response: embedding dimension 1, expected 2",
+        "embeddings": null,
+        "graph_unchanged": true,
+        "success": false,
+        "windows": 4
+      },
+      {
+        "calls": 6,
+        "case": "changed_retry_model",
+        "chunks": null,
+        "embedding_error": "model identity or dimension changed across recovered windows",
+        "embeddings": null,
+        "graph_unchanged": true,
+        "success": false,
+        "windows": 4
+      }
+    ]
+  },
+  "verification": "Five cases in one production-function fixture: initial success, complete recovery, terminal retry failure, invalid-width retry, changed served identity across retries. Four windows / 240 chunks per file. Successful results read back 240 validated and aligned vector rows with updated content hash and acknowledged committed revision; failures retain the previous file-owned records and record no committed revision.",
+  "components": "Real parser/chunker, HTTP embedding client and ArangoDB 3.12.11 transactions; controlled Unix provider, two-dimensional synthetic vectors; private generated Python source.",
+  "limits": "No GPU/model execution or retry-policy redesign. Cross-window model/dimension checks retain existing batched-client validation when requests are retried separately. Existing transaction/cancellation tests remain required in CI; not a production deployment or broad ingestion certificate.",
+  "log_sha256": {
+    "baseline": "645fe452e34f54db027167bd15723d2292cdbde06fb23be41824072a99ea84fd",
+    "corrected": "54fb6784e11d8e80345ce22faeee5a01918ea29ecbf5385ea4fd7e150dd5fbe5"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "item": "M04.01",
+  "reviewed_head": "5d0a8d829dc8078c331fee713a7b4874030738a3",
+  "review_state": "COMMENTED; one consistency nitpick addressed",
+  "correction": "Apply the same model/dimension invariant to oversized chunks sharing the completed recovery. No window sizing, retry-policy or model selection change.",
+  "earlier_evidence": "2026-09-21-embedding-retry-outcome.json",
+  "corrected_cases": [
+    {
+      "calls": 4,
+      "case": "initial_success",
+      "chunks": 240,
+      "embedding_error": null,
+      "embeddings": 240,
+      "graph_unchanged": false,
+      "success": true,
+      "windows": 4
+    },
+    {
+      "calls": 6,
+      "case": "complete_recovery",
+      "chunks": 240,
+      "embedding_error": null,
+      "embeddings": 240,
+      "graph_unchanged": false,
+      "success": true,
+      "windows": 4
+    },
+    {
+      "calls": 6,
+      "case": "terminal_retry_failure",
+      "chunks": null,
+      "embedding_error": "service error (HTTP 503): {\"error\":{\"message\":\"controlled window failure\"}}",
+      "embeddings": null,
+      "graph_unchanged": true,
+      "success": false,
+      "windows": 4
+    },
+    {
+      "calls": 6,
+      "case": "invalid_retry_vector",
+      "chunks": null,
+      "embedding_error": "invalid response: embedding dimension 1, expected 2",
+      "embeddings": null,
+      "graph_unchanged": true,
+      "success": false,
+      "windows": 4
+    },
+    {
+      "calls": 6,
+      "case": "changed_retry_model",
+      "chunks": null,
+      "embedding_error": "model identity or dimension changed across recovered windows",
+      "embeddings": null,
+      "graph_unchanged": true,
+      "success": false,
+      "windows": 4
+    },
+    {
+      "calls": 7,
+      "case": "complete_recovery_with_oversized",
+      "chunks": 241,
+      "embedding_error": null,
+      "embeddings": 241,
+      "graph_unchanged": false,
+      "success": true,
+      "windows": 5
+    },
+    {
+      "calls": 7,
+      "case": "changed_oversized_model",
+      "chunks": null,
+      "embedding_error": "model identity or dimension changed in oversized chunk recovery",
+      "embeddings": null,
+      "graph_unchanged": true,
+      "success": false,
+      "windows": 5
+    }
+  ],
+  "field_note": "The fixture field windows counts seed HTTP requests; mixed cases contain four late windows plus one plain oversized request, not five late windows.",
+  "tests": "Seven cases pass through real ingest_file/client/private ArangoDB; mixed valid recovery persists 241 aligned vectors, inconsistent model identity preserves prior records.",
+  "log_sha256": "d6370767c2523504afa58f237bd26c27f7a7dcf7d99028951dd35b8e6aaa44a7",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "73c3fd5c3fb0995d1175cef3f6cf6dbe6386f262ec25a7a74ba36ec77aa79a4f",
+    "crates/hades-cli/src/commands/codebase_embedding_retry_tests.rs": "e50000f7bf389e09a348d9cecf0d44e47be470eefc9fe61207b637e99f34045e"
+  },
+  "limits": "Inference synthetic; previous baseline/historical evidence unchanged; fresh final-head CI still required."
+}

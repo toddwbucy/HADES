@@ -32,6 +32,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Accept complete validated embedding-window retry recovery while retaining
+  terminal failures and atomic file-replacement protections (#157).
 - Reject malformed prune count acknowledgments and report potentially committed
   earlier deletions instead of successful zero counts (#155).
 
