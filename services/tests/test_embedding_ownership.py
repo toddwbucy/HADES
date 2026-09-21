@@ -240,18 +240,18 @@ def test_specification_error_envelopes(server):
         observations = []
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url='http://fixture') as client:
-                for label, request, expected_code in [
-                    ('task', dict(body(), task='invalid'), 'PE_INVALID_TASK'),
-                    ('encoding', dict(body(), encoding_format='base64'), 'PE_UNSUPPORTED_ENCODING_FORMAT'),
-                    ('images', dict(body(), images=['synthetic']), 'PE_MULTIMODAL_UNSUPPORTED'),
-                    ('empty_input', dict(body(), input=[]), None),
-                    ('invalid_shape', {'input': 'synthetic'}, None),
+                for label, request, expected_status, expected_code in [
+                    ('task', dict(body(), task='invalid'), 400, 'PE_INVALID_TASK'),
+                    ('encoding', dict(body(), encoding_format='base64'), 400, 'PE_UNSUPPORTED_ENCODING_FORMAT'),
+                    ('images', dict(body(), images=['synthetic']), 400, 'PE_MULTIMODAL_UNSUPPORTED'),
+                    ('empty_input', dict(body(), input=[]), 400, 'PE_INVALID_INPUT'),
+                    ('invalid_shape', {'input': 'synthetic'}, 422, 'PE_INVALID_REQUEST'),
                 ]:
                     response = await client.post('/v1/embeddings', json=request)
                     payload = response.json()
                     error = payload.get('error', {})
                     valid = (
-                        400 <= response.status_code < 500
+                        response.status_code == expected_status
                         and isinstance(error, dict)
                         and isinstance(error.get('message'), str)
                         and error.get('type') == 'invalid_request_error'
