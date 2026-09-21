@@ -144,7 +144,7 @@ pub(super) async fn store_relationships(
                 })).await?;
                 if found["hasMore"] == true || found["result"] != json!([0]) {
                     return Err(ArangoError::Request(
-                        "relationship endpoint no longer exists; retry ingestion".into(),
+                        "relationship endpoint no longer exists; unchanged files are skipped by content hash, so --force or a fresh database is required to regenerate missing endpoints".into(),
                     ));
                 }
                 let response = client

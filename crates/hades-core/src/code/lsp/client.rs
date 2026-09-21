@@ -6,7 +6,7 @@
 //! Uses an async reader task for response correlation and notification
 //! buffering.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::{
     Arc, Mutex as SyncMutex,
@@ -36,29 +36,35 @@ const MAX_NOTIFICATION_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Default)]
 struct Notifications {
     // Wire byte accounting is a bound on input size, not exact parsed heap usage.
-    entries: Vec<(usize, Value)>,
+    entries: VecDeque<(usize, Value)>,
     bytes: usize,
 }
 impl Notifications {
     fn push(&mut self, bytes: usize, message: Value) -> bool {
-        if self.entries.len() >= MAX_NOTIFICATIONS
-            || bytes > MAX_NOTIFICATION_BYTES.saturating_sub(self.bytes)
-        {
+        // Notifications are best-effort observations, not pending responses.
+        // Keep the latest bounded window without killing unrelated requests.
+        if bytes > MAX_NOTIFICATION_BYTES {
             return false;
         }
+        while self.entries.len() >= MAX_NOTIFICATIONS
+            || bytes > MAX_NOTIFICATION_BYTES.saturating_sub(self.bytes)
+        {
+            let (evicted_bytes, _) = self.entries.pop_front().unwrap();
+            self.bytes -= evicted_bytes;
+        }
         self.bytes += bytes;
-        self.entries.push((bytes, message));
+        self.entries.push_back((bytes, message));
         true
     }
     fn drain(&mut self, method: Option<&str>) -> Vec<Value> {
         let mut matched = Vec::new();
-        let mut retained = Vec::new();
+        let mut retained = VecDeque::new();
         for (bytes, message) in self.entries.drain(..) {
             if method.is_none_or(|m| message.get("method").and_then(Value::as_str) == Some(m)) {
                 self.bytes -= bytes;
                 matched.push(message);
             } else {
-                retained.push((bytes, message));
+                retained.push_back((bytes, message));
             }
         }
         self.entries = retained;
@@ -93,6 +99,7 @@ struct Transport {
 }
 impl Transport {
     fn close(&self, reason: &str) {
+        tracing::warn!(reason, "closing LSP transport");
         let mut pending = self.pending.lock().unwrap();
         pending.closed = true;
         for (_, sender) in pending.senders.drain() {
@@ -436,11 +443,9 @@ async fn reader_loop(
             }
         } else {
             // Notification from server.
-            if !notifications.lock().await.push(content_length, message) {
-                transport.close("LSP notification retention limit exceeded");
-                break;
+            if notifications.lock().await.push(content_length, message) {
+                notification_signal.notify_waiters();
             }
-            notification_signal.notify_waiters();
         }
     }
 }
@@ -638,13 +643,67 @@ mod tests {
         assert!(read_headers(&mut BufReader::new(&exact[..])).await.is_err());
     }
 
+    #[tokio::test]
+    async fn notification_flood_does_not_fail_pending_requests() {
+        let directory = tempfile::tempdir().unwrap();
+        let server = r#"
+import sys, json
+
+def send(value):
+    body = json.dumps(value).encode()
+    sys.stdout.buffer.write(b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+    sys.stdout.buffer.flush()
+
+while True:
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            sys.exit(0)
+        if line == b'\r\n':
+            break
+        name, value = line.decode().split(':', 1)
+        headers[name.lower()] = value.strip()
+    request = json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+    method = request.get('method')
+    if method == 'exit':
+        break
+    if method == 'flood':
+        for i in range(1100):
+            send({'jsonrpc': '2.0', 'method': '$/progress', 'params': {'sequence': i}})
+    if method == 'oversized-notification':
+        send({'jsonrpc': '2.0', 'method': 'textDocument/publishDiagnostics', 'params': {'text': 'x' * (8 * 1024 * 1024)}})
+    if 'id' in request:
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'answered'})
+"#;
+        let client = LspClient::start("/usr/bin/python3", &["-c", server], directory.path())
+            .await
+            .unwrap();
+        for method in ["flood", "oversized-notification"] {
+            assert_eq!(
+                client
+                    .request(method, Value::Null, Duration::from_secs(10))
+                    .await
+                    .unwrap(),
+                "answered"
+            );
+            let queue = client.notifications.lock().await;
+            assert!(queue.entries.len() <= MAX_NOTIFICATIONS);
+            assert!(queue.bytes <= MAX_NOTIFICATION_BYTES);
+            assert!(!client.transport.stop.is_cancelled());
+        }
+        let retained = client.drain_notifications(Some("$/progress")).await;
+        assert_eq!(retained.last().unwrap()["params"]["sequence"], 1099);
+        client.shutdown().await.unwrap();
+    }
+
     #[test]
     fn notification_drains_release_both_count_and_wire_budget() {
         let mut queue = Notifications::default();
         let message = |method| serde_json::json!({"method": method});
         assert!(queue.push(MAX_NOTIFICATION_BYTES - 1, message("keep")));
         assert!(queue.push(1, message("release")));
-        assert!(!queue.push(1, message("overflow")));
+        assert!(!queue.push(MAX_NOTIFICATION_BYTES + 1, message("oversized")));
         assert_eq!(queue.drain(Some("release")).len(), 1);
         assert_eq!(queue.bytes, MAX_NOTIFICATION_BYTES - 1);
         assert!(queue.push(1, message("refill")));
@@ -653,9 +712,17 @@ mod tests {
         for _ in 0..MAX_NOTIFICATIONS {
             assert!(queue.push(1, message("count")));
         }
-        assert!(!queue.push(1, message("overflow")));
-        assert_eq!(queue.drain(Some("count")).len(), MAX_NOTIFICATIONS);
-        assert!(queue.push(1, message("refill")));
+        assert!(queue.push(1, message("overflow")));
+        assert_eq!(queue.entries.len(), MAX_NOTIFICATIONS);
+        assert_eq!(queue.drain(Some("count")).len(), MAX_NOTIFICATIONS - 1);
+        assert_eq!(queue.bytes, 1);
+        assert_eq!(queue.drain(None).len(), 1);
+        assert!(queue.push(MAX_NOTIFICATION_BYTES, message("large")));
+        assert!(queue.push(1, message("latest")));
+        assert_eq!(queue.bytes, 1);
+        assert!(queue.drain(Some("large")).is_empty());
+        assert_eq!(queue.drain(Some("latest")).len(), 1);
+        assert_eq!(queue.bytes, 0);
     }
 
     #[tokio::test]

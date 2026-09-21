@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep LSP notification retention bounded without closing pending requests on overflow,
+  log transport close reasons, and clarify recovery when relationship endpoints are missing.
+
 - Store document embedding model, model hash, and dimension for strict semantic search
   validation; distinguish missing metadata from incompatible metadata and invalid vectors.
   Existing rows are not upgraded automatically: ordinary ingestion skips unchanged files.
