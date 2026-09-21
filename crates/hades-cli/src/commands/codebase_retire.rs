@@ -51,7 +51,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::info;
 
 use hades_core::config::HadesConfig;
 use hades_core::db::collections::CODEBASE;
@@ -392,15 +392,21 @@ async fn remove_other_edges(
                        REMOVE k IN @@edges OPTIONS { ignoreErrors: true } RETURN 1) \
                    RETURN LENGTH(gone)";
         let bind = json!({ "@edges": col, "keys": edge_keys });
-        match query::query_single(pool, aql, Some(&bind), ExecutionTarget::Writer).await {
-            Ok(v) => {
-                removed.insert(col.clone(), v.and_then(|v| v.as_u64()).unwrap_or(0));
-            }
-            Err(e) => {
-                warn!(collection = %col, error = %e, "failed to remove edges");
-                removed.insert(col.clone(), 0);
-            }
-        }
+        let partial = || {
+            format!(
+                "failed to remove authored edges from {col}; codebase retirement and earlier \
+             authored-edge deletions may already have committed (acknowledged: {removed:?}); \
+             inspect state before retrying"
+            )
+        };
+        let value = query::query_single(pool, aql, Some(&bind), ExecutionTarget::Writer)
+            .await
+            .with_context(partial)?;
+        let count = value
+            .and_then(|v| v.as_u64())
+            .filter(|count| *count <= edge_keys.len() as u64)
+            .with_context(|| format!("{}: invalid deletion count", partial()))?;
+        removed.insert(col.clone(), count);
     }
     Ok(removed)
 }

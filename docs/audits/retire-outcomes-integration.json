@@ -1,0 +1,15 @@
+{
+  "integrated_main": "13dff20c2811314cece05313bc0c12315c1311fd",
+  "original_fix": "81fc5bb789c8548b56cc43124bae7b310edd311f",
+  "conflicts": "Retained both CHANGELOG entries and both independent response-shape tests. Retirement runtime unchanged.",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/codebase_retire.rs": "c9e38281881734f6c8fd81422d9faa0a9e45969cc69e3e80e55b3d66aec6e07d",
+    "crates/hades-cli/tests/db_response_shapes.rs": "b7ccb413e4f1e619fb10450031271e872e79dc36ecf98b4c31343e87661495e4",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "d7a117cbc3b1ce309e4a63033f6de55c5926da5fabb9c55a828161a75f4a70bc",
+    "crates/hades-cli/src/commands/graph_embed_update.rs": "69f65fb95451c50e5af1a058c432b3867d0d9405f9f623618d1b82021e52026c"
+  },
+  "private_cli_response_tests": {
+    "passed": 14,
+    "failed": 0
+  }
+}

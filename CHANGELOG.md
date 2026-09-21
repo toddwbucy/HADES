@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Map all seven codebase command contracts and their ingestion, transaction and
+  management limitations, completing the native CLI source inventory (#12).
+
 - Trace daemon startup, transport authority, admission and shutdown boundaries
   with remaining private-fixture requirements for epic #12.
 
@@ -31,6 +34,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Correct codebase ingest and drift help to describe content-hash skipping,
   embedding backfill, and guarded Go enrichment instead of stale symbol-hash rules (#12).
+- Fail retirement when authored-edge deletion fails or returns an invalid count,
+  and disclose potentially committed earlier deletions (#147).
 
 - Reject incomplete, malformed, or mismatched graph-update destination selections
   instead of treating them as successful missing-only no-ops (#144).

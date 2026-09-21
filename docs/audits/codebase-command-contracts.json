@@ -1,0 +1,31 @@
+{
+  "source_revision": "13dff20c2811314cece05313bc0c12315c1311fd",
+  "scope": "Seven native CLI leaves, entry routing and ingestion/persistence helpers; source trace, not full runtime or transitive analyzer certification",
+  "leaves": [
+    "codebase ingest",
+    "codebase update",
+    "codebase stats",
+    "codebase validate",
+    "codebase prune-orphans",
+    "codebase drift",
+    "codebase retire"
+  ],
+  "combined_native_cli_leaf_coverage": {
+    "mapped": 80,
+    "inventory_total": 80,
+    "meaning": "Documented entry-point coverage only; full epic acceptance remains incomplete"
+  },
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-core/src/dispatch.rs": "e08a5a46b7158cf2d4dad745c90afe158909c9846fc8db270807c475fd3fd384",
+    "crates/hades-core/src/db/transaction.rs": "bede97765d217208c9e00c1883769577cba573ba7473361fb6f1e5167c1f523c",
+    "crates/hades-cli/src/commands/codebase.rs": "ccd807c7a0e03eab907f8dbccb365daf54b73a3eb0bdb1705918eeb3b8d9fc97",
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "f43c1e641a07aee6f519abc6b3935254598c7e58810be64b74622f2065ce5ab1",
+    "crates/hades-cli/src/commands/codebase_persist.rs": "fd409f09a383be9aef92406bef73fd5798621e0168a6f243478fc5e001c0c14f",
+    "crates/hades-cli/src/commands/codebase_mgmt.rs": "d6d98e7672ad72487f5dc87a5590cc652431f8f00c1f082671e1e3d87dedc3e6",
+    "crates/hades-cli/src/commands/codebase_validate.rs": "8bef605a2d93cf374ea606b66b8dedf5841b56fe0fb927e2fd912f2c83509c9e",
+    "crates/hades-cli/src/commands/codebase_prune.rs": "7fa89481d40f85d246f1ce0adeed15ebe4e61bce55baecfb5efb2884694a8abf",
+    "crates/hades-cli/src/commands/codebase_drift.rs": "d0eb83c770c9bd42972ff46804cb1bc11ec20fab7625fa7df00a6ef92b1cc2cc",
+    "crates/hades-cli/src/commands/codebase_retire.rs": "173f3586a48c04a67273074188d773c9da87a3e2042e4a1b1786b2ebcbffa052"
+  }
+}
