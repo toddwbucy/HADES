@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, info, warn};
 
 use super::error::{BatchError, ItemError};
@@ -230,40 +230,17 @@ impl BatchProcessor {
             });
             task_id_map.insert(handle.id(), item_id);
 
-            // Collect completed tasks as we go (prevents unbounded memory growth).
-            while let Some(Ok(result)) = join_set.try_join_next() {
+            // Collect every outcome, including task failures, through the same path.
+            while let Some(outcome) = join_set.try_join_next_with_id() {
+                let result = Self::resolve_task_result(outcome, &mut task_id_map);
                 self.record_result(&mut state, &progress, result, &mut results);
             }
         }
 
-        // Drain remaining tasks.
-        while let Some(join_result) = join_set.join_next().await {
-            match join_result {
-                Ok(result) => {
-                    self.record_result(&mut state, &progress, result, &mut results);
-                }
-                Err(e) => {
-                    // Task panicked — recover the item ID from the task ID map.
-                    let panicked_id = task_id_map
-                        .remove(&e.id())
-                        .unwrap_or_else(|| "unknown".into());
-                    error!(item_id = %panicked_id, error = %e, "task panicked");
-                    let item_error = ItemError {
-                        item_id: panicked_id.clone(),
-                        stage: "spawn".into(),
-                        message: format!("task panicked: {e}"),
-                        duration_ms: 0,
-                    };
-                    results.push(ItemResult {
-                        item_id: panicked_id,
-                        success: false,
-                        skipped: None,
-                        data: None,
-                        error: Some(item_error),
-                        duration_ms: 0,
-                    });
-                }
-            }
+        // Drain remaining tasks with identical result/checkpoint accounting.
+        while let Some(outcome) = join_set.join_next_with_id().await {
+            let result = Self::resolve_task_result(outcome, &mut task_id_map);
+            self.record_result(&mut state, &progress, result, &mut results);
         }
 
         // Save final state.
@@ -305,6 +282,38 @@ impl BatchProcessor {
             errors,
             duration_ms: batch_start.elapsed().as_millis() as u64,
         })
+    }
+
+    /// Resolve a join outcome and release its identity mapping on either path.
+    fn resolve_task_result(
+        outcome: Result<(Id, ItemResult), JoinError>,
+        task_ids: &mut std::collections::HashMap<Id, String>,
+    ) -> ItemResult {
+        match outcome {
+            Ok((task_id, result)) => {
+                task_ids.remove(&task_id);
+                result
+            }
+            Err(error) => {
+                let item_id = task_ids
+                    .remove(&error.id())
+                    .expect("every spawned batch task has an item identity");
+                error!(%item_id, %error, "batch task failed");
+                ItemResult {
+                    item_id: item_id.clone(),
+                    success: false,
+                    skipped: None,
+                    data: None,
+                    error: Some(ItemError {
+                        item_id,
+                        stage: "spawn".into(),
+                        message: format!("batch task failed: {error}"),
+                        duration_ms: 0,
+                    }),
+                    duration_ms: 0,
+                }
+            }
+        }
     }
 
     /// Record a single result: update state, save checkpoint, report progress.
@@ -387,6 +396,31 @@ mod tests {
             if summary.failed != 1 || summary.results.len() != 2 || !recorded {
                 incorrect += 1;
             }
+            assert_eq!(summary.completed, 1);
+            assert_eq!(summary.errors.len(), 1);
+            assert_eq!(summary.errors[0].item_id, panic_id);
+            assert_eq!(summary.errors[0].stage, "spawn");
+            let resumed = BatchProcessor::new(BatchProcessorConfig {
+                concurrency: 1,
+                state_file: Some(checkpoint.clone()),
+                resume: true,
+                ..Default::default()
+            })
+            .process(
+                vec![("first".into(), ()), ("last".into(), ())],
+                move |id, _| async move {
+                    assert_eq!(id, panic_id, "only the failed item should retry");
+                    Ok(Value::Null)
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (resumed.completed, resumed.failed, resumed.skipped),
+                (1, 0, 1)
+            );
+            assert_eq!(resumed.results.len(), 2);
+            assert!(!checkpoint.exists());
         }
         assert_eq!(
             incorrect, 0,
