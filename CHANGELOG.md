@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Reject incomplete, malformed, or mismatched graph-update destination selections
+  instead of treating them as successful missing-only no-ops (#144).
+
 - Publish the private LSP deadline test PID marker atomically so CI cannot read
   an empty readiness file before the child writes its identity.
 - Fail document ingestion when source metadata cannot be persisted, and retry
