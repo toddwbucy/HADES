@@ -130,6 +130,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace all 18 task command contracts, including workflow, partial-write and
+  session/reviewer limitations (epic #12).
+
 - Retain private actual-CLI reproductions of orientation metadata read failures
   silently returned as empty successful results (epic #12).
 
