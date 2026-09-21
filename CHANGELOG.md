@@ -34,6 +34,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Accept complete validated embedding-window retry recovery while retaining
   terminal failures and atomic file-replacement protections (#157).
+- Reject malformed prune count acknowledgments and report potentially committed
+  earlier deletions instead of successful zero counts (#155).
 
 - Return structured PE-API errors with required codes and safe public messages,
   including oversized inputs and backend OOM failures (#153).
