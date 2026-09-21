@@ -14,6 +14,14 @@ async fn run(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Vec<Str
 }
 
 async fn run_root(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Vec<String>) {
+    run_root_with_vectors(args, pages, Vec::new()).await
+}
+
+async fn run_root_with_vectors(
+    args: &[&str],
+    pages: Vec<Value>,
+    vectors: Vec<Vec<f32>>,
+) -> (std::process::Output, Vec<String>) {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("db.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
@@ -42,12 +50,32 @@ async fn run_root(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Ve
         }
     });
     let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let embed_socket = root.path().join("embedder.sock");
+    let embed_listener = tokio::net::UnixListener::bind(&embed_socket).unwrap();
+    let vectors = Arc::new(Mutex::new(VecDeque::from(vectors)));
+    let embed_app = Router::new().fallback(move || {
+        let vectors = vectors.clone();
+        async move {
+            match vectors.lock().unwrap().pop_front() {
+                Some(vector) => Json(json!({"model":"jinaai/jina-embeddings-v4",
+                    "data":[{"index":0,"embedding":vector}]}))
+                .into_response(),
+                None => (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "private fixture unavailable",
+                )
+                    .into_response(),
+            }
+        }
+    });
+    let embed_peer =
+        tokio::spawn(async move { axum::serve(embed_listener, embed_app).await.unwrap() });
     let config = root.path().join("config.json");
     std::fs::write(
         &config,
         serde_json::to_vec(&json!({"database":{
             "name":"fixture", "username":"fixture", "sockets":{"readonly":socket,"readwrite":socket}
-        }}))
+        }, "embedding":{"service":{"socket":embed_socket}}}))
         .unwrap(),
     )
     .unwrap();
@@ -67,6 +95,8 @@ async fn run_root(args: &[&str], pages: Vec<Value>) -> (std::process::Output, Ve
         .args(args)
         .kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await;
+    embed_peer.abort();
+    let _ = embed_peer.await;
     peer.abort();
     let _ = peer.await;
     let output = output.expect("private CLI exceeded deadline").unwrap();
@@ -351,4 +381,115 @@ async fn orientation_does_not_hide_metadata_read_failures() {
         incorrect_successes, 0,
         "metadata read failures must not become successful empty data"
     );
+}
+
+#[tokio::test]
+async fn compliance_report_does_not_pass_missing_or_unavailable_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("claim.rs");
+    std::fs::write(&file, "// CS-32\nfn example() {}\n").unwrap();
+    let path = file.to_str().unwrap();
+    let empty = json!({"result":[],"hasMore":false});
+    let found = json!({"result":[{"_key":"smell-032-test","_id":"smell_specs/smell-032-test","name":"CS-32: example","smell_id":32}],"hasMore":false});
+    let edge = json!({"result":[{"enforcement_type":"static"}],"hasMore":false});
+    let mut incorrect_passes = 0;
+    for (case, replies) in [
+        ("missing_definition", vec![empty.clone(), empty.clone()]),
+        ("unavailable_probe", vec![empty.clone(), found, edge]),
+    ] {
+        let (output, calls) = run_root(&["smell", "report", path], replies).await;
+        assert!(output.status.success(), "{case}: {output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["data"]["ref_verification"]["refs_found"], 1);
+        if case == "missing_definition" {
+            assert_eq!(
+                value["data"]["ref_verification"]["missing_from_graph"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(calls.len(), 2);
+        } else {
+            let probes = value["data"]["embedding_probe"].as_array().unwrap();
+            assert_eq!(probes.len(), 1);
+            assert!(probes[0]["error"].is_string());
+            assert!(probes[0]["pass"].is_null());
+            assert_eq!(calls.len(), 3);
+        }
+        assert!(
+            calls
+                .iter()
+                .all(|call| call == "POST /_db/fixture/_api/cursor")
+        );
+        println!(
+            "{case}: exit={:?} report={} stderr={}",
+            output.status.code(),
+            value,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        incorrect_passes += usize::from(value["data"]["passed"] == true);
+    }
+    assert_eq!(
+        incorrect_passes, 0,
+        "incomplete compliance evidence must not pass"
+    );
+}
+
+#[tokio::test]
+async fn compliance_report_preserves_positive_and_negative_controls() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("claim.rs");
+    let empty = json!({"result":[],"hasMore":false});
+    let found = json!({"result":[{"_key":"smell-032-test","_id":"smell_specs/smell-032-test","name":"CS-32: example","smell_id":32}],"hasMore":false});
+    let edge = json!({"result":[{"enforcement_type":"static"}],"hasMore":false});
+    let forbidden = json!({"result":[{"_key":"static-test","tier":"static","forbidden_patterns":["forbidden"],"name":"static example"}],"hasMore":false});
+    let mut a = vec![0.0_f32; 2048];
+    a[0] = 1.0;
+    let mut b = vec![0.0_f32; 2048];
+    b[1] = 1.0;
+    for (case, content, pages, vectors, expected) in [
+        (
+            "empty",
+            "fn example() {}",
+            vec![empty.clone()],
+            vec![],
+            true,
+        ),
+        ("static", "// forbidden", vec![forbidden], vec![], false),
+        (
+            "unlinked",
+            "// CS-32",
+            vec![empty.clone(), found.clone(), empty.clone()],
+            vec![],
+            false,
+        ),
+        (
+            "positive",
+            "// CS-32",
+            vec![empty.clone(), found.clone(), edge.clone()],
+            vec![a.clone(), a.clone()],
+            true,
+        ),
+        (
+            "negative_probe",
+            "// CS-32",
+            vec![empty, found, edge],
+            vec![a, b],
+            false,
+        ),
+    ] {
+        std::fs::write(&file, content).unwrap();
+        let (output, _) =
+            run_root_with_vectors(&["smell", "report", file.to_str().unwrap()], pages, vectors)
+                .await;
+        assert!(output.status.success(), "{case}: {output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["success"], true, "execution succeeded: {case}");
+        assert_eq!(value["data"]["passed"], expected, "{case}: {value}");
+        if case == "positive" || case == "negative_probe" {
+            assert_eq!(value["data"]["embedding_probe"][0]["pass"], expected);
+            assert!(value["data"]["embedding_probe"][0].get("error").is_none());
+        }
+    }
 }
