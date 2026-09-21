@@ -61,6 +61,49 @@ mod document_metadata_outcomes {
                 "pipeline_document_persisted":true,"source_path_present":false,"content_hash_present":false,
                 "chunks_including_control":2,"embeddings_including_control":2}));
             assert!(!output.status.success(),"a rejected final metadata write must fail the ingest item");
+            let report:Value=serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["success"],false);
+            assert_eq!(report["data"]["failed"],1);
+            assert_eq!(report["data"]["results"][0]["success"],false);
+            assert!(report["data"]["results"][0]["error"].as_str().unwrap().contains("already committed"));
+            let args=["ingest",control.to_str().unwrap(),rejected.to_str().unwrap(),"--task","code","--concurrency","1"];
+            let mixed=cli_command(&pool,&embedder,&args).env("HADES_EXTRACTOR_SOCKET",&socket)
+                .current_dir(root.path()).output().await.unwrap();
+            assert!(!mixed.status.success(),"{mixed:?}");
+            let report:Value=serde_json::from_slice(&mixed.stdout).unwrap();
+            assert_eq!(report["success"],false);
+            assert_eq!(report["data"]["total"],2);
+            assert_eq!(report["data"]["failed"],1);
+            assert!(report["data"]["results"].as_array().unwrap().iter().any(|r|r["input"]==control.to_str().unwrap() && r["success"]==true));
+            let checkpoint=root.path().join(".hades-batch-state.json");
+            let state:Value=serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+            assert_eq!(state["completed"],json!([control.to_str().unwrap()]));
+            assert!(state["failed"][rejected.to_str().unwrap()].is_string());
+            // Resume must retry the failure even while the rejection remains.
+            let again=cli_command(&pool,&embedder,&args).arg("--resume").env("HADES_EXTRACTOR_SOCKET",&socket)
+                .current_dir(root.path()).output().await.unwrap();
+            assert!(!again.status.success());
+            let again:Value=serde_json::from_slice(&again.stdout).unwrap();
+            assert_eq!(again["data"]["failed"],1);
+            assert_eq!(again["data"]["skipped"],1);
+            assert!(checkpoint.exists());
+            pool.writer().put("collection/documents/properties",&json!({"schema":null})).await.unwrap();
+            let retry=cli_command(&pool,&embedder,&args).arg("--resume").env("HADES_EXTRACTOR_SOCKET",&socket)
+                .current_dir(root.path()).output().await.unwrap();
+            assert!(retry.status.success(),"{retry:?}");
+            let retry:Value=serde_json::from_slice(&retry.stdout).unwrap();
+            assert_eq!(retry["success"],true);
+            assert_eq!(retry["data"]["failed"],0);
+            assert_eq!(retry["data"]["skipped"],1);
+            assert!(!checkpoint.exists());
+            let repaired=crud::get_document(&pool,"documents","rejected").await.unwrap();
+            assert_eq!(repaired["source"],"local");
+            assert_eq!(repaired["source_path"],rejected.to_str().unwrap());
+            assert!(repaired["content_hash"].is_string());
+            assert_eq!(crud::count_collection(&pool,"chunks").await.unwrap(),2);
+            assert_eq!(crud::count_collection(&pool,"embeddings").await.unwrap(),2);
+            println!("Metadata retry controls: mixed batch failure retained; failed checkpoint retried; repaired metadata and exact chunk/vector counts verified");
+
         }).await;
     }
 }

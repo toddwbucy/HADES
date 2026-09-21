@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fail document ingestion when source metadata cannot be persisted, and retry
+  failed checkpoint entries on explicit batch resume (#137).
+
 ### Added
 
 - Record a real private-database reproduction of ingestion reporting success

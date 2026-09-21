@@ -33,3 +33,29 @@ resume so a failed metadata stage is not silently skipped as completed. Evaluate
 whether metadata belongs in the pipeline transaction rather than claiming that
 error propagation alone makes ingestion atomic. Metadata identity override and
 batch/checkpoint scoping remain separate source-review candidates.
+
+## Remediation design
+
+The source-metadata PATCH now propagates its database error into the item result.
+Batch summary, outer success and exit status follow the failed item, while other
+items retain their results. The diagnostic names the metadata document and states
+that content, chunks and embeddings have already committed.
+
+Checkpoint resume now skips only completed entries. Failed entries are retried,
+not converted to successful skips; successful retry removes the old failure, and
+failed transitions remove any completed marker. This is a deliberate change to
+shared batch resume semantics. Resume is explicitly requested by the caller; this
+change does not add automatic retry to an ordinary ingest invocation.
+
+The pipeline API owns extracted metadata and its transaction, while this CLI stage
+adds caller source identity and optional custom metadata afterwards. Moving the
+latter into the transaction would require a separate API and caller-contract
+change. This fix preserves that boundary and makes partial persistence explicit;
+it does not claim whole-ingest atomicity. Crash-after-commit behavior, concurrent
+writers, metadata overrides and checkpoint scoping remain audit limitations.
+
+Validation: 27 batch tests passed (0.15s); all 17 private database lifecycle
+tests passed (63.15s), with clean server shutdown. The extended actual CLI fixture
+checks single failure, mixed batch, repeated resume under rejection and successful
+resume after removing the validation rule, including exact data/checkpoint readback.
+The baseline JSON remains unchanged; remediation hashes and results are separate.
