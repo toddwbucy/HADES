@@ -1,0 +1,17 @@
+{
+  "source_revision": "95e8629a192112ecce92e8c13169cef73c0441f1",
+  "scope": "Daemon CLI entry and transport/service lifecycle source trace; not full MCP or runtime certification",
+  "leaves": [
+    "daemon"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/daemon.rs": "2f2d81345498cd5a43e58a1a49500fc5a4c5578a231f95e68a035451c8aa0980",
+    "crates/hades-cli/src/commands/mcp_server.rs": "92a366f84c76328d3d1a4865b09ea09812dafdf57371974eda9e36de105b2bcc",
+    "crates/hades-cli/src/commands/mcp_sessions.rs": "4755eb759431a659d7cce0a22da150b4f3c48098b2197e535e391588492c4946",
+    "crates/hades-cli/src/commands/transport_limits.rs": "50b1d43641f6d890c2950a2fff95741bd2bb5fe50426f992d69f87da52012a73",
+    "crates/hades-core/src/service.rs": "565c8d5c8dfb531728be6f3a8885d9729e2b4459f350e60fb20ccf328546236e",
+    "crates/hades-core/src/ingest_jobs.rs": "0bd055b4c96c72d4bcad1ad2d7bafbc7bde33409d56d772c0ccab947a10b238c",
+    "crates/hades-core/src/db/pool.rs": "2778429f1a940d70ce2fbd1064eb82855f0755fd03daef1a2ae761c17d96fde1"
+  }
+}
