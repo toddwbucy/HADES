@@ -1,0 +1,27 @@
+{
+  "baseline_revision": "ac652f7",
+  "scope": "Private Unix HTTP fixtures, actual CLI and shared request service; no production use",
+  "source_sha256": {
+    "crates/hades-core/src/dispatch.rs": "e08a5a46b7158cf2d4dad745c90afe158909c9846fc8db270807c475fd3fd384",
+    "crates/hades-core/src/service.rs": "565c8d5c8dfb531728be6f3a8885d9729e2b4459f350e60fb20ccf328546236e",
+    "crates/hades-cli/tests/db_response_shapes.rs": "c96a247547d8ef547a40bbf95cd898572807edfe530443c677724385d7c99108",
+    "crates/hades-cli/src/commands/smell_mgmt.rs": "8e521bda365fb62047aff51ff7237ee8ebb7e1ad171ca4ada146fcae6b663265",
+    "crates/hades-core/src/persephone/embedding.rs": "f57939e39265e77f0a5ba46036daeaf58cf30d74daffab0f97e0f275c89712ab"
+  },
+  "cli_tests": {
+    "passed": 9,
+    "failed": 0,
+    "seconds": 0.09
+  },
+  "service_tests": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 0.01
+  },
+  "asserted_behavior": [
+    "Missing definitions and HTTP503 probes cannot produce a passing CLI report",
+    "Valid same-vector embeddings and empty reports retain passing verdicts",
+    "Static violations, unlinked claims and orthogonal embeddings remain nonpassing",
+    "Shared request service preserves request ID, execution success and missing/unlinked diagnostics separately from verdict"
+  ]
+}

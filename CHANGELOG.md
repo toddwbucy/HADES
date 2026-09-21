@@ -22,6 +22,16 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Document four compliance and linking command contracts, including verdict,
   filesystem, and partial-write limitations for the full audit (#12).
 
+### Fixed
+
+- Prevent compliance reports from passing when smell definitions are missing or
+  required embedding probes fail; retain evidence diagnostics (#133).
+
+### Added
+
+- Record isolated CLI reproductions of passing compliance reports with missing
+  definitions or failed embedding probes (#12).
+
 ### Security
 
 - Reject WeaverTools adapter HTTP redirects before forwarding credentials or
@@ -124,6 +134,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and rollback procedure in `docs/code-file-identities.md`.
 
 ### Added
+
+- Trace all 18 task command contracts, including workflow, partial-write and
+  session/reviewer limitations (epic #12).
 
 - Retain private actual-CLI reproductions of orientation metadata read failures
   silently returned as empty successful results (epic #12).
