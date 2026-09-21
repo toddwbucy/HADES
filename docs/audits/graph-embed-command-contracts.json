@@ -1,0 +1,22 @@
+{
+  "source_revision": "7bd9f64a3a491ace6798294427d9b70aa5a224a8",
+  "scope": "Four native graph-embedding command source traces; not full runtime certification",
+  "leaves": [
+    "graph-embed train",
+    "graph-embed embed",
+    "graph-embed neighbors",
+    "graph-embed update"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/graph_embed.rs": "ae8dc93eb7909ef1a5c2120343341a0140aae4b661f85237987f6b1ff6f591b8",
+    "crates/hades-cli/src/commands/graph_embed_query.rs": "dedb1e2b1c080154b671c2cd13ca93310ce9e50036ae08505954ba229c7d05a2",
+    "crates/hades-cli/src/commands/graph_embed_train.rs": "b27a289470839528d3543f610d5926223e4cc659c3ab41ce10733d9b525de927",
+    "crates/hades-cli/src/commands/graph_embed_update.rs": "fe9c7e9667eb6b8b3e22977faeb8f4e2ecfe6bd5cd11097b18b13d850f166cf7",
+    "crates/hades-core/src/dispatch.rs": "e08a5a46b7158cf2d4dad745c90afe158909c9846fc8db270807c475fd3fd384",
+    "crates/hades-core/src/graph/export.rs": "ff243a956d8cf3e5456cd8d1a2b9e47359e68a59618be2ffd5fa9b3a5496f7fc",
+    "crates/hades-core/src/training.rs": "cca96eb331455fc858a6f8d527368f87f16fc6b975a630c5bc4b6548791983f7",
+    "crates/hades-core/src/db/pool.rs": "2778429f1a940d70ce2fbd1064eb82855f0755fd03daef1a2ae761c17d96fde1",
+    "crates/hades-core/src/db/transport.rs": "b3d5777b20ee38df1327c44df60bea5e8e2ac2cf57c505a0c42448a63599107a"
+  }
+}

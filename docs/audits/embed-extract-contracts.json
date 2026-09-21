@@ -1,0 +1,20 @@
+{
+  "source_revision": "92584154b1272072e81d8cc3946e583aea114a2f",
+  "scope": "Source trace of seven native embedding/extraction leaves, not runtime certification",
+  "leaves": [
+    "embed text",
+    "embed service status",
+    "embed service start",
+    "embed service stop",
+    "embed gpu status",
+    "embed gpu list",
+    "extract"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/embed.rs": "735c5b8427584695fa9328e38be6acdb02b1e315ba1c54eb66391a221b0988f3",
+    "crates/hades-cli/src/commands/embed_mgmt.rs": "17cc6001f0b05fcc5915e7f23b1f9f845fde15f68ad44500947256937946a3ef",
+    "crates/hades-cli/src/commands/output.rs": "28469b8f0e81d4e0bdd03026d6ba52f492c76c675ef826f60c046bfeb65235c8",
+    "crates/hades-core/src/persephone/embedding.rs": "f57939e39265e77f0a5ba46036daeaf58cf30d74daffab0f97e0f275c89712ab"
+  }
+}

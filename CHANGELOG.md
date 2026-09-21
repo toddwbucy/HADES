@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Document four compliance and linking command contracts, including verdict,
+  filesystem, and partial-write limitations for the full audit (#12).
+
 ### Fixed
 
 - Reject incomplete, malformed, or mismatched graph-update destination selections
@@ -35,6 +40,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Preserve malformed graph-update destination-selection parser reproductions
   for the epic #12 audit.
+- Trace graph-embedding command contracts, export/session boundaries, and remaining
+  runtime verification gaps for epic #12.
 
 - Record a real private-database reproduction of ingestion reporting success
   after its source metadata patch is rejected (epic #12).
@@ -145,6 +152,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and rollback procedure in `docs/code-file-identities.md`.
 
 ### Added
+
+- Trace seven native embedding/extraction command contracts and explicit
+  provider, subprocess and output-file limits (epic #12).
 
 - Trace all 18 task command contracts, including workflow, partial-write and
   session/reviewer limitations (epic #12).
