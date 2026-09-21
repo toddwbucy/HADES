@@ -17,11 +17,18 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Document four compliance and linking command contracts, including verdict,
+  filesystem, and partial-write limitations for the full audit (#12).
+
 ### Fixed
 
 - Preserve batch task panics in results, failure progress, and resume checkpoints
   regardless of when the task completes (#141).
 
+- Publish the private LSP deadline test PID marker atomically so CI cannot read
+  an empty readiness file before the child writes its identity.
 - Fail document ingestion when source metadata cannot be persisted, and retry
   failed checkpoint entries on explicit batch resume (#137).
 - Require complete, valid import acknowledgments at every schema application
@@ -30,6 +37,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   required embedding probes fail; retain evidence diagnostics (#133).
 
 ### Added
+
+- Trace graph-embedding command contracts, export/session boundaries, and remaining
+  runtime verification gaps for epic #12.
 
 - Record a real private-database reproduction of ingestion reporting success
   after its source metadata patch is rejected (epic #12).
@@ -140,6 +150,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and rollback procedure in `docs/code-file-identities.md`.
 
 ### Added
+
+- Trace seven native embedding/extraction command contracts and explicit
+  provider, subprocess and output-file limits (epic #12).
 
 - Trace all 18 task command contracts, including workflow, partial-write and
   session/reviewer limitations (epic #12).
