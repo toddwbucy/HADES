@@ -1,0 +1,22 @@
+{
+  "base_revision": "e8e24262cf25879fce6bf89c30105fcb6331a82b",
+  "baseline_commit": "cd4dffd",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/codebase_retire.rs": "c9e38281881734f6c8fd81422d9faa0a9e45969cc69e3e80e55b3d66aec6e07d",
+    "crates/hades-cli/tests/db_response_shapes.rs": "e662acf873964a641f796d05fd0f24accf15317637240d810cd8d6d279b1540d",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "d7a117cbc3b1ce309e4a63033f6de55c5926da5fabb9c55a828161a75f4a70bc"
+  },
+  "private_cli_tests": {
+    "passed": 13,
+    "failed": 0,
+    "retirement_cases": 8
+  },
+  "database_lifecycle": {
+    "passed": 18,
+    "failed": 0,
+    "seconds": 64.08,
+    "arangodb_version": "3.12.11",
+    "server_stop_exit": 0
+  },
+  "limitations": "Injected authored-edge failure and counts use synthetic acknowledgments. Real lifecycle validates successful file retirement; it does not reproduce the injected authored-edge failure on a real backend."
+}

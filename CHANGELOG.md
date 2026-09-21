@@ -24,6 +24,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Fail retirement when authored-edge deletion fails or returns an invalid count,
+  and disclose potentially committed earlier deletions (#147).
+
 - Preserve batch task panics in results, failure progress, and resume checkpoints
   regardless of when the task completes (#141).
 

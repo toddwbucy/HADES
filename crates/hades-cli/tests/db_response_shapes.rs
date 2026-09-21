@@ -670,12 +670,21 @@ async fn schema_apply_rejects_malformed_or_inconsistent_import_counts() {
 #[tokio::test]
 async fn retirement_cannot_succeed_after_authored_edge_deletion_fails() {
     let cursor = |rows| json!({"result":rows,"hasMore":false,"error":false});
-    for rejected in [false, true] {
-        let final_page = if rejected {
-            json!({"_fixture_status":503,"error":true,"errorNum":9999,"errorMessage":"injected authored-edge deletion failure"})
-        } else {
-            cursor(json!([1]))
-        };
+    for (case, final_page, expected) in [
+        ("removed", cursor(json!([1])), Some(1)),
+        ("already_absent", cursor(json!([0])), Some(0)),
+        (
+            "backend_error",
+            json!({"_fixture_status":503,"error":true,"errorNum":9999,"errorMessage":"injected authored-edge deletion failure"}),
+            None,
+        ),
+        ("missing", cursor(json!([])), None),
+        ("null", cursor(json!([null])), None),
+        ("string", cursor(json!(["1"])), None),
+        ("negative", cursor(json!([-1])), None),
+        ("excess", cursor(json!([2])), None),
+    ] {
+        let rejected = expected.is_none();
         let (output, calls) = run_root(
             &["codebase", "retire", "--file", "target", "--yes"],
             vec![
@@ -691,7 +700,7 @@ async fn retirement_cannot_succeed_after_authored_edge_deletion_fails() {
         let response: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
         println!(
             "RETIRE_OUTCOME {}",
-            json!({"rejected":rejected,"exit":output.status.code(),
+            json!({"case":case,"rejected":rejected,"exit":output.status.code(),
             "response":response,"calls":calls})
         );
         assert_eq!(calls.len(), 5);
@@ -700,9 +709,15 @@ async fn retirement_cannot_succeed_after_authored_edge_deletion_fails() {
                 !output.status.success(),
                 "retirement falsely succeeded after an authored-edge deletion error"
             );
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("authored") && stderr.contains("may already have committed"));
         } else {
             assert!(output.status.success(), "control failed: {output:?}");
-            assert_eq!(response["data"]["other_edges"]["authored"]["removed"], 1);
+            assert_eq!(
+                response["data"]["other_edges"]["authored"]["removed"],
+                expected.unwrap()
+            );
         }
     }
 }
