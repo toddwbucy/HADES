@@ -18,6 +18,7 @@
     "crates/hades-core/src/batch/rate_limit.rs": "3112a8f6a20c822acbf77bb817f5ce7cdcde5410084c472bd1e56834a148897b",
     "crates/hades-core/src/chunking/strategies.rs": "9c8a21be4ea1f9dc262c06bcc35c7e6fab61ae4051c2c7a49d52915623613661",
     "crates/hades-core/src/db/collections.rs": "08e0054fda279cd956456907509b460057eff814c842b1dffb783054aabb84a2",
-    "crates/hades-core/src/db/keys.rs": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e"
+    "crates/hades-core/src/db/keys.rs": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+    "crates/hades-core/src/db/transaction.rs": "bede97765d217208c9e00c1883769577cba573ba7473361fb6f1e5167c1f523c"
   }
 }
