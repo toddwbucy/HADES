@@ -721,3 +721,81 @@ async fn retirement_cannot_succeed_after_authored_edge_deletion_fails() {
         }
     }
 }
+
+#[tokio::test]
+async fn graph_update_noop_requires_complete_valid_selection() {
+    fn pages(rows: Value) -> Vec<Value> {
+        let cursor = |rows| json!({"result":rows,"hasMore":false,"error":false});
+        vec![
+            json!({"result":[{"name":"hades_schema","type":2,"isSystem":false}]}),
+            cursor(json!([
+                {"schema_type":"schema_meta","relation_order":["links"],"num_relations":1,"feature_dim":2,"model_type":"hetero_sage"},
+                {"schema_type":"edge_definition","name":"links","from_collections":["nodes"],"to_collections":["nodes"]}
+            ])),
+            cursor(json!([["nodes/a", "nodes/b"]])),
+            cursor(json!([["a", null], ["b", null]])),
+            cursor(rows),
+        ]
+    }
+    let present =
+        |key: &str| json!({"key":key,"id":format!("nodes/{key}"),"missing":false,"absent":false});
+    let args = [
+        "--gpu",
+        "0",
+        "graph-embed",
+        "update",
+        "--new-nodes",
+        "--checkpoint-dir",
+        "missing-checkpoint",
+    ];
+    for rows in [
+        json!([null, present("b")]),
+        json!([{}, present("b")]),
+        json!([{"key":"a","id":"nodes/a","missing":"true","absent":false},present("b")]),
+        json!([{"key":"a","id":"nodes/a","missing":true,"absent":true},present("b")]),
+        json!([present("a")]),
+        json!([present("a"), present("a")]),
+        json!([present("a"), present("foreign")]),
+        json!([present("a"),{"key":"b","id":"other/b","missing":false,"absent":false}]),
+    ] {
+        let (output, calls) = run_root(&args, pages(rows.clone())).await;
+        assert!(
+            !output.status.success(),
+            "accepted malformed selection {rows}: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("failed to select nodes missing structural embeddings"),
+            "wrong error: {output:?}"
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(calls.len(), 5);
+    }
+    for (rows, absent) in [
+        (json!([present("b"), present("a")]), 0),
+        (
+            json!([present("a"),{"key":"b","id":null,"missing":false,"absent":true}]),
+            1,
+        ),
+    ] {
+        let (output, calls) = run_root(&args, pages(rows)).await;
+        assert!(output.status.success(), "valid no-op failed: {output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["data"]["model"]["service_contacted"], false);
+        assert_eq!(value["data"]["export"]["absent_from_target"], absent);
+        assert_eq!(calls.len(), 5);
+    }
+    let (output, calls) = run_root(
+        &args,
+        pages(json!([
+            {"key":"a","id":"nodes/a","missing":true,"absent":false},present("b")
+        ])),
+    )
+    .await;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no trained model found"),
+        "valid missing item not selected: {output:?}"
+    );
+    assert_eq!(calls.len(), 5);
+}

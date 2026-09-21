@@ -18,5 +18,6 @@
     "arangodb_version": "3.12.11",
     "server_stop_exit": 0
   },
-  "limitations": "Injected authored-edge failure and counts use synthetic acknowledgments. Real lifecycle validates successful file retirement; it does not reproduce the injected authored-edge failure on a real backend."
+  "limitations": "Injected authored-edge failure and counts use synthetic acknowledgments. Real lifecycle validates successful file retirement; it does not reproduce the injected authored-edge failure on a real backend.",
+  "source_revision": "81fc5bb789c8548b56cc43124bae7b310edd311f"
 }

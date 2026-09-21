@@ -1,0 +1,51 @@
+{
+  "source_revision": "7bd9f64a3a491ace6798294427d9b70aa5a224a8",
+  "test_source_sha256": "cc336055f2dc168148daccd6615856eef982a2d5cd276e05e1f27e3fde3e60d5",
+  "test": "commands::graph_embed_update::tests::malformed_selection_rows_cannot_be_successful_noops",
+  "observations": [
+    {
+      "absent": 0,
+      "accepted": true,
+      "case": "null",
+      "selected": 0
+    },
+    {
+      "absent": 0,
+      "accepted": true,
+      "case": "empty_object",
+      "selected": 0
+    },
+    {
+      "absent": 0,
+      "accepted": true,
+      "case": "missing_flags",
+      "selected": 0
+    },
+    {
+      "absent": 0,
+      "accepted": true,
+      "case": "string_flag",
+      "selected": 0
+    },
+    {
+      "absent": 1,
+      "accepted": true,
+      "case": "contradictory_absence",
+      "selected": 0
+    },
+    {
+      "absent": 1,
+      "accepted": true,
+      "case": "absent_with_id",
+      "selected": 0
+    },
+    {
+      "absent": 0,
+      "accepted": true,
+      "case": "present_without_id",
+      "selected": 0
+    }
+  ],
+  "expected": "All seven malformed shapes must be rejected.",
+  "scope": "Direct production parser regression. No actual CLI process, ArangoDB, provider, GPU or production data accessed."
+}
