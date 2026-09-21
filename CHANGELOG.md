@@ -19,6 +19,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Publish the private LSP deadline test PID marker atomically so CI cannot read
+  an empty readiness file before the child writes its identity.
 - Fail document ingestion when source metadata cannot be persisted, and retry
   failed checkpoint entries on explicit batch resume (#137).
 - Require complete, valid import acknowledgments at every schema application
