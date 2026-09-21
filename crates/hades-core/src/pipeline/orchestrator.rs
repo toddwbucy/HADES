@@ -379,7 +379,16 @@ impl Pipeline {
             .embeddings
             .iter()
             .enumerate()
-            .map(|(i, emb)| embedding_doc(profile, doc_key, i, emb))
+            .map(|(i, emb)| {
+                embedding_doc(
+                    profile,
+                    doc_key,
+                    i,
+                    emb,
+                    &embed_result.model,
+                    embed_result.dimension,
+                )
+            })
             .collect();
 
         let batches = vec![
@@ -500,6 +509,8 @@ fn embedding_doc(
     doc_key: &str,
     index: usize,
     embedding: &[f32],
+    model: &str,
+    dimension: u32,
 ) -> Value {
     let ck = keys::chunk_key(doc_key, index);
     let mut doc = json!({
@@ -507,6 +518,8 @@ fn embedding_doc(
         "chunk_key": ck,
         "doc_key": doc_key,
         "embedding": embedding,
+        "model": model,
+        "dimension": dimension,
     });
     set_foreign_key(&mut doc, profile, doc_key);
     doc
@@ -537,7 +550,7 @@ mod tests {
         for name in ["default", "codebase"] {
             let profile = CollectionProfile::get(name).unwrap();
             let c = chunk_doc(profile, "docA", 0, &chunk());
-            let e = embedding_doc(profile, "docA", 0, &[0.1, 0.2]);
+            let e = embedding_doc(profile, "docA", 0, &[0.1, 0.2], "served-model", 2);
             for (kind, d) in [("chunk", &c), ("embedding", &e)] {
                 assert_eq!(
                     d[profile.foreign_key].as_str(),
@@ -554,6 +567,33 @@ mod tests {
         }
     }
 
+    /// Stored document rows must satisfy the actual search reader, not just
+    /// retain their foreign keys. Either missing metadata field is invalid.
+    #[test]
+    fn document_embedding_rows_satisfy_search_contract() {
+        let profile = CollectionProfile::get("default").unwrap();
+        let row = embedding_doc(profile, "docA", 0, &[0.1, 0.2], "served-model", 2);
+        assert_eq!(row["model"], "served-model");
+        assert_eq!(row["dimension"], 2);
+        let ranker = || {
+            crate::retrieval::TopK::new(
+                vec![0.1, 0.2],
+                "served-model".into(),
+                profile.foreign_key,
+                1,
+            )
+            .unwrap()
+        };
+        ranker().insert(row.clone()).unwrap();
+        for field in ["model", "dimension"] {
+            let mut missing = row.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            let error = ranker().insert(missing).unwrap_err().to_string();
+            assert!(error.contains("stored embedding"), "{field}: {error}");
+            assert!(!error.contains("reingest"), "{field}: {error}");
+        }
+    }
+
     /// No registered profile may name a structural chunk/embedding field as
     /// its foreign key — that would make `set_foreign_key` clobber real data.
     #[test]
@@ -567,6 +607,8 @@ mod tests {
             "end_char",
             "chunk_key",
             "embedding",
+            "model",
+            "dimension",
         ];
         for name in ["default", "codebase"] {
             let fk = CollectionProfile::get(name).unwrap().foreign_key;
@@ -584,7 +626,7 @@ mod tests {
         let c = chunk_doc(profile, "docA", 3, &chunk());
         assert_eq!(c["_key"], "docA_chunk_3");
         assert_eq!(c["text"], "hello");
-        let e = embedding_doc(profile, "docA", 3, &[1.0]);
+        let e = embedding_doc(profile, "docA", 3, &[1.0], "served-model", 1);
         assert_eq!(e["chunk_key"], "docA_chunk_3");
         assert_eq!(e["_key"], "docA_chunk_3_emb");
     }

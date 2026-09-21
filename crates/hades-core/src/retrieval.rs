@@ -66,7 +66,7 @@ impl TopK {
     }
     pub fn insert(&mut self, row: Value) -> Result<(), ArangoError> {
         let invalid = || {
-            ArangoError::Request("stored embedding has invalid keys, model, dimension, or vector; reingest the corpus".into())
+            ArangoError::Request("stored embedding has invalid keys, model, dimension, or vector; verify stored row metadata and compatibility with the query model and dimension".into())
         };
         let key = |name| {
             row.get(name)

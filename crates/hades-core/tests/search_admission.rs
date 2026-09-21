@@ -162,7 +162,9 @@ async fn invalid_stored_vectors_fail_without_partial_results() {
         let response = request(&mock.pool, &config).await;
         assert!(!response.success);
         assert_eq!(response.error_code.as_deref(), Some("QUERY_FAILED"));
-        assert!(response.error.unwrap().contains("reingest the corpus"));
+        let error = response.error.unwrap();
+        assert!(error.contains("verify stored row metadata"));
+        assert!(!error.contains("reingest"));
         assert!(response.data.is_none());
         mock.event("POST cursor").await;
         mock.released().await;

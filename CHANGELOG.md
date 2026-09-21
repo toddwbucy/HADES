@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Store document embedding model and dimension for strict semantic search validation,
+  and replace unconditional reingestion advice with metadata and compatibility diagnostics.
+
 - Accept complete validated embedding-window retry recovery while retaining
   terminal failures and atomic file-replacement protections (#157).
 - Reject malformed prune count acknowledgments and report potentially committed
