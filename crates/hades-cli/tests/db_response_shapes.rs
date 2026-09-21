@@ -40,12 +40,18 @@ async fn run_root_with_vectors(
             if method == "DELETE" {
                 Json(json!({"error":false})).into_response()
             } else {
-                let response = responses
+                let mut response = responses
                     .lock()
                     .unwrap()
                     .pop_front()
                     .expect("unexpected request");
-                Json(response).into_response()
+                let status = response
+                    .as_object_mut()
+                    .and_then(|v| v.remove("_fixture_status"))
+                    .and_then(|v| v.as_u64())
+                    .map(|code| axum::http::StatusCode::from_u16(code as u16).unwrap())
+                    .unwrap_or(axum::http::StatusCode::OK);
+                (status, Json(response)).into_response()
             }
         }
     });
@@ -658,5 +664,45 @@ async fn schema_apply_rejects_malformed_or_inconsistent_import_counts() {
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains("schema metadata"));
         assert_eq!(calls.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn retirement_cannot_succeed_after_authored_edge_deletion_fails() {
+    let cursor = |rows| json!({"result":rows,"hasMore":false,"error":false});
+    for rejected in [false, true] {
+        let final_page = if rejected {
+            json!({"_fixture_status":503,"error":true,"errorNum":9999,"errorMessage":"injected authored-edge deletion failure"})
+        } else {
+            cursor(json!([1]))
+        };
+        let (output, calls) = run_root(
+            &["codebase", "retire", "--file", "target", "--yes"],
+            vec![
+                cursor(json!(["target"])),
+                json!({"result":[{"name":"authored","type":3}]}),
+                cursor(json!(["bridge"])),
+                cursor(json!([{"files":1,"chunks":1,"embeddings":1,"symbols":1,
+                    "defines_edges":1,"calls_edges":0,"implements_edges":0,"imports_edges":0}])),
+                final_page,
+            ],
+        )
+        .await;
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        println!(
+            "RETIRE_OUTCOME {}",
+            json!({"rejected":rejected,"exit":output.status.code(),
+            "response":response,"calls":calls})
+        );
+        assert_eq!(calls.len(), 5);
+        if rejected {
+            assert!(
+                !output.status.success(),
+                "retirement falsely succeeded after an authored-edge deletion error"
+            );
+        } else {
+            assert!(output.status.success(), "control failed: {output:?}");
+            assert_eq!(response["data"]["other_edges"]["authored"]["removed"], 1);
+        }
     }
 }
