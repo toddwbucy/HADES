@@ -25,5 +25,6 @@
     "Mixed batch retains successful control and failed item in checkpoint",
     "Resume retries failed item while rejection remains",
     "Resume after removing rejection persists source_path/content_hash, retains exact chunk/vector counts, and clears checkpoint"
-  ]
+  ],
+  "source_revision": "766e7a852f1e4852cb989b3e899a0d47fca49bc2"
 }

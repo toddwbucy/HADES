@@ -59,3 +59,8 @@ tests passed (63.15s), with clean server shutdown. The extended actual CLI fixtu
 checks single failure, mixed batch, repeated resume under rejection and successful
 resume after removing the validation rule, including exact data/checkpoint readback.
 The baseline JSON remains unchanged; remediation hashes and results are separate.
+
+After integrating the schema fix, all 18 combined real-database lifecycle tests
+passed (63.04s) with clean shutdown. Both fixture includes are retained; metadata
+runtime and fixture contents are unchanged. Historical evidence is pinned to its
+executed revision and combined hashes are recorded in the integration artifact.
