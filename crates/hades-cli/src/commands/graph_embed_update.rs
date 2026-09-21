@@ -470,6 +470,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_selection_rows_cannot_be_successful_noops() {
+        let cases = [
+            ("null", json!(null)),
+            ("empty_object", json!({})),
+            ("missing_flags", json!({"id":"nodes/a"})),
+            (
+                "string_flag",
+                json!({"id":"nodes/a","missing":"true","absent":false}),
+            ),
+            (
+                "contradictory_absence",
+                json!({"id":"nodes/a","missing":true,"absent":true}),
+            ),
+            (
+                "absent_with_id",
+                json!({"id":"nodes/a","missing":false,"absent":true}),
+            ),
+            (
+                "present_without_id",
+                json!({"id":null,"missing":false,"absent":false}),
+            ),
+        ];
+        let mut accepted = 0;
+        for (name, row) in cases {
+            let outcome = parse_missing_embedding_results("nodes", vec![row]);
+            println!(
+                "SELECTION_OUTCOME {}",
+                json!({
+                    "case":name,"accepted":outcome.is_ok(),
+                    "selected":outcome.as_ref().ok().map(|r|r.missing_ids.len()),
+                    "absent":outcome.as_ref().ok().map(|r|r.absent_from_target)
+                })
+            );
+            accepted += usize::from(outcome.is_ok());
+        }
+        assert_eq!(accepted, 0, "malformed rows must not imply no work remains");
+    }
+
+    #[test]
     fn parses_missing_and_absent_destination_documents() {
         let result = parse_missing_embedding_results(
             "codebase_files",

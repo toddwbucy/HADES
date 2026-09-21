@@ -30,6 +30,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Preserve malformed graph-update destination-selection parser reproductions
+  for the epic #12 audit.
+
 - Record a real private-database reproduction of ingestion reporting success
   after its source metadata patch is rejected (epic #12).
 
