@@ -23,8 +23,8 @@ from typing import Any
 import numpy as np
 import torch
 
-# Export the backend failure type for transport classification without string matching.
-BackendOutOfMemoryError = torch.OutOfMemoryError
+# Export the native failure type through the namespace available since PyTorch 2.0.
+BackendOutOfMemoryError = torch.cuda.OutOfMemoryError
 from transformers import AutoModel, AutoTokenizer
 
 from .tensors import embeddings_to_numpy

@@ -344,3 +344,27 @@ def test_framework_errors_and_shutdown_use_safe_envelopes(server):
         finally:
             await state.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("legacy_namespace", [False, True])
+def test_backend_oom_type_import_without_cuda_initialization(monkeypatch, legacy_namespace):
+    import torch
+
+    # PyTorch 2.0 exposes this native type only through torch.cuda.
+    expected = torch.cuda.OutOfMemoryError
+    if legacy_namespace:
+        monkeypatch.delattr(torch, "OutOfMemoryError", raising=False)
+    transformers = types.ModuleType("transformers")
+    transformers.AutoModel = transformers.AutoTokenizer = object
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    def forbidden_cuda_init():
+        pytest.fail("Import must not initialize CUDA")
+    monkeypatch.setattr(torch.cuda, "_lazy_init", forbidden_cuda_init)
+    name = "embedding._oom_import_backend"
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parents[1] / "embedding/jina_v4.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    assert module.BackendOutOfMemoryError is expected

@@ -33,16 +33,13 @@ pub enum CodebaseCmd {
         #[arg(long = "compile-commands")]
         compile_commands: Option<PathBuf>,
 
-        /// Re-ingest each file even if its change-detection digest is
-        /// unchanged. This rebuilds the node's symbols, chunks, and embeddings
-        /// in place — it does NOT drop the file node or its inbound edges, so
-        /// authored bridge edges survive (unlike `db purge`). Use it to refresh
-        /// a node whose stored view has drifted from the source — in particular
-        /// after an edit that touched only bodies, signatures, or comments,
-        /// which a name-keyed `symbol_hash` cannot see and which
-        /// `codebase drift` reports as `changed`. What `symbol_hash` covers
-        /// depends on the node's `analysis_tier` — see `codebase drift --help`;
-        /// the name-only case is Python and Rust at tier `semantic`.
+        /// Re-ingest each file even if its content hash is unchanged.
+        /// This rebuilds symbols, chunks, and embeddings under the same file
+        /// identity while retaining inbound authored edges. Ordinary ingestion
+        /// already detects body, signature, and comment edits using the full
+        /// content hash; --force is not required just because symbol names
+        /// stayed the same. Use it to rebuild unchanged files after changes to
+        /// analyzers or embedding configuration, or to refresh dependencies.
         ///
         /// Pass the ORIGINAL ingest root, not a narrower path. Keys are
         /// derived relative to the path given (a file bases at its parent), so
@@ -53,7 +50,7 @@ pub enum CodebaseCmd {
         /// inbound edges are reported as `dangling_inbound_edges` — not
         /// deleted, since each records a real dependency. Re-resolve them by
         /// re-running `codebase ingest --force <the same ingest root>` (plain
-        /// re-ingest skips the dependents, whose own `symbol_hash` did not
+        /// re-ingest skips the dependents, whose own content hash did not
         /// change), or run `hades codebase prune-orphans` to drop them; until
         /// then `codebase validate` will flag them.
         ///
@@ -62,12 +59,11 @@ pub enum CodebaseCmd {
         /// available now is still skipped — pass `--allow-analysis-downgrade`
         /// as well to refresh it.
         ///
-        /// One exception, and it is the recovery path for #193: a `.go` node
-        /// whose stored `semantic` tier came from the old gopls stamp IS
-        /// rewritten to `structural`, without `--allow-analysis-downgrade`.
-        /// Go has no per-file semantic analyzer, so that stamp described a
-        /// fidelity the node's own digest never had, and the gopls phase
-        /// re-supplies the semantic symbols and edges later in the same run.
+        /// Go may replace an older semantic tier when gopls is scheduled,
+        /// the file belongs to a discoverable Go module, and incoming analysis
+        /// is richer than raw text. Enrichment runs afterwards; failure can
+        /// leave earlier file updates committed and makes the run fail unless
+        /// analysis downgrade was explicitly accepted.
         #[arg(short = 'f', long = "force", alias = "no-skip")]
         force: bool,
 
@@ -118,27 +114,17 @@ pub enum CodebaseCmd {
     /// `changed.unverifiable` are all zero. `unhandled` does not gate it, since
     /// every repository contains files no analyzer handles.
     ///
-    /// `changed` exists because drift compares full content while incremental
-    /// ingest compares `symbol_hash`, whose meaning depends on the node's
-    /// `analysis_tier`. At tier `semantic`, Python and Rust hash symbol *names*
-    /// only, so an edited body, signature or comment leaves it identical and a
-    /// plain `codebase ingest` skips the file while its stored chunks go stale.
-    /// Refresh those with `codebase ingest --force`.
+    /// Both drift and incremental ingestion compare full content hashes.
+    /// Body, signature, and comment edits therefore trigger ordinary re-ingest.
+    /// Missing stored content hashes also trigger reprocessing, subject to the
+    /// analyzer-fidelity guard. Unreadable files cannot be repaired by ingest
+    /// until they become readable.
     ///
-    /// The other tiers are stricter and mostly self-correct: tier `structural`
-    /// and C++ at tier `semantic` hash the serialized symbol list (line spans
-    /// and metadata included), and tier `text` hashes full content. Check the
-    /// tier rather than the extension. Go is in the `structural` group: it has
-    /// no per-file semantic analyzer, and the semantic symbols and edges gopls
-    /// contributes are recorded under their own keys rather than by restating
-    /// the file's tier.
-    ///
-    /// One exception on graphs built before that changed: `.go` nodes ingested
-    /// by an older HADES still read `semantic` even though their digest is
-    /// tree-sitter's, and a plain re-ingest will not clear the stamp because
-    /// the unchanged-digest skip fires first. `codebase ingest --force <the
-    /// original ingest root>` rewrites them; until then, treat a `.go` node
-    /// reading `semantic` as `structural`.
+    /// Unchanged files are reprocessed when relationships are pending, or when
+    /// an available embedder needs to backfill missing vectors according to
+    /// stored chunk/embedding counts. These counts do not verify model identity
+    /// or vector freshness. Use --force with the original ingest root for an
+    /// explicit rebuild; it does not override the analyzer-fidelity guard.
     ///
     /// `stale` is NOT "the source file was deleted". It is every node with no
     /// counterpart under the root you passed. Nodes belonging to another
