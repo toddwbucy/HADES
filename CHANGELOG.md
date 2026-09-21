@@ -26,6 +26,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Restrict Python import symbol targets to the requested local module, preventing
+  unrelated same-name definitions from becoming resolved graph edges (#149).
+
 - Preserve batch task panics in results, failure progress, and resume checkpoints
   regardless of when the task completes (#141).
 

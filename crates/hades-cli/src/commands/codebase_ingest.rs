@@ -3749,13 +3749,11 @@ fn resolve_python_imports_scoped(
                     // Try symbol-level resolution: look up the imported name in the symbol index.
                     let mut resolved = false;
                     if let Some(targets) = symbol_index.get(original_name) {
-                        // If we know the target file, prefer symbols from that file.
-                        let target = if let Some(tf) = target_file {
-                            targets.iter().find(|(path, _)| path == tf)
-                        } else {
-                            None
-                        }
-                        .or_else(|| targets.first());
+                        // A matching bare name in another module is not evidence
+                        // that this import refers to it. Unknown modules stay
+                        // unresolved; known modules retain the file fallback.
+                        let target =
+                            target_file.and_then(|tf| targets.iter().find(|(path, _)| path == tf));
 
                         if let Some((target_path, target_skey)) = target
                             && target_path != source_path
@@ -5433,26 +5431,38 @@ mod tests {
             )]);
             let mut files = HashMap::from([
                 ("app.py".to_owned(), vec![]),
-                ("unrelated.py".to_owned(), vec![make_def_sym("Config", SymbolKind::Class)]),
+                (
+                    "unrelated.py".to_owned(),
+                    vec![make_def_sym("Config", SymbolKind::Class)],
+                ),
                 ("config.py".to_owned(), vec![]),
             ]);
             if defines_requested {
-                files.get_mut("config.py").unwrap().push(make_def_sym("Config", SymbolKind::Class));
+                files
+                    .get_mut("config.py")
+                    .unwrap()
+                    .push(make_def_sym("Config", SymbolKind::Class));
             }
             let index = build_python_symbol_index_scoped(&files, namespace);
             let edges = resolve_python_imports_scoped(&imports, &files, &index, namespace);
             let valid = match expected_target {
                 None => edges.is_empty(),
-                Some((path, resolved)) => edges.len() == 1
-                    && edges[0]["target_path"] == path
-                    && edges[0]["resolved"] == resolved,
+                Some((path, resolved)) => {
+                    edges.len() == 1
+                        && edges[0]["target_path"] == path
+                        && edges[0]["resolved"] == resolved
+                }
             };
-            observations.push(json!({"module":module,"defines_requested":defines_requested,
-                "valid":valid,"edges":edges}));
+            observations.push(
+                json!({"module":module,"defines_requested":defines_requested,
+                "valid":valid,"edges":edges}),
+            );
         }
         println!("{}", serde_json::to_string_pretty(&observations).unwrap());
-        assert!(observations.iter().all(|row| row["valid"] == true),
-            "import resolution invented a target outside the requested module");
+        assert!(
+            observations.iter().all(|row| row["valid"] == true),
+            "import resolution invented a target outside the requested module"
+        );
     }
 
     #[test]
