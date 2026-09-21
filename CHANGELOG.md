@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Document four compliance and linking command contracts, including verdict,
+  filesystem, and partial-write limitations for the full audit (#12).
+
 ### Fixed
 
 - Publish the private LSP deadline test PID marker atomically so CI cannot read
