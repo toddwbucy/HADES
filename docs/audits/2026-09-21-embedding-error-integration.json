@@ -1,0 +1,110 @@
+{
+  "date": "2026-09-21",
+  "issue": 153,
+  "pr": 154,
+  "starting_head": "3504a6b4c03c4e1e8755172ce7a6437face90f2a",
+  "integrated_main": "57b1d7447b9d5d7c57ec43b537f8d934b37b35ee",
+  "conflict_resolution": "CHANGELOG only; preserve both entries",
+  "implementation": "Unchanged PE error correction; test assertion strengthened from any 4xx to exact 400/422 and named codes",
+  "source_sha256": {
+    "services/embedding/http_server.py": "2fe32d34e1ba6dd8522d867a43b73e0d1d933db5db1eb0b9af9c3502e0702557",
+    "services/embedding/jina_v4.py": "34739174ed99ce32e9c4bd34755ded35b4b595672cae83542e1ef924a9c562bb",
+    "services/tests/test_embedding_ownership.py": "9795e1a0f31c7e519fe248fbd3c61b0226218fec193a472f9b84887d5293c8e1"
+  },
+  "tests": {
+    "suite": "services/tests/test_embedding_ownership.py",
+    "passed": 29,
+    "failed": 0,
+    "seconds": 2.71,
+    "log_sha256": "53e20dd21f53a25fcfe871c8426ddb3cdfaa683cc69d7b3bcbc34569a365729b"
+  },
+  "original_baseline": {
+    "revision": "ede0f5ead044311962e268744e3f9a6cfd6be19e",
+    "artifact_sha256": "d27a9f1b93ff60fe99d3eb567855f63ebff91d3466c731fef5ed6a35c89ecc97",
+    "source_and_original_fixture_hashes_verified": true,
+    "preserved": true,
+    "six_original_cases_failed": true
+  },
+  "corrected_observations": [
+    {
+      "body": {
+        "error": {
+          "code": "PE_INVALID_TASK",
+          "message": "Unsupported embedding task",
+          "param": "task",
+          "type": "invalid_request_error"
+        }
+      },
+      "case": "task",
+      "conforms": true,
+      "status": 400
+    },
+    {
+      "body": {
+        "error": {
+          "code": "PE_UNSUPPORTED_ENCODING_FORMAT",
+          "message": "Only float encoding is supported",
+          "param": "encoding_format",
+          "type": "invalid_request_error"
+        }
+      },
+      "case": "encoding",
+      "conforms": true,
+      "status": 400
+    },
+    {
+      "body": {
+        "error": {
+          "code": "PE_MULTIMODAL_UNSUPPORTED",
+          "message": "This backend serves text only",
+          "param": "images",
+          "type": "invalid_request_error"
+        }
+      },
+      "case": "images",
+      "conforms": true,
+      "status": 400
+    },
+    {
+      "body": {
+        "error": {
+          "code": "PE_INVALID_INPUT",
+          "message": "Input must be non-empty",
+          "param": "input",
+          "type": "invalid_request_error"
+        }
+      },
+      "case": "empty_input",
+      "conforms": true,
+      "status": 400
+    },
+    {
+      "body": {
+        "error": {
+          "code": "PE_INVALID_REQUEST",
+          "message": "Request fields do not match the embedding API schema",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "case": "invalid_shape",
+      "conforms": true,
+      "status": 422
+    },
+    {
+      "body": {
+        "error": {
+          "code": "PE_BACKEND_ERROR",
+          "message": "Embedding backend failed",
+          "param": null,
+          "type": "server_error"
+        }
+      },
+      "case": "backend_failure",
+      "conforms": true,
+      "status": 500
+    }
+  ],
+  "review": "Author final-diff review; automated review initially rate-limited, not approval. No mandatory external approval configured at starting observation. Final CI must be checked independently.",
+  "limits": "Real ASGI/worker lifecycle with fake inference and OOM; no GPU exhaustion recovery, live endpoint, production data/config/model access. Existing timeout/cancellation/drain behavior preserved; no full PE specification certification."
+}

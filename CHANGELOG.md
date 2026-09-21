@@ -32,6 +32,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Return structured PE-API errors with required codes and safe public messages,
+  including oversized inputs and backend OOM failures (#153).
 - Correct codebase ingest and drift help to describe content-hash skipping,
   embedding backfill, and guarded Go enrichment instead of stale symbol-hash rules (#12).
 

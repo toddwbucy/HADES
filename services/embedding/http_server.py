@@ -28,10 +28,16 @@ from typing import Any, Optional, Union
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 
 from .config import EmbeddingConfig
-from .jina_v4 import EMBEDDING_DIM, MAX_TOKENS, SUPPORTED_TASKS, JinaV4Embedder
+from .jina_v4 import (
+    EMBEDDING_DIM, MAX_TOKENS, SUPPORTED_TASKS, JinaV4Embedder,
+    InputTooLargeError, BackendOutOfMemoryError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +223,7 @@ class AppState:
     async def run_work(self, function):
         """Own executor work independently of the HTTP request task."""
         if self._closing:
-            raise HTTPException(status_code=503, detail="embedding service is closing")
+            raise PEError(503, "PE_SERVICE_CLOSING", "Embedding service is closing")
         self.active_requests += 1
         self._idle.clear()
         operation = asyncio.create_task(self._run_work(function))
@@ -331,6 +337,46 @@ app = FastAPI(
 )
 
 
+class PEError(HTTPException):
+    """An intentional, public-safe PE-API failure."""
+
+    def __init__(self, status, code, message, param=None):
+        super().__init__(status_code=status, detail=message)
+        self.code = code
+        self.param = param
+
+
+def error_response(status, message, code=None, param=None, headers=None):
+    return JSONResponse(status_code=status, headers=headers, content={"error": {
+        "message": message,
+        "type": "invalid_request_error" if 400 <= status < 500 else "server_error",
+        "param": param,
+        "code": code,
+    }})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_handler(request, exc):
+    if isinstance(exc, PEError):
+        return error_response(exc.status_code, exc.detail, exc.code, exc.param, exc.headers)
+    # Framework errors must not reflect arbitrary exception details.
+    return error_response(exc.status_code, "Request rejected" if exc.status_code < 500
+                          else "Service unavailable", headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request, exc):
+    # Validation details may include full input values; never serialize them.
+    return error_response(422, "Request fields do not match the embedding API schema",
+                          "PE_INVALID_REQUEST")
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request, exc):
+    logger.error("Unhandled embedding API failure", exc_info=(type(exc), exc, exc.__traceback__))
+    return error_response(500, "Embedding service failed", "PE_BACKEND_ERROR")
+
+
 def _state(app: FastAPI) -> AppState:
     return app.state.app_state  # type: ignore[no-any-return]
 
@@ -393,29 +439,18 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
     texts: list[str] = [req.input] if isinstance(req.input, str) else list(req.input)
 
     if not texts:
-        raise HTTPException(status_code=400, detail="`input` must be non-empty")
+        raise PEError(400, "PE_INVALID_INPUT", "Input must be non-empty", "input")
 
     # The spec makes these MUSTs, and this service is its reference
     # implementation, so a backend author reading the document gets what it
     # describes. All three previously returned 200.
     if req.encoding_format != "float":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"PE_UNSUPPORTED_ENCODING_FORMAT: encoding_format "
-                f"{req.encoding_format!r} is not supported, only 'float'"
-            ),
-        )
+        raise PEError(400, "PE_UNSUPPORTED_ENCODING_FORMAT",
+                      "Only float encoding is supported", "encoding_format")
 
     if req.images:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "PE_MULTIMODAL_UNSUPPORTED: this backend serves text only. "
-                "Refusing rather than returning text-only embeddings for a "
-                "request that supplied images."
-            ),
-        )
+        raise PEError(400, "PE_MULTIMODAL_UNSUPPORTED",
+                      "This backend serves text only", "images")
 
     # `model` is deliberately NOT validated against the served model. The Rust
     # client sends a configured alias ("jinaai/jina-embeddings-v4") while this
@@ -427,16 +462,11 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
 
     task = req.task or "retrieval.passage"
     if task not in SUPPORTED_TASKS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"unknown task {task!r}; supported: {', '.join(SUPPORTED_TASKS)}",
-        )
+        raise PEError(400, "PE_INVALID_TASK", "Unsupported embedding task", "task")
 
     if req.batch_size is not None and req.batch_size < 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"`batch_size` must be non-negative, got {req.batch_size}",
-        )
+        raise PEError(400, "PE_INVALID_BATCH_SIZE",
+                      "Batch size must be non-negative", "batch_size")
     batch_override = (
         req.batch_size if (req.batch_size is not None and req.batch_size > 0) else None
     )
@@ -458,14 +488,8 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
             # input 0's spans out of inputs 1 and 2, silently, whenever the
             # later documents happen to be long enough to contain them.
             if lc.boundaries is not None and len(texts) > 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "late_chunk.boundaries applies to a single input, but "
-                        f"{len(texts)} inputs were sent. Send one input per "
-                        "request when supplying boundaries."
-                    ),
-                )
+                raise PEError(400, "PE_INVALID_BOUNDARIES",
+                              "Explicit boundaries require exactly one input", "late_chunk.boundaries")
 
             def _late() -> tuple[list, list]:
                 vecs: list = []
@@ -501,13 +525,22 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
         # 400 as a 500, which tells a client to retry something that will never
         # succeed.
         raise
+    except InputTooLargeError as e:
+        raise PEError(400, "PE_INPUT_TOO_LARGE",
+                      f"Input {e.index} has {e.n_tokens} tokens; ceiling is {e.max_tokens}",
+                      "input") from e
+    except BackendOutOfMemoryError as e:
+        logger.exception("Embedding backend exhausted memory")
+        raise PEError(503, "PE_BACKEND_OOM", "Embedding backend exhausted memory") from e
     except ValueError as e:
-        # `JinaV4Embedder.embed_texts` raises ValueError for invalid
-        # batch_size; surface that as a 400 not a 500.
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.exception("Embedding input rejected")
+        # The late-chunk saturation guard predates the typed length exception.
+        if str(e).startswith("PE_INPUT_TOO_LARGE:"):
+            raise PEError(400, "PE_INPUT_TOO_LARGE", "Input exceeds the model context ceiling", "input") from e
+        raise PEError(400, "PE_INVALID_INPUT", "Embedding input or chunk parameters are invalid", "input") from e
     except Exception as e:
         logger.exception("Embedding failed")
-        raise HTTPException(status_code=500, detail=f"embedding failed: {e}")
+        raise PEError(500, "PE_BACKEND_ERROR", "Embedding backend failed") from e
 
     duration_ms = int((time.time() - started) * 1000)
     logger.info(

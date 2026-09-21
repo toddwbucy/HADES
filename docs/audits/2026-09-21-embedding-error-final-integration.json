@@ -1,0 +1,22 @@
+{
+  "previous_evidence": "2026-09-21-embedding-error-integration.json",
+  "integrated_main": "b8226fd510c262cd5b752a29524170ad656ba63b",
+  "review_correction": "Use torch.cuda.OutOfMemoryError, available in supported PyTorch 2.0, instead of later top-level alias. Worker and HTTP behavior unchanged.",
+  "upstream_source": "https://github.com/pytorch/pytorch/blob/v2.0.0/torch/cuda/__init__.py#L186",
+  "source_sha256": {
+    "services/embedding/http_server.py": "2fe32d34e1ba6dd8522d867a43b73e0d1d933db5db1eb0b9af9c3502e0702557",
+    "services/embedding/jina_v4.py": "c1810d1e79757ebefe219bfbbd46c0e39c076008f3b40494b874ae93ad4da22d",
+    "services/tests/test_embedding_ownership.py": "3adec842b3d2d1661eef9174a1aa5df030877550003d3d4718ba3a743e61c026"
+  },
+  "compatibility_reproduction": {
+    "before": "1 failed (legacy namespace), 1 passed (current namespace)",
+    "log_sha256": "4811622efb19abec662e466b60b15099e367055ab621c9b08cc204dc5a4aeb9f",
+    "scope": "Current CPU PyTorch with its top-level alias removed to simulate old namespace; not a full old-version runtime test."
+  },
+  "final_focused_test": {
+    "passed": 31,
+    "seconds": 3.33,
+    "log_sha256": "2b9317bbea69a6d99bd9f1a8956e7d6b73a03b68c06c7408361fcfec9e45d813"
+  },
+  "limits": "No model loaded or CUDA initialized; inference/OOM synthetic; no real GPU exhaustion recovery. Original baseline and earlier evidence unchanged. Final-head CI separately required."
+}
