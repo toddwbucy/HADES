@@ -140,6 +140,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace seven native embedding/extraction command contracts and explicit
+  provider, subprocess and output-file limits (epic #12).
+
 - Trace all 18 task command contracts, including workflow, partial-write and
   session/reviewer limitations (epic #12).
 
