@@ -1,0 +1,34 @@
+{
+  "source_revision": "2bb0e6a13cdc705d6708010047d487cd37dbc911",
+  "test": "batch::processor::tests::panicked_items_remain_in_summary_and_checkpoint",
+  "test_source_sha256": "3d423931504e822f9a0c216f37251704ba1bceefca5dfa7011fe69c5a8f57634",
+  "observations": [
+    {
+      "checkpoint_exists": false,
+      "completed": 1,
+      "failed": 0,
+      "panic_id": "first",
+      "panic_recorded_in_checkpoint": false,
+      "result_count": 1,
+      "result_ids": [
+        "last"
+      ],
+      "total": 2
+    },
+    {
+      "checkpoint_exists": true,
+      "completed": 1,
+      "failed": 1,
+      "panic_id": "last",
+      "panic_recorded_in_checkpoint": false,
+      "result_count": 2,
+      "result_ids": [
+        "first",
+        "last"
+      ],
+      "total": 2
+    }
+  ],
+  "expected": "Both cases: total 2, completed 1, failed 1, two results, panic retained in checkpoint.",
+  "isolation": "Temporary files and local Tokio tasks only; no database, model, or service access."
+}

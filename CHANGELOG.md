@@ -24,6 +24,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve batch task panics in results, failure progress, and resume checkpoints
+  regardless of when the task completes (#141).
+
 - Publish the private LSP deadline test PID marker atomically so CI cannot read
   an empty readiness file before the child writes its identity.
 - Fail document ingestion when source metadata cannot be persisted, and retry
