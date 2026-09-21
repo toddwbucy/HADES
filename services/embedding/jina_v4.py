@@ -22,6 +22,9 @@ from typing import Any
 
 import numpy as np
 import torch
+
+# Export the backend failure type for transport classification without string matching.
+BackendOutOfMemoryError = torch.OutOfMemoryError
 from transformers import AutoModel, AutoTokenizer
 
 from .tensors import embeddings_to_numpy

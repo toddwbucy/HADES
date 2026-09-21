@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Return structured PE-API errors with required codes and safe public messages,
+  including oversized inputs and backend OOM failures (#153).
+
 - Fail retirement when authored-edge deletion fails or returns an invalid count,
   and disclose potentially committed earlier deletions (#147).
 
