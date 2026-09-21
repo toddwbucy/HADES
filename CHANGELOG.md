@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Trace ingestion and schema-application contracts, including checkpoint,
+  identity, transaction and acknowledgment limitations (epic #12).
+
 ### Fixed
 
 - Require complete, valid import acknowledgments at every schema application
