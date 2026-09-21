@@ -799,3 +799,69 @@ async fn graph_update_noop_requires_complete_valid_selection() {
     );
     assert_eq!(calls.len(), 5);
 }
+
+#[tokio::test]
+async fn prune_requires_valid_count_acknowledgments() {
+    let cursor = |rows| json!({"result":rows,"hasMore":false,"error":false});
+    let mut violations = Vec::new();
+    for dry_run in [false, true] {
+        for (case, page, expected) in [
+            ("zero", cursor(json!([0])), Some(0)),
+            ("positive", cursor(json!([3])), Some(3)),
+            (
+                "backend_error",
+                json!({"_fixture_status":503,"error":true,"errorNum":9999,"errorMessage":"fixture unavailable"}),
+                None,
+            ),
+            ("missing_row", cursor(json!([])), None),
+            ("null", cursor(json!([null])), None),
+            ("string", cursor(json!(["3"])), None),
+            ("fraction", cursor(json!([1.5])), None),
+            ("negative", cursor(json!([-1])), None),
+            ("boolean", cursor(json!([true])), None),
+            ("object", cursor(json!([{}])), None),
+            ("multiple_rows", cursor(json!([0, 1])), None),
+            (
+                "missing_result",
+                json!({"hasMore":false,"error":false}),
+                None,
+            ),
+        ] {
+            // The symbols sweep has already acknowledged two deletions before
+            // the chunks acknowledgment under test. Failure cannot imply rollback.
+            let mut pages = vec![cursor(json!([2])), page];
+            pages.extend((0..6).map(|_| cursor(json!([0]))));
+            let args = if dry_run {
+                vec!["codebase", "prune-orphans", "--dry-run"]
+            } else {
+                vec!["codebase", "prune-orphans"]
+            };
+            let (output, calls) = run_root(&args, pages).await;
+            let response: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!(
+                "PRUNE_COUNT_OUTCOME {}",
+                json!({"case":case,"dry_run":dry_run,
+                "exit":output.status.code(),"response":response,"calls":calls.len(),"stderr":stderr})
+            );
+            if let Some(n) = expected {
+                assert!(output.status.success(), "{case}: {output:?}");
+                assert_eq!(response["success"], true);
+                assert_eq!(response["data"]["orphan_symbols"], 2);
+                assert_eq!(response["data"]["orphan_chunks"], n);
+                assert_eq!(calls.len(), 8);
+            } else if output.status.success() || !output.stdout.is_empty() || calls.len() != 2 {
+                violations.push(format!(
+                    "{case}, dry_run={dry_run}: invalid acknowledgment accepted"
+                ));
+            } else if !stderr.contains("prune")
+                || (!dry_run && !stderr.contains("may already have committed"))
+            {
+                violations.push(format!(
+                    "{case}, dry_run={dry_run}: missing failure context"
+                ));
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}

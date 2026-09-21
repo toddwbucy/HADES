@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Reject malformed prune count acknowledgments and report potentially committed
+  earlier deletions instead of successful zero counts (#155).
+
 - Return structured PE-API errors with required codes and safe public messages,
   including oversized inputs and backend OOM failures (#153).
 - Correct codebase ingest and drift help to describe content-hash skipping,

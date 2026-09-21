@@ -1,0 +1,764 @@
+{
+  "item": "M04.03",
+  "baseline_revision": "b810c7bec2296d83e7b77c9fb05ca01d16f29c25",
+  "classification": "CONFIRMED",
+  "handler": "codebase_prune::run_prune -> sweep_orphans -> run_count",
+  "contract": "AQL LENGTH/COUNT queries return exactly one nonnegative integer; malformed acknowledgments cannot imply zero. Existing ArangoError::Api(1203) branch retained.",
+  "outcomes": {
+    "baseline": [
+      {
+        "calls": 8,
+        "case": "zero",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.905681595+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "positive",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 3,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.915559669+00:00"
+        }
+      },
+      {
+        "calls": 2,
+        "case": "backend_error",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 8,
+        "case": "missing_row",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.930620739+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "null",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.939188569+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "string",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.947313211+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "fraction",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.956172439+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "negative",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.963891393+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "boolean",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.972062875+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "object",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.979906679+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "multiple_rows",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:14.988688037+00:00"
+        }
+      },
+      {
+        "calls": 2,
+        "case": "missing_result",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 8,
+        "case": "zero",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.003822967+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "positive",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 3,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.012246347+00:00"
+        }
+      },
+      {
+        "calls": 2,
+        "case": "backend_error",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 8,
+        "case": "missing_row",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.026233552+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "null",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.034532013+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "string",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.042292877+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "fraction",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.050985116+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "negative",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.058554241+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "boolean",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.066904242+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "object",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.075241543+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "multiple_rows",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:15.083210645+00:00"
+        }
+      },
+      {
+        "calls": 2,
+        "case": "missing_result",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      }
+    ],
+    "corrected": [
+      {
+        "calls": 8,
+        "case": "zero",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:47.635345181+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "positive",
+        "dry_run": false,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dry_run": false,
+            "orphan_chunks": 3,
+            "orphan_embeddings": 0,
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:47.645253554+00:00"
+        }
+      },
+      {
+        "calls": 2,
+        "case": "backend_error",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "missing_row",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "null",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "string",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "fraction",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "negative",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "boolean",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "object",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "multiple_rows",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "missing_result",
+        "dry_run": false,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 8,
+        "case": "zero",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 0,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:47.716248812+00:00"
+        }
+      },
+      {
+        "calls": 8,
+        "case": "positive",
+        "dry_run": true,
+        "exit": 0,
+        "response": {
+          "command": "codebase.prune_orphans",
+          "data": {
+            "dangling_edges": {
+              "calls_edges": 0,
+              "defines_edges": 0,
+              "implements_edges": 0,
+              "imports_edges": 0
+            },
+            "dangling_edges_note": "lower bound: excludes edges that become dangling after orphan symbols are removed; a real run may remove more",
+            "dry_run": true,
+            "orphan_chunks": 3,
+            "orphan_embeddings": 0,
+            "orphan_embeddings_note": "lower bound: excludes embeddings that become orphaned after orphan chunks are removed; a real run may remove more",
+            "orphan_symbols": 2
+          },
+          "success": true,
+          "timestamp": "2026-09-21T13:59:47.724723503+00:00"
+        }
+      },
+      {
+        "calls": 2,
+        "case": "backend_error",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "missing_row",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "null",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "string",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "fraction",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "negative",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "boolean",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "object",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "multiple_rows",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      },
+      {
+        "calls": 2,
+        "case": "missing_result",
+        "dry_run": true,
+        "exit": 1,
+        "response": null
+      }
+    ]
+  },
+  "verification": "15 actual-CLI db_response_shapes tests passed, including 24 prune cases (write/dry-run).",
+  "limits": "Controlled Unix HTTP database peer, not actual deletion or rollback evidence; earlier acknowledged symbols deletion precedes tested chunk acknowledgment. No whole-prune atomicity or schema completeness claim. Initial optional missing-collection transport control did not reach the Api branch and was replaced with an ordinary backend-error control; missing-collection transport policy was not changed.",
+  "baseline_source_sha256": "7fa89481d40f85d246f1ce0adeed15ebe4e61bce55baecfb5efb2884694a8abf",
+  "log_sha256": {
+    "baseline": "b87460652837026ee99f699a89d3d91c679a2154ef3cd9ed757394cb724e7905",
+    "corrected": "cf2a6b3c157a5d9b189be89d4fda8a7944ecf029db0eee8476afdd6424bdcd22"
+  }
+}

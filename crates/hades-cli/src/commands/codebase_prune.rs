@@ -107,7 +107,13 @@ pub async fn run_prune(config: &HadesConfig, dry_run: bool) -> Result<()> {
         orphan_chunks,
         orphan_embeddings,
         dangling,
-    } = sweep_orphans(&pool, dry_run).await?;
+    } = sweep_orphans(&pool, dry_run).await.with_context(|| {
+        if dry_run {
+            "prune dry-run failed; counts are incomplete"
+        } else {
+            "prune failed; deletions may already have committed; outcome may be partial or uncertain"
+        }
+    })?;
     let total_edges: u64 = dangling.values().filter_map(Value::as_u64).sum();
 
     let mut report = json!({
@@ -317,8 +323,13 @@ async fn run_count(
     bind: &Value,
     target: ExecutionTarget,
 ) -> Result<u64> {
-    match query::query_single(pool, aql, Some(bind), target).await {
-        Ok(v) => Ok(v.and_then(|v| v.as_u64()).unwrap_or(0)),
+    match query::query(pool, aql, Some(bind), None, false, target).await {
+        Ok(result) => match result.results.as_slice() {
+            [value] => value
+                .as_u64()
+                .context("prune count acknowledgment must be a nonnegative integer"),
+            _ => anyhow::bail!("prune count acknowledgment must contain exactly one count"),
+        },
         Err(ArangoError::Api {
             error_num: 1203, ..
         }) => Ok(0),
