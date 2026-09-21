@@ -1,4 +1,5 @@
-# HADES
+# H.A.D.E.S. 
+### Hybrid Adaptive Data Exploration System
 
 [![CI](https://github.com/toddwbucy/HADES/actions/workflows/ci.yml/badge.svg)](https://github.com/toddwbucy/HADES/actions/workflows/ci.yml)
 
