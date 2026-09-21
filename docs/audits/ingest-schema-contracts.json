@@ -1,0 +1,24 @@
+{
+  "source_revision": "2bb0e6a13cdc705d6708010047d487cd37dbc911",
+  "scope": "Source contracts for ingest and schema apply; includes pending PR138, not deployment provenance",
+  "leaves": [
+    "ingest",
+    "schema apply"
+  ],
+  "source_sha256": {
+    "crates/hades-cli/src/main.rs": "5dadb7e855821fcc07992fe62ea29ec4ad26d11a56950d2b4c74cfac0013e9a5",
+    "crates/hades-cli/src/commands/ingest.rs": "9f5cb604faa7d31feb09d326facab4c9cf390ee6f95a0ef56f1fe1c236f12c3b",
+    "crates/hades-cli/src/commands/schema.rs": "7b03f04accbda50c122a608ffa516d1cbfcabcea93503924a2fd6f239e15277f",
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "f43c1e641a07aee6f519abc6b3935254598c7e58810be64b74622f2065ce5ab1",
+    "crates/hades-core/src/schema_apply.rs": "d29b1b4a450865d2d4619eadcdb992336dd8d7dd92d9c50b98f4e33045aacb77",
+    "crates/hades-core/src/ingest_routing.rs": "6de87efd4996e37a92ae405415a509895aff609940b8ba8b82037218cd6aa4f0",
+    "crates/hades-core/src/pipeline/orchestrator.rs": "470056f446de38a7437c787ef135816a0e6aaf43d6db50f8aa15709cca051b2f",
+    "crates/hades-core/src/batch/processor.rs": "67f8cc7ebfea920eac0c938cba1993c5bd202e962f43790317538441197fe678",
+    "crates/hades-core/src/batch/state.rs": "21d6c61b5e51bb48a80af4de09c403e9d0ca0289d28e56427260b90e91f85366",
+    "crates/hades-core/src/batch/rate_limit.rs": "3112a8f6a20c822acbf77bb817f5ce7cdcde5410084c472bd1e56834a148897b",
+    "crates/hades-core/src/chunking/strategies.rs": "9c8a21be4ea1f9dc262c06bcc35c7e6fab61ae4051c2c7a49d52915623613661",
+    "crates/hades-core/src/db/collections.rs": "08e0054fda279cd956456907509b460057eff814c842b1dffb783054aabb84a2",
+    "crates/hades-core/src/db/keys.rs": "96fe00cad8a1e89b46b74a7f34a0d53b91fd125e814e0a8c6775f684e1155d7e",
+    "crates/hades-core/src/db/transaction.rs": "bede97765d217208c9e00c1883769577cba573ba7473361fb6f1e5167c1f523c"
+  }
+}

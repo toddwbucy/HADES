@@ -19,6 +19,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace ingestion and schema-application contracts, including checkpoint,
+  identity, transaction and acknowledgment limitations (epic #12).
 - Document four compliance and linking command contracts, including verdict,
   filesystem, and partial-write limitations for the full audit (#12).
 
