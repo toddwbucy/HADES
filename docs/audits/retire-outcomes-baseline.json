@@ -1,0 +1,91 @@
+{
+  "source_revision": "e8e24262cf25879fce6bf89c30105fcb6331a82b",
+  "test_source_sha256": "f4af8b60158e294984ea2469a391f90cc7cc421bc9c120870ee1e2017a6bf1c9",
+  "observations": [
+    {
+      "calls": [
+        "POST /_db/fixture/_api/cursor",
+        "GET /_db/fixture/_api/collection",
+        "POST /_db/fixture/_api/cursor",
+        "POST /_db/fixture/_api/cursor",
+        "POST /_db/fixture/_api/cursor"
+      ],
+      "exit": 0,
+      "rejected": false,
+      "response": {
+        "command": "codebase.retire",
+        "data": {
+          "codebase": {
+            "calls_edges": 0,
+            "chunks": 1,
+            "defines_edges": 1,
+            "embeddings": 1,
+            "files": 1,
+            "implements_edges": 0,
+            "imports_edges": 0,
+            "symbols": 1
+          },
+          "dry_run": false,
+          "other_edges": {
+            "authored": {
+              "count": 1,
+              "keys": [
+                "bridge"
+              ],
+              "removed": 1,
+              "truncated": false
+            }
+          },
+          "other_edges_total": 1,
+          "requested": 1,
+          "retired": 1,
+          "unknown_keys": []
+        },
+        "success": true
+      }
+    },
+    {
+      "calls": [
+        "POST /_db/fixture/_api/cursor",
+        "GET /_db/fixture/_api/collection",
+        "POST /_db/fixture/_api/cursor",
+        "POST /_db/fixture/_api/cursor",
+        "POST /_db/fixture/_api/cursor"
+      ],
+      "exit": 0,
+      "rejected": true,
+      "response": {
+        "command": "codebase.retire",
+        "data": {
+          "codebase": {
+            "calls_edges": 0,
+            "chunks": 1,
+            "defines_edges": 1,
+            "embeddings": 1,
+            "files": 1,
+            "implements_edges": 0,
+            "imports_edges": 0,
+            "symbols": 1
+          },
+          "dry_run": false,
+          "other_edges": {
+            "authored": {
+              "count": 1,
+              "keys": [
+                "bridge"
+              ],
+              "removed": 0,
+              "truncated": false
+            }
+          },
+          "other_edges_total": 1,
+          "requested": 1,
+          "retired": 1,
+          "unknown_keys": []
+        },
+        "success": true
+      }
+    }
+  ],
+  "scope": "Actual CLI/private Unix HTTP peers, synthetic acknowledgments. No real deletion or production database access."
+}
