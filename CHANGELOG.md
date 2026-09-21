@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Added
+
+- Record a real private-database reproduction of ingestion reporting success
+  after its source metadata patch is rejected (epic #12).
+
 ### Fixed
 
 - Prevent compliance reports from passing when smell definitions are missing or
