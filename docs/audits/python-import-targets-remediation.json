@@ -1,0 +1,19 @@
+{
+  "issue": 149,
+  "baseline_commit": "61ecc57",
+  "tests": {
+    "focused_resolver": {
+      "passed": 7,
+      "failed": 0,
+      "exit_code": 0
+    },
+    "cli_all_targets_clippy": {
+      "exit_code": 0,
+      "seconds": 10.64
+    }
+  },
+  "files_sha256": {
+    "crates/hades-cli/src/commands/codebase_ingest.rs": "d67e545a2ae8691ea8d1dde91df21311bdd2d093e6379d06cc4a7339bc13c943"
+  },
+  "scope": "Synthetic symbols passed to actual scoped resolver; no database/CLI integration, deployment or stored-edge repair"
+}

@@ -32,6 +32,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Restrict Python import symbol targets to the requested local module, preventing
+  unrelated same-name definitions from becoming resolved graph edges (#149).
 - Fail retirement when authored-edge deletion fails or returns an invalid count,
   and disclose potentially committed earlier deletions (#147).
 
