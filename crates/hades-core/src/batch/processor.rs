@@ -457,10 +457,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Only "c" should have been processed; "a" and "b" were skipped.
-        assert_eq!(call_count.load(Ordering::Relaxed), 1);
-        assert_eq!(summary.skipped, 2);
-        assert_eq!(summary.completed, 1);
+        // Retry failed "b" and new "c"; only completed "a" is skipped.
+        assert_eq!(call_count.load(Ordering::Relaxed), 2);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.completed, 2);
+        assert_eq!(summary.failed, 0);
+        assert!(!state_path.exists());
     }
 
     #[tokio::test]

@@ -7,7 +7,16 @@ use std::time::Duration;
 async fn request_deadline_includes_a_blocked_stdin_write() {
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("pid");
-    let script = "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(5)";
+    // Publish readiness only after the PID is fully written and closed.
+    // File creation alone raced the parent's read on loaded CI runners.
+    let script = r#"
+import os,sys,time
+pending = sys.argv[1] + '.pending'
+with open(pending, 'w') as marker:
+    marker.write(str(os.getpid()))
+os.replace(pending, sys.argv[1])
+time.sleep(5)
+"#;
     let client = LspClient::start(
         "/usr/bin/python3",
         &["-c", script, marker.to_str().unwrap()],

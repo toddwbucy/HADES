@@ -1,0 +1,18 @@
+{
+  "integrated_main": "866ca943dddc2fe7fe3d1ba99d01142027b6286f",
+  "scope": "Combined schema and metadata real-database lifecycle fixtures",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/ingest.rs": "9f5cb604faa7d31feb09d326facab4c9cf390ee6f95a0ef56f1fe1c236f12c3b",
+    "crates/hades-core/src/batch/state.rs": "21d6c61b5e51bb48a80af4de09c403e9d0ca0289d28e56427260b90e91f85366",
+    "crates/hades-core/src/batch/processor.rs": "67f8cc7ebfea920eac0c938cba1993c5bd202e962f43790317538441197fe678",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "d7a117cbc3b1ce309e4a63033f6de55c5926da5fabb9c55a828161a75f4a70bc",
+    "crates/hades-cli/tests/fixtures/document_metadata_outcomes.rs": "8d02f1574a5c59159932c89e5788f1b31fa3c802fa2b4027fcfdf900ad100b8a",
+    "crates/hades-cli/tests/fixtures/schema_apply_outcomes.rs": "ce152a071ff6cb96b1da92ad8faec79a2f9950b0c4bbaa1db290d0f8f6f73666"
+  },
+  "database_lifecycle": {
+    "passed": 18,
+    "failed": 0,
+    "seconds": 63.04,
+    "private_server_stop_exit": 0
+  }
+}
