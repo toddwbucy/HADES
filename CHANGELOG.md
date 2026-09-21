@@ -19,6 +19,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Publish the private LSP deadline test PID marker atomically so CI cannot read
+  an empty readiness file before the child writes its identity.
+
+### Fixed
+
 - Require complete, valid import acknowledgments at every schema application
   stage and disclose potentially committed earlier operations on failure (#135).
 - Prevent compliance reports from passing when smell definitions are missing or
