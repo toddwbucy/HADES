@@ -1,0 +1,14 @@
+{
+  "base_integrated": "e1e7b453dbaef9948a94e3d03e73325ef45b099e",
+  "scope": "Combined schema/compliance CLI fixture after additive merge resolution",
+  "source_sha256": {
+    "crates/hades-core/src/schema_apply.rs": "d29b1b4a450865d2d4619eadcdb992336dd8d7dd92d9c50b98f4e33045aacb77",
+    "crates/hades-cli/tests/db_response_shapes.rs": "d57243290dddbb076b431315d3767cba5b05ddb49eaa677a0161d2552d93a457",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "6d05389137ddec2e4517a237dbb162b4046c3292157ee558360a06b74f1e02f7",
+    "crates/hades-cli/tests/fixtures/schema_apply_outcomes.rs": "ce152a071ff6cb96b1da92ad8faec79a2f9950b0c4bbaa1db290d0f8f6f73666"
+  },
+  "cli_tests": {
+    "passed": 12,
+    "failed": 0
+  }
+}
