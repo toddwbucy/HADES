@@ -17,6 +17,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ## [Unreleased]
 
+### Fixed
+
+- Require complete, valid import acknowledgments at every schema application
+  stage and disclose potentially committed earlier operations on failure (#135).
+
 ### Added
 
 - Preserve private schema-apply acknowledgment failure reproductions (#135).

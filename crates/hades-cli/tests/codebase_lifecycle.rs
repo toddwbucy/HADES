@@ -20,6 +20,7 @@ const MODEL: &str = "jinaai/jina-embeddings-v4";
 include!("fixtures/ingest_vector_freshness.rs");
 include!("fixtures/db_insert_outcomes.rs");
 include!("fixtures/materialize_outcomes.rs");
+include!("fixtures/schema_apply_outcomes.rs");
 
 struct Embedder {
     fail: Arc<AtomicBool>,

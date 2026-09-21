@@ -48,3 +48,30 @@ retain valid created/updated controls and explicitly disclose earlier effects.
 Verify relevant backend semantics in a private database separately from injected
 reply contracts. Guard exemptions, reconciliation, identifiers and existing-object
 mismatches remain separate candidates. No production changes were made.
+
+## Remediation and verified backend behavior
+
+All four schema import stages now retain the raw response until acknowledgment
+validation completes: error must be false; created, updated, errors, empty, and
+ignored must be unsigned counters; errors/empty/ignored must be zero; checked
+created+updated must equal the submitted count. Stage and collection diagnostics
+warn that earlier operations may have committed and require inspection before retry.
+The underlying complete=true/onDuplicate=replace import semantics are unchanged.
+
+Ten CLI response tests pass, including all four stage failures, successful created
+and updated controls, offline dry-run, in-use refusal, and 31 malformed/inconsistent
+counter cases. Existing response contracts remain covered.
+
+The real private ArangoDB 3.12.11 lifecycle suite passed all 17 tests. The new schema
+case creates and reads back seed data, all three schema records and the named graph;
+refuses an in-use apply; successfully replaces a seed under force while retaining
+an unrelated document and skipping the existing graph. An invalid-key batch is
+rejected with HTTP 400/error 1221, produces CLI exit 1 and empty stdout, and leaves
+the prior seed value, unrelated document, collection count, and metadata revision
+unchanged. The private server stopped with exit 0. This verifies atomic rejection
+of that single complete=true import, not rollback of the whole schema operation.
+
+The historical injected HTTP-success/error reply remains a client-boundary test;
+it is not represented as normal backend behavior. Baseline JSON is preserved.
+Guard exemptions, schema reconciliation, collection/graph mismatch checks and
+broader recovery readiness remain outside this fix. Nothing was deployed.

@@ -398,3 +398,124 @@ async fn schema_apply_requires_confirmed_metadata_import() {
         "unconfirmed schema metadata must not be reported applied"
     );
 }
+
+#[tokio::test]
+async fn schema_apply_validates_every_import_stage_and_preserves_controls() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("schema.yaml");
+    std::fs::write(
+        &file,
+        r#"
+collections:
+  - {name: docs, type: document}
+  - {name: links, type: edge}
+docs:
+  - {_key: one}
+edge_definitions:
+  - {name: links, from_collections: [docs], to_collections: [docs]}
+named_graphs:
+  - {name: example, edges: [links]}
+"#,
+    )
+    .unwrap();
+    let stages = [
+        "document seeds",
+        "edge definition",
+        "named graph metadata",
+        "schema metadata",
+    ];
+    let created = json!({"error":false,"created":1,"updated":0,"errors":0,"ignored":0,"empty":0});
+    let updated = json!({"error":false,"created":0,"updated":1,"errors":0,"ignored":0,"empty":0});
+    for (stage_index, stage) in stages.iter().enumerate() {
+        let mut pages = vec![json!({}); 3];
+        pages.extend(vec![created.clone(); stage_index]);
+        pages.push(json!({"error":false,"created":0,"updated":0,"errors":1,"ignored":0,"empty":0}));
+        let (output, calls) = run_root(
+            &["schema", "apply", file.to_str().unwrap(), "--force"],
+            pages,
+        )
+        .await;
+        assert!(!output.status.success(), "{stage}: {output:?}");
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains(stage), "{diagnostic}");
+        assert!(diagnostic.contains("earlier operations may have committed"));
+        assert_eq!(calls.len(), 4 + stage_index, "stop after rejected import");
+    }
+    for acknowledgment in [created, updated] {
+        let mut pages = vec![json!({}); 3];
+        pages.extend(vec![acknowledgment; 4]);
+        pages.push(json!({}));
+        let (output, calls) = run_root(
+            &["schema", "apply", file.to_str().unwrap(), "--force"],
+            pages,
+        )
+        .await;
+        assert!(output.status.success(), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["data"]["applied"], true);
+        assert_eq!(value["data"]["result"]["documents_upserted"], 1);
+        assert_eq!(value["data"]["result"]["edge_definitions_registered"], 1);
+        assert_eq!(calls.len(), 8);
+    }
+    let (dry, calls) = run_root(
+        &["schema", "apply", file.to_str().unwrap(), "--dry-run"],
+        vec![],
+    )
+    .await;
+    assert!(dry.status.success(), "{dry:?}");
+    assert!(calls.is_empty());
+    let (guard, calls) = run_root(
+        &["schema", "apply", file.to_str().unwrap()],
+        vec![json!({"result":[1],"hasMore":false})],
+    )
+    .await;
+    assert!(!guard.status.success());
+    assert!(String::from_utf8_lossy(&guard.stderr).contains("is in use"));
+    assert_eq!(calls, ["POST /_db/fixture/_api/cursor"]);
+}
+
+#[tokio::test]
+async fn schema_apply_rejects_malformed_or_inconsistent_import_counts() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("schema.yaml");
+    std::fs::write(&file, "{}\n").unwrap();
+    let good = json!({"error":false,"created":1,"updated":0,"errors":0,"ignored":0,"empty":0});
+    let mut replies = Vec::new();
+    for field in ["created", "updated", "errors", "ignored", "empty"] {
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        replies.push(missing);
+        for bad in [json!(null), json!(-1), json!("0"), json!(0.5)] {
+            let mut reply = good.clone();
+            reply[field] = bad;
+            replies.push(reply);
+        }
+    }
+    for (field, value) in [
+        ("ignored", json!(1)),
+        ("empty", json!(1)),
+        ("created", json!(2)),
+        ("error", json!(true)),
+        ("error", json!(null)),
+    ] {
+        let mut reply = good.clone();
+        reply[field] = value;
+        replies.push(reply);
+    }
+    let mut overflow = good;
+    overflow["created"] = json!(u64::MAX);
+    overflow["updated"] = json!(2);
+    replies.push(overflow);
+    for reply in replies {
+        let (output, calls) = run_root(
+            &["schema", "apply", file.to_str().unwrap()],
+            vec![json!({}), reply.clone()],
+        )
+        .await;
+        assert!(!output.status.success(), "{reply}: {output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("schema metadata"));
+        assert_eq!(calls.len(), 2);
+    }
+}

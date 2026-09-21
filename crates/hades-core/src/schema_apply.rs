@@ -22,7 +22,7 @@
 //! [5. apply]      execute each Operation; collect per-op results
 //! ```
 //!
-//! Idempotency: per-document upserts via `crud::insert_documents`
+//! Idempotency: confirmed per-document imports
 //! (`onDuplicate=replace`), collection creation tolerates 409 Conflict.
 //! Re-applying the same YAML to the same DB is a no-op semantically.
 
@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use serde_yaml::Mapping;
 use tracing::{debug, info};
 
-use crate::db::{ArangoError, ArangoErrorKind, ArangoPool, crud};
+use crate::db::{ArangoError, ArangoErrorKind, ArangoPool};
 
 /// Placeholder used in plan ops and `_key` suffixes when an edge
 /// definition has no `source_field`. Parenthesized so it cannot
@@ -61,6 +61,16 @@ pub enum ApplyError {
     /// Underlying ArangoDB error.
     #[error("ArangoDB error during apply: {0}")]
     Arango(#[from] ArangoError),
+
+    /// An import did not provide trustworthy confirmation of every submitted document.
+    #[error(
+        "schema apply {stage} import into '{collection}' is unconfirmed: {reason}; earlier operations may have committed; inspect database state before retrying"
+    )]
+    UnconfirmedImport {
+        stage: String,
+        collection: String,
+        reason: String,
+    },
 
     /// Serialization-related failure inside the applier.
     #[error("internal serialization error: {0}")]
@@ -549,8 +559,7 @@ pub async fn apply(
         if docs.is_empty() {
             continue;
         }
-        let res = crud::insert_documents(pool, col, docs, /* overwrite= */ true).await?;
-        let n = (res.created + res.updated) as usize;
+        let n = import_confirmed(pool, col, docs, "document seeds").await?;
         info!(collection = %col, count = n, "upserted documents");
         result.documents_upserted += n;
     }
@@ -571,7 +580,7 @@ pub async fn apply(
             "to_collections": ed.to_collections,
             "description": ed.description,
         });
-        crud::insert_documents(pool, "hades_schema", &[doc], /* overwrite= */ true).await?;
+        import_confirmed(pool, "hades_schema", &[doc], "edge definition").await?;
         result.edge_definitions_registered += 1;
         info!(name = %ed.name, "registered edge definition");
     }
@@ -588,7 +597,7 @@ pub async fn apply(
             "edge_definitions": ng.edges,
             "description": ng.description.clone().unwrap_or_default(),
         });
-        crud::insert_documents(pool, "hades_schema", &[doc], /* overwrite= */ true).await?;
+        import_confirmed(pool, "hades_schema", &[doc], "named graph metadata").await?;
         info!(name = %ng.name, "registered named graph document");
     }
 
@@ -615,13 +624,7 @@ pub async fn apply(
         "model_type": model_type,
         "schema_checksum": checksum,
     });
-    crud::insert_documents(
-        pool,
-        "hades_schema",
-        &[meta_doc],
-        /* overwrite= */ true,
-    )
-    .await?;
+    import_confirmed(pool, "hades_schema", &[meta_doc], "schema metadata").await?;
     info!("registered schema_meta document");
 
     // 6. Named graphs via gharial. Idempotent: 409 Conflict (graph
@@ -671,6 +674,57 @@ pub async fn apply(
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
+
+// Schema application cannot advertise an applied schema using an import reply
+// that omits or contradicts document accounting. Keep the raw reply until checked.
+async fn import_confirmed(
+    pool: &ArangoPool,
+    collection: &str,
+    docs: &[Value],
+    stage: &str,
+) -> Result<usize, ApplyError> {
+    let failure = |reason: String| ApplyError::UnconfirmedImport {
+        stage: stage.into(),
+        collection: collection.into(),
+        reason,
+    };
+    let body = docs
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    let path =
+        format!("import?collection={collection}&type=documents&complete=true&onDuplicate=replace");
+    let reply = pool
+        .writer()
+        .post_raw(&path, &body, "application/x-ndjson")
+        .await
+        .map_err(|e| failure(e.to_string()))?;
+    if reply["error"] != json!(false) {
+        return Err(failure("reply must affirm error:false".into()));
+    }
+    let count = |field: &str| {
+        reply[field]
+            .as_u64()
+            .ok_or_else(|| failure(format!("missing or invalid '{field}' count")))
+    };
+    let created = count("created")?;
+    let updated = count("updated")?;
+    let errors = count("errors")?;
+    let empty = count("empty")?;
+    let ignored = count("ignored")?;
+    if errors != 0
+        || empty != 0
+        || ignored != 0
+        || created.checked_add(updated) != Some(docs.len() as u64)
+    {
+        return Err(failure(format!(
+            "submitted {}, created {created}, updated {updated}, errors {errors}, empty {empty}, ignored {ignored}",
+            docs.len()
+        )));
+    }
+    Ok(docs.len())
+}
 
 async fn ensure_collection(
     pool: &ArangoPool,

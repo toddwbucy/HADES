@@ -1,0 +1,31 @@
+{
+  "baseline_revision": "93c4d67",
+  "scope": "Private CLI protocol fixtures and runner-owned ArangoDB 3.12.11; no production use",
+  "source_sha256": {
+    "crates/hades-core/src/schema_apply.rs": "d29b1b4a450865d2d4619eadcdb992336dd8d7dd92d9c50b98f4e33045aacb77",
+    "crates/hades-cli/src/commands/schema.rs": "7b03f04accbda50c122a608ffa516d1cbfcabcea93503924a2fd6f239e15277f",
+    "crates/hades-cli/tests/db_response_shapes.rs": "be1ab4e7fbdab5e7935acef6e8d0ed4194c22a1d39ccd3702a9e0d928c175593",
+    "crates/hades-cli/tests/codebase_lifecycle.rs": "6d05389137ddec2e4517a237dbb162b4046c3292157ee558360a06b74f1e02f7",
+    "crates/hades-cli/tests/fixtures/schema_apply_outcomes.rs": "ce152a071ff6cb96b1da92ad8faec79a2f9950b0c4bbaa1db290d0f8f6f73666"
+  },
+  "cli_contracts": {
+    "passed": 10,
+    "failed": 0,
+    "seconds": 0.19
+  },
+  "real_database_lifecycle": {
+    "passed": 17,
+    "failed": 0,
+    "seconds": 63.58,
+    "server_stop_exit": 0
+  },
+  "real_rejection": {
+    "http_status": 400,
+    "error_number": 1221,
+    "cli_exit": 1,
+    "document_count": 2,
+    "prior_seed_value": 2,
+    "unrelated_value": 9,
+    "metadata_revision_unchanged": true
+  }
+}
