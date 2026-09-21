@@ -424,7 +424,7 @@ async fn query_missing_embedding_batch(
         "FOR key IN @keys \
          LET d = DOCUMENT(@@collection, key) \
          RETURN { \
-           id: d == null ? null : d._id, \
+           key: key, id: d == null ? null : d._id, \
            missing: d != null AND d.structural_embedding == null, \
            absent: d == null \
          }",
@@ -436,28 +436,56 @@ async fn query_missing_embedding_batch(
     .await
     .with_context(|| format!("failed to inspect collection {}", batch.collection))?;
 
-    parse_missing_embedding_results(&batch.collection, result.results)
+    parse_missing_embedding_results(&batch.collection, &batch.keys, result.results)
 }
 
 fn parse_missing_embedding_results(
     collection: &str,
+    requested_keys: &[String],
     results: Vec<serde_json::Value>,
 ) -> Result<MissingEmbeddingBatchResult> {
+    #[derive(serde::Deserialize)]
+    struct SelectionRow {
+        key: String,
+        id: serde_json::Value,
+        missing: bool,
+        absent: bool,
+    }
+
+    let mut remaining: std::collections::HashSet<&str> =
+        requested_keys.iter().map(String::as_str).collect();
+    anyhow::ensure!(
+        remaining.len() == requested_keys.len() && results.len() == requested_keys.len(),
+        "collection {collection} returned an incomplete selection (expected {} rows, received {})",
+        requested_keys.len(),
+        results.len()
+    );
     let mut missing_ids = Vec::new();
     let mut absent_from_target = 0usize;
     for value in results {
-        if value.get("absent").and_then(serde_json::Value::as_bool) == Some(true) {
+        let row: SelectionRow = serde_json::from_value(value).with_context(|| {
+            format!("collection {collection} returned an invalid selection row")
+        })?;
+        anyhow::ensure!(
+            remaining.remove(row.key.as_str()),
+            "collection {collection} returned a duplicate or unrequested selection key"
+        );
+        if row.absent {
+            anyhow::ensure!(
+                row.id.is_null() && !row.missing,
+                "collection {collection} returned inconsistent absent-document state"
+            );
             absent_from_target += 1;
-            continue;
+        } else {
+            let expected_id = format!("{collection}/{}", row.key);
+            anyhow::ensure!(
+                row.id.as_str() == Some(expected_id.as_str()),
+                "collection {collection} returned an invalid document ID"
+            );
+            if row.missing {
+                missing_ids.push(expected_id);
+            }
         }
-        if value.get("missing").and_then(serde_json::Value::as_bool) != Some(true) {
-            continue;
-        }
-        let arango_id = value
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .with_context(|| format!("collection {collection} returned an invalid document ID"))?;
-        missing_ids.push(arango_id.to_string());
     }
     Ok(MissingEmbeddingBatchResult {
         missing_ids,
@@ -470,13 +498,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_selection_rows_cannot_be_successful_noops() {
+        let cases = [
+            ("null", json!(null)),
+            ("empty_object", json!({})),
+            ("missing_flags", json!({"id":"nodes/a"})),
+            (
+                "string_flag",
+                json!({"id":"nodes/a","missing":"true","absent":false}),
+            ),
+            (
+                "contradictory_absence",
+                json!({"id":"nodes/a","missing":true,"absent":true}),
+            ),
+            (
+                "absent_with_id",
+                json!({"id":"nodes/a","missing":false,"absent":true}),
+            ),
+            (
+                "present_without_id",
+                json!({"id":null,"missing":false,"absent":false}),
+            ),
+        ];
+        let mut accepted = 0;
+        for (name, mut row) in cases {
+            if let Some(object) = row.as_object_mut() {
+                object.insert("key".into(), json!("a"));
+            }
+            let outcome = parse_missing_embedding_results("nodes", &["a".into()], vec![row]);
+            println!(
+                "SELECTION_OUTCOME {}",
+                json!({
+                    "case":name,"accepted":outcome.is_ok(),
+                    "selected":outcome.as_ref().ok().map(|r|r.missing_ids.len()),
+                    "absent":outcome.as_ref().ok().map(|r|r.absent_from_target)
+                })
+            );
+            accepted += usize::from(outcome.is_ok());
+        }
+        assert_eq!(accepted, 0, "malformed rows must not imply no work remains");
+    }
+
+    #[test]
     fn parses_missing_and_absent_destination_documents() {
         let result = parse_missing_embedding_results(
             "codebase_files",
+            &["a".into(), "b".into(), "c".into()],
             vec![
-                json!({ "id": "codebase_files/a", "missing": true, "absent": false }),
-                json!({ "id": "codebase_files/b", "missing": false, "absent": false }),
-                json!({ "id": null, "missing": false, "absent": true }),
+                json!({ "key":"a", "id": "codebase_files/a", "missing": true, "absent": false }),
+                json!({ "key":"b", "id": "codebase_files/b", "missing": false, "absent": false }),
+                json!({ "key":"c", "id": null, "missing": false, "absent": true }),
             ],
         )
         .unwrap();
@@ -489,10 +560,36 @@ mod tests {
     fn missing_destination_document_requires_an_id() {
         let err = parse_missing_embedding_results(
             "codebase_files",
-            vec![json!({ "id": null, "missing": true, "absent": false })],
+            &["a".into()],
+            vec![json!({ "key":"a", "id": null, "missing": true, "absent": false })],
         )
         .unwrap_err();
         assert!(err.to_string().contains("invalid document ID"));
+    }
+
+    #[test]
+    fn selection_requires_exact_requested_keys_and_matching_ids() {
+        let valid = json!({"key":"a","id":"nodes/a","missing":false,"absent":false});
+        for rows in [
+            vec![],
+            vec![valid.clone(), valid.clone()],
+            vec![json!({"key":"b","id":"nodes/b","missing":false,"absent":false})],
+            vec![json!({"key":"a","id":"other/a","missing":false,"absent":false})],
+            vec![json!({"key":"a","missing":false,"absent":true})],
+        ] {
+            assert!(parse_missing_embedding_results("nodes", &["a".into()], rows).is_err());
+        }
+        assert!(
+            parse_missing_embedding_results(
+                "nodes",
+                &["a".into(), "b".into()],
+                vec![valid.clone(), valid.clone()]
+            )
+            .is_err()
+        );
+        let result = parse_missing_embedding_results("nodes", &["a".into()], vec![valid]).unwrap();
+        assert!(result.missing_ids.is_empty());
+        assert_eq!(result.absent_from_target, 0);
     }
 
     #[test]
