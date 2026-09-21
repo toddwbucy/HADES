@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace daemon startup, transport authority, admission and shutdown boundaries
+  with remaining private-fixture requirements for epic #12.
+
 - Document four compliance and linking command contracts, including verdict,
   filesystem, and partial-write limitations for the full audit (#12).
 
