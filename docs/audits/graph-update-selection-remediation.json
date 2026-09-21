@@ -1,0 +1,28 @@
+{
+  "base_revision": "7bd9f64a3a491ace6798294427d9b70aa5a224a8",
+  "baseline_commit": "91bfa01",
+  "source_sha256": {
+    "crates/hades-cli/src/commands/graph_embed_update.rs": "69f65fb95451c50e5af1a058c432b3867d0d9405f9f623618d1b82021e52026c",
+    "crates/hades-cli/tests/db_response_shapes.rs": "e8286f381ce2ba0014992f4405a37804afd435c8401fa791f3efe21213ed15a5",
+    "crates/hades-cli/tests/training_alignment.rs": "fcdb804a875c4cca02f44ebe5fe00dedceab02a13251276ed370000fe5836433",
+    "services/tests/training_alignment_peer.py": "5b815d935f2a1713073b06e68e0672b35648b3c7adb08d0c0b826e1ae32d1b7e"
+  },
+  "unit_tests": {
+    "passed": 5,
+    "failed": 0
+  },
+  "cli_response_tests": {
+    "passed": 13,
+    "failed": 0,
+    "new_case": "8 malformed response rejections, 2 valid no-ops, 1 missing-node selection reaching checkpoint validation"
+  },
+  "real_database_training_alignment": {
+    "passed": 2,
+    "failed": 0,
+    "seconds": 3.42,
+    "arangodb_version": "3.12.11",
+    "server_stop_exit": 0,
+    "evidence": "Existing CPU provider and real CLI: missing-only export 1, full export 3, no-op preserves rows/revisions, full training exports 7. Live sockets and GPUs hidden."
+  },
+  "clippy": "CLI all targets, warnings denied: passed"
+}

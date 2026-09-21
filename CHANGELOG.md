@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Trace daemon startup, transport authority, admission and shutdown boundaries
+  with remaining private-fixture requirements for epic #12.
+
 - Trace ingestion and schema-application contracts, including checkpoint,
   identity, transaction and acknowledgment limitations (epic #12).
 - Document four compliance and linking command contracts, including verdict,
@@ -29,6 +32,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Restrict Python import symbol targets to the requested local module, preventing
   unrelated same-name definitions from becoming resolved graph edges (#149).
 
+- Reject incomplete, malformed, or mismatched graph-update destination selections
+  instead of treating them as successful missing-only no-ops (#144).
 - Preserve batch task panics in results, failure progress, and resume checkpoints
   regardless of when the task completes (#141).
 
@@ -43,6 +48,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Preserve malformed graph-update destination-selection parser reproductions
+  for the epic #12 audit.
 - Trace graph-embedding command contracts, export/session boundaries, and remaining
   runtime verification gaps for epic #12.
 

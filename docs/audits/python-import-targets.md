@@ -12,7 +12,7 @@ At source `6984f125ae6158dec30bdfa6e106ec84e1c3d173`, the actual scoped Python i
 | `from config import Config`; config.py lacks the definition | Symbol edge to `unrelated.py`, resolved=true | Existing unresolved file edge to config.py |
 | config.py defines Config, alongside unrelated definition | Correct symbol edge to config.py | Preserve correct symbol edge |
 
-The regression test failed with exit 101; both erroneous cases were observed before the final assertion. The valid control passed. `python-import-targets-baseline.json` preserves observations and the fixture source hash at baseline commit `61ecc57`; no live-corpus corruption is asserted.
+The regression test failed with exit 101; both erroneous cases were observed before the final assertion. The valid control passed. `python-import-targets-baseline.json` identifies `6984f125ae6158dec30bdfa6e106ec84e1c3d173` as the unmodified production-source base. Its `fixture_source_sha256` hashes that source **with the added failing regression test**, committed as `61ecc57` (also the remediation manifest’s `baseline_commit`). Direct `git show` verification confirms the hash matches `61ecc57`, not the unmodified base. No live-corpus corruption is asserted.
 
 ## Correction and verification
 
