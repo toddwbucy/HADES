@@ -1459,6 +1459,20 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
     .unwrap();
     assert_eq!(ready.info().await.unwrap().max_seq_length, Some(8192));
     let dir = tempfile::tempdir().unwrap();
+    // Trap every database request on a private listener: invalid policy must
+    // fail before touching even this mock, and can never discover a live server.
+    let db_socket = dir.path().join("database.sock");
+    let listener = tokio::net::UnixListener::bind(&db_socket).unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let app = Router::new().fallback(move || {
+        let calls = observed.clone();
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        }
+    });
+    let database = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let config = dir.path().join("hades.yaml");
     std::fs::write(&config, format!(
         "embedding:\n  service:\n    socket: {}\nchunking:\n  prechunk:\n    max_window_tokens: 9000\n",
@@ -1468,8 +1482,9 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
     let output = Command::new(env!("CARGO_BIN_EXE_hades"))
         .env("HADES_CONFIG", config)
         .env("HADES_EMBEDDER_SOCKET", &embedder.socket)
-        .env("ARANGO_RO_SOCKET", dir.path().join("no-database.sock"))
-        .env("ARANGO_RW_SOCKET", dir.path().join("no-database.sock"))
+        .env("ARANGO_SOCKET", &db_socket)
+        .env("ARANGO_RO_SOCKET", &db_socket)
+        .env("ARANGO_RW_SOCKET", &db_socket)
         .args([
             "ingest",
             input.to_str().unwrap(),
@@ -1479,6 +1494,13 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
         .output()
         .await
         .unwrap();
+    database.abort();
+    let _ = database.await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "invalid policy must precede database access"
+    );
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("9000") && error.contains("8192"), "{error}");
