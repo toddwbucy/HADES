@@ -138,14 +138,24 @@ pub(super) async fn store_relationships(
                     }
                 }
                 let found = client.post("cursor", &json!({
-                    "query":"RETURN LENGTH(FOR id IN @ids FILTER DOCUMENT(id) == null RETURN 1)",
+                    "query":"RETURN (FOR id IN @ids FILTER DOCUMENT(id) == null RETURN id)",
                     "bindVars":{"ids":ids},"batchSize":1,"ttl":30,"memoryLimit":33554432,
                     "options":{"maxRuntime":30,"failOnWarning":true}
                 })).await?;
-                if found["hasMore"] == true || found["result"] != json!([0]) {
-                    return Err(ArangoError::Request(
-                        "relationship endpoint no longer exists; unchanged files are skipped by content hash, so --force or a fresh database is required to regenerate missing endpoints".into(),
-                    ));
+                let missing = found["result"].as_array()
+                    .filter(|rows| rows.len() == 1)
+                    .and_then(|rows| rows[0].as_array())
+                    .filter(|ids| ids.iter().all(Value::is_string));
+                let missing = missing.filter(|_| found["hasMore"] != true)
+                    .ok_or_else(|| ArangoError::Request(format!(
+                        "invalid relationship endpoint check response for {collection}")))?;
+                if !missing.is_empty() {
+                    let mut ids: Vec<_> = missing.iter().map(|id| id.as_str().unwrap()).collect();
+                    ids.sort_unstable();
+                    return Err(ArangoError::Request(format!(
+                        "relationship endpoint no longer exists in batch for {collection}: {} missing endpoints; first {} ids: {:?}; unchanged files are skipped by content hash, so --force or a fresh database is required to regenerate missing endpoints",
+                        ids.len(), ids.len().min(10), &ids[..ids.len().min(10)]
+                    )));
                 }
                 let response = client
                     .post(
@@ -454,6 +464,9 @@ mod tests {
             pool.writer().delete("document/codebase_files/target").await.unwrap();
             let error = store_relationships(&pool, current, vec![(CODEBASE.calls_edges, vec![edge])]).await.unwrap_err();
             assert!(error.to_string().contains("endpoint no longer exists"));
+            assert!(error.to_string().contains(CODEBASE.calls_edges));
+            assert!(error.to_string().contains("1 missing endpoints"));
+            assert!(error.to_string().contains("codebase_files/target"));
         }).await;
     }
 

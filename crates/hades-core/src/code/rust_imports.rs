@@ -138,7 +138,7 @@ pub fn leaf_name(path: &str) -> &str {
 /// Build a symbol index from all ingested files' symbols.
 ///
 /// Returns a map from bare symbol name → vec of (rel_path, symbol_key).
-/// Only definition symbols are indexed (imports are skipped).
+/// Only primitive symbols with stored vertices are indexed.
 pub fn build_symbol_index(
     file_symbols: &HashMap<String, Vec<Symbol>>,
 ) -> HashMap<String, Vec<(String, String)>> {
@@ -154,8 +154,8 @@ pub fn build_symbol_index_scoped(
     for (rel_path, symbols) in file_symbols {
         let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
-            // Skip imports themselves — we only want definitions.
-            if sym.kind == SymbolKind::Import {
+            // Match the vertex writer: imports and impl scaffolding are not stored.
+            if !sym.kind.is_primitive() {
                 continue;
             }
 
@@ -317,7 +317,9 @@ fn pick_best_import_target<'a>(
 
     let mut best: Option<(&str, &str, usize)> = None;
 
-    for (rel_path, skey) in targets {
+    let mut candidates: Vec<_> = targets.iter().collect();
+    candidates.sort_unstable(); // Relative path, then symbol key.
+    for (rel_path, skey) in candidates {
         // Skip same-file matches.
         if rel_path == source_path {
             continue;
@@ -602,6 +604,48 @@ mod tests {
         assert!(
             !index.contains_key("std::collections::HashMap"),
             "should skip import symbols"
+        );
+    }
+    #[test]
+    fn primitive_import_targets_and_ties_are_deterministic() {
+        let make = |kind| Symbol {
+            name: "Store".into(),
+            kind,
+            start_line: 1,
+            end_line: 2,
+            metadata: serde_json::json!({}),
+        };
+        let namespace = "/fixture";
+        let imports = HashMap::from([("src/main.rs".into(), vec!["crate::store::Store".into()])]);
+        for round in 0..32 {
+            let mut entries = vec![
+                (
+                    "src/store/00_impl.rs".to_owned(),
+                    vec![make(SymbolKind::Impl)],
+                ),
+                ("src/store/a.rs".to_owned(), vec![make(SymbolKind::Struct)]),
+                ("src/store/z.rs".to_owned(), vec![make(SymbolKind::Struct)]),
+            ];
+            entries.rotate_left(round % 3);
+            let files = entries.into_iter().collect();
+            let index = build_symbol_index_scoped(&files, namespace);
+            assert_eq!(index["Store"].len(), 2, "impl must never enter the index");
+            let edges = resolve_rust_imports_scoped(&imports, &index, namespace);
+            let key = keys::symbol_key(
+                &keys::scoped_file_key(namespace, "src/store/a.rs"),
+                "Store",
+                1,
+            );
+            assert_eq!(edges.len(), 1);
+            assert_eq!(edges[0]["_to"], format!("codebase_symbols/{key}"));
+        }
+        let candidates = vec![
+            ("src/store/a.rs".into(), "z".into()),
+            ("src/store/a.rs".into(), "a".into()),
+        ];
+        assert_eq!(
+            pick_best_import_target(&candidates, "store::Store", "src/main.rs"),
+            Some(("src/store/a.rs", "a"))
         );
     }
 }

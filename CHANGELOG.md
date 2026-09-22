@@ -32,6 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Resolve cross-file edges only to stored primitive symbols, break candidate ties
+  deterministically by path and key, and identify missing relationship endpoints.
+
 - Persist LSP enrichment in size-bounded whole-file transaction groups, keeping each
   file’s symbols, outgoing edges, analysis metadata and symbol count atomic under
   the existing 32 MiB transaction cap.

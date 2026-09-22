@@ -32,8 +32,8 @@ use crate::db::keys;
 ///
 /// For methods (symbols with `parent_symbol` metadata), the qualified name is
 /// `"ParentClass.method_name"`. For top-level functions, classes, and other
-/// primitives it is just the symbol name. Imports are skipped — they produce
-/// import edges, not call edges.
+/// primitives it is just the symbol name. Only primitive symbols are indexed,
+/// matching the stored vertices; imports and impl scaffolding are excluded.
 pub fn build_qualified_index(
     file_symbols: &HashMap<String, Vec<Symbol>>,
 ) -> HashMap<String, Vec<(String, String)>> {
@@ -49,7 +49,7 @@ pub fn build_qualified_index_scoped(
     for (rel_path, symbols) in file_symbols {
         let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
-            if sym.kind == SymbolKind::Import {
+            if !sym.kind.is_primitive() {
                 continue;
             }
             let qname = qualified_name(sym);
@@ -220,12 +220,14 @@ fn pick_best<'a>(entries: &'a [(String, String)], prefer_file: &str) -> Option<(
     if entries.is_empty() {
         return None;
     }
-    for (path, skey) in entries {
+    let mut candidates: Vec<_> = entries.iter().collect();
+    candidates.sort_unstable(); // Relative path, then symbol key.
+    for (path, skey) in &candidates {
         if path == prefer_file {
             return Some((path.as_str(), skey.as_str()));
         }
     }
-    entries.first().map(|(p, k)| (p.as_str(), k.as_str()))
+    candidates.first().map(|(p, k)| (p.as_str(), k.as_str()))
 }
 
 #[cfg(test)]
@@ -277,7 +279,7 @@ mod tests {
         for (rel_path, symbols) in file_symbols {
             let fkey = keys::file_key(rel_path);
             for sym in symbols {
-                if sym.kind == SymbolKind::Import {
+                if !sym.kind.is_primitive() {
                     continue;
                 }
                 let skey = keys::symbol_key(&fkey, &sym.qualified_name(), sym.start_line);
@@ -500,5 +502,41 @@ mod tests {
             edges.is_empty(),
             "unresolved external calls must not emit edges"
         );
+    }
+    #[test]
+    fn primitive_call_targets_and_ties_are_deterministic() {
+        let namespace = "/fixture";
+        for round in 0..32 {
+            let mut scaffold = klass("Store");
+            scaffold.kind = SymbolKind::Impl;
+            let mut entries = vec![
+                ("00_impl.py".to_owned(), vec![scaffold]),
+                ("a.py".to_owned(), vec![klass("Store")]),
+                ("z.py".to_owned(), vec![klass("Store")]),
+            ];
+            entries.rotate_left(round % 3);
+            let mut files: HashMap<_, _> = entries.into_iter().collect();
+            files.insert(
+                "main.py".into(),
+                vec![func(
+                    "caller",
+                    None,
+                    json!([{"name":"Store","qualified_name":"Store"}]),
+                )],
+            );
+            let index = build_qualified_index_scoped(&files, namespace);
+            assert_eq!(index["Store"].len(), 2, "impl must never enter the index");
+            let edges = resolve_python_calls_scoped(&files, &index, &HashMap::new(), namespace);
+            let key = keys::symbol_key(&keys::scoped_file_key(namespace, "a.py"), "Store", 1);
+            assert_eq!(edges.len(), 1);
+            assert_eq!(edges[0]["_to"], format!("codebase_symbols/{key}"));
+        }
+        let candidates = vec![
+            ("a.py".into(), "z".into()),
+            ("a.py".into(), "a".into()),
+            ("z.py".into(), "b".into()),
+        ];
+        assert_eq!(pick_best(&candidates, "main.py"), Some(("a.py", "a")));
+        assert_eq!(pick_best(&candidates, "z.py"), Some(("z.py", "b")));
     }
 }
