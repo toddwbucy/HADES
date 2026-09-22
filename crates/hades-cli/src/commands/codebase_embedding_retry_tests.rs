@@ -54,7 +54,12 @@ async fn recovered_embedding_windows_determine_file_outcome() {
                 "# Documentation for generated function {i}: {}\ndef function_{i}():\n    return {i}\n\n",
                 "private fixture padding ".repeat(7))).collect();
             if case.contains("oversized") {
-                body.push_str(&format!("# {}\n", "oversized padding ".repeat(650)));
+                // ASCII oversized chunks now split before late packing. Keep
+                // the plain-path identity regression too: a Unicode chunk can
+                // fit the character budget while exceeding the byte-span packer.
+                let padding = if mode == 5 { "é".repeat(5500) }
+                    else { "oversized padding ".repeat(650) };
+                body.push_str(&format!("# {padding}\n"));
             }
             fs::write(&path, &body).unwrap();
             *state.lock().unwrap() = (0,0);
