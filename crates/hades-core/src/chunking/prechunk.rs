@@ -246,9 +246,16 @@ fn reported_tokens(error: &EmbeddingError) -> Option<usize> {
         return None;
     };
     let body: serde_json::Value = serde_json::from_str(message).ok()?;
-    let detail = body["detail"].as_str()?;
-    let (_, detail) = detail.split_once("PE_INPUT_TOO_LARGE: input ")?;
-    let (_, detail) = detail.split_once(" is ")?;
+    let detail = if body["error"]["code"] == "PE_INPUT_TOO_LARGE" {
+        body["error"]["message"].as_str()?.strip_prefix("Input ")?
+    } else {
+        body["detail"]
+            .as_str()?
+            .strip_prefix("PE_INPUT_TOO_LARGE: input ")?
+    };
+    let (_, detail) = detail
+        .split_once(" has ")
+        .or_else(|| detail.split_once(" is "))?;
     detail
         .split_once(" tokens")?
         .0
@@ -429,6 +436,45 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn refusal_sentence_forms_and_saturation_are_compatible() {
+        for (body, expected) in [
+            (
+                serde_json::json!({"detail":"PE_INPUT_TOO_LARGE: input 0 is 13173 tokens, which exceeds this profile's 11892-token ceiling."}),
+                Some(13173),
+            ),
+            (
+                serde_json::json!({"error":{"code":"PE_INPUT_TOO_LARGE","message":"Input 0 has 13173 tokens; ceiling is 11892"}}),
+                Some(13173),
+            ),
+            (
+                serde_json::json!({"detail":"PE_INPUT_TOO_LARGE: input filled the 11892-token window and was truncated at character 40 of 50"}),
+                None,
+            ),
+            (
+                serde_json::json!({"error":{"code":"PE_INPUT_TOO_LARGE","message":"Input exceeds the model context ceiling"}}),
+                None,
+            ),
+            (
+                serde_json::json!({"error":{"code":"PE_INVALID_INPUT","message":"Input 0 has 13173 tokens; ceiling is 11892"}}),
+                None,
+            ),
+            (
+                serde_json::json!({"error":{"code":"PE_INPUT_TOO_LARGE","message":"Input 0 has 0 tokens; ceiling is 11892"}}),
+                None,
+            ),
+        ] {
+            assert_eq!(
+                reported_tokens(&EmbeddingError::Http {
+                    status: 400,
+                    message: body.to_string()
+                }),
+                expected,
+                "{body}"
+            );
+        }
     }
 
     #[test]

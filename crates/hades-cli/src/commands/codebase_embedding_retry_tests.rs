@@ -144,8 +144,12 @@ async fn adaptive_prechunk_recovers_dense_inputs_on_both_paths() {
                 let count = if text.contains('🦀') { 20000 } else { (text.len() * 10).div_ceil(13) };
                 state.lock().unwrap().push((text.len(),count > 11892));
                 if count > 11892 {
-                    return (axum::http::StatusCode::BAD_REQUEST, Json(json!({"detail":format!(
-                        "PE_INPUT_TOO_LARGE: input {i} is {count} tokens, which exceeds this profile's 11892-token ceiling.")}))).into_response();
+                    let refusal = if text.is_ascii() {
+                        json!({"detail":format!("PE_INPUT_TOO_LARGE: input {i} is {count} tokens, which exceeds this profile's 11892-token ceiling.")})
+                    } else {
+                        json!({"error":{"code":"PE_INPUT_TOO_LARGE","message":format!("Input {i} has {count} tokens; ceiling is 11892")}})
+                    };
+                    return (axum::http::StatusCode::BAD_REQUEST, Json(refusal)).into_response();
                 }
                 if let Some(bounds) = body["late_chunk"]["boundaries"].as_array() {
                     for (j,b) in bounds.iter().enumerate() {
