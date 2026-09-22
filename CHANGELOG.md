@@ -32,6 +32,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Record the fresh scratch rebuild and incremental TOML scope alignment,
+  verified live counts except for the documented rust-analyzer calls variance,
+  verified edge integrity, assertion-key compatibility warning,
+  and inspected configuration locations for the unexecuted cutover/rollback.
+
 - Resolve cross-file edges only to stored primitive symbols, break candidate ties
   deterministically by path and key, and identify missing relationship endpoints.
 
