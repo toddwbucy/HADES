@@ -32,6 +32,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Persist LSP enrichment in size-bounded whole-file transaction groups, keeping each
+  file’s symbols, outgoing edges, analysis metadata and symbol count atomic under
+  the existing 32 MiB transaction cap.
+
 - Keep LSP notification retention bounded without closing pending requests on overflow,
   log transport close reasons, and clarify recovery when relationship endpoints are missing.
 
