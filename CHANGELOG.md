@@ -32,8 +32,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
-- Record scratch rebuild commands, the cleared schema gate, both observed ingestion
-  failures, partial comparison, and unexecuted cutover/rollback prerequisites.
+- Record the resumed scratch rehearsal, passing ingestion/adapter/verification,
+  retained historical failures, comparison gaps, and unexecuted cutover/rollback.
 
 - Resolve cross-file edges only to stored primitive symbols, break candidate ties
   deterministically by path and key, and identify missing relationship endpoints.
