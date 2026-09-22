@@ -3700,7 +3700,6 @@ async fn store_lsp_extractions(
                 if super::codebase_persist::revision(&client, &key).await?.as_deref() != Some(expected.revision.as_str()) {
                     return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
                 }
-                expected.verify_source().await?;
             }
             for group in &batch {
                 let mut docs = vec![(CODEBASE.symbols, group.symbols.clone())];
