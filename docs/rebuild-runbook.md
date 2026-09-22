@@ -2,7 +2,8 @@
 
 ## Current checkpoint — 2026-09-22
 
-**Scratch execution passed; live comparison remains incomplete. No cutover approval.**
+**Retained-scratch recovery passed; fresh-from-empty rehearsal remains outstanding.
+Live comparison is incomplete. Keep PR #160 in draft; no cutover approval.**
 Todd authorized resumption after #163 merged. This resumed the existing
 `scratch_rebuild_wt5` from the stopped September 21 rehearsal; it did **not** create
 another database, truncate collections or force re-ingestion. The old source and
@@ -24,6 +25,43 @@ The original schema gate remains supported by the
 `5ee16d3` baseline and current main. No schema reapplication or live AQL was run.
 The adapter uses the previously verified loopback endpoint of the same user-level
 ArangoDB instance. No credentials, configuration or services were changed.
+
+## Review-seat reconciliation — 2026-09-22
+
+The [review submitted at 14:00:55 UTC (09:00:55 CDT)](https://github.com/toddwbucy/HADES/pull/160#pullrequestreview-5279136550)
+independently reports zero dangling edges across every code and adapter edge
+collection, embedding metadata present on all 1,050 document and 1,976 code rows,
+and 4,868 symbols: rust-analyzer 4,409, syn 217, rustpython 194, libclang 48.
+All 161 Rust files carry `ra_analyzed`. These are attributed reviewer observations
+on `50120e07` / binary `8facda9`, not additional code-seat database queries.
+They support recovery, not a fresh rebuild or semantic correctness of every edge.
+
+The reviewer identifies retained pre-#163 import edges as contamination: changing
+a target changes its deterministic key, so replacing current keys does not remove
+all historical keys. Current import construction uses source/target-derived keys;
+the adapter also explicitly retains absent rows. The review reports a fresh
+`scratch_resolver_fix` total of 1,067 imports. Retained local evidence independently
+records 1,067 emitted imports on candidate `13f201cc`, not the identical `8facda9`
+binary or a new full-rebuild comparison. The exact 196-row attribution and the
+calls/citations differences were not independently reconstructed here. Do not
+promote these mixed-history count differences to new defects or accepted losses.
+
+One detail remains inconsistent: the review says 170 currently routed code files,
+whereas this run's retained ingest and drift captures both establish 171. Preserve
+171 as the observed run count; source revision alone does not reconcile discovery
+options or the live corpus's 188 rows. No additional source investigation was run.
+
+The review requests a fresh `scratch_rebuild_wt5_r2` run and refers to an r2 goal
+allowing read-only live AQL. That goal text was not found among the supplied
+attachments. The executed authorization named only `scratch_rebuild_wt5` and
+excluded live AQL. No rule violation is alleged by the review. Recommended next
+step, **pending Todd's authorization**, is one fresh pass on this branch and PR in
+`scratch_rebuild_wt5_r2`, permitting read-only live schema/count/report comparison,
+while retaining all other safety and stop conditions. Do not create it, clear the
+existing scratch database, or broaden live reads based on this review alone.
+Fresh ingestion, adapter execution and the full verification/comparison sequence
+remain prerequisites for claiming the intended fresh rebuild demonstrated. The
+historical live unrouted list remains unavailable unless its envelope is supplied.
 
 ## Preparation actually performed
 
@@ -165,7 +203,8 @@ recorded without inventing a cause or treating them as approved data loss.
 | `wt_vocabulary` | 41 | 41 |
 | `wt_writes_edges` | 2 | 2 |
 
-The six differing collection counts are not reconciled: calls (one fewer), files,
+The six differing collection counts are not fully reconciled (see the attributed
+review-seat explanation above): calls (one fewer), files,
 chunks and code embeddings (17 fewer each), imports (196 more), and adapter
 citations (four fewer). The original live source/options and retained-row history
 were not reconstructed. Do not truncate, retire or relabel rows to make counts
