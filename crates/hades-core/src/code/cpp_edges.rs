@@ -60,7 +60,7 @@ pub fn resolve_cpp_calls_scoped(
     let mut seen = HashSet::new();
     for (source_path, symbols) in file_symbols {
         let source_fkey = keys::scoped_file_key(namespace, source_path);
-        for caller in symbols.iter().filter(|s| s.kind != SymbolKind::Import) {
+        for caller in symbols.iter().filter(|s| s.kind.is_primitive()) {
             let Some(calls) = caller.metadata.get("calls").and_then(Value::as_array) else {
                 continue;
             };
@@ -313,5 +313,32 @@ mod tests {
         files.insert("target.cpp".into(), vec![target]);
 
         assert_eq!(resolve_cpp_calls(Path::new("."), &files).len(), 1);
+    }
+    #[test]
+    fn non_primitive_callers_do_not_emit_edges() {
+        for kind in [SymbolKind::Impl, SymbolKind::Import, SymbolKind::Function] {
+            let primitive = kind.is_primitive();
+            let mut caller = function(
+                "caller",
+                1,
+                json!({"calls":[{
+                    "qualified_name":"target", "target_usr":"target-usr"
+                }]}),
+            );
+            caller.kind = kind;
+            let files = HashMap::from([
+                ("caller.cpp".into(), vec![caller]),
+                (
+                    "target.cpp".into(),
+                    vec![function("target", 1, json!({"usr":"target-usr"}))],
+                ),
+            ]);
+            let edges = resolve_cpp_calls(Path::new("."), &files);
+            assert_eq!(edges.len(), usize::from(primitive));
+            if primitive {
+                let caller_key = keys::symbol_key(&keys::file_key("caller.cpp"), "caller", 1);
+                assert_eq!(edges[0]["_from"], format!("codebase_symbols/{caller_key}"));
+            }
+        }
     }
 }

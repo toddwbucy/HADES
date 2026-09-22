@@ -3766,8 +3766,8 @@ fn build_python_symbol_index_scoped(
     for (rel_path, symbols) in file_symbols {
         let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
-            // Only index definitions, not imports.
-            if sym.kind == SymbolKind::Import {
+            // Match the vertex writer, excluding import and impl scaffolding.
+            if !sym.kind.is_primitive() {
                 continue;
             }
             // Index is keyed by the bare name (call sites use bare names), but
@@ -5549,6 +5549,38 @@ mod tests {
             end_line: 10,
             metadata: json!({}),
         }
+    }
+
+    #[test]
+    fn primitive_bare_call_index_excludes_impl_targets() {
+        let namespace = "/fixture";
+        let files = HashMap::from([
+            (
+                "00_impl.py".to_owned(),
+                vec![make_def_sym("Store", SymbolKind::Impl)],
+            ),
+            (
+                "store.py".to_owned(),
+                vec![make_def_sym("Store", SymbolKind::Struct)],
+            ),
+            (
+                "main.py".to_owned(),
+                vec![Symbol {
+                    name: "caller".into(),
+                    kind: SymbolKind::Function,
+                    start_line: 1,
+                    end_line: 2,
+                    metadata: json!({"calls":[{"name":"Store","qualified_name":"alias.Store"}]}),
+                }],
+            ),
+        ]);
+        let bare = build_python_symbol_index_scoped(&files, namespace);
+        assert_eq!(bare["Store"].len(), 1);
+        let edges =
+            python_calls::resolve_python_calls_scoped(&files, &HashMap::new(), &bare, namespace);
+        let key = keys::symbol_key(&keys::scoped_file_key(namespace, "store.py"), "Store", 1);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["_to"], format!("codebase_symbols/{key}"));
     }
 
     #[test]
