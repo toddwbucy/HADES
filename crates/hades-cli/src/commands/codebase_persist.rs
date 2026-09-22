@@ -138,14 +138,24 @@ pub(super) async fn store_relationships(
                     }
                 }
                 let found = client.post("cursor", &json!({
-                    "query":"RETURN LENGTH(FOR id IN @ids FILTER DOCUMENT(id) == null RETURN 1)",
+                    "query":"RETURN (FOR id IN @ids FILTER DOCUMENT(id) == null RETURN id)",
                     "bindVars":{"ids":ids},"batchSize":1,"ttl":30,"memoryLimit":33554432,
                     "options":{"maxRuntime":30,"failOnWarning":true}
                 })).await?;
-                if found["hasMore"] == true || found["result"] != json!([0]) {
-                    return Err(ArangoError::Request(
-                        "relationship endpoint no longer exists; retry ingestion".into(),
-                    ));
+                let missing = found["result"].as_array()
+                    .filter(|rows| rows.len() == 1)
+                    .and_then(|rows| rows[0].as_array())
+                    .filter(|ids| ids.iter().all(Value::is_string));
+                let missing = missing.filter(|_| found["hasMore"].as_bool() == Some(false))
+                    .ok_or_else(|| ArangoError::Request(format!(
+                        "invalid relationship endpoint check response for {collection}")))?;
+                if !missing.is_empty() {
+                    let mut missing_ids: Vec<_> = missing.iter().map(|id| id.as_str().unwrap()).collect();
+                    missing_ids.sort_unstable();
+                    return Err(ArangoError::Request(format!(
+                        "relationship endpoint no longer exists in batch for {collection}: {} missing endpoints; first {} ids: {:?}; unchanged files are skipped by content hash, so --force or a fresh database is required to regenerate missing endpoints",
+                        missing_ids.len(), missing_ids.len().min(10), &missing_ids[..missing_ids.len().min(10)]
+                    )));
                 }
                 let response = client
                     .post(
@@ -317,6 +327,97 @@ mod tests {
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
 
+    #[tokio::test]
+    async fn relationship_endpoint_cursor_requires_explicit_completion() {
+        use axum::{Json, Router, extract::Request};
+        use std::sync::{Arc, Mutex};
+        for has_more in [
+            None,
+            Some(Value::Null),
+            Some(json!(true)),
+            Some(json!(0)),
+            Some(json!("false")),
+            Some(json!([])),
+            Some(json!({})),
+            Some(json!(false)),
+        ] {
+            let valid = has_more == Some(json!(false));
+            let mut response = json!({"result":[[]]});
+            if let Some(value) = has_more {
+                response["hasMore"] = value;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let captured = requests.clone();
+            let app = Router::new().fallback(move |request: Request| {
+                let requests = captured.clone();
+                let response = response.clone();
+                async move {
+                    let method = request.method().as_str();
+                    let path = request.uri().path().split("/_api/").nth(1).unwrap();
+                    requests.lock().unwrap().push(format!("{method} {path}"));
+                    Json(match (method, path) {
+                        ("POST", "transaction/begin") => json!({"result":{"id":"1"}}),
+                        ("POST", "cursor") => response,
+                        ("POST", "document/codebase_imports_edges") => json!([{"error":false}]),
+                        ("PUT", "transaction/1") => json!({"result":{"status":"committed"}}),
+                        ("DELETE", "transaction/1") => json!({"result":{"status":"aborted"}}),
+                        _ => panic!("unexpected request {method} {path}"),
+                    })
+                }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{
+                "name":"private_cursor_fixture", "sockets":{"readonly":socket,"readwrite":socket}
+            }}))
+            .unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            let result = store_relationships(
+                &pool,
+                Default::default(),
+                vec![(
+                    CODEBASE.imports_edges,
+                    vec![json!({"_key":"edge",
+                    "_from":"codebase_files/source", "_to":"codebase_symbols/target"})],
+                )],
+            )
+            .await;
+            let calls = requests.lock().unwrap().clone();
+            if valid {
+                result.unwrap();
+                assert_eq!(
+                    calls,
+                    [
+                        "POST transaction/begin",
+                        "POST cursor",
+                        "POST document/codebase_imports_edges",
+                        "PUT transaction/1"
+                    ]
+                );
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("invalid relationship endpoint check response")
+                );
+                assert_eq!(
+                    calls,
+                    [
+                        "POST transaction/begin",
+                        "POST cursor",
+                        "DELETE transaction/1"
+                    ],
+                    "malformed cursor must abort before writing edges"
+                );
+            }
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
     fn prepared(expected_revision: Option<String>, text: &str) -> Replacement {
         Replacement {
             key: "file".into(),
@@ -454,6 +555,9 @@ mod tests {
             pool.writer().delete("document/codebase_files/target").await.unwrap();
             let error = store_relationships(&pool, current, vec![(CODEBASE.calls_edges, vec![edge])]).await.unwrap_err();
             assert!(error.to_string().contains("endpoint no longer exists"));
+            assert!(error.to_string().contains(CODEBASE.calls_edges));
+            assert!(error.to_string().contains("1 missing endpoints"));
+            assert!(error.to_string().contains("codebase_files/target"));
         }).await;
     }
 

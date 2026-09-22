@@ -35,6 +35,16 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Record scratch rebuild commands, the cleared schema gate, both observed ingestion
   failures, partial comparison, and unexecuted cutover/rollback prerequisites.
 
+- Resolve cross-file edges only to stored primitive symbols, break candidate ties
+  deterministically by path and key, and identify missing relationship endpoints.
+
+- Persist LSP enrichment in size-bounded whole-file transaction groups, keeping each
+  file’s symbols, outgoing edges, analysis metadata and symbol count atomic under
+  the existing 32 MiB transaction cap.
+
+- Keep LSP notification retention bounded without closing pending requests on overflow,
+  log transport close reasons, and clarify recovery when relationship endpoints are missing.
+
 - Store document embedding model, model hash, and dimension for strict semantic search
   validation; distinguish missing metadata from incompatible metadata and invalid vectors.
   Existing rows are not upgraded automatically: ordinary ingestion skips unchanged files.

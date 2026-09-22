@@ -34,25 +34,61 @@ async fn oversized_frame_declaration_is_rejected_without_waiting_for_body() {
 }
 
 const FLOOD: &str = r#"
-import sys,json,time
+import sys,json
 size=int(sys.argv[1]);count=int(sys.argv[2])
 body=json.dumps({'jsonrpc':'2.0','method':'window/logMessage','params':{'message':'x'*size}}).encode()
 frame=('Content-Length: %d\r\n\r\n'%len(body)).encode()+body
 for _ in range(count): sys.stdout.buffer.write(frame)
 sys.stdout.buffer.flush()
-time.sleep(5)
 "#;
 
-#[tokio::test]
-async fn notification_count_overflow_fails_pending_request() {
-    let script = format!("import sys; sys.argv=['fixture','256','2048']\n{FLOOD}");
-    rejects_peer(&script, "notification retention limit").await;
+async fn survives_flood(size: usize, count: usize, retained_count: usize) {
+    let directory = tempfile::tempdir().unwrap();
+    let script = format!("import sys; sys.argv=['fixture','{size}','{count}']\n{FLOOD}\n{ECHO}");
+    let mut client = LspClient::start("/usr/bin/python3", &["-c", &script], directory.path())
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .request("fixture", json!(42), Duration::from_secs(3))
+            .await
+            .unwrap(),
+        json!(42)
+    );
+    assert!(client.is_alive());
+    let retained = client.drain_notifications(None).await;
+    assert_eq!(retained.len(), retained_count);
+    assert!(retained.len() <= 1024);
+    assert!(
+        retained
+            .iter()
+            .map(|v| serde_json::to_vec(v).unwrap().len())
+            .sum::<usize>()
+            <= 8 * 1024 * 1024
+    );
+    // Draining the bounded queue must leave the connection usable.
+    assert_eq!(
+        client
+            .request("echo", json!(7), Duration::from_secs(3))
+            .await
+            .unwrap(),
+        json!(7)
+    );
+    tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
-async fn notification_wire_bytes_overflow_before_count_limit() {
-    let script = format!("import sys; sys.argv=['fixture','1048576','9']\n{FLOOD}");
-    rejects_peer(&script, "notification retention limit").await;
+async fn notification_count_overflow_preserves_pending_request() {
+    survives_flood(256, 2048, 1024).await;
+}
+
+#[tokio::test]
+async fn notification_wire_bytes_overflow_preserves_pending_request() {
+    // Each framed payload is slightly larger than 1 MiB, so only seven fit.
+    survives_flood(1048576, 9, 7).await;
 }
 
 const ECHO: &str = r#"

@@ -3508,13 +3508,27 @@ async fn enrichment_revisions(
     Ok(revisions)
 }
 
-/// Enrichment is a separate atomic stage: failed stores retain the committed
-/// structural graph and do not publish partial symbols, edges or success flags.
+// Serialized payload is not ArangoDB transaction memory: leave headroom for
+// indexes, old versions and AQL updates under the unchanged 32 MiB server cap.
+const ENRICHMENT_PAYLOAD_BUDGET: usize = 1024 * 1024;
+const ENRICHMENT_FILE_RESERVE: usize = 64 * 1024;
+
+#[derive(Default)]
+struct EnrichmentFileGroup {
+    path: String,
+    key: String,
+    patch: Value,
+    symbols: Vec<Value>,
+    edges: Vec<(EdgeKind, Value)>,
+}
+
+/// Commit whole-file enrichment groups. A later failure retains earlier complete
+/// groups; no failed group publishes partial documents or success metadata.
 #[allow(clippy::too_many_arguments)]
 async fn store_lsp_extractions(
     db: &ArangoPool,
     all_extractions: HashMap<String, FileExtraction>,
-    revisions: HashMap<String, EnrichmentInput>,
+    mut revisions: HashMap<String, EnrichmentInput>,
     workspaces: usize,
     workspaces_attempted: usize,
     analyzer: &'static str,
@@ -3572,70 +3586,162 @@ async fn store_lsp_extractions(
         })
         .collect();
 
-    let symbol_count = symbols.len();
-    let edge_count = edge_docs.len();
-    let collections = CODEBASE
-        .all_collections()
+    let mut groups: HashMap<String, EnrichmentFileGroup> = file_patches
         .into_iter()
-        .map(|(name, _)| name.to_owned())
-        .collect();
-    let namespace_owned = namespace.to_owned();
-    let stored = hades_core::db::transaction::run(db, collections, move |client| async move {
-        for (path, _, _, _) in &file_patches {
-            if !revisions.contains_key(path) {
-                return Err(hades_core::db::ArangoError::Request("missing enrichment preparation revision".into()));
-            }
-        }
-        for (path, expected) in &revisions {
-            let key = keys::scoped_file_key(&namespace_owned, path);
-            if super::codebase_persist::revision(&client, &key).await?.as_deref() != Some(expected.revision.as_str()) {
-                return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
-            }
-            expected.verify_source().await?;
-        }
-        let mut batches = vec![(CODEBASE.symbols, symbols)];
-        for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
-            batches.push((kind.collection(), edge_docs.iter().filter(|(k, _)| *k == kind).map(|(_, d)| d.clone()).collect()));
-        }
-        for (collection, docs) in batches {
-            if docs.is_empty() { continue; }
-            let response = client.post(&format!("document/{collection}?overwriteMode=replace"), &json!(docs)).await?;
-            let rows = response.as_array().ok_or_else(|| hades_core::db::ArangoError::Request("invalid enrichment batch response".into()))?;
-            if rows.len() != docs.len() || rows.iter().any(|row| row["error"] == true) {
-                return Err(hades_core::db::ArangoError::Request(format!("failed enrichment batch in {collection}")));
-            }
-        }
-        for (_, key, count, analyzed_at) in &file_patches {
+        .map(|(path, key, count, analyzed_at)| {
             let patch = json!({format!("{metadata_prefix}_analyzed"):true,
                 format!("{metadata_prefix}_symbol_count"):count,
                 format!("{metadata_prefix}_analyzed_at"):analyzed_at});
-            client.patch(&format!("document/{}/{key}", CODEBASE.files), &patch).await?;
-        }
-        super::codebase_persist::query(&client,
-            "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
-            json!({"fkeys":file_patches.iter().map(|(_,key,_,_)| key).collect::<Vec<_>>(),
-                "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
-        for input in revisions.values() {
-            input.verify_source().await?;
-        }
-        Ok(())
-    }).await;
-    if let Err(error) = stored {
-        warn!(%error, analyzer, "atomic enrichment store failed; committed graph retained");
-        return Ok(SemanticLspStats {
-            workspaces,
-            workspaces_attempted,
-            store_failed: true,
-            ..Default::default()
-        });
+            (
+                key.clone(),
+                EnrichmentFileGroup {
+                    path,
+                    key,
+                    patch,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    // Defines edges include every resolver symbol (including non-primitives).
+    // Calls/implements belong to the source symbol's file, even across files.
+    let owners: HashMap<String, String> = edge_docs
+        .iter()
+        .filter(|(kind, _)| *kind == EdgeKind::Defines)
+        .map(|(_, edge)| {
+            (
+                edge["_to"].as_str().unwrap().to_owned(),
+                edge["_from"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    for symbol in symbols {
+        groups
+            .get_mut(
+                symbol["file_key"]
+                    .as_str()
+                    .context("symbol missing file owner")?,
+            )
+            .context("symbol has no enrichment file")?
+            .symbols
+            .push(symbol);
     }
-    Ok(SemanticLspStats {
-        symbols: symbol_count,
-        edges: edge_count,
+    for (kind, edge) in edge_docs {
+        let source = edge["_from"].as_str().context("edge missing source")?;
+        let owner = if kind == EdgeKind::Defines {
+            source.rsplit('/').next().unwrap()
+        } else {
+            owners.get(source).context("edge has no source file")?
+        };
+        groups
+            .get_mut(owner)
+            .context("edge has no enrichment file")?
+            .edges
+            .push((kind, edge));
+    }
+    let mut groups: Vec<_> = groups.into_values().collect();
+    groups.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut batches = Vec::new();
+    let mut batch = Vec::new();
+    let mut bytes = 0;
+    for group in groups {
+        let size = serde_json::to_vec(&(&group.symbols, &group.edges, &group.patch, &group.key))?
+            .len()
+            + ENRICHMENT_FILE_RESERVE;
+        if size > ENRICHMENT_PAYLOAD_BUDGET {
+            warn!(file = %group.path, size, analyzer, "enrichment file exceeds transaction payload budget; no enrichment stored");
+            return Ok(SemanticLspStats {
+                workspaces,
+                workspaces_attempted,
+                store_failed: true,
+                ..Default::default()
+            });
+        }
+        if bytes + size > ENRICHMENT_PAYLOAD_BUDGET {
+            batches.push(std::mem::take(&mut batch));
+            bytes = 0;
+        }
+        bytes += size;
+        batch.push(group);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    let mut stats = SemanticLspStats {
         workspaces,
         workspaces_attempted,
         ..Default::default()
-    })
+    };
+    for batch in batches {
+        let symbol_count: usize = batch.iter().map(|g| g.symbols.len()).sum();
+        let edge_count: usize = batch.iter().map(|g| g.edges.len()).sum();
+        let collections = CODEBASE
+            .all_collections()
+            .into_iter()
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        let namespace_owned = namespace.to_owned();
+        let stored = hades_core::db::transaction::run(db, collections, move |client| async move {
+            for group in &batch {
+                if !revisions.contains_key(&group.path) {
+                    return Err(hades_core::db::ArangoError::Request("missing enrichment preparation revision".into()));
+                }
+            }
+            // Include dependencies without extractions. Revisions refreshed by our
+            // own prior commits are carried forward; intervening writes still fail.
+            for (path, expected) in &revisions {
+                let key = keys::scoped_file_key(&namespace_owned, path);
+                if super::codebase_persist::revision(&client, &key).await?.as_deref() != Some(expected.revision.as_str()) {
+                    return Err(hades_core::db::ArangoError::Request("file changed during enrichment; retry ingestion".into()));
+                }
+            }
+            for group in &batch {
+                let mut docs = vec![(CODEBASE.symbols, group.symbols.clone())];
+                for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
+                    docs.push((kind.collection(), group.edges.iter().filter(|(k, _)| *k == kind).map(|(_, d)| d.clone()).collect()));
+                }
+                for (collection, docs) in docs {
+                    if docs.is_empty() { continue; }
+                    let response = client.post(&format!("document/{collection}?overwriteMode=replace"), &json!(docs)).await?;
+                    let rows = response.as_array().ok_or_else(|| hades_core::db::ArangoError::Request("invalid enrichment batch response".into()))?;
+                    if rows.len() != docs.len() || rows.iter().any(|row| row["error"] == true) {
+                        return Err(hades_core::db::ArangoError::Request(format!("failed enrichment batch in {collection}")));
+                    }
+                }
+                client.patch(&format!("document/{}/{}", CODEBASE.files, group.key), &group.patch).await?;
+            }
+            super::codebase_persist::query(&client,
+                "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
+                json!({"fkeys":batch.iter().map(|g| &g.key).collect::<Vec<_>>(),
+                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+            for group in &batch {
+                revisions.get_mut(&group.path).unwrap().revision = super::codebase_persist::revision(&client, &group.key).await?
+                    .ok_or_else(|| hades_core::db::ArangoError::Request("enrichment file disappeared".into()))?;
+            }
+            for input in revisions.values() { input.verify_source().await?; }
+            Ok(revisions)
+        }).await;
+        match stored {
+            Ok(updated) => {
+                revisions = updated;
+                stats.symbols += symbol_count;
+                stats.edges += edge_count;
+            }
+            Err(error) => {
+                warn!(%error, analyzer, committed_symbols = stats.symbols, committed_edges = stats.edges,
+                    "atomic enrichment file group failed; earlier committed groups retained; failed commit acknowledgment may leave an uncertain outcome");
+                stats.store_failed = true;
+                return Ok(stats);
+            }
+        }
+    }
+    Ok(stats)
 }
 
 // ── Python import graph resolution ──────────────────────────────────────
@@ -3660,8 +3766,8 @@ fn build_python_symbol_index_scoped(
     for (rel_path, symbols) in file_symbols {
         let fkey = keys::scoped_file_key(namespace, rel_path);
         for sym in symbols {
-            // Only index definitions, not imports.
-            if sym.kind == SymbolKind::Import {
+            // Match the vertex writer, excluding import and impl scaffolding.
+            if !sym.kind.is_primitive() {
                 continue;
             }
             // Index is keyed by the bare name (call sites use bare names), but
@@ -3926,6 +4032,7 @@ fn is_semantic_target(
 #[cfg(test)]
 mod tests {
     include!("codebase_embedding_retry_tests.rs");
+    include!("codebase_enrichment_store_tests.rs");
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
     use std::collections::HashSet;
@@ -5442,6 +5549,38 @@ mod tests {
             end_line: 10,
             metadata: json!({}),
         }
+    }
+
+    #[test]
+    fn primitive_bare_call_index_excludes_impl_targets() {
+        let namespace = "/fixture";
+        let files = HashMap::from([
+            (
+                "00_impl.py".to_owned(),
+                vec![make_def_sym("Store", SymbolKind::Impl)],
+            ),
+            (
+                "store.py".to_owned(),
+                vec![make_def_sym("Store", SymbolKind::Struct)],
+            ),
+            (
+                "main.py".to_owned(),
+                vec![Symbol {
+                    name: "caller".into(),
+                    kind: SymbolKind::Function,
+                    start_line: 1,
+                    end_line: 2,
+                    metadata: json!({"calls":[{"name":"Store","qualified_name":"alias.Store"}]}),
+                }],
+            ),
+        ]);
+        let bare = build_python_symbol_index_scoped(&files, namespace);
+        assert_eq!(bare["Store"].len(), 1);
+        let edges =
+            python_calls::resolve_python_calls_scoped(&files, &HashMap::new(), &bare, namespace);
+        let key = keys::symbol_key(&keys::scoped_file_key(namespace, "store.py"), "Store", 1);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["_to"], format!("codebase_symbols/{key}"));
     }
 
     #[test]
