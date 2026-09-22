@@ -146,7 +146,7 @@ pub(super) async fn store_relationships(
                     .filter(|rows| rows.len() == 1)
                     .and_then(|rows| rows[0].as_array())
                     .filter(|ids| ids.iter().all(Value::is_string));
-                let missing = missing.filter(|_| found["hasMore"] != true)
+                let missing = missing.filter(|_| found["hasMore"].as_bool() == Some(false))
                     .ok_or_else(|| ArangoError::Request(format!(
                         "invalid relationship endpoint check response for {collection}")))?;
                 if !missing.is_empty() {
@@ -326,6 +326,97 @@ pub(super) async fn query(
 mod tests {
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
+
+    #[tokio::test]
+    async fn relationship_endpoint_cursor_requires_explicit_completion() {
+        use axum::{Json, Router, extract::Request};
+        use std::sync::{Arc, Mutex};
+        for has_more in [
+            None,
+            Some(Value::Null),
+            Some(json!(true)),
+            Some(json!(0)),
+            Some(json!("false")),
+            Some(json!([])),
+            Some(json!({})),
+            Some(json!(false)),
+        ] {
+            let valid = has_more == Some(json!(false));
+            let mut response = json!({"result":[[]]});
+            if let Some(value) = has_more {
+                response["hasMore"] = value;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let captured = requests.clone();
+            let app = Router::new().fallback(move |request: Request| {
+                let requests = captured.clone();
+                let response = response.clone();
+                async move {
+                    let method = request.method().as_str();
+                    let path = request.uri().path().split("/_api/").nth(1).unwrap();
+                    requests.lock().unwrap().push(format!("{method} {path}"));
+                    Json(match (method, path) {
+                        ("POST", "transaction/begin") => json!({"result":{"id":"1"}}),
+                        ("POST", "cursor") => response,
+                        ("POST", "document/codebase_imports_edges") => json!([{"error":false}]),
+                        ("PUT", "transaction/1") => json!({"result":{"status":"committed"}}),
+                        ("DELETE", "transaction/1") => json!({"result":{"status":"aborted"}}),
+                        _ => panic!("unexpected request {method} {path}"),
+                    })
+                }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{
+                "name":"private_cursor_fixture", "sockets":{"readonly":socket,"readwrite":socket}
+            }}))
+            .unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            let result = store_relationships(
+                &pool,
+                Default::default(),
+                vec![(
+                    CODEBASE.imports_edges,
+                    vec![json!({"_key":"edge",
+                    "_from":"codebase_files/source", "_to":"codebase_symbols/target"})],
+                )],
+            )
+            .await;
+            let calls = requests.lock().unwrap().clone();
+            if valid {
+                result.unwrap();
+                assert_eq!(
+                    calls,
+                    [
+                        "POST transaction/begin",
+                        "POST cursor",
+                        "POST document/codebase_imports_edges",
+                        "PUT transaction/1"
+                    ]
+                );
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("invalid relationship endpoint check response")
+                );
+                assert_eq!(
+                    calls,
+                    [
+                        "POST transaction/begin",
+                        "POST cursor",
+                        "DELETE transaction/1"
+                    ],
+                    "malformed cursor must abort before writing edges"
+                );
+            }
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
 
     fn prepared(expected_revision: Option<String>, text: &str) -> Replacement {
         Replacement {
