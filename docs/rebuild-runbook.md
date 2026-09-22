@@ -2,10 +2,10 @@
 
 ## Current checkpoint — 2026-09-22, TOML scope aligned
 
-**Requested counts match live; every edge collection has zero dangling endpoints.**
-The only remaining collection-count difference is the review-seat-documented
-rust-analyzer ±1 call-edge variance. No production cutover was performed or authorized.
-PR #160 remains draft for review; no automatic merge is queued.
+**All requested counts match live except the documented rust-analyzer ±1 call-edge
+variance; every edge collection has zero dangling endpoints.**
+No production cutover was performed or authorized.
+PR #160 is open for review; no automatic merge is queued.
 
 Todd authorized the incremental `--unparsed-ext toml` pass on existing
 `scratch_rebuild_wt5_r2` after the
@@ -35,8 +35,11 @@ schema and initial-ingest commands and captures remain in the
 [immutable fresh-run record](https://github.com/toddwbucy/HADES/blob/26eae4786c409cb376403ce5764cc3a54613ba38/docs/rebuild-runbook.md).
 Do not recreate this retained database.
 
-For a future separately authorized fresh rebuild, the ingestion command must include
-`--unparsed-ext toml`; followed by the adapter dry-run and write shown below.
+For a future separately authorized fresh rebuild, follow the creation and schema
+steps in the immutable fresh-run record above using a newly approved empty database.
+Use that new target for ingestion with `--unparsed-ext toml`, then adapter dry-run
+and write. The later command block targets retained `scratch_rebuild_wt5_r2` and
+is **incremental-only**, not a fresh-database creation or rebuild procedure.
 The sequence actually observed was fresh ingestion without that flag, then the
 incremental correction. A single fresh invocation with the corrected flag was
 not separately repeated. No `--force`, truncation or code correction was used.
