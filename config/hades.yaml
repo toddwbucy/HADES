@@ -143,3 +143,16 @@ sync:
 #analyzers:
 #  rust_analyzer: /usr/local/lib/hades/tools/rust-analyzer
 #  gopls: /usr/local/lib/hades/tools/gopls
+
+# Shared code/document pre-chunking, resolved against /v1/models at ingest startup.
+# The same root-level schema applies to every config search location, including
+# ~/.config/hades/hades.yaml and /etc/hades/hades.yaml; this is a template only.
+chunking:
+  prechunk:
+    overlap_tokens: 1000
+    safety_margin_tokens: 256
+    # Optional cap; must not exceed the reported backend max_seq_length.
+    # Effective tokens = min(cap if set, max_seq_length - safety_margin_tokens).
+    # Initial windows and overlap use 2.0 bytes/token; reported size errors
+    # refine the refused input's byte budget and retry with overlap.
+    max_window_tokens: null

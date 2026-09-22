@@ -19,6 +19,7 @@ use tracing::warn;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HadesConfig {
+    pub chunking: crate::chunking::prechunk::ChunkingPolicy,
     pub database: DatabaseConfig,
     pub embedding: EmbeddingConfig,
     /// Document extraction service (docling). `#[serde(default)]` because every

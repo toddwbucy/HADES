@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 use crate::chunking::{ChunkingStrategy, TextChunk};
 use crate::db::ArangoPool;
@@ -19,6 +19,7 @@ use crate::persephone::extraction::{
 /// Pipeline configuration.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
+    pub prechunk: crate::chunking::prechunk::PrechunkConfig,
     /// Collection profile to store results in.
     pub profile: &'static CollectionProfile,
     /// Embedding task parameter (e.g. "retrieval.passage").
@@ -34,6 +35,7 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
+            prechunk: Default::default(),
             profile: CollectionProfile::default_profile(),
             embed_task: "retrieval.passage".to_string(),
             embed_batch_size: None,
@@ -311,23 +313,30 @@ impl Pipeline {
         extract_result: &ExtractResult,
         chunker: &(dyn ChunkingStrategy + Send + Sync),
     ) -> Result<usize, PipelineError> {
-        // 2. Chunk
-        let chunks = chunker.chunk(&extract_result.full_text);
-        if chunks.is_empty() {
-            warn!(doc_key, "chunking produced no text chunks");
+        let window = self
+            .config
+            .prechunk
+            .from_backend(&self.embedder)
+            .await
+            .map_err(|e| PipelineError::Other(e.to_string()))?;
+        let input = chunker.chunk(&extract_result.full_text);
+        if input.is_empty() {
             return Err(PipelineError::EmptyChunks);
         }
-
-        // 3. Embed
-        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let embed_result = self
-            .embedder
-            .embed(
-                &texts,
-                &self.config.embed_task,
-                self.config.embed_batch_size,
-            )
-            .await?;
+        let (chunks, parents, embed_result) = crate::chunking::prechunk::embed_chunks(
+            &self.embedder,
+            &extract_result.full_text,
+            input,
+            window,
+            &self.config.embed_task,
+            self.config.embed_batch_size,
+            false,
+        )
+        .await
+        .map_err(|e| match e.downcast::<EmbeddingError>() {
+            Ok(e) => PipelineError::Embedding(e),
+            Err(e) => PipelineError::Other(e.to_string()),
+        })?;
 
         if embed_result.embeddings.len() != chunks.len() {
             return Err(PipelineError::Other(format!(
@@ -338,19 +347,29 @@ impl Pipeline {
         }
 
         // 4. Store
-        self.store(doc_key, extract_result, &chunks, &embed_result)
-            .await?;
+        self.store(
+            doc_key,
+            extract_result,
+            &chunks,
+            &embed_result,
+            &parents,
+            window.tokens,
+        )
+        .await?;
 
         Ok(chunks.len())
     }
 
     /// Store metadata, chunks, and embeddings in ArangoDB.
+    #[allow(clippy::too_many_arguments)]
     async fn store(
         &self,
         doc_key: &str,
         extract_result: &ExtractResult,
         chunks: &[TextChunk],
         embed_result: &EmbedResult,
+        parents: &[usize],
+        window_tokens: u32,
     ) -> Result<(), PipelineError> {
         let profile = self.config.profile;
 
@@ -370,24 +389,31 @@ impl Pipeline {
         // -- Chunk documents -----------------------------------------------
         let chunk_docs: Vec<Value> = chunks
             .iter()
-            .enumerate()
-            .map(|(i, chunk)| chunk_doc(profile, doc_key, i, chunk))
+            .map(|chunk| {
+                let mut row = chunk_doc(profile, doc_key, chunk.chunk_index, chunk);
+                row["parent_chunk_index"] = json!(parents[chunk.chunk_index]);
+                row
+            })
             .collect();
 
         // -- Embedding documents -------------------------------------------
         let embedding_docs: Vec<Value> = embed_result
             .embeddings
             .iter()
-            .enumerate()
-            .map(|(i, emb)| {
-                embedding_doc(
+            .zip(chunks)
+            .map(|(emb, chunk)| {
+                let mut row = embedding_doc(
                     profile,
                     doc_key,
-                    i,
+                    chunk.chunk_index,
                     emb,
                     &embed_result.model,
                     embed_result.dimension,
-                )
+                );
+                row["window_tokens"] = json!(window_tokens);
+                let index = row["chunk_index"].as_u64().expect("mapped chunk index") as usize;
+                row["parent_chunk_index"] = json!(parents[index]);
+                row
             })
             .collect();
 
@@ -516,6 +542,7 @@ fn embedding_doc(
     let mut doc = json!({
         "_key": keys::embedding_key(&ck),
         "chunk_key": ck,
+        "chunk_index": index,
         "doc_key": doc_key,
         "embedding": embedding,
         "model": model,

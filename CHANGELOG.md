@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Pre-chunk document and code inputs with backend-sized, configurable overlapping
+  windows, adapt refused inputs using reported token counts, and persist window
+  budgets and parent attribution with embeddings.
+
 - Map all seven codebase command contracts and their ingestion, transaction and
   management limitations, completing the native CLI source inventory (#12).
 

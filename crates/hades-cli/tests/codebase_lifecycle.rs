@@ -1448,3 +1448,93 @@ async fn killed_cli_after_transactional_chunk_write_rolls_back_and_retries() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
+    let embedder = Embedder::new().await;
+    let ready = hades_core::persephone::embedding::EmbeddingClient::connect_at(
+        embedder.socket.to_str().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ready.info().await.unwrap().max_seq_length, Some(8192));
+    let dir = tempfile::tempdir().unwrap();
+    // Trap every database request on a private listener: invalid policy must
+    // fail before touching even this mock, and can never discover a live server.
+    let db_socket = dir.path().join("database.sock");
+    let listener = tokio::net::UnixListener::bind(&db_socket).unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let app = Router::new().fallback(move || {
+        let calls = observed.clone();
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        }
+    });
+    let database = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let config = dir.path().join("hades.yaml");
+    std::fs::write(&config, format!(
+        "embedding:\n  service:\n    socket: {}\nchunking:\n  prechunk:\n    max_window_tokens: 9000\n",
+        embedder.socket.display())).unwrap();
+    let input = dir.path().join("fixture.txt");
+    std::fs::write(&input, "private ingest preflight fixture").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_hades"))
+        .env("HADES_CONFIG", config)
+        .env("HADES_EMBEDDER_SOCKET", &embedder.socket)
+        .env("ARANGO_SOCKET", &db_socket)
+        .env("ARANGO_RO_SOCKET", &db_socket)
+        .env("ARANGO_RW_SOCKET", &db_socket)
+        .args([
+            "ingest",
+            input.to_str().unwrap(),
+            "--db",
+            "hades_test_preflight",
+        ])
+        .output()
+        .await
+        .unwrap();
+    database.abort();
+    let _ = database.await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "invalid policy must precede database access"
+    );
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("9000") && error.contains("8192"), "{error}");
+    assert!(error.contains("max_window_tokens"), "{error}");
+}
+
+#[tokio::test]
+async fn non_ingest_command_does_not_validate_the_embedding_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("database.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let app = Router::new().fallback(|| async { Json(json!({"result":[]})) });
+    let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let config = dir.path().join("hades.yaml");
+    std::fs::write(
+        &config,
+        "chunking:\n  prechunk:\n    max_window_tokens: 9000\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_hades"))
+        .env("HADES_CONFIG", &config)
+        .env("HADES_EMBEDDER_SOCKET", dir.path().join("absent.sock"))
+        .env("ARANGO_SOCKET", &socket)
+        .env("ARANGO_RO_SOCKET", &socket)
+        .env("ARANGO_RW_SOCKET", &socket)
+        .args(["db", "databases", "--db", "hades_test_mock"])
+        .output()
+        .await
+        .unwrap();
+    peer.abort();
+    let _ = peer.await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
