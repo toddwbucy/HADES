@@ -19,6 +19,7 @@ use crate::persephone::extraction::{
 /// Pipeline configuration.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
+    pub prechunk: crate::chunking::prechunk::PrechunkConfig,
     /// Collection profile to store results in.
     pub profile: &'static CollectionProfile,
     /// Embedding task parameter (e.g. "retrieval.passage").
@@ -34,6 +35,7 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
+            prechunk: Default::default(),
             profile: CollectionProfile::default_profile(),
             embed_task: "retrieval.passage".to_string(),
             embed_batch_size: None,
@@ -311,8 +313,18 @@ impl Pipeline {
         extract_result: &ExtractResult,
         chunker: &(dyn ChunkingStrategy + Send + Sync),
     ) -> Result<usize, PipelineError> {
-        // 2. Chunk
-        let chunks = chunker.chunk(&extract_result.full_text);
+        let window = self
+            .config
+            .prechunk
+            .from_backend(&self.embedder)
+            .await
+            .map_err(|e| PipelineError::Other(e.to_string()))?;
+        let (chunks, parents) = crate::chunking::prechunk::prechunk(
+            chunker.chunk(&extract_result.full_text),
+            window.chars,
+            window.overlap_chars,
+        )
+        .map_err(|e| PipelineError::Other(e.to_string()))?;
         if chunks.is_empty() {
             warn!(doc_key, "chunking produced no text chunks");
             return Err(PipelineError::EmptyChunks);
@@ -338,19 +350,29 @@ impl Pipeline {
         }
 
         // 4. Store
-        self.store(doc_key, extract_result, &chunks, &embed_result)
-            .await?;
+        self.store(
+            doc_key,
+            extract_result,
+            &chunks,
+            &embed_result,
+            &parents,
+            window.tokens,
+        )
+        .await?;
 
         Ok(chunks.len())
     }
 
     /// Store metadata, chunks, and embeddings in ArangoDB.
+    #[allow(clippy::too_many_arguments)]
     async fn store(
         &self,
         doc_key: &str,
         extract_result: &ExtractResult,
         chunks: &[TextChunk],
         embed_result: &EmbedResult,
+        parents: &[usize],
+        window_tokens: u32,
     ) -> Result<(), PipelineError> {
         let profile = self.config.profile;
 
@@ -371,7 +393,11 @@ impl Pipeline {
         let chunk_docs: Vec<Value> = chunks
             .iter()
             .enumerate()
-            .map(|(i, chunk)| chunk_doc(profile, doc_key, i, chunk))
+            .map(|(i, chunk)| {
+                let mut row = chunk_doc(profile, doc_key, i, chunk);
+                row["parent_chunk_index"] = json!(parents[i]);
+                row
+            })
             .collect();
 
         // -- Embedding documents -------------------------------------------
@@ -380,14 +406,17 @@ impl Pipeline {
             .iter()
             .enumerate()
             .map(|(i, emb)| {
-                embedding_doc(
+                let mut row = embedding_doc(
                     profile,
                     doc_key,
                     i,
                     emb,
                     &embed_result.model,
                     embed_result.dimension,
-                )
+                );
+                row["window_tokens"] = json!(window_tokens);
+                row["parent_chunk_index"] = json!(parents[i]);
+                row
             })
             .collect();
 

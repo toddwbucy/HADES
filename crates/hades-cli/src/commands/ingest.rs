@@ -324,7 +324,9 @@ pub async fn run_phase(
 
     // -- Build pipeline --------------------------------------------------------
     let embed_task = determine_embed_task(task, profile);
+    config.chunking.prechunk.from_backend(&embedder).await?;
     let pipeline_config = PipelineConfig {
+        prechunk: config.chunking.prechunk.clone(),
         profile,
         embed_task,
         embed_batch_size: Some(config.embedding.batch.size),

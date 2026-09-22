@@ -310,6 +310,16 @@ fn main() -> anyhow::Result<()> {
     };
     config.apply_cli_overrides(cli.database.as_deref(), cli.gpu);
 
+    if config.chunking.prechunk.max_window_tokens.is_some() {
+        tokio::runtime::Runtime::new()?.block_on(async {
+            let client = hades_core::persephone::embedding::EmbeddingClient::connect_at(
+                &config.embedding.service.socket,
+            )
+            .await?;
+            config.chunking.prechunk.from_backend(&client).await
+        })?;
+    }
+
     // ── Command dispatch ────────────────────────────────────────────────
     match cli.command {
         Commands::Ingest {

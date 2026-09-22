@@ -1448,3 +1448,23 @@ async fn killed_cli_after_transactional_chunk_write_rolls_back_and_retries() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn prechunk_override_above_backend_ceiling_fails_cli_startup() {
+    let embedder = Embedder::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("hades.yaml");
+    std::fs::write(&config, format!(
+        "embedding:\n  service:\n    socket: {}\nchunking:\n  prechunk:\n    max_window_tokens: 9000\n",
+        embedder.socket.display())).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_hades"))
+        .env("HADES_CONFIG", config)
+        .args(["db", "collections"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("9000") && error.contains("8192"), "{error}");
+    assert!(error.contains("max_window_tokens"), "{error}");
+}

@@ -15,6 +15,7 @@
 //! never have been called, and it was removed rather than left for the next
 //! reader to find and reimplement against.
 
+pub mod prechunk;
 mod strategies;
 
 pub use strategies::{SentenceChunking, SlidingWindowChunking, TokenChunking};

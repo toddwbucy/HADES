@@ -25,6 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use hades_core::HadesConfig;
 use hades_core::chunking::ChunkingStrategy;
+use hades_core::chunking::prechunk::CHARS_PER_TOKEN_FLOOR;
 use hades_core::code::lsp::go_symbols::GoSymbolExtractor;
 use hades_core::code::lsp::symbols::FileExtraction;
 use hades_core::code::lsp::{
@@ -201,7 +202,7 @@ pub async fn run_phase(
     // Ask the backend what it will accept, once per run. The answer is a
     // property of the load profile the embedder happens to be running, so it
     // cannot be a constant and must not be read per file.
-    let window_chars = embed_window_chars(embedder.as_ref()).await;
+    let window_chars = embed_window_chars(embedder.as_ref(), config).await?;
 
     // Ensure codebase collections exist.
     ensure_collections(&db).await?;
@@ -835,64 +836,14 @@ static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
         .unwrap_or(false)
 });
 
-/// Character budget for one embed window, derived from the backend's ceiling.
-///
-/// The window is packed by characters because chunk boundaries are character
-/// offsets, while the ceiling is in tokens, so the conversion needs a
-/// chars-per-token figure. It has to be a *floor*, not an average: pack by the
-/// average and the densest files overshoot the ceiling.
-///
-/// 2.0 is measured, not guessed. Across 285 files of real Rust, Python, CUDA and
-/// markdown the lowest ratio observed was 2.18 chars per token, the 5th
-/// percentile 3.68 and the median 4.18. So 2.0 leaves headroom under the densest
-/// file in that corpus, and a typical file still fills roughly half the window.
-///
-/// The constant this replaced was 12,000 characters, justified by a comment
-/// claiming dense Rust runs 1.5 chars per token. Measurement puts it at 4.19, so
-/// that budget packed about 2,870 tokens against a 32,768-token card and split
-/// 134 of those 285 files, producing 672 windows where 313 suffice. Every extra
-/// window is a seam where a chunk's vector loses the surrounding file, which is
-/// the whole point of late chunking.
-const CHARS_PER_TOKEN_FLOOR: f64 = 2.0;
-
-/// Fallback budget when the backend does not report `max_seq_length`.
-///
-/// The previous hardcoded value, kept for a backend that predates the field:
-/// under-packing is a quality loss, and overshooting an unknown ceiling is a
-/// refused window, so the conservative number is the right guess when there is
-/// nothing to read.
-const FALLBACK_WINDOW_CHARS: usize = 12_000;
-
-/// Ask the backend what it will accept and convert it to a character budget.
-async fn embed_window_chars(embedder: Option<&EmbeddingClient>) -> usize {
-    let Some(client) = embedder else {
-        return FALLBACK_WINDOW_CHARS;
-    };
-    match client.info().await {
-        Ok(info) => match info.max_seq_length {
-            Some(ceiling) => {
-                let budget = (f64::from(ceiling) * CHARS_PER_TOKEN_FLOOR) as usize;
-                info!(
-                    ceiling_tokens = ceiling,
-                    window_chars = budget,
-                    profile = info.profile.as_deref().unwrap_or("unreported"),
-                    "embed window sized from the backend's ceiling"
-                );
-                budget
-            }
-            None => {
-                warn!(
-                    fallback = FALLBACK_WINDOW_CHARS,
-                    "backend does not report max_seq_length, using the conservative budget"
-                );
-                FALLBACK_WINDOW_CHARS
-            }
-        },
-        Err(e) => {
-            warn!(error = %e, fallback = FALLBACK_WINDOW_CHARS,
-                  "could not read the backend's ceiling, using the conservative budget");
-            FALLBACK_WINDOW_CHARS
-        }
+/// Resolve the shared policy before any file writes; no guessed backend ceiling.
+async fn embed_window_chars(
+    embedder: Option<&EmbeddingClient>,
+    config: &HadesConfig,
+) -> Result<usize> {
+    match embedder {
+        Some(client) => Ok(config.chunking.prechunk.from_backend(client).await?.chars),
+        None => Ok(usize::MAX), // no embedding request or row will be produced
     }
 }
 
@@ -1764,7 +1715,11 @@ async fn ingest_file(
 
     // Chunk with AST-aligned chunking.
     let chunker = AstChunking::new(analysis.top_level_defs.clone());
-    let chunks = chunker.chunk(&source);
+    let (chunks, parents) = hades_core::chunking::prechunk::prechunk(
+        chunker.chunk(&source),
+        window_chars,
+        config.chunking.prechunk.overlap_tokens as usize * CHARS_PER_TOKEN_FLOOR,
+    )?;
 
     // Build file document (embedding_count populated after embed step below).
     let num_sym = analysis.symbols.len();
@@ -1804,6 +1759,7 @@ async fn ingest_file(
                 "_key": ckey,
                 "file_key": fkey,
                 "chunk_index": c.chunk_index,
+                "parent_chunk_index": parents[c.chunk_index],
                 "total_chunks": c.total_chunks,
                 "text": c.text,
                 "start_char": c.start_char,
@@ -1877,7 +1833,7 @@ async fn ingest_file(
     // Read once for the process rather than once per ingested file.
     let late_chunking_disabled = *LATE_CHUNKING_DISABLED;
 
-    let (embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
+    let (mut embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
         Some(emb) if !chunks.is_empty() && late_chunking_disabled => {
             let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
             match emb
@@ -2156,6 +2112,11 @@ async fn ingest_file(
         }
         _ => (Vec::new(), None),
     };
+    for (i, row) in embedding_docs.iter_mut().enumerate() {
+        row["window_tokens"] = json!(window_chars / CHARS_PER_TOKEN_FLOOR);
+        row["chunk_index"] = json!(i);
+        row["parent_chunk_index"] = json!(parents[i]);
+    }
     if let Some(error) = &embedding_error {
         return Ok(FileResult {
             path: rel_path.to_owned(),
@@ -2554,7 +2515,12 @@ async fn ingest_unparsed_file(
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
     let chunker = AstChunking::new(Vec::new());
-    let chunks = chunker.chunk(&source);
+    let window_chars = embed_window_chars(embedder, config).await?;
+    let (chunks, parents) = hades_core::chunking::prechunk::prechunk(
+        chunker.chunk(&source),
+        window_chars,
+        config.chunking.prechunk.overlap_tokens as usize * CHARS_PER_TOKEN_FLOOR,
+    )?;
     let num_chk = chunks.len();
 
     // Chunk documents — no symbol overlap (unparsed files have no symbols).
@@ -2566,6 +2532,7 @@ async fn ingest_unparsed_file(
                 "_key": ckey,
                 "file_key": fkey,
                 "chunk_index": c.chunk_index,
+                "parent_chunk_index": parents[c.chunk_index],
                 "total_chunks": c.total_chunks,
                 "text": c.text,
                 "start_char": c.start_char,
@@ -2590,7 +2557,7 @@ async fn ingest_unparsed_file(
     // applies. Not done here because it is a second change and this one is
     // already under review.
     let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-    let (embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
+    let (mut embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
         Some(emb) if !chunk_texts.is_empty() => {
             match emb
                 .embed(&chunk_texts, "code", Some(config.embedding.batch.size))
@@ -2625,6 +2592,11 @@ async fn ingest_unparsed_file(
         }
         _ => (Vec::new(), None),
     };
+    for (i, row) in embedding_docs.iter_mut().enumerate() {
+        row["window_tokens"] = json!(window_chars / CHARS_PER_TOKEN_FLOOR);
+        row["chunk_index"] = json!(i);
+        row["parent_chunk_index"] = json!(parents[i]);
+    }
     if let Some(error) = &embedding_error {
         return Ok(FileResult {
             path: rel_path.to_owned(),
@@ -4177,7 +4149,7 @@ mod tests {
                         false,
                         false,
                         false,
-                        FALLBACK_WINDOW_CHARS,
+                        12_000,
                         "",
                     )
                     .await
@@ -4680,7 +4652,7 @@ mod tests {
                 false,
                 false,
                 false,
-                FALLBACK_WINDOW_CHARS,
+                12_000,
                 "",
             )
             .await
@@ -4887,7 +4859,7 @@ mod tests {
                 false,
                 false,
                 false,
-                FALLBACK_WINDOW_CHARS,
+                12_000,
                 "",
             )
             .await
@@ -4931,7 +4903,7 @@ mod tests {
                 true,
                 false,
                 true,
-                FALLBACK_WINDOW_CHARS,
+                12_000,
                 "",
             )
             .await
@@ -4973,7 +4945,7 @@ mod tests {
                 true,
                 false,
                 false,
-                FALLBACK_WINDOW_CHARS,
+                12_000,
                 "",
             )
             .await
@@ -5073,7 +5045,7 @@ mod tests {
                     false,
                     false,
                     false,
-                    FALLBACK_WINDOW_CHARS,
+                    12_000,
                     "",
                 )
                 .await
@@ -5104,7 +5076,7 @@ mod tests {
                     true,
                     false,
                     false,
-                    FALLBACK_WINDOW_CHARS,
+                    12_000,
                     "",
                 )
                 .await

@@ -71,6 +71,24 @@ Discover the model the backend has loaded. OpenAI-compatible response shape.
   Ada and 32,768 on a 48 GiB A6000, so a client that wants to know what fits MUST
   ask the backend rather than read the model card. An input above this value is
   refused with `PE_INPUT_TOO_LARGE` and never silently truncated.
+  HADES pre-chunks document and code chunks before embedding using the shared
+  root-level YAML `chunking.prechunk` policy. `overlap_tokens` defaults to 1000;
+  `safety_margin_tokens` defaults to 256. The effective window is the smaller
+  of optional `max_window_tokens` and the backend ceiling minus the margin.
+  An explicit cap above the backend ceiling fails CLI startup naming both values;
+  missing backend ceiling, exhausted margin, or overlap at least the effective
+  window prevents ingestion rather than selecting a hard-coded budget. The same
+  schema applies at every configuration search location, including `/etc/hades/hades.yaml`.
+  Window and overlap character lengths use the existing 2.0 chars/token floor;
+  this is a conservative heuristic, not an exact tokenizer or a guarantee for
+  arbitrarily dense text. Hash-heavy requirements files can still be refused
+  under the defaults; set a lower `max_window_tokens` for such inputs. The live
+  `requirements-ci.txt` proof used 5,946 (half its reported 11,892-token ceiling).
+  `PE_INPUT_TOO_LARGE` handling remains unchanged.
+  Stored embeddings carry effective `window_tokens` and `parent_chunk_index`;
+  split chunks preserve parent attribution, byte offsets and file-order indices.
+  Chunks that fit retain their boundaries; code late-chunk packing remains in use.
+
 - **`device`, `physical_device` and `profile` are OPTIONAL** and describe where the
   model is loaded. `device` is the in-process device string, which
   `CUDA_VISIBLE_DEVICES` renumbers from zero, so it cannot identify the card on a
