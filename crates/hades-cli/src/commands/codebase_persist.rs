@@ -150,11 +150,11 @@ pub(super) async fn store_relationships(
                     .ok_or_else(|| ArangoError::Request(format!(
                         "invalid relationship endpoint check response for {collection}")))?;
                 if !missing.is_empty() {
-                    let mut ids: Vec<_> = missing.iter().map(|id| id.as_str().unwrap()).collect();
-                    ids.sort_unstable();
+                    let mut missing_ids: Vec<_> = missing.iter().map(|id| id.as_str().unwrap()).collect();
+                    missing_ids.sort_unstable();
                     return Err(ArangoError::Request(format!(
                         "relationship endpoint no longer exists in batch for {collection}: {} missing endpoints; first {} ids: {:?}; unchanged files are skipped by content hash, so --force or a fresh database is required to regenerate missing endpoints",
-                        ids.len(), ids.len().min(10), &ids[..ids.len().min(10)]
+                        missing_ids.len(), missing_ids.len().min(10), &missing_ids[..missing_ids.len().min(10)]
                     )));
                 }
                 let response = client

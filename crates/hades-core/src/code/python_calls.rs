@@ -24,7 +24,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
-use super::symbols::{Symbol, SymbolKind};
+use super::symbols::Symbol;
+#[cfg(test)]
+use super::symbols::SymbolKind;
 use crate::db::collections::CODEBASE;
 use crate::db::keys;
 
@@ -94,8 +96,8 @@ pub fn resolve_python_calls_scoped(
         let fkey = keys::scoped_file_key(namespace, rel_path);
 
         for sym in symbols {
-            // Only definition symbols can call other symbols.
-            if sym.kind == SymbolKind::Import {
+            // Only stored primitive symbols can be edge sources.
+            if !sym.kind.is_primitive() {
                 continue;
             }
 
@@ -538,5 +540,28 @@ mod tests {
         ];
         assert_eq!(pick_best(&candidates, "main.py"), Some(("a.py", "a")));
         assert_eq!(pick_best(&candidates, "z.py"), Some(("z.py", "b")));
+    }
+    #[test]
+    fn non_primitive_callers_do_not_emit_edges() {
+        for kind in [SymbolKind::Impl, SymbolKind::Import, SymbolKind::Function] {
+            let primitive = kind.is_primitive();
+            let mut caller = func(
+                "caller",
+                None,
+                json!([{"name":"target", "qualified_name":"target"}]),
+            );
+            caller.kind = kind;
+            let files = HashMap::from([
+                ("caller.py".into(), vec![caller]),
+                ("target.py".into(), vec![func("target", None, json!([]))]),
+            ]);
+            let index = build_qualified_index(&files);
+            let edges = resolve_python_calls(&files, &index, &HashMap::new());
+            assert_eq!(edges.len(), usize::from(primitive));
+            if primitive {
+                let caller_key = keys::symbol_key(&keys::file_key("caller.py"), "caller", 1);
+                assert_eq!(edges[0]["_from"], format!("codebase_symbols/{caller_key}"));
+            }
+        }
     }
 }
