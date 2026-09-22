@@ -1,171 +1,132 @@
 # WeaverTools rebuild rehearsal runbook
 
-## Current checkpoint — 2026-09-22
+## Current checkpoint — fresh run, 2026-09-22
 
-**Retained-scratch recovery passed; fresh-from-empty rehearsal remains outstanding.
-Live comparison is incomplete. Keep PR #160 in draft; no cutover approval.**
-Todd authorized resumption after #163 merged. This resumed the existing
-`scratch_rebuild_wt5` from the stopped September 21 rehearsal; it did **not** create
-another database, truncate collections or force re-ingestion. The old source and
-embedding writes were reused. This establishes recovery plus downstream execution,
-not a fresh-from-empty run of the current binary or acceptance of count differences.
+**Fresh-from-empty execution and verification passed. Comparison limitations remain;
+no production cutover or merge is authorized by this result.** PR #160 remains draft
+for review. Todd authorized `scratch_rebuild_wt5_r2` plus read-only live
+schema/count/report comparisons after the review-seat reconciliation. No prior
+scratch database was cleared or reused for this run; no `--force` was used.
 
-- Current-main implementation: `90bab3ae8c46ba930d162bda9a3d8d5f61b802c9`.
-- Rehearsal branch integration/build revision: `8facda9` (`docs/rebuild-runbook`, PR #160).
-- Source: clean `f03142a85e1c6bf088b6299063455272df93d68d`, `/opt/weavertools/WeaverTools`.
-- All times below use measured subprocess wall time. Log timestamps are UTC;
-  the rehearsal date/time zone is America/Chicago (CDT, UTC−05:00).
-- [Main integration CI](https://github.com/toddwbucy/HADES/actions/runs/35735357279)
-  passed before this resumption's first scratch write. Documentation PR CI is
-  tracked separately; neither is production deployment evidence.
+- Refreshed main: `90bab3ae8c46ba930d162bda9a3d8d5f61b802c9`.
+- Documentation starting revision: `9cbab044714102c3d89fd75feaed7ac0b1f8c51f`.
+- Binary build revision: `8facda9`, identical implementation to refreshed main;
+  reused the existing private binary rather than rebuilding unchanged code.
+- Binary SHA-256: `c2988d354a395cccb790ee3b4e1bc5ce23bf707c560ae3ef4153c74ad375d463`.
+- Source: `/opt/weavertools/WeaverTools`, clean before and after at
+  `f03142a85e1c6bf088b6299063455272df93d68d`.
+- Evidence captured September 22, 2026, 09:58–10:12 America/Chicago (CDT,
+  UTC−05:00). Command logs use UTC; table times below use CDT.
+- [Main CI](https://github.com/toddwbucy/HADES/actions/runs/35735357279) and
+  [starting documentation CI](https://github.com/toddwbucy/HADES/actions/runs/35742744334)
+  passed. Final documentation CI is tracked on PR #160, separately from runtime evidence.
 
-The original schema gate remains supported by the
-[review-seat comparison of all 20 schema rows](https://github.com/toddwbucy/HADES/pull/160#pullrequestreview-5271355507).
-`services/adapters/weavertools/schema.yaml` is unchanged between the original
-`5ee16d3` baseline and current main. No schema reapplication or live AQL was run.
-The adapter uses the previously verified loopback endpoint of the same user-level
-ArangoDB instance. No credentials, configuration or services were changed.
+The pre-create lookup returned database-not-found (ArangoDB 404 / 1228), as expected.
+Creation succeeded once. After schema application all 35 collections existed;
+only `hades_schema` held rows (20), every data collection was empty. The live and
+scratch schema query results matched exactly after excluding `_id` and `_rev`.
+This includes every metadata field, all 18 relation definitions and the named graph.
+The creation command necessarily calls the `_system` database-creation endpoint;
+its only created database was the authorized `scratch_rebuild_wt5_r2`.
 
-## Review-seat reconciliation — 2026-09-22
+## Exact commands and phase timings
 
-The [review submitted at 14:00:55 UTC (09:00:55 CDT)](https://github.com/toddwbucy/HADES/pull/160#pullrequestreview-5279136550)
-independently reports zero dangling edges across every code and adapter edge
-collection, embedding metadata present on all 1,050 document and 1,976 code rows,
-and 4,868 symbols: rust-analyzer 4,409, syn 217, rustpython 194, libclang 48.
-All 161 Rust files carry `ra_analyzed`. These are attributed reviewer observations
-on `50120e07` / binary `8facda9`, not additional code-seat database queries.
-They support recovery, not a fresh rebuild or semantic correctness of every edge.
-
-The reviewer identifies retained pre-#163 import edges as contamination: changing
-a target changes its deterministic key, so replacing current keys does not remove
-all historical keys. Current import construction uses source/target-derived keys;
-the adapter also explicitly retains absent rows. The review reports a fresh
-`scratch_resolver_fix` total of 1,067 imports. Retained local evidence independently
-records 1,067 emitted imports on candidate `13f201cc`, not the identical `8facda9`
-binary or a new full-rebuild comparison. The exact 196-row attribution and the
-calls/citations differences were not independently reconstructed here. Do not
-promote these mixed-history count differences to new defects or accepted losses.
-
-One detail remains inconsistent: the review says 170 currently routed code files,
-whereas this run's retained ingest and drift captures both establish 171. Preserve
-171 as the observed run count; source revision alone does not reconcile discovery
-options or the live corpus's 188 rows. No additional source investigation was run.
-
-The review requests a fresh `scratch_rebuild_wt5_r2` run and refers to an r2 goal
-allowing read-only live AQL. That goal text was not found among the supplied
-attachments. The executed authorization named only `scratch_rebuild_wt5` and
-excluded live AQL. No rule violation is alleged by the review. Recommended next
-step, **pending Todd's authorization**, is one fresh pass on this branch and PR in
-`scratch_rebuild_wt5_r2`, permitting read-only live schema/count/report comparison,
-while retaining all other safety and stop conditions. Do not create it, clear the
-existing scratch database, or broaden live reads based on this review alone.
-Fresh ingestion, adapter execution and the full verification/comparison sequence
-remain prerequisites for claiming the intended fresh rebuild demonstrated. The
-historical live unrouted list remains unavailable unless its envelope is supplied.
-
-## Preparation actually performed
-
-Used the existing isolated checkout `/tmp/hades-epic12`; the active `/opt/HADES`
-checkout was untouched. Fetched main, checked out the existing rehearsal branch,
-and merged `origin/main`. The only conflict was adjacent changelog entries; both
-the rehearsal entry and incoming fix entries were retained. The branch's only
-changes relative to main remain `docs/rebuild-runbook.md` and `CHANGELOG.md`.
+Executed from the existing isolated checkout `/tmp/hades-epic12`. Preparation:
 
 ```bash
 git fetch origin
-git checkout docs/rebuild-runbook
-git merge origin/main --no-edit
-CARGO_TARGET_DIR=/tmp/hades-lsp-fix/target CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo build -p hades-cli --bin hades
-cp /tmp/hades-lsp-fix/target/debug/hades /tmp/hades-rebuild-rehearsal/2026-09-22/hades
+mkdir -p /tmp/hades-rebuild-rehearsal/r2-2026-09-22
+cp /tmp/hades-rebuild-rehearsal/2026-09-22/hades /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades
 ```
 
-Cargo reported 3.83 seconds for this private build; total preparation wall time
-was not captured. Nothing was installed. The capture wrapper set
-`CARGO_TARGET_DIR=/tmp/hades-rebuild-rehearsal/2026-09-22/analyzer-target` and
-`PYTHONDONTWRITEBYTECODE=1` for every command below, keeping analyzer build output
-private and preventing Python bytecode writes to the source tree.
-
-## Commands and phase timings
-
-The existing scratch database was reused: **do not replay database creation from
-the historical record**. Commands below are the exact resumed invocations, run
-from `/tmp/hades-epic12`; no `--force` or analysis downgrade was used.
+Each captured command below additionally inherited
+`CARGO_TARGET_DIR=/tmp/hades-rebuild-rehearsal/r2-2026-09-22/analyzer-target` and
+`PYTHONDONTWRITEBYTECODE=1`, keeping generated analyzer output private. The wrapper
+records stdout, stderr, start epoch, subprocess wall time and exit status separately.
+Preparation wall time was not measured. These are completed historical invocations,
+**not an instruction to recreate an existing database**.
 
 | Phase | Start (CDT) | Seconds | Exit |
 | --- | --- | ---: | ---: |
-| live-collections-before | 08:45:42 | 0.0183 | 0 |
-| scratch-collections-before | 08:45:42 | 0.0191 | 0 |
-| ingest-1 | 08:52:02 | 48.7118 | 0 |
-| adapter-dry-run | 08:53:09 | 0.2311 | 0 |
-| adapter-write | 08:53:34 | 0.4952 | 0 |
-| drift | 08:54:01 | 0.1042 | 0 |
-| validate | 08:54:02 | 0.3061 | 0 |
-| query-default | 08:54:03 | 4.0631 | 0 |
-| query-codebase | 08:54:02 | 6.1033 | 0 |
-| metadata-embeddings | 08:54:44 | 0.0128 | 0 |
-| metadata-codebase_embeddings | 08:54:41 | 0.0156 | 0 |
-| adapter-report | 08:54:40 | 0.0095 | 0 |
-| scratch-collections-after | 08:54:00 | 0.0203 | 0 |
+| scratch-before | 09:58:55 | 0.0098 | 1 |
+| create-scratch | 09:59:14 | 0.0131 | 0 |
+| apply-schema | 09:59:14 | 0.0363 | 0 |
+| live-schema | 09:59:32 | 0.0109 | 0 |
+| scratch-schema | 09:59:32 | 0.0100 | 0 |
+| live-counts | 09:59:32 | 0.0186 | 0 |
+| scratch-empty | 09:59:32 | 0.0189 | 0 |
+| live-report | 09:59:32 | 0.0093 | 0 |
+| ingest-1 | 09:59:49 | 705.6009 | 0 |
+| adapter-dry-run | 10:12:02 | 0.2313 | 0 |
+| adapter-write | 10:12:02 | 0.5071 | 0 |
+| scratch-collections-after | 10:12:03 | 0.0199 | 0 |
+| drift | 10:12:03 | 0.1022 | 0 |
+| validate | 10:12:03 | 0.2221 | 0 |
+| query-default | 10:12:03 | 1.8346 | 0 |
+| query-codebase | 10:12:05 | 2.4788 | 0 |
+| metadata-embeddings | 10:12:07 | 0.0100 | 0 |
+| metadata-codebase_embeddings | 10:12:07 | 0.0139 | 0 |
+| adapter-report | 10:12:08 | 0.0091 | 0 |
 
-Independent read-only checks overlapped; table order is logical, not strict start-time order.
+`scratch-before` exit 1 is the expected absence check, not an ingestion failure.
 
 ```bash
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db WeaverTools_v5 db collections
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db collections
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades ingest /opt/weavertools/WeaverTools --db scratch_rebuild_wt5
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5 --repo /opt/weavertools/WeaverTools --dry-run
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5 --repo /opt/weavertools/WeaverTools
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 codebase drift /opt/weavertools/WeaverTools
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 codebase validate
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db query 'state persistence' -n 5
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db query 'state persistence' -c codebase -n 5
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db aql 'FOR e IN @@collection LET invalid = !IS_STRING(e.model) OR e.model == "" OR !IS_STRING(e.model_hash) OR e.model_hash == "" OR !IS_NUMBER(e.dimension) OR e.dimension <= 0 OR e.dimension != FLOOR(e.dimension) COLLECT AGGREGATE total = SUM(1), invalid_rows = SUM(invalid ? 1 : 0) RETURN {total, invalid_rows}' --bind '{"@collection":"embeddings"}'
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db aql 'FOR e IN @@collection LET invalid = !IS_STRING(e.model) OR e.model == "" OR !IS_STRING(e.model_hash) OR e.model_hash == "" OR !IS_NUMBER(e.dimension) OR e.dimension <= 0 OR e.dimension != FLOOR(e.dimension) COLLECT AGGREGATE total = SUM(1), invalid_rows = SUM(invalid ? 1 : 0) RETURN {total, invalid_rows}' --bind '{"@collection":"codebase_embeddings"}'
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db get wt_ingest_report latest
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/2026-09-22/hades --db scratch_rebuild_wt5 db collections
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db collections
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db create-database scratch_rebuild_wt5_r2
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 schema apply services/adapters/weavertools/schema.yaml
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db WeaverTools_v5 db aql 'FOR d IN hades_schema SORT d._key RETURN UNSET(d, "_id", "_rev")'
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db aql 'FOR d IN hades_schema SORT d._key RETURN UNSET(d, "_id", "_rev")'
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db WeaverTools_v5 db collections
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db collections
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db WeaverTools_v5 db get wt_ingest_report latest
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades ingest /opt/weavertools/WeaverTools --db scratch_rebuild_wt5_r2
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5_r2 --repo /opt/weavertools/WeaverTools --dry-run
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5_r2 --repo /opt/weavertools/WeaverTools
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db collections
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 codebase drift /opt/weavertools/WeaverTools
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 codebase validate
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db query 'state persistence' -n 5
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db query 'state persistence' -c codebase -n 5
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db aql 'FOR e IN @@collection LET invalid = !IS_STRING(e.model) OR e.model == "" OR !IS_STRING(e.model_hash) OR e.model_hash == "" OR !IS_NUMBER(e.dimension) OR e.dimension <= 0 OR e.dimension != FLOOR(e.dimension) COLLECT AGGREGATE total = SUM(1), invalid_rows = SUM(invalid ? 1 : 0) RETURN {total, invalid_rows}' --bind '{"@collection":"embeddings"}'
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db aql 'FOR e IN @@collection LET invalid = !IS_STRING(e.model) OR e.model == "" OR !IS_STRING(e.model_hash) OR e.model_hash == "" OR !IS_NUMBER(e.dimension) OR e.dimension <= 0 OR e.dimension != FLOOR(e.dimension) COLLECT AGGREGATE total = SUM(1), invalid_rows = SUM(invalid ? 1 : 0) RETURN {total, invalid_rows}' --bind '{"@collection":"codebase_embeddings"}'
+HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db get wt_ingest_report latest
 ```
 
-## Observed results
+## Observed results and limits
 
-- Ingest: exit 0, `success:true`; 171 code files and 46 documents processed with
-  zero failures, all skipped as unchanged in the structural/document passes.
-  Rust-analyzer nevertheless ran for 161 files and stored 4,409 symbols and 7,754
-  edges, one crate, zero store errors, `store_failed:false`, no failed files or
-  workspaces. Relationship stage passed; 1,067 import and 153 Python-call edges
-  were reported in this ingest envelope. Those are run output counts, not the
-  retained collection totals below.
-- Discovery: 171 code, 46 documents, 42 unrouted paths (listed below).
-- Adapter: dry-run and write both exit 0; server acknowledged **2,177 rows plus
-  one report**. `dangling_documents=0`, `dangling_code=0`,
-  `cites_sources_with_no_file_node=0`, `declared_in_targets_with_no_document_row=0`.
-  The adapter report explicitly states that absent older rows are retained and
-  stale retirement was not performed.
-- Drift: `clean:true`, 171 matched nodes, zero changed/unverifiable/uningested or
-  stale nodes for this root. The code-only drift command's unhandled list is
-  distinct from unified ingestion's unrouted list; documents have their own route.
-- Validation: **14 queried invariants passed, zero failed; three invariants are
-  delegated to database/unit-test guarantees and were not queried**. Do not call
-  this 17 runtime checks.
-- Semantic queries: `state persistence` returned five results from `default` and
-  five from `codebase`; model identity reported by both was
-  `/bulk-store/books/models/jinaai--jina-embeddings-v4`, dimension 2048. This is
-  retrieval execution evidence, not a scored retrieval-quality evaluation.
-- Exhaustive metadata scans: all **1,050 document embeddings** and **1,976 code
-  embeddings** have nonempty string `model`/`model_hash` and a positive integer
-  `dimension`; zero invalid rows. This checks presence/types, not a recomputation
-  of model hashes or an independent validation of vector provenance.
+- Unified ingestion: **705.6009 seconds**, exit 0, `success:true`; 171 code files
+  and 46 documents completed, zero failed and **zero skipped**. Code produced
+  1,976 embeddings; no embedding failures, enrichment error or relationship error.
+- Rust-analyzer: 161 files; 4,409 symbols and 7,754 edges emitted, one crate,
+  zero store errors, `store_failed:false`, no failed files/workspaces. Final
+  collection totals below include the other analyzers. The envelope emitted
+  1,067 import and 153 Python-call edges; these are distinct from total stored calls.
+- Adapter dry-run and write: exit 0; **2,177 rows plus one report acknowledged**.
+  Both live and scratch reports have zero dangling document/code citations,
+  missing citation-source files and missing declaring-document targets. These
+  are report-based checks, not a new exhaustive scan of every adapter edge.
+- Drift: clean, 171 source files matched 171 graph nodes; zero changed, stale,
+  unverifiable or uningested files. This also confirms the observed route count
+  is 171, not the earlier review's 170. No discovery policy was changed.
+- Validation: **14 queried invariants passed, zero failed, three skipped** because
+  they are database/unit-test guarantees; not 17 runtime checks.
+- Queries: `state persistence` returned five results on each of `default` and
+  `codebase`, model `/bulk-store/books/models/jinaai--jina-embeddings-v4`, dimension
+  2048. This proves query execution, not scored retrieval-quality acceptance.
+- Metadata: exhaustive scans of all 1,050 document and 1,976 code embeddings found
+  zero rows lacking nonempty string model/hash or a positive integer dimension.
+  Hash provenance and vector quality were not independently established.
 
-Existing non-fatal LSP close warnings (`incomplete or oversized LSP header`,
-`LSP reader terminated`, `LSP client dropped`) appeared at teardown; no store or
-relationship failure occurred. No implementation fix was made in this rehearsal.
+Non-fatal LSP teardown warnings (`incomplete or oversized LSP header`,
+`LSP reader terminated`, `LSP client dropped`) occurred; the enrichment store and
+complete ingestion succeeded. No implementation correction was made.
 
-## Collection comparison
+## Live comparison
 
-Live reads were taken before resumed ingestion, scratch reads after adapter write.
-These are sequential observations, not a frozen live snapshot. Differences are
-recorded without inventing a cause or treating them as approved data loss.
+Live was read before ingestion; scratch was read after the adapter. This is not
+an atomic snapshot of the live service. No production rows were written or retired.
 
-| Collection | WeaverTools_v5 | scratch_rebuild_wt5 |
+| Collection | WeaverTools_v5 | scratch_rebuild_wt5_r2 |
 | --- | ---: | ---: |
 | `chunks` | 1050 | 1050 |
 | `codebase_calls_edges` | 3431 | 3430 |
@@ -174,7 +135,7 @@ recorded without inventing a cause or treating them as approved data loss.
 | `codebase_embeddings` | 1993 | 1976 |
 | `codebase_files` | 188 | 171 |
 | `codebase_implements_edges` | 68 | 68 |
-| `codebase_imports_edges` | 1067 | 1263 |
+| `codebase_imports_edges` | 1067 | 1067 |
 | `codebase_symbols` | 4868 | 4868 |
 | `documents` | 46 | 46 |
 | `embeddings` | 1050 | 1050 |
@@ -203,25 +164,32 @@ recorded without inventing a cause or treating them as approved data loss.
 | `wt_vocabulary` | 41 | 41 |
 | `wt_writes_edges` | 2 | 2 |
 
-The six differing collection counts are not fully reconciled (see the attributed
-review-seat explanation above): calls (one fewer), files,
-chunks and code embeddings (17 fewer each), imports (196 more), and adapter
-citations (four fewer). The original live source/options and retained-row history
-were not reconstructed. Do not truncate, retire or relabel rows to make counts
-match. In particular, the existing scratch database contains history from the
-older writer, so this is not proof of a clean rebuild from empty on current main.
+Five counts differ: files/chunks/code embeddings are 17 fewer each, calls one
+fewer, and adapter citations four fewer. Fresh imports are **1,067**, matching
+live, compared with 1,263 in retained `scratch_rebuild_wt5`. This removes the prior
+mixed-history import excess from the new run; it does not identify every old edge
+or prove semantic correctness of all targets. The other count differences remain
+unreconciled, not silently accepted as loss or classified as new defects.
+Crate-aware import correctness remains a separate known follow-up.
 
-| Comparison item | Live | Scratch |
+| Comparison | Live | Fresh scratch |
 | --- | --- | --- |
-| Adapter dangling citations | Unknown: original live command allowlist excludes report reads | 0 documents; 0 code |
-| Unified-ingest unrouted set | Unknown: original live ingestion envelope not provided | 42 paths below |
+| Adapter dangling document / code citations | 0 / 0 | 0 / 0 |
+| Missing citation-source / declaring-document targets | 0 / 0 | 0 / 0 |
+| Unified-ingest unrouted paths | Unknown: historical live envelope unavailable | 42, listed below |
+| Citing files out of adapter scope | 0 in stored live report | 3 in new report |
 
-Remaining owner/reviewer evidence: the live `wt_ingest_report/latest` report and
-the historical live ingest envelope. A read-only `db get wt_ingest_report latest`
-against `WeaverTools_v5` would supply the former, but is outside the original
-live allowlist; it was **not executed**. The latter cannot be recovered from
-collection counts. If a current-main fresh-from-empty rehearsal is required,
-that needs a separately approved scratch target; the existing database is retained.
+Live report `_rev` is `_mJ-mKhS--g`; it contains no run timestamp or source revision.
+Its zero counts are historical report observations, not proof of current live
+coverage. It additionally lists `weaver-analysis (socket)` as an unknown document
+tag; the new report does not. Both retain the malformed/unknown `WeaverTools`
+notes. The scratch report explicitly covers present extracted rows only and does
+not retire absent older rows (there were no prior rows in this fresh database).
+
+The historical live unrouted set cannot be reconstructed from collection counts.
+Supplying its original ingest envelope is the only remaining comparison input;
+without it, unrouted parity remains unknown. Successful runtime checks do not
+establish live parity or authorize production migration.
 
 ## Unrouted paths (current unified ingest)
 
@@ -292,7 +260,7 @@ Three out-of-scope declaration/citation files were reported: `crates/weaver-anal
 
 This section follows [Code-file identities and migration](code-file-identities.md).
 It does not authorize production commands, service operations, snapshots, or
-configuration changes. The resumed scratch database is **not** an approved cutover target.
+configuration changes. Neither scratch database is an approved cutover target.
 
 1. Before scheduling production, inventory canonical roots, source revisions,
    analyzer options, schema, adapter configuration, model identity, external key
@@ -322,36 +290,50 @@ configuration changes. The resumed scratch database is **not** an approved cutov
    snapshots until Todd completes retention and acceptance review.
 
 
-## Evidence and historical checkpoint
+## Historical evidence and stop disposition
 
-The September 21 failures, commands, timings, original comparison and complete
-stdout envelopes remain immutable in
-[the prior checkpoint](https://github.com/toddwbucy/HADES/blob/35445db92da75bc1131c739ebdff8bb667d765de/docs/rebuild-runbook.md).
-Those runs failed under `5ee16d3`: 668.7475 s with incomplete LSP enrichment and
-4.9374 s with a relationship-endpoint failure. They are not rewritten as passing.
-The raw local captures remain under `/tmp/hades-rebuild-rehearsal/`; the new dated
-captures are separate under `/tmp/hades-rebuild-rehearsal/2026-09-22/`.
-Large stdout envelopes were removed from the active runbook following review;
-the original Git revision and local files preserve them.
+- [Original September 21 stopped rehearsal](https://github.com/toddwbucy/HADES/blob/35445db92da75bc1131c739ebdff8bb667d765de/docs/rebuild-runbook.md):
+  both failed envelopes remain immutable; original captures remain untouched.
+- [September 22 retained-scratch recovery and review reconciliation](https://github.com/toddwbucy/HADES/blob/9cbab044714102c3d89fd75feaed7ac0b1f8c51f/docs/rebuild-runbook.md):
+  preserves all earlier measurements, the review's contamination explanation and
+  the authorization gap subsequently resolved by Todd. Its pending-r2 status is
+  superseded by this fresh execution, not retroactively rewritten.
+- Current raw stdout/stderr/command metadata:
+  `/tmp/hades-rebuild-rehearsal/r2-2026-09-22/`. These local temporary captures
+  are not a durable off-server archive; compact results and hashes are committed.
 
-Current key captures (SHA-256):
+All scratch commands finished; no automatic merge or further rehearsal is queued.
+Execution stops with fresh verification complete and the historical live unrouted
+comparison unavailable. The five count differences require review before any
+production acceptance; they do not authorize another investigation. PR stays draft
+for independent review. Final-revision CI status is recorded in the PR body.
+No production service, data, model, configuration, source tree or active checkout
+was modified. No deployment, snapshot, cutover, rollback, #164 refactor or broader
+audit work began. Both scratch databases are retained for owner review.
 
-| Capture | SHA-256 |
+### Capture SHA-256
+
+Each phase has `.json`, `.stdout` and `.stderr` files. The digest below hashes their
+concatenation in that order, binding both output streams and command metadata.
+
+| Phase | SHA-256 (`json || stdout || stderr`) |
 | --- | --- |
-| `ingest-1.stdout` | `33d2c38df895d40c25d8e9d726477f93f8dbcecc7ab66368c42bfea6ddeb86d1` |
-| `ingest-1.stderr` | `b154de501f177f2bed55b460f9b3fc7b95200a61e886bfde0d8fc382f1e967ff` |
-| `adapter-dry-run.stdout` | `5d018dc9bb72eff55ae4a01127413aec7e9571407b876fc537edbd3b48895df5` |
-| `adapter-write.stdout` | `0782b4890096f8cd3cb3e6453e3007835e38f1fa77dd73705547438c7b462888` |
-| `adapter-report.stdout` | `5c1605df9b624b0ef1788155ab4a28d3c126d6a7b2bb1334eaba8eb123475bda` |
-| `drift.stdout` | `5e9b4e1ae8dbbf29c93f03a2b438d51489ad7e43bb68bb882e92f6bc61a22557` |
-| `validate.stdout` | `1997abdd1c9f890326f88815b4198b3d4e9af462e562177447f2c9df89ce3a11` |
-| `query-default.stdout` | `ee3a311c5dfcc5187231d907efad563eda6fdda2054432ed72b92b22220a1ff6` |
-| `query-codebase.stdout` | `14ed02e06e05c3e37163fb200c4e31e9aa8dd0c656cf0cdbfd9fc4690e8dac3d` |
-| `metadata-embeddings.stdout` | `29ac321ab03d70904e4cc993e132fab6e604e1a775187a37df45d8d4d7ac5bc6` |
-| `metadata-codebase_embeddings.stdout` | `d80a88014e7c1dd4724ba813a809ed7dd14600676873ef0ec9226d9f385c2895` |
-
-No production write, database creation/drop, force-reingest, deployment, service
-restart, configuration change, snapshot, cutover or rollback occurred during this
-resumption. All scratch operations have exited. No #164 refactor or broader audit
-was started. The PR stays draft pending review and resolution of the comparison
-limitations above; CI cannot substitute for those missing records.
+| scratch-before | `116aa66800bbd3abc64ef3f8f3282fc77e38c0d88914f33db326124b73fce990` |
+| create-scratch | `4de6042e80a5c6bc11b6d4417648644d7c49befd7fd5d866227ff90e2d914b39` |
+| apply-schema | `79477837b4c1644c088aca5f5236ee1e7e2eb14b8039541c9685c5396dc48687` |
+| live-schema | `a7abcde8d36eff051621cd66e977dcb023e0dc89e6db56289300d5b48f4835fc` |
+| scratch-schema | `150e9f5e8c697ebfe3df5842c55eb6ba1b5e6befd4902903aee469c43a2988d1` |
+| live-counts | `7682fa850fd5af2476fb6a3bb93e40203b7bfa07c7136abb146e19439987ed04` |
+| scratch-empty | `082ac4aa9d5007495c8555523c77b05cd91abc69a119be12f4d33eed2ef89056` |
+| live-report | `6a9703c0df4ba444161b75835e02a535482cf67711429b8be836ccd730cfbe73` |
+| ingest-1 | `6b6bff44fecf845f11abad2517505a791efabb9cf3fb9f6b8ffd26e7d43ff730` |
+| adapter-dry-run | `911b479caa58bf0ba5f7437f8b4d0e7bd2673ed08771610dc760f3776a27ab84` |
+| adapter-write | `7fd812a92225af993a30533592366902d8543643c029fb45f74014ab801b82ab` |
+| scratch-collections-after | `dd15c3ddc0354561ed94797ac199f361b02193e93a72d553b5da21fe59f202cb` |
+| drift | `ce2d3237d2af0d929b9ae785feca75ef44be6dbc90681a4531bc88ee1d8676f2` |
+| validate | `c04a18c2afb4cd3dd919331fa2c985e4f5c1b3a4a4f37bda2616faa38f4e2e3c` |
+| query-default | `f39c01529ee256864165e0c227914f71451d3a690830cb577aa9c0f544319f9f` |
+| query-codebase | `0d757912992fa28a2bf9614b02fc41a29d8168d95ee9f5e10d433c8a14b1ad9e` |
+| metadata-embeddings | `d9cd6f3695fb3d64906aac672ee6c719f8dfdc603066ccf6aea9695f647a8c40` |
+| metadata-codebase_embeddings | `0248fbbb9b2e66e2b2ebbe43dac55a021f66bac7e802e079ce48759ab459e43a` |
+| adapter-report | `af95fc47268ed63365493d7304275012328fd5cb669cc4ec1746dbd3b6ef8db9` |

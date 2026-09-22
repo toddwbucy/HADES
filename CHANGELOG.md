@@ -32,9 +32,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
-- Record the resumed scratch rehearsal, passing ingestion/adapter/verification,
-  retained historical failures, review-seat reconciliation, the outstanding fresh
-  rebuild, comparison gaps, and unexecuted cutover/rollback.
+- Record the fresh scratch rebuild with passing ingestion/adapter/verification,
+  live comparisons, retained historical evidence, remaining comparison limits,
+  and unexecuted cutover/rollback.
 
 - Resolve cross-file edges only to stored primitive symbols, break candidate ties
   deterministically by path and key, and identify missing relationship endpoints.
