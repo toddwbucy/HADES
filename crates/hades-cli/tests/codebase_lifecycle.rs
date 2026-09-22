@@ -1459,6 +1459,7 @@ async fn prechunk_override_above_backend_ceiling_fails_cli_startup() {
         embedder.socket.display())).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_hades"))
         .env("HADES_CONFIG", config)
+        .env_remove("HADES_EMBEDDER_SOCKET")
         .args(["db", "collections"])
         .output()
         .await
