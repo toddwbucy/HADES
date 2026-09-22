@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use hades_core::HadesConfig;
 use hades_core::chunking::ChunkingStrategy;
-use hades_core::chunking::prechunk::CHARS_PER_TOKEN_FLOOR;
+use hades_core::chunking::prechunk::BYTES_PER_TOKEN_FLOOR;
 use hades_core::code::lsp::go_symbols::GoSymbolExtractor;
 use hades_core::code::lsp::symbols::FileExtraction;
 use hades_core::code::lsp::{
@@ -202,7 +202,7 @@ pub async fn run_phase(
     // Ask the backend what it will accept, once per run. The answer is a
     // property of the load profile the embedder happens to be running, so it
     // cannot be a constant and must not be read per file.
-    let window_chars = embed_window_chars(embedder.as_ref(), config).await?;
+    let window_bytes = embed_window_bytes(embedder.as_ref(), config).await?;
 
     // Ensure codebase collections exist.
     ensure_collections(&db).await?;
@@ -399,7 +399,7 @@ pub async fn run_phase(
                 force,
                 allow_analysis_downgrade,
                 gopls_cmd.is_some(),
-                window_chars,
+                window_bytes,
                 namespace,
             )
             .await
@@ -837,115 +837,66 @@ static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
 });
 
 /// Resolve the shared policy before any file writes; no guessed backend ceiling.
-async fn embed_window_chars(
+async fn embed_window_bytes(
     embedder: Option<&EmbeddingClient>,
     config: &HadesConfig,
 ) -> Result<usize> {
     match embedder {
-        Some(client) => Ok(config.chunking.prechunk.from_backend(client).await?.chars),
+        Some(client) => Ok(config.chunking.prechunk.from_backend(client).await?.bytes),
         None => Ok(usize::MAX), // no embedding request or row will be produced
     }
 }
 
-/// One unit of text handed to the embedder in a single forward pass.
-///
-/// A file smaller than the model's context window is one window. A larger file
-/// is split into several, which is the pre-chunking escape hatch: chunk
-/// boundaries inside a window keep their AST alignment, so only the seams
-/// between windows lose cross-chunk context.
-struct EmbedWindow {
-    /// The window's source text, sent to the embedder whole.
-    text: String,
-    /// Chunk boundaries as character ranges relative to `text`, not the file.
-    boundaries: Vec<(usize, usize)>,
-    /// File-order index of each boundary, positionally parallel to
-    /// `boundaries`.
-    ///
-    /// Not a first index plus an offset. The packing loop skips a chunk too large
-    /// for any window, so a window's boundaries are not necessarily consecutive
-    /// in file order, and `first_chunk_index + position` then named the wrong
-    /// chunk for every boundary after the gap: each vector would have been stored
-    /// under a later chunk's key, with the count still matching and nothing to
-    /// show it. Carrying the indices makes the mapping explicit.
-    chunk_indices: Vec<usize>,
-}
-
-/// Finalize one embed window: slice its text and convert its boundaries.
-///
-/// Skips the window rather than panicking when the offsets do not describe a
-/// valid slice. `TextChunk` offsets come from AST spans and from line
-/// arithmetic that can drift, since `str::lines()` strips `\r` and so a CRLF
-/// source undercounts by one byte per line. Before late chunking these offsets
-/// were only ever stored as metadata, so drift was harmless. Slicing with them
-/// makes it fatal, and `&str[a..b]` panics on an index inside a multibyte
-/// sequence.
 #[allow(clippy::too_many_arguments)]
-fn push_embed_window(
-    windows: &mut Vec<EmbedWindow>,
+async fn prepare_embeddings(
+    embedder: Option<&EmbeddingClient>,
+    config: &HadesConfig,
     source: &str,
-    start: usize,
-    end: usize,
-    byte_boundaries: Vec<(usize, usize)>,
-    chunk_indices: Vec<usize>,
-    rel_path: &str,
-) {
-    let end = end.min(source.len());
-    let Some(text) = source.get(start..end) else {
-        warn!(
-            path = rel_path,
-            start, end, "chunk offsets do not land on character boundaries, window skipped"
-        );
-        return;
+    chunks: Vec<hades_core::chunking::TextChunk>,
+    window_bytes: usize,
+    fkey: &str,
+    late: bool,
+) -> Result<(
+    Vec<hades_core::chunking::TextChunk>,
+    Vec<usize>,
+    Vec<Value>,
+    Option<String>,
+)> {
+    let Some(client) = embedder.filter(|_| !chunks.is_empty()) else {
+        let parents = chunks.iter().map(|c| c.chunk_index).collect();
+        return Ok((chunks, parents, Vec::new(), None));
     };
-    debug_assert_eq!(
-        byte_boundaries.len(),
-        chunk_indices.len(),
-        "every boundary needs the file-order index of the chunk it came from"
-    );
-    windows.push(EmbedWindow {
-        boundaries: byte_offsets_to_chars(text, &byte_boundaries),
-        text: text.to_string(),
-        chunk_indices,
-    });
-}
-
-/// Convert byte offsets into `text` to character offsets.
-///
-/// `TextChunk::start_char` and `end_char` are byte offsets despite their
-/// names. The embedding server maps boundaries against the tokenizer's offset
-/// mapping, which is character-indexed, so passing bytes straight through made
-/// the two sides disagree on every file containing a multibyte character, with
-/// the gap widening through the file. Nothing failed, because the pooling was
-/// correct over whatever range it was given.
-///
-/// An offset landing inside a multibyte sequence rounds down to the character
-/// containing it, which is the only interpretation that keeps ranges ordered.
-fn byte_offsets_to_chars(text: &str, offsets: &[(usize, usize)]) -> Vec<(usize, usize)> {
-    let mut wanted: Vec<usize> = offsets.iter().flat_map(|(s, e)| [*s, *e]).collect();
-    wanted.sort_unstable();
-    wanted.dedup();
-
-    let mut map: HashMap<usize, usize> = HashMap::new();
-    let mut w = 0usize;
-    for (char_idx, (byte_idx, _)) in text.char_indices().enumerate() {
-        while w < wanted.len() && wanted[w] < byte_idx {
-            map.insert(wanted[w], char_idx.saturating_sub(1));
-            w += 1;
+    let policy = hades_core::chunking::prechunk::PrechunkWindow {
+        tokens: (window_bytes / BYTES_PER_TOKEN_FLOOR) as u32,
+        bytes: window_bytes,
+        overlap_bytes: config.chunking.prechunk.overlap_tokens as usize * BYTES_PER_TOKEN_FLOOR,
+    };
+    match hades_core::chunking::prechunk::embed_chunks(
+        client,
+        source,
+        chunks,
+        policy,
+        "code",
+        Some(config.embedding.batch.size),
+        late,
+    )
+    .await
+    {
+        Ok((chunks, parents, r)) => {
+            let rows = chunks.iter().zip(&r.embeddings).map(|(c, vector)| {
+                let ckey = keys::chunk_key(fkey, c.chunk_index);
+                let mut row = json!({"_key": keys::embedding_key(&ckey), "chunk_key": ckey,
+                    "file_key": fkey, "chunk_index": c.chunk_index, "embedding": vector,
+                    "model": r.model, "model_hash": keys::model_hash(&r.model), "dimension": r.dimension,
+                    "window_tokens": policy.tokens});
+                let index = row["chunk_index"].as_u64().expect("mapped chunk index") as usize;
+                row["parent_chunk_index"] = json!(parents[index]);
+                row
+            }).collect();
+            Ok((chunks, parents, rows, None))
         }
-        if w < wanted.len() && wanted[w] == byte_idx {
-            map.insert(wanted[w], char_idx);
-            w += 1;
-        }
+        Err(e) => Ok((Vec::new(), Vec::new(), Vec::new(), Some(e.to_string()))),
     }
-    // Anything at or past the end maps to the character count, so an exclusive
-    // end offset of `text.len()` stays exclusive.
-    let total_chars = text.chars().count();
-    while w < wanted.len() {
-        map.insert(wanted[w], total_chars);
-        w += 1;
-    }
-
-    offsets.iter().map(|(s, e)| (map[s], map[e])).collect()
 }
 
 // ── Collection setup ────────────────────────────────────────────────────
@@ -1535,7 +1486,7 @@ async fn ingest_file(
     force: bool,
     allow_analysis_downgrade: bool,
     gopls_scheduled: bool,
-    window_chars: usize,
+    window_bytes: usize,
     namespace: &str,
 ) -> Result<FileResult> {
     // Read source.
@@ -1715,11 +1666,16 @@ async fn ingest_file(
 
     // Chunk with AST-aligned chunking.
     let chunker = AstChunking::new(analysis.top_level_defs.clone());
-    let (chunks, parents) = hades_core::chunking::prechunk::prechunk(
+    let (chunks, parents, embedding_docs, embedding_error) = prepare_embeddings(
+        embedder,
+        config,
+        &source,
         chunker.chunk(&source),
-        window_chars,
-        config.chunking.prechunk.overlap_tokens as usize * CHARS_PER_TOKEN_FLOOR,
-    )?;
+        window_bytes,
+        &fkey,
+        !*LATE_CHUNKING_DISABLED,
+    )
+    .await?;
 
     // Build file document (embedding_count populated after embed step below).
     let num_sym = analysis.symbols.len();
@@ -1817,306 +1773,6 @@ async fn ingest_file(
         })
         .collect();
 
-    // Embed with LATE CHUNKING: encode each window of the file in one pass and
-    // pool per AST boundary, so every chunk vector is conditioned on the code
-    // around it. Embedding chunks independently (the previous behaviour) threw
-    // that context away — the model computes token-level states either way, so
-    // it cost nothing and gained nothing.
-    //
-    // Files larger than the model's context window are pre-chunked first: the
-    // AST chunks are grouped into windows that fit, and each window is encoded
-    // whole. Boundaries within a window keep their AST alignment, so symbol
-    // intersection is unaffected. This is the escape hatch, not the norm.
-    // Escape hatch, and what makes the two strategies comparable: with this
-    // set, chunks are embedded independently as before. Useful if late
-    // chunking ever misbehaves, and required to A/B the two on one corpus.
-    // Read once for the process rather than once per ingested file.
-    let late_chunking_disabled = *LATE_CHUNKING_DISABLED;
-
-    let (mut embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
-        Some(emb) if !chunks.is_empty() && late_chunking_disabled => {
-            let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-            match emb
-                .embed(&chunk_texts, "code", Some(config.embedding.batch.size))
-                .await
-            {
-                Ok(r) => (
-                    r.embeddings
-                        .iter()
-                        .enumerate()
-                        .map(|(i, vec)| {
-                            let ckey = keys::chunk_key(&fkey, i);
-                            json!({
-                                "_key": keys::embedding_key(&ckey),
-                                "chunk_key": ckey,
-                                "file_key": fkey,
-                                "embedding": vec,
-                                "model": r.model,
-                                "model_hash": keys::model_hash(&r.model),
-                                "dimension": r.dimension,
-                            })
-                        })
-                        .collect::<Vec<Value>>(),
-                    None,
-                ),
-                Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding preparation failed; retaining committed graph");
-                    (Vec::new(), Some(e.to_string()))
-                }
-            }
-        }
-        Some(emb) if !chunks.is_empty() => {
-            // Window budget comes from the backend's reported ceiling, computed
-            // once per run in `embed_window_chars`. A constant here was wrong on
-            // both cards: see that function for the measurement.
-
-            let mut windows: Vec<EmbedWindow> = Vec::new();
-            let mut cur: Vec<(usize, usize)> = Vec::new();
-            let mut cur_indices: Vec<usize> = Vec::new();
-            let mut cur_start = 0usize;
-            // Chunks too large to share a window with anything, including
-            // themselves. `AstChunking` caps a chunk at 8,000 characters by
-            // splitting at line boundaries, but `split_at_lines` emits one whole
-            // line when its accumulator is empty, so a minified or generated file
-            // with a single very long line produces a chunk of unbounded size.
-            //
-            // Sent whole to `embed_late_chunked`, such a chunk exceeds the
-            // backend's ceiling, is refused, and takes the file's other windows
-            // down with it, because that call returns on the first error. They go
-            // through the plain path instead: one vector each with no surrounding
-            // context, which is worse than late chunking and far better than the
-            // file losing every vector it had.
-            let mut oversized: Vec<usize> = Vec::new();
-            for (i, c) in chunks.iter().enumerate() {
-                if c.end_char.saturating_sub(c.start_char) > window_chars {
-                    oversized.push(i);
-                    continue;
-                }
-                if cur.is_empty() {
-                    cur_start = c.start_char;
-                }
-                let would_span = c.end_char.saturating_sub(cur_start);
-                if !cur.is_empty() && would_span > window_chars {
-                    // Derived from the window's own boundaries rather than by
-                    // indexing `first_index + cur.len()`: a skipped oversized
-                    // chunk makes those two disagree.
-                    let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
-                    push_embed_window(
-                        &mut windows,
-                        &source,
-                        cur_start,
-                        end,
-                        std::mem::take(&mut cur),
-                        std::mem::take(&mut cur_indices),
-                        rel_path,
-                    );
-                    cur_start = c.start_char;
-                }
-                // Boundaries are relative to the window, not the file, and are
-                // byte offsets at this point. `push_embed_window` converts.
-                cur.push((
-                    c.start_char.saturating_sub(cur_start),
-                    c.end_char.saturating_sub(cur_start),
-                ));
-                cur_indices.push(i);
-            }
-            if !cur.is_empty() {
-                let end = cur_start + cur.last().map(|(_, e)| *e).unwrap_or(0);
-                push_embed_window(
-                    &mut windows,
-                    &source,
-                    cur_start,
-                    end,
-                    cur,
-                    cur_indices,
-                    rel_path,
-                );
-            }
-            if windows.len() > 1 {
-                debug!(
-                    path = rel_path,
-                    windows = windows.len(),
-                    "file exceeds the context window, pre-chunked before late chunking"
-                );
-            }
-
-            let texts: Vec<String> = windows.iter().map(|w| w.text.clone()).collect();
-            let bounds: Vec<Vec<(usize, usize)>> =
-                windows.iter().map(|w| w.boundaries.clone()).collect();
-
-            // One vector per chunk, keyed by the chunk's file-order index, so a
-            // window that fails costs its own chunks and not the file's.
-            let mut by_index: std::collections::BTreeMap<usize, Vec<f32>> =
-                std::collections::BTreeMap::new();
-            let mut model = String::new();
-            let mut dimension = 0u32;
-            let mut first_error: Option<String> = None;
-
-            let take = |result: hades_core::persephone::embedding::LateChunkEmbedResult,
-                        offset: usize,
-                        by_index: &mut std::collections::BTreeMap<usize, Vec<f32>>,
-                        model: &mut String,
-                        dimension: &mut u32,
-                        first_error: &mut Option<String>| {
-                // Separate retries must retain the batched client's invariant:
-                // one served model identity and vector width across windows.
-                if !model.is_empty() && (*model != result.model || *dimension != result.dimension) {
-                    first_error.get_or_insert_with(|| {
-                        "model identity or dimension changed across recovered windows".into()
-                    });
-                    return;
-                }
-                *model = result.model.clone();
-                *dimension = result.dimension;
-                for (w, vecs) in result.per_input.iter().enumerate() {
-                    let indices = &windows[offset + w].chunk_indices;
-                    for v in vecs {
-                        // Looked up rather than computed. A position the window
-                        // never sent would otherwise mint an embedding under some
-                        // other chunk's key, which reads as a healthy row.
-                        match indices.get(v.chunk_index) {
-                            Some(&i) => {
-                                by_index.insert(i, v.embedding.clone());
-                            }
-                            None => warn!(
-                                path = rel_path,
-                                window = offset + w,
-                                position = v.chunk_index,
-                                boundaries = indices.len(),
-                                "embedder returned a chunk position the window did not send"
-                            ),
-                        }
-                    }
-                }
-            };
-
-            if !windows.is_empty() {
-                match emb.embed_late_chunked(&texts, "code", &bounds).await {
-                    Ok(result) => take(
-                        result,
-                        0,
-                        &mut by_index,
-                        &mut model,
-                        &mut dimension,
-                        &mut first_error,
-                    ),
-                    Err(e) => {
-                        // The batched call returns on its first failing window and
-                        // discards the vectors of every window that already
-                        // succeeded, so a 500-window file that trips on window 400
-                        // used to be stored with nothing. Retried one window at a
-                        // time, every window must recover before replacement.
-                        warn!(
-                            path = rel_path,
-                            error = %e,
-                            windows = windows.len(),
-                            "batched late-chunk embed failed, retrying window by window"
-                        );
-                        // The initial failure remains diagnostic. Only a
-                        // terminal retry failure or incomplete/invalid recovery
-                        // prevents the file's later atomic replacement.
-                        for (w, (text, bound)) in texts.iter().zip(bounds.iter()).enumerate() {
-                            match emb
-                                .embed_late_chunked(
-                                    std::slice::from_ref(text),
-                                    "code",
-                                    std::slice::from_ref(bound),
-                                )
-                                .await
-                            {
-                                Ok(result) => take(
-                                    result,
-                                    w,
-                                    &mut by_index,
-                                    &mut model,
-                                    &mut dimension,
-                                    &mut first_error,
-                                ),
-                                Err(e) => {
-                                    warn!(path = rel_path, window = w, error = %e,
-                                        "window failed on retry; retaining committed file graph");
-                                    first_error.get_or_insert_with(|| e.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Chunks no window could hold, embedded blind rather than dropped.
-            for &i in &oversized {
-                match emb
-                    .embed(std::slice::from_ref(&chunks[i].text), "code", None)
-                    .await
-                {
-                    Ok(r) => {
-                        if let Some(v) = r.embeddings.into_iter().next() {
-                            if model.is_empty() {
-                                model = r.model.clone();
-                                dimension = r.dimension;
-                            } else if model != r.model || dimension != r.dimension {
-                                first_error.get_or_insert_with(|| {
-                                    "model identity or dimension changed in oversized chunk recovery".into()
-                                });
-                                continue;
-                            }
-                            by_index.insert(i, v);
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            path = rel_path,
-                            chunk = i,
-                            error = %e,
-                            "oversized chunk failed the plain embed path too"
-                        );
-                        if first_error.is_none() {
-                            first_error = Some(e.to_string());
-                        }
-                    }
-                }
-            }
-
-            if by_index.len() != chunks.len() {
-                warn!(
-                    path = rel_path,
-                    chunks = chunks.len(),
-                    vectors = by_index.len(),
-                    "fewer vectors than chunks; rejecting file replacement"
-                );
-                if first_error.is_none() {
-                    first_error = Some(format!(
-                        "{} chunks produced {} vectors",
-                        chunks.len(),
-                        by_index.len()
-                    ));
-                }
-            }
-
-            let docs = by_index
-                .into_iter()
-                .map(|(i, vec)| {
-                    let ckey = keys::chunk_key(&fkey, i);
-                    json!({
-                        "_key": keys::embedding_key(&ckey),
-                        "chunk_key": ckey,
-                        "file_key": fkey,
-                        "embedding": vec,
-                        "model": model,
-                        "model_hash": keys::model_hash(&model),
-                        "dimension": dimension,
-                    })
-                })
-                .collect::<Vec<Value>>();
-            (docs, first_error)
-        }
-        _ => (Vec::new(), None),
-    };
-    for (i, row) in embedding_docs.iter_mut().enumerate() {
-        row["window_tokens"] = json!(window_chars / CHARS_PER_TOKEN_FLOOR);
-        row["chunk_index"] = json!(i);
-        row["parent_chunk_index"] = json!(parents[i]);
-    }
     if let Some(error) = &embedding_error {
         return Ok(FileResult {
             path: rel_path.to_owned(),
@@ -2515,12 +2171,17 @@ async fn ingest_unparsed_file(
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
     let chunker = AstChunking::new(Vec::new());
-    let window_chars = embed_window_chars(embedder, config).await?;
-    let (chunks, parents) = hades_core::chunking::prechunk::prechunk(
+    let window_bytes = embed_window_bytes(embedder, config).await?;
+    let (chunks, parents, embedding_docs, embedding_error) = prepare_embeddings(
+        embedder,
+        config,
+        &source,
         chunker.chunk(&source),
-        window_chars,
-        config.chunking.prechunk.overlap_tokens as usize * CHARS_PER_TOKEN_FLOOR,
-    )?;
+        window_bytes,
+        &fkey,
+        false,
+    )
+    .await?;
     let num_chk = chunks.len();
 
     // Chunk documents — no symbol overlap (unparsed files have no symbols).
@@ -2544,59 +2205,6 @@ async fn ingest_unparsed_file(
         })
         .collect();
 
-    // Embed chunks (skipped if embedder unavailable).
-    //
-    // NOT the same path as parsed files any more. The parsed path encodes whole
-    // windows and pools per AST boundary, so each vector carries its file's
-    // context. This one still sends chunks as separate inputs, so every chunk
-    // is encoded blind to the rest of its document.
-    //
-    // That leaves markdown and every unsupported language on the old
-    // behaviour, which includes the specs and PRDs the late-chunking work was
-    // undertaken for. These chunks have offsets too, so the same treatment
-    // applies. Not done here because it is a second change and this one is
-    // already under review.
-    let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-    let (mut embedding_docs, embedding_error): (Vec<Value>, Option<String>) = match embedder {
-        Some(emb) if !chunk_texts.is_empty() => {
-            match emb
-                .embed(&chunk_texts, "code", Some(config.embedding.batch.size))
-                .await
-            {
-                Ok(embed_result) => {
-                    let docs = embed_result
-                        .embeddings
-                        .iter()
-                        .enumerate()
-                        .map(|(i, vec)| {
-                            let ckey = keys::chunk_key(&fkey, i);
-                            let ekey = keys::embedding_key(&ckey);
-                            json!({
-                                "_key": ekey,
-                                "chunk_key": ckey,
-                                "file_key": fkey,
-                                "embedding": vec,
-                                "model": embed_result.model,
-                                "model_hash": keys::model_hash(&embed_result.model),
-                                "dimension": embed_result.dimension,
-                            })
-                        })
-                        .collect::<Vec<Value>>();
-                    (docs, None)
-                }
-                Err(e) => {
-                    warn!(path = rel_path, error = %e, "embedding preparation failed; retaining committed graph");
-                    (Vec::new(), Some(e.to_string()))
-                }
-            }
-        }
-        _ => (Vec::new(), None),
-    };
-    for (i, row) in embedding_docs.iter_mut().enumerate() {
-        row["window_tokens"] = json!(window_chars / CHARS_PER_TOKEN_FLOOR);
-        row["chunk_index"] = json!(i);
-        row["parent_chunk_index"] = json!(parents[i]);
-    }
     if let Some(error) = &embedding_error {
         return Ok(FileResult {
             path: rel_path.to_owned(),
@@ -5879,132 +5487,6 @@ mod tests {
         let missing = tmp.path().join("not-here");
         let err = resolve_ingest_root(&missing).expect_err("must not resolve");
         assert!(err.to_string().contains("not-here"), "{err}");
-    }
-
-    // ── Embed window construction ───────────────────────────────────────
-    //
-    // These cover the arithmetic that silently corrupted a corpus: chunk
-    // offsets are bytes, the embedding server reads them as characters, and
-    // nothing downstream can tell the difference because pooling is correct
-    // over whatever range it is handed.
-
-    #[test]
-    fn byte_offsets_equal_char_offsets_for_ascii() {
-        let text = "fn main() { println!(\"hi\"); }";
-        let got = byte_offsets_to_chars(text, &[(0, 9), (10, text.len())]);
-        assert_eq!(got, vec![(0, 9), (10, text.chars().count())]);
-    }
-
-    #[test]
-    fn byte_offsets_shift_after_a_multibyte_character() {
-        // The em-dash is three bytes and one character, so every offset past
-        // it differs by two. Passing bytes through unconverted is exactly the
-        // drift that pointed chunks at the wrong code.
-        let text = "let a = 1; // \u{2014} note\nlet b = 2;";
-        let dash_bytes = text.find('\u{2014}').unwrap();
-        let after_bytes = dash_bytes + '\u{2014}'.len_utf8();
-        let got = byte_offsets_to_chars(text, &[(0, dash_bytes), (after_bytes, text.len())]);
-
-        let dash_chars = text.chars().take_while(|c| *c != '\u{2014}').count();
-        assert_eq!(got[0], (0, dash_chars));
-        assert_eq!(got[1], (dash_chars + 1, text.chars().count()));
-        assert_ne!(
-            got[1].0, after_bytes,
-            "byte and character offsets must not be treated as interchangeable"
-        );
-    }
-
-    #[test]
-    fn byte_offset_inside_a_multibyte_sequence_rounds_down() {
-        let text = "a\u{2014}b";
-        // Byte 2 is the middle of the em-dash, which no character starts at.
-        // Byte 2 rounds down to the em-dash at character 1, and byte 4 is the
-        // start of 'b' at character 2.
-        let got = byte_offsets_to_chars(text, &[(2, 4)]);
-        assert_eq!(got, vec![(1, 2)]);
-    }
-
-    #[test]
-    fn window_with_unaligned_offsets_is_skipped_not_panicked() {
-        let source = "a\u{2014}b".to_string();
-        let mut windows = Vec::new();
-        // Byte 2 is inside the em-dash. Slicing here would panic before this
-        // guard existed, aborting the whole ingest run.
-        push_embed_window(
-            &mut windows,
-            &source,
-            2,
-            source.len(),
-            vec![(0, 1)],
-            vec![0],
-            "t.rs",
-        );
-        assert!(windows.is_empty(), "unaligned window must be dropped");
-    }
-
-    /// A window's boundaries are not necessarily consecutive in file order, so
-    /// the mapping back has to be a lookup rather than a first index plus the
-    /// position within the window.
-    ///
-    /// The packing loop skips a chunk too large for any window. Before the
-    /// indices were carried, `first_chunk_index + position` named the wrong chunk
-    /// for every boundary after such a gap: each vector was stored under a later
-    /// chunk's key, the counts still matched, and nothing showed it.
-    #[test]
-    fn a_window_records_the_file_order_index_of_every_boundary() {
-        let source = "alpha bravo charlie delta".to_string();
-        let mut windows = Vec::new();
-        // Chunks 3 and 5 survived; 4 was oversized and skipped between them.
-        push_embed_window(
-            &mut windows,
-            &source,
-            0,
-            source.len(),
-            vec![(0, 5), (6, 11)],
-            vec![3, 5],
-            "t.rs",
-        );
-        let w = windows.first().expect("window kept");
-        assert_eq!(w.chunk_indices, vec![3, 5]);
-        assert_eq!(
-            w.chunk_indices.len(),
-            w.boundaries.len(),
-            "one index per boundary, positionally parallel"
-        );
-        // What the flatten does: position 1 is chunk 5, not chunk 4.
-        assert_eq!(w.chunk_indices.get(1).copied(), Some(5));
-        assert_eq!(
-            w.chunk_indices.get(2),
-            None,
-            "a position never sent maps nowhere"
-        );
-    }
-
-    #[test]
-    fn window_with_reversed_offsets_is_skipped() {
-        let source = "abcdef".to_string();
-        let mut windows = Vec::new();
-        push_embed_window(&mut windows, &source, 4, 2, vec![(0, 1)], vec![0], "t.rs");
-        assert!(windows.is_empty());
-    }
-
-    #[test]
-    fn window_boundaries_are_relative_to_the_window() {
-        let source = "aaaabbbbcccc".to_string();
-        let mut windows = Vec::new();
-        push_embed_window(
-            &mut windows,
-            &source,
-            4,
-            12,
-            vec![(0, 4), (4, 8)],
-            vec![3, 4],
-            "t.rs",
-        );
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].text, "bbbbcccc");
-        assert_eq!(windows[0].boundaries, vec![(0, 4), (4, 8)]);
-        assert_eq!(windows[0].chunk_indices, vec![3, 4]);
     }
 
     #[tokio::test]

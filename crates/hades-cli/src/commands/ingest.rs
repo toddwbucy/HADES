@@ -306,6 +306,11 @@ pub async fn run_phase(
     let file_paths: Vec<PathBuf> = inputs.to_vec();
 
     // -- Connect to services ---------------------------------------------------
+    let embedder = EmbeddingClient::connect_at(&config.embedding.service.socket)
+        .await
+        .context("failed to connect to embedding service")?;
+
+    config.chunking.prechunk.from_backend(&embedder).await?;
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
     ensure_document_collections(&db, profile).await?;
 
@@ -318,13 +323,7 @@ pub async fn run_phase(
             )
         })?;
 
-    let embedder = EmbeddingClient::connect_at(&config.embedding.service.socket)
-        .await
-        .context("failed to connect to embedding service")?;
-
-    // -- Build pipeline --------------------------------------------------------
     let embed_task = determine_embed_task(task, profile);
-    config.chunking.prechunk.from_backend(&embedder).await?;
     let pipeline_config = PipelineConfig {
         prechunk: config.chunking.prechunk.clone(),
         profile,

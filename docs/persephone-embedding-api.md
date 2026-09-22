@@ -75,16 +75,17 @@ Discover the model the backend has loaded. OpenAI-compatible response shape.
   root-level YAML `chunking.prechunk` policy. `overlap_tokens` defaults to 1000;
   `safety_margin_tokens` defaults to 256. The effective window is the smaller
   of optional `max_window_tokens` and the backend ceiling minus the margin.
-  An explicit cap above the backend ceiling fails CLI startup naming both values;
+  An explicit cap above the backend ceiling fails at ingestion entry, before writes, naming both values;
   missing backend ceiling, exhausted margin, or overlap at least the effective
   window prevents ingestion rather than selecting a hard-coded budget. The same
   schema applies at every configuration search location, including `/etc/hades/hades.yaml`.
-  Window and overlap character lengths use the existing 2.0 chars/token floor;
-  this is a conservative heuristic, not an exact tokenizer or a guarantee for
-  arbitrarily dense text. Hash-heavy requirements files can still be refused
-  under the defaults; set a lower `max_window_tokens` for such inputs. The live
-  `requirements-ci.txt` proof used 5,946 (half its reported 11,892-token ceiling).
-  `PE_INPUT_TOO_LARGE` handling remains unchanged.
+  Pre-chunking and late-chunk packing both measure bytes, initially using 2.0
+  bytes/token. This estimate is not a tokenizer guarantee. On `PE_INPUT_TOO_LARGE`,
+  both paths use the refused input's reported token count to reduce its byte
+  window and overlap, preserving UTF-8 boundaries, then retry. Further refusals
+  refine that input again; refusal at the minimum character boundary or an
+  unparseable count remains a failure, without replacing committed data.
+  No global embedder connection is required for non-ingest commands.
   Stored embeddings carry effective `window_tokens` and `parent_chunk_index`;
   split chunks preserve parent attribution, byte offsets and file-order indices.
   Chunks that fit retain their boundaries; code late-chunk packing remains in use.

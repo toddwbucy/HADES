@@ -153,5 +153,6 @@ chunking:
     safety_margin_tokens: 256
     # Optional cap; must not exceed the reported backend max_seq_length.
     # Effective tokens = min(cap if set, max_seq_length - safety_margin_tokens).
-    # The existing 2.0 chars/token floor sizes windows and their overlap.
+    # Initial windows and overlap use 2.0 bytes/token; reported size errors
+    # refine the refused input's byte budget and retry with overlap.
     max_window_tokens: null
