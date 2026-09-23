@@ -19,6 +19,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add Agent-tier indexed equality lookup across CLI, daemon and MCP, with schema-owned lookup indexes and fail-closed index hints (#173).
+
 - Record observed source Git commit and dirty state on ingested file/document rows,
   ingest envelopes and job records, and the WeaverTools adapter report; non-Git
   inputs explicitly carry null provenance. Missing Git is named explicitly and

@@ -237,6 +237,30 @@ Fetch a single document by collection and key.
 | `collection` | `string` | required | Collection name |
 | `key`        | `string` | required | Document `_key` |
 
+### `db.lookup` (Agent)
+
+Read-only equality lookup on one field in a named collection. MCP exposes
+`db_lookup`; the CLI is `hades db lookup COLLECTION FIELD JSON_VALUE`.
+For example: `hades --db scratch_173 db lookup wt_assertions ident '"example-slug"' --limit 2 --fields ident,full_text`.
+
+Required parameters are `collection` (string), `field` (string), and `value`
+(any JSON value). Optional `limit` defaults to 10, caps at 1000, and rejects zero.
+Optional `fields` selects exactly those attributes; omission drops `full_text`,
+`embedding`, `text`, and `body`, matching the other vertex read operations.
+Results contain `collection`, `documents`, and `count`.
+
+Before opening a query cursor, the handler reads indexes and requires a persistent
+index whose **first** field equals `field`. A later field of a compound index,
+primary index, or stored-value projection does not qualify. Refusal names the
+collection and available persistent leading fields; a missing collection is
+`NOT_FOUND`. Fields use dot-separated nested attribute paths.
+
+The query binds the equality value and field path and forces the selected index
+names with `forceIndexHint: true`. If an index disappears or cannot answer the
+predicate (for example a sparse index for null), the request fails instead of
+falling back to a collection scan. Schema owners declare `lookup_fields` for
+`hades schema apply`; lookup creates no indexes and grants no write authority.
+
 ### `db.list` (Agent)
 
 List documents in a collection.

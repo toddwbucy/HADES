@@ -142,6 +142,9 @@ pub struct CollectionDef {
     /// `"document"` or `"edge"`.
     #[serde(rename = "type")]
     pub collection_type: CollectionType,
+    /// Leading equality fields indexed by schema apply for agent lookup (#173).
+    #[serde(default)]
+    pub lookup_fields: Vec<String>,
 }
 
 /// Collection type discriminator.
@@ -212,6 +215,10 @@ pub enum Operation {
     CreateCollection {
         name: String,
         collection_type: u32,
+    },
+    EnsureLookupIndex {
+        collection: String,
+        field: String,
     },
     UpsertDocuments {
         collection: String,
@@ -315,6 +322,22 @@ pub fn validate(file: &SchemaFile) -> Result<(), ApplyError> {
             .is_some()
         {
             errors.push(format!("collection '{}' declared twice", c.name));
+        }
+    }
+
+    for c in &file.collections {
+        let mut seen = HashSet::new();
+        for field in &c.lookup_fields {
+            if field
+                .split('.')
+                .any(|part| part.is_empty() || part.contains(['[', ']']))
+                || !seen.insert(field)
+            {
+                errors.push(format!(
+                    "collection '{}' has invalid or duplicate lookup field '{}'",
+                    c.name, field
+                ));
+            }
         }
     }
 
@@ -471,6 +494,15 @@ pub fn plan(file: &SchemaFile) -> Vec<Operation> {
         });
     }
 
+    for c in &file.collections {
+        for field in &c.lookup_fields {
+            ops.push(Operation::EnsureLookupIndex {
+                collection: c.name.clone(),
+                field: field.clone(),
+            });
+        }
+    }
+
     // Stable order for documents (by collection name, alphabetical).
     let mut doc_collections: Vec<&String> = file.documents.keys().collect();
     doc_collections.sort();
@@ -549,6 +581,13 @@ pub async fn apply(
     ensure_collection(pool, "hades_schema", CollectionType::Document, &mut result).await?;
     for c in &file.collections {
         ensure_collection(pool, &c.name, c.collection_type, &mut result).await?;
+    }
+
+    // Schema owns lookup eligibility; repeated apply reuses equivalent indexes (#173).
+    for c in &file.collections {
+        for field in &c.lookup_fields {
+            crate::db::index::ensure_lookup_index(pool, &c.name, field).await?;
+        }
     }
 
     // 2. Document seeds.

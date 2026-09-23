@@ -63,6 +63,7 @@ Every daemon command is classified into exactly one tier:
 | Command | Parameters | Returns | Purpose |
 |---------|-----------|---------|---------|
 | `db.get` | `collection`, `key`, `fields?` | Single document | Fetch by known key |
+| `db.lookup` | `collection`, `field`, `value`, `limit?`, `fields?` | Bounded document array | Equality lookup using a persistent leading-field index; never scans |
 | `db.list` | `collection?`, `limit?`, `paper?`, `fields?` | Document array | Browse with pagination |
 | `db.count` | `collection` | Integer count | Collection size |
 | `db.check` | `document_id` | Existence flag + metadata | Verify document exists before acting |

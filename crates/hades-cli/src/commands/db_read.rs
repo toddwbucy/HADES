@@ -12,6 +12,32 @@ use hades_core::dispatch::{self, DaemonCommand};
 
 use super::output::{self, OutputFormat};
 
+/// Read-only indexed lookup, shared with the network handler (#173).
+pub async fn run_lookup(
+    config: &HadesConfig,
+    collection: String,
+    field: String,
+    value: serde_json::Value,
+    limit: u32,
+    fields: Option<Vec<String>>,
+) -> Result<()> {
+    let pool = ArangoPool::from_config(config)?;
+    let data = dispatch::dispatch(
+        &pool,
+        config,
+        DaemonCommand::DbLookup(dispatch::DbLookupParams {
+            collection,
+            field,
+            value,
+            limit: Some(limit),
+            fields,
+        }),
+    )
+    .await?;
+    output::print_output("db.lookup", data, &OutputFormat::Json);
+    Ok(())
+}
+
 /// `hades db get <collection> <key> [--format F]`
 pub async fn run_get(
     config: &HadesConfig,

@@ -380,6 +380,17 @@ struct DbQueryArgs {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DbLookupArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    collection: String,
+    field: String,
+    value: serde_json::Value,
+    limit: Option<u32>,
+    fields: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DbGetArgs {
     #[schemars(
         description = "Vertex fields to return. Omit to exclude full_text, embedding, text and body; name bulk fields explicitly to retrieve them."
@@ -711,6 +722,26 @@ impl HadesMcpServer {
                 rerank: a.rerank.unwrap_or(false),
                 structural: a.structural.unwrap_or(false),
             },
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Read-only indexed equality lookup. Requires a persistent index beginning with field; refuses scans. Limit defaults to 10, capped at 1000. Bulk fields omitted unless explicitly named in fields."
+    )]
+    async fn db_lookup(
+        &self,
+        Parameters(a): Parameters<DbLookupArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::DbLookup(hades_core::dispatch::DbLookupParams {
+                collection: a.collection,
+                field: a.field,
+                value: a.value,
+                limit: a.limit,
+                fields: a.fields,
+            }),
         )
         .await
     }
@@ -1114,6 +1145,51 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mcp_lookup_forwards_indexed_query_at_network_agent_ceiling() {
+        let mut mock = cursor_mock::Mock::new(vec![
+            cursor_mock::Reply::page(serde_json::json!({"indexes":[{"id":"nodes/2","name":"by_ident","type":"persistent","fields":["ident"]}]})),
+            cursor_mock::Reply::page(serde_json::json!({"result":[{"ident":"wanted","full_text":"requested"}],"hasMore":false})),
+        ]).await;
+        let config = HadesConfig::with_database("fixture");
+        let cache = Arc::new(PoolCache::new(config.clone(), &[], Vec::new()).unwrap());
+        cache.pools.write().await.insert(
+            "fixture".into(),
+            (Arc::new(config), Arc::new(mock.pool.clone())),
+        );
+        let server = HadesMcpServer::new(cache, ConnectionPolicy::agent_only());
+        let result = server
+            .db_lookup(Parameters(DbLookupArgs {
+                db: None,
+                collection: "nodes".into(),
+                field: "ident".into(),
+                value: serde_json::json!("wanted"),
+                limit: Some(2),
+                fields: Some(vec!["ident".into(), "full_text".into()]),
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        mock.event("GET index?collection=nodes").await;
+        let query = mock.event("POST cursor").await;
+        assert_eq!(query["bindVars"]["value"], "wanted");
+        assert_eq!(query["bindVars"]["limit"], 2);
+        assert_eq!(
+            query["bindVars"]["indexes"],
+            serde_json::json!(["by_ident"])
+        );
+        assert_eq!(
+            query["bindVars"]["keep"],
+            serde_json::json!(["ident", "full_text"])
+        );
+        assert!(
+            query["query"]
+                .as_str()
+                .unwrap()
+                .contains("forceIndexHint: true")
+        );
+    }
+
     // --- tokens ------------------------------------------------------------
 
     #[test]
@@ -1242,6 +1318,7 @@ mod tests {
                 "db_count",
                 "db_get",
                 "db_list",
+                "db_lookup",
                 "db_query",
                 "db_schema_init",
                 "graph_list",

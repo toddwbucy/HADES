@@ -212,6 +212,17 @@ pub struct DbGetParams {
     pub key: String,
 }
 
+/// Indexed equality lookup; keys remain storage identities (#173).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DbLookupParams {
+    pub collection: String,
+    pub field: String,
+    pub value: Value,
+    pub limit: Option<u32>,
+    pub fields: Option<Vec<String>>,
+}
+
 /// Params for `db.list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -715,6 +726,9 @@ pub enum DaemonCommand {
     #[serde(rename = "db.get")]
     DbGet(DbGetParams),
 
+    #[serde(rename = "db.lookup")]
+    DbLookup(DbLookupParams),
+
     #[serde(rename = "db.list")]
     DbList(DbListParams),
 
@@ -965,6 +979,7 @@ impl DaemonCommand {
             Self::Orient(_) => AccessTier::Agent,
             Self::DbQuery { .. } => AccessTier::Agent,
             Self::DbGet(_) => AccessTier::Agent,
+            Self::DbLookup(_) => AccessTier::Agent,
             Self::DbList(_) => AccessTier::Agent,
             Self::DbCount(_) => AccessTier::Agent,
             Self::DbCheck(_) => AccessTier::Agent,
@@ -1141,6 +1156,9 @@ pub async fn dispatch(
                 .await
                 .map_err(DispatchError::Handler)
         }
+        DaemonCommand::DbLookup(params) => handlers::db_lookup(pool, &params)
+            .await
+            .map_err(DispatchError::Handler),
         DaemonCommand::DbList(params) => {
             let limit = params.limit.unwrap_or(20).min(MAX_LIMIT);
             handlers::db_list(
@@ -1630,6 +1648,69 @@ mod handlers {
             "collections": entries,
             "total": entries.len(),
         }))
+    }
+
+    /// Refuse before opening a cursor unless a persistent leading-field index exists.
+    pub async fn db_lookup(
+        pool: &ArangoPool,
+        params: &super::DbLookupParams,
+    ) -> Result<Value, HandlerError> {
+        let limit = params.limit.unwrap_or(10).min(super::MAX_LIMIT);
+        if limit == 0 {
+            return Err(HandlerError::InvalidLimit {
+                limit,
+                max: super::MAX_LIMIT,
+            });
+        }
+        let indexes = crate::db::index::list_indexes(pool, &params.collection)
+            .await
+            .map_err(|source| HandlerError::Query {
+                context: format!("cannot read indexes for collection '{}'", params.collection),
+                source,
+            })?;
+        let mut available: Vec<_> = indexes
+            .iter()
+            .filter(|index| index.index_type == "persistent")
+            .filter_map(|index| index.fields.first().cloned())
+            .collect();
+        available.sort();
+        available.dedup();
+        let hints: Vec<_> = indexes
+            .iter()
+            .filter(|index| {
+                index.index_type == "persistent" && index.fields.first() == Some(&params.field)
+            })
+            .map(|index| index.name.clone())
+            .filter(|name| !name.is_empty())
+            .collect();
+        if hints.is_empty() {
+            return Err(HandlerError::InvalidParameter {
+                name: "field".into(),
+                reason: format!(
+                    "collection '{}' has no persistent leading-field index for '{}'; indexed fields available: {:?}",
+                    params.collection, params.field, available
+                ),
+            });
+        }
+        // Force the checked index even if it vanishes or is unusable (e.g. sparse/null).
+        // AQL must fail rather than substitute a collection scan (#173).
+        let aql = "FOR d IN @@col OPTIONS { indexHint: @indexes, forceIndexHint: true } \
+                   FILTER d.@path == @value LIMIT @limit \
+                   RETURN @keep == null ? UNSET(d, @drop) : KEEP(d, @keep)";
+        let bind = json!({"@col": params.collection, "indexes": hints,
+            "path": params.field.split('.').collect::<Vec<_>>(), "value": params.value,
+            "limit": limit, "keep": params.fields, "drop": BULK_FIELDS});
+        let rows = query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader)
+            .await
+            .map_err(|source| HandlerError::Query {
+                context: format!(
+                    "indexed lookup failed for collection '{}' field '{}'",
+                    params.collection, params.field
+                ),
+                source,
+            })?
+            .results;
+        Ok(json!({"collection": params.collection, "documents": rows, "count": rows.len()}))
     }
 
     /// Check if a document exists by its full _id (collection/key).

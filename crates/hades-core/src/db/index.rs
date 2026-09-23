@@ -53,6 +53,9 @@ impl VectorMetric {
 pub struct IndexInfo {
     /// Full index ID (e.g. `"collection/12345"`).
     pub id: String,
+    /// Server index name, used for forced lookup hints (#173).
+    #[serde(default)]
+    pub name: String,
     /// Index type (e.g. `"primary"`, `"hash"`, `"vector"`).
     #[serde(rename = "type")]
     pub index_type: String,
@@ -144,6 +147,24 @@ pub async fn create_vector_index(
 
     debug!(id = %info.id, "vector index created");
     Ok(info)
+}
+
+/// Ensure a non-sparse equality index; ArangoDB reuses an equivalent index (#173).
+pub async fn ensure_lookup_index(
+    pool: &ArangoPool,
+    collection: &str,
+    field: &str,
+) -> Result<(), ArangoError> {
+    let path = format!("index?collection={}", encode_query_value(collection));
+    pool.writer()
+        .post(
+            &path,
+            &serde_json::json!({
+                "type": "persistent", "fields": [field], "unique": false, "sparse": false
+            }),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Drop an index by its full ID (e.g. `"collection/12345"`).

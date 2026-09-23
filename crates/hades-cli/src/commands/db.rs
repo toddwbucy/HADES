@@ -199,6 +199,18 @@ pub enum DbCmd {
         collection: String,
     },
 
+    /// Lookup documents by equality on a persistently indexed field.
+    Lookup {
+        collection: String,
+        field: String,
+        /// Equality value as JSON (quote JSON strings, e.g. '"weaver-spu"').
+        value: serde_json::Value,
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: u32,
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
+    },
+
     /// Get a single document by key.
     Get {
         /// Vertex fields to return, including bulk fields only when named (#170).

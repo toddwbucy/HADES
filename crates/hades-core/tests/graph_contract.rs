@@ -338,3 +338,60 @@ fn weavertools_edge_endpoints_follow_document_format() {
         assert_eq!(row["to_collections"], json!(to), "{name}");
     }
 }
+
+#[tokio::test]
+async fn indexed_lookup_is_agent_bounded_projected_and_fails_closed() {
+    use hades_core::dispatch::{AccessTier, DaemonCommand};
+    use hades_core::service::{ConnectionPolicy, handle_request};
+    with_temp_db("indexed_lookup", Fixtures::Empty, |pool| async move {
+        crud::create_collection(&pool, "nodes", Some(2)).await.unwrap();
+        pool.writer().post("index?collection=nodes", &json!({"type":"persistent","fields":["ident","other"],"name":"by_ident"})).await.unwrap();
+        pool.writer().post("index?collection=nodes", &json!({"type":"persistent","fields":["first","second"],"name":"by_first"})).await.unwrap();
+        pool.writer().post("index?collection=nodes", &json!({"type":"persistent","fields":["nested.ident"],"name":"by_nested"})).await.unwrap();
+        pool.writer().post("index?collection=nodes", &json!({"type":"persistent","fields":["sparse"],"sparse":true,"name":"by_sparse"})).await.unwrap();
+        let docs: Vec<_> = (0..1002).map(|n| json!({"_key":format!("node{n}"),"ident":"same","other":n,"nested":{"ident":true},"full_text":"bulk","text":"bulk","body":"bulk","embedding":[1,0]})).collect();
+        crud::insert_documents(&pool,"nodes",&docs,false).await.unwrap();
+        let call = |params| {
+            let pool=pool.clone();
+            async move {
+                let request=json!({"command":"db.lookup","params":params});
+                let cmd:DaemonCommand=serde_json::from_value(request.clone()).unwrap();
+                assert_eq!(cmd.access_tier(),AccessTier::Agent);
+                handle_request(&pool,&Default::default(),ConnectionPolicy::agent_only(),&serde_json::to_vec(&request).unwrap(),std::time::Duration::from_secs(5)).await
+            }
+        };
+        for (limit,count) in [(None,10),(Some(2),2),(Some(5000),1000)] {
+            let response=call(json!({"collection":"nodes","field":"ident","value":"same","limit":limit})).await;
+            assert!(response.success,"{response:?}");
+            let data=response.data.unwrap();
+            assert_eq!(data["count"],count);
+            for row in data["documents"].as_array().unwrap() {
+                for field in ["full_text","text","body","embedding"] {assert!(row.get(field).is_none());}
+            }
+        }
+        let projected=call(json!({"collection":"nodes","field":"ident","value":"same","limit":1,"fields":["ident","full_text","embedding"]})).await;
+        assert!(projected.success,"{projected:?}");
+        let row=&projected.data.unwrap()["documents"][0];
+        assert_eq!(row.as_object().unwrap().len(),3);
+        assert_eq!(row["full_text"],"bulk");
+        assert_eq!(row["embedding"],json!([1,0]));
+        let nested=call(json!({"collection":"nodes","field":"nested.ident","value":true})).await;
+        assert!(nested.success,"{nested:?}");
+        assert_eq!(nested.data.unwrap()["count"],10);
+        for field in ["unindexed","second","_key"] {
+            let response=call(json!({"collection":"nodes","field":field,"value":"same"})).await;
+            assert!(!response.success,"{response:?}");
+            let error=serde_json::to_string(&response).unwrap();
+            assert!(error.contains("indexed fields available") && error.contains("ident") && error.contains("first"),"{error}");
+        }
+        let missing=call(json!({"collection":"absent_nodes","field":"ident","value":"x"})).await;
+        assert!(!missing.success);
+        assert!(serde_json::to_string(&missing).unwrap().contains("absent_nodes"));
+        // A sparse index cannot answer equality to null. Forcing it must fail,
+        // rather than falling back to scanning the collection (#173).
+        let sparse=call(json!({"collection":"nodes","field":"sparse","value":null})).await;
+        assert!(!sparse.success,"{sparse:?}");
+        let zero=call(json!({"collection":"nodes","field":"ident","value":"same","limit":0})).await;
+        assert!(!zero.success);
+    }).await;
+}

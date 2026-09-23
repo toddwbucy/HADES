@@ -59,20 +59,28 @@ collections:
   # The corpus's own records, written by `write_graph.py`.
   - name: wt_assertions
     type: document
+    lookup_fields: [ident]
   - name: wt_documents
     type: document
+    lookup_fields: [ident]
   - name: wt_vocabulary
     type: document
+    lookup_fields: [ident]
   - name: wt_crates
     type: document
+    lookup_fields: [ident]
   - name: wt_terms
     type: document
+    lookup_fields: [ident]
   - name: wt_axioms
     type: document
+    lookup_fields: [ident]
   - name: wt_artifacts
     type: document
+    lookup_fields: [ident]
   - name: wt_systems
     type: document
+    lookup_fields: [ident]
   - name: wt_ingest_report
     type: document
   - name: wt_cites_edges

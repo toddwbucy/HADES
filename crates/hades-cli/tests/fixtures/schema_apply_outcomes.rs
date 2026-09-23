@@ -47,3 +47,24 @@ async fn schema_apply_real_imports_replace_preserve_and_fail_explicitly() {
             "prior_seed_value":2,"unrelated_value":9,"document_count":2,"metadata_revision_unchanged":true}));
     }).await;
 }
+
+#[tokio::test]
+async fn weavertools_schema_apply_ensures_lookup_indexes_idempotently() {
+    with_temp_db("lookup_schema", Fixtures::Empty, |pool| async move {
+        let embedder=Embedder::new().await;
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../services/adapters/weavertools/schema.yaml");
+        let mut previous=std::collections::BTreeMap::new();
+        for pass in 0..2 {
+            let output=cli_command(&pool,&embedder,&["schema","apply",path.to_str().unwrap()]).output().await.unwrap();
+            assert!(output.status.success(),"{output:?}");
+            for suffix in ["assertions","documents","vocabulary","crates","terms","axioms","artifacts","systems"] {
+                let collection=format!("wt_{suffix}");
+                let indexes=hades_core::db::index::list_indexes(&pool,&collection).await.unwrap();
+                let matches:Vec<_>=indexes.iter().filter(|i|i.index_type=="persistent" && i.fields==["ident"]).collect();
+                assert_eq!(matches.len(),1,"{collection}: {indexes:?}");
+                if pass==0 { previous.insert(collection,matches[0].id.clone()); }
+                else { assert_eq!(previous[&collection],matches[0].id); }
+            }
+        }
+    }).await;
+}
