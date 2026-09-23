@@ -39,7 +39,7 @@ const CODE_EXTENSIONS: &[&str] = &[
 ];
 
 /// Keys that user-provided metadata cannot override.
-const PROTECTED_KEYS: &[&str] = &["_key", "status", "source"];
+const PROTECTED_KEYS: &[&str] = &["_key", "status", "source", "source_git"];
 
 /// Ingest command failed with partial results.
 ///
@@ -101,6 +101,7 @@ pub async fn run_unified(
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
+    let source_git = hades_core::source_git::resolve(&root)?;
     let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
     let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
 
@@ -174,6 +175,7 @@ pub async fn run_unified(
 
     let result_data = json!({
         "root": root.display().to_string(),
+        "source_git": source_git,
         "routed": {
             "code": found.code.len(),
             "documents": found.documents.len(),
@@ -378,6 +380,11 @@ pub async fn run_phase(
     };
 
     let processor = BatchProcessor::new(batch_config);
+    let source_git = root
+        .as_deref()
+        .map(hades_core::source_git::resolve)
+        .transpose()?
+        .flatten();
 
     // -- Build items for batch processor ---------------------------------------
     let custom_id: Option<Arc<str>> = id.map(Arc::from);
@@ -392,6 +399,7 @@ pub async fn run_phase(
         .collect();
 
     // -- Process batch ---------------------------------------------------------
+    let envelope_git = source_git.clone();
     let summary = processor
         .process(items, move |_item_id, path| {
             let pipeline = pipeline.clone();
@@ -400,6 +408,7 @@ pub async fn run_phase(
             let custom_id = custom_id.clone();
             let extra_metadata = extra_metadata.clone();
             let root = root.clone();
+            let source_git = source_git.clone();
 
             async move {
                 ingest_file(
@@ -412,6 +421,7 @@ pub async fn run_phase(
                     extra_metadata.as_deref(),
                     custom_id.as_deref(),
                     root.as_deref(),
+                    source_git.as_ref(),
                 )
                 .await
             }
@@ -464,7 +474,24 @@ pub async fn run_phase(
             })
             .count();
 
+    // Explicit-file batches may span repositories; per-item observations remain
+    // authoritative, and the envelope is populated only when they agree (#171).
+    let observed = result_values
+        .iter()
+        .filter_map(|row| row.get("source_git"))
+        .collect::<Vec<_>>();
+    let source_git = serde_json::to_value(envelope_git)?
+        .as_object()
+        .map(|o| Value::Object(o.clone()))
+        .or_else(|| {
+            observed
+                .first()
+                .filter(|first| observed.iter().all(|v| v == *first))
+                .map(|v| (*v).clone())
+        })
+        .unwrap_or(Value::Null);
     let result_data = json!({
+        "source_git": source_git,
         "total": summary.total,
         "completed": summary.completed,
         "failed": summary.failed,
@@ -501,6 +528,7 @@ async fn ingest_file(
     extra_metadata: Option<&Value>,
     custom_id: Option<&str>,
     root: Option<&Path>,
+    root_git: Option<&hades_core::source_git::SourceGit>,
 ) -> Result<Value> {
     // Identity FIRST, from the path as the caller wrote it: the key comes from
     // the caller's own path, so a symlinked input keeps the name the caller used
@@ -516,6 +544,10 @@ async fn ingest_file(
     let path: PathBuf = std::fs::canonicalize(path)
         .with_context(|| format!("input path not found or unreadable: {}", path.display()))?;
     let path = path.as_path();
+    let source_git = match root_git {
+        Some(git) => Some(git.clone()),
+        None => hades_core::source_git::resolve(root.unwrap_or(path))?,
+    };
 
     // Who already holds this key, and is it this same file?
     //
@@ -584,7 +616,9 @@ async fn ingest_file(
         };
         if unchanged && !force {
             info!(doc_key, "unchanged since last ingest, skipping");
-            return Ok(json!({"skipped": true, "reason": "content hash unchanged"}));
+            return Ok(
+                json!({"skipped": true, "reason": "content hash unchanged", "source_git": source_git}),
+            );
         }
         if !unchanged {
             info!(
@@ -610,6 +644,7 @@ async fn ingest_file(
     // Update metadata with source info + extra metadata.
     let mut file_meta = json!({
         "source": "local",
+        "source_git": source_git,
         "source_path": path.display().to_string(),
         // The identity the collision check compares, stable across a move of the
         // tree. Absent when the caller named files rather than a root.
@@ -643,6 +678,7 @@ async fn ingest_file(
 
     Ok(json!({
         "num_chunks": result.chunk_count,
+        "source_git": source_git,
     }))
 }
 

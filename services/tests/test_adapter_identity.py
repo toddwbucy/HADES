@@ -7,6 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'adapters'))
 from weavertools import write_graph as w
+@pytest.fixture(autouse=True)
+def mock_source_git(monkeypatch):
+    monkeypatch.setattr(w, 'resolve_source_git', lambda root: None)
+
+
 from weavertools.records import Node, Edge
 
 

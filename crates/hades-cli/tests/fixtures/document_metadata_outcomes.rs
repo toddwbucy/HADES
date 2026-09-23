@@ -106,4 +106,75 @@ mod document_metadata_outcomes {
 
         }).await;
     }
+    #[tokio::test]
+    async fn source_git_reaches_all_ingest_writers_and_envelopes() {
+        with_temp_db("source_git", Fixtures::Codebase, |pool| async move {
+            use hades_core::db::{crud, query::{query, ExecutionTarget}};
+            for collection in ["documents", "chunks", "embeddings"] {
+                crud::create_collection(&pool, collection, Some(2)).await.unwrap();
+            }
+            let services = tempfile::tempdir().unwrap();
+            let socket = services.path().join("extract.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async {
+                Some((listener.accept().await.map(|(stream, _)| stream), listener))
+            });
+            let _peer = Peer(tokio::spawn(async move {
+                tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor))
+                    .serve_with_incoming(incoming).await.unwrap();
+            }));
+            let embedder = Embedder::new().await;
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::write(tree.path().join("source.py"), "def symbol():\n    return 1\n").unwrap();
+            std::fs::write(tree.path().join("raw.toml"), "name = 'fixture'\n").unwrap();
+            std::fs::write(tree.path().join("paper.md"), "# Private paper\nContent.\n").unwrap();
+            let git = |args: &[&str]| {
+                let out = std::process::Command::new("git").arg("-C").arg(tree.path()).args(args).output().unwrap();
+                assert!(out.status.success(), "{out:?}"); out
+            };
+            let mut expected = Value::Null;
+            for state in ["non_git", "clean", "dirty"] {
+                if state == "clean" {
+                    git(&["init", "-q"]); git(&["add", "."]);
+                    git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+                    let commit = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout).unwrap();
+                    expected = json!({"commit":commit.trim(), "dirty":false});
+                } else if state == "dirty" {
+                    std::fs::write(tree.path().join("untracked"), "dirty").unwrap();
+                    expected["dirty"] = json!(true);
+                }
+                let root = tree.path().to_str().unwrap();
+                let paper = tree.path().join("paper.md");
+                for args in [
+                    vec!["ingest", root, "--unparsed-ext", "toml", "--task", "code", "--force"],
+                    vec!["codebase", "ingest", root, "--unparsed-ext", "toml", "--force"],
+                    vec!["ingest", paper.to_str().unwrap(), "--root", root, "--task", "code", "--force", "--metadata", "{\"source_git\":{\"commit\":\"spoof\"}}"],
+                    vec!["ingest", paper.to_str().unwrap(), "--task", "code", "--force"],
+                ] {
+                    let output = cli_command(&pool, &embedder, &args)
+                        .env("HADES_EXTRACTOR_SOCKET", &socket).current_dir(services.path()).output().await.unwrap();
+                    assert!(output.status.success(), "{state}: {output:?}");
+                    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+                    assert_eq!(envelope["data"].get("source_git"), Some(&expected), "{state}: {envelope}");
+                    for collection in ["codebase_files", "documents"] {
+                        let rows = query(&pool, "FOR row IN @@collection RETURN row", Some(&json!({"@collection":collection})), None, false, ExecutionTarget::Reader).await.unwrap().results;
+                        assert_eq!(rows.len(), if collection == "documents" { 1 } else { 2 });
+                        for row in rows {
+                            assert_eq!(row.get("source_git"), Some(&expected), "{state}: {row}");
+                        }
+                    }
+                }
+            }
+            // A later run that skips unchanged content must not relabel old rows.
+            git(&["add", "."]);
+            git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "later"]);
+            let output = cli_command(&pool, &embedder, &["ingest",tree.path().to_str().unwrap(),"--unparsed-ext","toml","--task","code"])
+                .env("HADES_EXTRACTOR_SOCKET", &socket).current_dir(services.path()).output().await.unwrap();
+            assert!(output.status.success(), "{output:?}");
+            for collection in ["codebase_files", "documents"] {
+                let rows = query(&pool, "FOR row IN @@collection RETURN row", Some(&json!({"@collection":collection})), None, false, ExecutionTarget::Reader).await.unwrap().results;
+                for row in rows { assert_eq!(row.get("source_git"), Some(&expected)); }
+            }
+        }).await;
+    }
 }

@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from weavertools.extractor import ingest  # noqa: E402
+from source_git import resolve as resolve_source_git  # noqa: E402
 
 # One collection per node kind and one per relation, which is the notation the
 # 2026-08-08 graph used. The content does not migrate (its rows are stale against
@@ -326,6 +327,7 @@ def _main() -> int:
         )
         return 1
 
+    source_git = resolve_source_git(Path(args.repo))
     docs, code = ingest(Path(args.repo), set(doc_keys), set(code_keys))
 
     nodes = validate_declarations(docs.nodes, docs.edges + code.edges)
@@ -454,6 +456,7 @@ def _main() -> int:
             "stale_retirement_performed": False,
             "coverage": "present extracted rows only; older absent rows are retained",
             "repo": args.repo,
+            "source_git": source_git,
             "document_notes": docs.notes,
             "code_notes": code.notes,
             "dangling_documents": [vars(e) for e in docs.dangling],

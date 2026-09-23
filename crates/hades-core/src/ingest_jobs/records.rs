@@ -57,6 +57,7 @@ async fn start_with(
             reason: "canonical ingestion path must be valid UTF-8".into(),
         });
     }
+    let source_git = crate::source_git::resolve(&resolved).map_err(service)?;
     let reservation = super::reserve(&resolved).map_err(service)?;
     if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict
@@ -97,7 +98,7 @@ async fn start_with(
     }
     reservation.identify(&database, &job).map_err(service)?;
     let row = json!({"_key":job,"status":"starting","owner_instance":super::instance(),
-        "database":database,"path":resolved,"force":force,"started_at":chrono::Utc::now().to_rfc3339(),
+        "database":database,"path":resolved,"source_git":source_git,"force":force,"started_at":chrono::Utc::now().to_rfc3339(),
         "output_storage":"bounded_job_record","log_path":null,"stderr_path":null});
     command
         .arg("--db")
@@ -214,7 +215,7 @@ async fn own_start(
             return;
         }
     };
-    let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"pid":pid,"poll":"ingest.status"})));
+    let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"source_git":row["source_git"],"pid":pid,"poll":"ingest.status"})));
     let update = match child.finish(shutdown).await {
         Ok(output) => outcome(output),
         Err(error) => failed(&error.to_string()),
@@ -358,6 +359,71 @@ mod tests {
         );
         drop(reservation);
         assert!(admission.reserve(path).is_ok());
+    }
+
+    #[tokio::test]
+    async fn source_git_is_preserved_in_job_start_and_status() {
+        let _test = super::super::TEST_LOCK.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let config = HadesConfig::with_database("fixture");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+            out
+        };
+        let mut expected = Value::Null;
+        for state in ["non_git", "clean", "dirty"] {
+            if state == "clean" {
+                git(&["init", "-q"]);
+                git(&[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "fixture",
+                ]);
+                expected = json!({"commit": String::from_utf8(git(&["rev-parse", "HEAD"]).stdout).unwrap().trim(), "dirty":false});
+            } else if state == "dirty" {
+                std::fs::write(root.path().join("untracked"), "dirty").unwrap();
+                expected["dirty"] = json!(true);
+            }
+            let mut replies = admission();
+            replies.extend([ok(), ok(), ok()]);
+            let mut mock = Mock::new(replies).await;
+            let started = start_with(
+                &mock.pool,
+                &config,
+                root.path().to_str().unwrap(),
+                false,
+                python("print('{}')"),
+            )
+            .await
+            .unwrap();
+            let mut row = inserted(&mut mock).await;
+            assert_eq!(row.get("source_git"), Some(&expected));
+            assert_eq!(started.get("source_git"), Some(&expected));
+            let job = row["_key"].as_str().unwrap().to_owned();
+            mock.event(&format!("PATCH document/{COLLECTION}/{job}"))
+                .await;
+            let finished = mock
+                .event(&format!("PATCH document/{COLLECTION}/{job}"))
+                .await;
+            released(&job).await;
+            row.as_object_mut()
+                .unwrap()
+                .extend(finished.as_object().unwrap().clone());
+            let read = Mock::new(vec![Reply::page(row)]).await;
+            let reported = status(&read.pool, &job).await.unwrap();
+            assert_eq!(reported.get("source_git"), Some(&expected));
+        }
     }
 
     fn ok() -> Reply {

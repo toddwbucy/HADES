@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Record observed source Git commit and dirty state on ingested file/document rows,
+  ingest envelopes and job records, and the WeaverTools adapter report; non-Git
+  inputs explicitly carry null provenance (#171).
+
 - Pre-chunk document and code inputs with backend-sized, configurable overlapping
   windows, adapt refused inputs using reported token counts, and persist window
   budgets and parent attribution with embeddings.

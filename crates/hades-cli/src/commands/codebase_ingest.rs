@@ -180,6 +180,7 @@ pub async fn run_phase(
 
     // Resolve the ingest root before anything derives from it.
     let path = resolve_ingest_root(&path)?;
+    let source_git = hades_core::source_git::resolve(&path)?;
 
     let unparsed_set = normalize_unparsed_ext(unparsed_ext);
     let lang_override = parse_language_arg(language)?;
@@ -211,7 +212,7 @@ pub async fn run_phase(
     let files = discover_files(&path, lang_override, &unparsed_set)?;
     if files.is_empty() {
         return Ok(PhaseOutcome {
-            data: json!({ "total": 0, "message": "no supported source files found" }),
+            data: json!({ "source_git": source_git, "total": 0, "message": "no supported source files found" }),
             failure: None,
         });
     }
@@ -370,6 +371,7 @@ pub async fn run_phase(
                     force,
                     allow_analysis_downgrade,
                     namespace,
+                    &source_git,
                 )
                 .await?;
                 if result.skipped == Some(true) && result.num_symbols.is_none() {
@@ -401,6 +403,7 @@ pub async fn run_phase(
                 gopls_cmd.is_some(),
                 window_bytes,
                 namespace,
+                &source_git,
             )
             .await
         };
@@ -762,6 +765,7 @@ pub async fn run_phase(
         .collect();
 
     let result_data = json!({
+        "source_git": source_git,
         "total": total,
         "completed": succeeded,
         "failed": failed,
@@ -1488,6 +1492,7 @@ async fn ingest_file(
     gopls_scheduled: bool,
     window_bytes: usize,
     namespace: &str,
+    source_git: &Option<hades_core::source_git::SourceGit>,
 ) -> Result<FileResult> {
     // Read source.
     let fkey = keys::scoped_file_key(namespace, rel_path);
@@ -1529,6 +1534,7 @@ async fn ingest_file(
                     force,
                     allow_analysis_downgrade,
                     namespace,
+                    source_git,
                 )
                 .await?;
                 if result.skipped == Some(true) && result.num_symbols.is_none() {
@@ -1810,6 +1816,7 @@ async fn ingest_file(
         "_key": fkey,
         "file_key_version": 2,
         "ingest_root": namespace,
+        "source_git": source_git,
         "path": rel_path,
         "kind": "file",
         "language": lang.name(),
@@ -2116,6 +2123,7 @@ async fn ingest_unparsed_file(
     force: bool,
     allow_analysis_downgrade: bool,
     namespace: &str,
+    source_git: &Option<hades_core::source_git::SourceGit>,
 ) -> Result<FileResult> {
     let fkey = keys::scoped_file_key(namespace, rel_path);
     let expected_revision = super::codebase_persist::revision(db.writer(), &fkey).await?;
@@ -2227,6 +2235,7 @@ async fn ingest_unparsed_file(
     let fields = json!({
         "file_key_version": 2,
         "ingest_root": namespace,
+        "source_git": source_git,
         "path": rel_path,
         "rel_path": rel_path,
         "kind": "file",
@@ -3759,6 +3768,7 @@ mod tests {
                         false,
                         12_000,
                         "",
+                        &None,
                     )
                     .await
                     .expect("ingest")
@@ -4262,6 +4272,7 @@ mod tests {
                 false,
                 12_000,
                 "",
+                &None,
             )
             .await
             .unwrap();
@@ -4280,6 +4291,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &None,
             )
             .await;
             assert!(
@@ -4300,7 +4312,8 @@ mod tests {
                     "fixture analyzer unavailable",
                     false,
                     true,
-                    ""
+                    "",
+                    &None,
                 )
                 .await
                 .is_err()
@@ -4324,6 +4337,7 @@ mod tests {
                 false,
                 true,
                 "",
+                &None,
             )
             .await
             .unwrap();
@@ -4348,6 +4362,7 @@ mod tests {
                 false,
                 true,
                 "",
+                &None,
             )
             .await
             .unwrap();
@@ -4469,6 +4484,7 @@ mod tests {
                 false,
                 12_000,
                 "",
+                &None,
             )
             .await
             .expect("first ingest failed");
@@ -4513,6 +4529,7 @@ mod tests {
                 true,
                 12_000,
                 "",
+                &None,
             )
             .await
             .expect("re-ingest with gopls scheduled failed");
@@ -4555,6 +4572,7 @@ mod tests {
                 false,
                 12_000,
                 "",
+                &None,
             )
             .await
             .expect("re-ingest without gopls failed");
@@ -4655,6 +4673,7 @@ mod tests {
                     false,
                     12_000,
                     "",
+                    &None,
                 )
                 .await
                 .unwrap_or_else(|e| panic!("first ingest failed for .{ext}: {e}"));
@@ -4686,6 +4705,7 @@ mod tests {
                     false,
                     12_000,
                     "",
+                    &None,
                 )
                 .await
                 .unwrap_or_else(|e| panic!("second ingest failed for .{ext}: {e}"));
