@@ -865,3 +865,25 @@ async fn prune_requires_valid_count_acknowledgments() {
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[tokio::test]
+async fn get_cli_excludes_bulk_unless_fields_are_named() {
+    let document = json!({"_key":"doc","label":"fixture","full_text":"paper","embedding":[1,0],"body":"body","text":"text"});
+    for fields in [false, true] {
+        let mut args = vec!["get", "documents", "doc"];
+        if fields {
+            args.extend(["--fields", "_key,label,full_text,embedding,text,body"]);
+        }
+        let (output, _) = run(&args, vec![document.clone()]).await;
+        assert!(output.status.success(), "{output:?}");
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["data"]["label"], "fixture");
+        for key in ["full_text", "embedding", "text", "body"] {
+            if fields {
+                assert_eq!(response["data"][key], document[key]);
+            } else {
+                assert!(response["data"].get(key).is_none());
+            }
+        }
+    }
+}

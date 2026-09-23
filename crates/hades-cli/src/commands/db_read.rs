@@ -18,6 +18,7 @@ pub async fn run_get(
     collection: &str,
     key: &str,
     format: &str,
+    fields: Option<&[String]>,
 ) -> Result<()> {
     let fmt = OutputFormat::parse(format)?;
     let pool = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
@@ -25,6 +26,7 @@ pub async fn run_get(
         &pool,
         config,
         DaemonCommand::DbGet(dispatch::DbGetParams {
+            fields: fields.map(|v| v.to_vec()),
             collection: collection.to_string(),
             key: key.to_string(),
         }),
@@ -74,13 +76,21 @@ pub async fn run_check(config: &HadesConfig, document_id: &str) -> Result<()> {
 }
 
 /// `hades db recent [--limit N] [--format F]`
-pub async fn run_recent(config: &HadesConfig, limit: u32, format: &str) -> Result<()> {
+pub async fn run_recent(
+    config: &HadesConfig,
+    limit: u32,
+    format: &str,
+    fields: Option<&[String]>,
+) -> Result<()> {
     let fmt = OutputFormat::parse(format)?;
     let pool = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
     let data = dispatch::dispatch(
         &pool,
         config,
-        DaemonCommand::DbRecent(dispatch::DbRecentParams { limit: Some(limit) }),
+        DaemonCommand::DbRecent(dispatch::DbRecentParams {
+            fields: fields.map(|v| v.to_vec()),
+            limit: Some(limit),
+        }),
     )
     .await?;
     output::print_output("db.recent", data, &fmt);

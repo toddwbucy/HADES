@@ -700,6 +700,7 @@ fn main() -> anyhow::Result<()> {
         }
         // ── Native DB read commands ─────────────────────────────────────
         Commands::Db(commands::db::DbCmd::Get {
+            fields,
             collection,
             key,
             format,
@@ -711,6 +712,7 @@ fn main() -> anyhow::Result<()> {
                 &collection,
                 &key,
                 &format,
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Count { collection }) => {
@@ -728,10 +730,19 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_check(&config, &document_id))
         }
-        Commands::Db(commands::db::DbCmd::Recent { limit, format }) => {
+        Commands::Db(commands::db::DbCmd::Recent {
+            limit,
+            format,
+            fields,
+        }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(commands::db_read::run_recent(&config, limit, &format))
+            rt.block_on(commands::db_read::run_recent(
+                &config,
+                limit,
+                &format,
+                fields.as_deref(),
+            ))
         }
         Commands::Db(commands::db::DbCmd::List {
             collection,
@@ -904,6 +915,7 @@ fn main() -> anyhow::Result<()> {
             min_depth,
             max_depth,
             graph,
+            fields,
             format: _,
         })) => {
             init_tracing();
@@ -915,12 +927,14 @@ fn main() -> anyhow::Result<()> {
                 min_depth,
                 max_depth,
                 graph.as_deref(),
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::ShortestPath {
             source,
             target,
             graph,
+            fields,
             format: _,
         })) => {
             init_tracing();
@@ -930,6 +944,7 @@ fn main() -> anyhow::Result<()> {
                 &source,
                 &target,
                 graph.as_deref(),
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::Neighbors {
@@ -937,6 +952,7 @@ fn main() -> anyhow::Result<()> {
             direction,
             limit,
             graph,
+            fields,
             format: _,
         })) => {
             init_tracing();
@@ -947,6 +963,7 @@ fn main() -> anyhow::Result<()> {
                 &direction,
                 limit,
                 graph.as_deref(),
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::List { format: _ })) => {
