@@ -1900,13 +1900,9 @@ async fn collect_preserved_targets(
         "batchSize":1,"ttl":30,"memoryLimit":33554432,
         "options":{"maxRuntime":30,"failOnWarning":true}
     })).await?;
-    let rows = response["result"]
-        .as_array()
+    let rows = hades_core::db::query::completed_rows(&response)
         .context("invalid preserved target snapshot")?;
-    anyhow::ensure!(
-        response["hasMore"] != true && rows.len() == 1,
-        "incomplete preserved target snapshot"
-    );
+    anyhow::ensure!(rows.len() == 1, "incomplete preserved target snapshot");
     let row = &rows[0];
     let revision = row["file"]["_rev"]
         .as_str()
@@ -3299,7 +3295,7 @@ async fn store_lsp_extractions(
             super::codebase_persist::query(&client,
                 "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
                 json!({"fkeys":batch.iter().map(|g| &g.key).collect::<Vec<_>>(),
-                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files}), false).await?;
             for group in &batch {
                 revisions.get_mut(&group.path).unwrap().revision = super::codebase_persist::revision(&client, &group.key).await?
                     .ok_or_else(|| hades_core::db::ArangoError::Request("enrichment file disappeared".into()))?;
@@ -3342,25 +3338,7 @@ fn build_python_symbol_index_scoped(
     file_symbols: &HashMap<String, Vec<Symbol>>,
     namespace: &str,
 ) -> HashMap<String, Vec<(String, String)>> {
-    let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for (rel_path, symbols) in file_symbols {
-        let fkey = keys::scoped_file_key(namespace, rel_path);
-        for sym in symbols {
-            // Match the vertex writer, excluding import and impl scaffolding.
-            if !sym.kind.is_primitive() {
-                continue;
-            }
-            // Index is keyed by the bare name (call sites use bare names), but
-            // the value must be the qualified-name-derived key so edges target
-            // the actual stored vertex (#113).
-            let skey = keys::symbol_key(&fkey, &sym.qualified_name(), sym.start_line);
-            index
-                .entry(sym.name.clone())
-                .or_default()
-                .push((rel_path.clone(), skey));
-        }
-    }
-    index
+    hades_core::code::python_calls::build_bare_index_scoped(file_symbols, namespace)
 }
 
 /// Build a mapping from Python module name → relative file path.
@@ -3611,6 +3589,54 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn preserved_snapshot_requires_explicit_complete_array() {
+        use axum::{Json, Router};
+        let valid_rows =
+            json!([{ "file": {"_rev":"revision", "language":"python"}, "symbols":[] }]);
+        for response in [
+            json!({}),
+            json!({"result":valid_rows}),
+            json!({"hasMore":null,"result":valid_rows}),
+            json!({"hasMore":"false","result":valid_rows}),
+            json!({"hasMore":0,"result":valid_rows}),
+            json!({"hasMore":true,"result":valid_rows}),
+            json!({"hasMore":false,"result":null}),
+            json!({"hasMore":false,"result":{}}),
+            json!({"hasMore":false,"result":[]}),
+            json!({"hasMore":false,"result":valid_rows}),
+        ] {
+            let valid = response == json!({"hasMore":false,"result":valid_rows});
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let served = response.clone();
+            let app = Router::new().fallback(move || {
+                let response = served.clone();
+                async move { Json(response) }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{"name":"fixture", "sockets":{"readonly":socket,"readwrite":socket}}})).unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            assert_eq!(
+                (collect_preserved_targets(
+                    &pool,
+                    "file",
+                    Some("revision"),
+                    "file.py",
+                    None,
+                    &mut ImportContext::default()
+                )
+                .await)
+                    .is_ok(),
+                valid,
+                "{response}"
+            );
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
     include!("codebase_embedding_retry_tests.rs");
     include!("codebase_enrichment_store_tests.rs");
     use super::*;

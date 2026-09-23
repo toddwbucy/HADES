@@ -64,7 +64,7 @@ pub enum CodebaseCmd {
         /// is richer than raw text. Enrichment runs afterwards; failure can
         /// leave earlier file updates committed and makes the run fail unless
         /// analysis downgrade was explicitly accepted.
-        #[arg(short = 'f', long = "force", alias = "no-skip")]
+        #[arg(long = "force", alias = "no-skip")]
         force: bool,
 
         /// Permit a lower-fidelity analyzer to replace previously stored

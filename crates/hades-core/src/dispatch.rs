@@ -1904,6 +1904,14 @@ mod handlers {
 
     /// Aggregate statistics across all collection profiles.
     pub async fn db_stats(pool: &ArangoPool) -> Result<Value, HandlerError> {
+        // Collection 404s are empty profiles only after the database itself exists (#164).
+        pool.reader()
+            .get("database/current")
+            .await
+            .map_err(|source| HandlerError::Query {
+                context: format!("failed to inspect database '{}'", pool.database()),
+                source,
+            })?;
         let mut profiles_data = Vec::new();
         let mut total_docs: u64 = 0;
         let mut total_chunks: u64 = 0;
@@ -5182,10 +5190,16 @@ mod handlers {
         if hybrid && !results.is_empty() {
             results = hybrid_rerank(text, results);
         }
-        if structural && !results.is_empty() {
-            results =
+        let structural_reason = if !structural {
+            Some("not_requested")
+        } else if results.is_empty() {
+            Some("no_results")
+        } else {
+            let (ranked, reason) =
                 structural_rerank(pool, profile.metadata, &results, admission.clone()).await?;
-        }
+            results = ranked;
+            reason
+        };
 
         if serde_json::to_vec(&results)
             .map_err(|e| HandlerError::ServiceError(e.to_string()))?
@@ -5205,6 +5219,8 @@ mod handlers {
             "dimension": embed_result.dimension,
             "result_count": results.len(),
             "results": results,
+            "structural_applied": structural_reason.is_none(),
+            "structural_reason": structural_reason,
         }))
     }
 
@@ -5303,7 +5319,7 @@ mod handlers {
         metadata_col: &str,
         results: &[Value],
         admission: std::sync::Arc<tokio::sync::SemaphorePermit<'static>>,
-    ) -> Result<Vec<Value>, HandlerError> {
+    ) -> Result<(Vec<Value>, Option<&'static str>), HandlerError> {
         use std::collections::HashMap;
 
         let parent_keys: Vec<&str> = results
@@ -5312,7 +5328,7 @@ mod handlers {
             .collect();
 
         if parent_keys.is_empty() {
-            return Ok(results.to_vec());
+            return Ok((results.to_vec(), Some("no_parent_keys")));
         }
 
         let aql = "FOR key IN @keys \
@@ -5371,7 +5387,7 @@ mod handlers {
 
         if emb_map.is_empty() {
             tracing::info!("no structural embeddings found, skipping structural fusion");
-            return Ok(results.to_vec());
+            return Ok((results.to_vec(), Some("no_structural_embeddings")));
         }
 
         let top_vecs: Vec<&Vec<f32>> = results
@@ -5384,13 +5400,13 @@ mod handlers {
             .collect();
 
         if top_vecs.is_empty() {
-            return Ok(results.to_vec());
+            return Ok((results.to_vec(), Some("no_centroid_sources")));
         }
 
         let expected_dim = top_vecs[0].len();
         if top_vecs.iter().any(|v| v.len() != expected_dim) {
             tracing::info!("mismatched structural embedding dimensions, skipping fusion");
-            return Ok(results.to_vec());
+            return Ok((results.to_vec(), Some("dimension_mismatch")));
         }
 
         let centroid = compute_centroid(&top_vecs);
@@ -5426,7 +5442,7 @@ mod handlers {
             "structural fusion applied"
         );
 
-        Ok(fused)
+        Ok((fused, None))
     }
 
     // ── Embedding handlers ────────────────────────────────────────────
@@ -5711,7 +5727,7 @@ mod handlers {
         let result = query::query(pool, aql, None, None, false, ExecutionTarget::Reader)
             .await
             .map_err(|e| HandlerError::Query {
-                context: "failed to load smell definitions".into(),
+                context: "failed to load smell definitions from collection 'smell_specs'".into(),
                 source: e,
             })?;
 

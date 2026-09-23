@@ -340,25 +340,27 @@ app = FastAPI(
 class PEError(HTTPException):
     """An intentional, public-safe PE-API failure."""
 
-    def __init__(self, status, code, message, param=None):
+    def __init__(self, status, code, message, param=None, **fields):
         super().__init__(status_code=status, detail=message)
         self.code = code
         self.param = param
+        self.fields = fields
 
 
-def error_response(status, message, code=None, param=None, headers=None):
+def error_response(status, message, code=None, param=None, headers=None, fields=None):
     return JSONResponse(status_code=status, headers=headers, content={"error": {
         "message": message,
         "type": "invalid_request_error" if 400 <= status < 500 else "server_error",
         "param": param,
         "code": code,
+        **(fields or {}),
     }})
 
 
 @app.exception_handler(StarletteHTTPException)
 async def http_error_handler(request, exc):
     if isinstance(exc, PEError):
-        return error_response(exc.status_code, exc.detail, exc.code, exc.param, exc.headers)
+        return error_response(exc.status_code, exc.detail, exc.code, exc.param, exc.headers, exc.fields)
     # Framework errors must not reflect arbitrary exception details.
     return error_response(exc.status_code, "Request rejected" if exc.status_code < 500
                           else "Service unavailable", headers=exc.headers)
@@ -495,13 +497,17 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
                 vecs: list = []
                 meta: list = []
                 for i, text in enumerate(texts):
-                    m, spans = state.embedder.embed_late_chunked(
-                        text,
-                        task=task,
-                        chunk_size_tokens=lc.chunk_size_tokens,
-                        overlap_tokens=lc.overlap_tokens,
-                        boundaries=lc.boundaries,
-                    )
+                    try:
+                        m, spans = state.embedder.embed_late_chunked(
+                            text,
+                            task=task,
+                            chunk_size_tokens=lc.chunk_size_tokens,
+                            overlap_tokens=lc.overlap_tokens,
+                            boundaries=lc.boundaries,
+                        )
+                    except InputTooLargeError as exc:
+                        exc.index = i  # The backend sees one input; expose its request index (#164).
+                        raise
                     if len(spans) != len(m):
                         raise RuntimeError(
                             f"input {i}: {len(m)} vectors for {len(spans)} spans"
@@ -528,15 +534,13 @@ async def create_embeddings(req: EmbedRequest) -> EmbedResponse:
     except InputTooLargeError as e:
         raise PEError(400, "PE_INPUT_TOO_LARGE",
                       f"Input {e.index} has {e.n_tokens} tokens; ceiling is {e.max_tokens}",
-                      "input") from e
+                      "input", reported_tokens=e.n_tokens,
+                      ceiling=e.max_tokens, input_index=e.index) from e
     except BackendOutOfMemoryError as e:
         logger.exception("Embedding backend exhausted memory")
         raise PEError(503, "PE_BACKEND_OOM", "Embedding backend exhausted memory") from e
     except ValueError as e:
         logger.exception("Embedding input rejected")
-        # The late-chunk saturation guard predates the typed length exception.
-        if str(e).startswith("PE_INPUT_TOO_LARGE:"):
-            raise PEError(400, "PE_INPUT_TOO_LARGE", "Input exceeds the model context ceiling", "input") from e
         raise PEError(400, "PE_INVALID_INPUT", "Embedding input or chunk parameters are invalid", "input") from e
     except Exception as e:
         logger.exception("Embedding failed")

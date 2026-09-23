@@ -60,11 +60,11 @@ impl Replacement {
                     LET imps = (FOR e IN @@imports FILTER e._from IN ids REMOVE e IN @@imports RETURN 1) RETURN 1";
                 query(&client, aql, json!({"@symbols":CODEBASE.symbols,"@defines":CODEBASE.defines_edges,
                     "@calls":CODEBASE.calls_edges,"@implements":CODEBASE.implements_edges,
-                    "@imports":CODEBASE.imports_edges,"files_name":CODEBASE.files,"key":self.key})).await?;
+                    "@imports":CODEBASE.imports_edges,"files_name":CODEBASE.files,"key":self.key}), true).await?;
             }
             for collection in [CODEBASE.chunks, CODEBASE.embeddings] {
                 query(&client, "FOR d IN @@collection FILTER d.file_key == @key REMOVE d IN @@collection",
-                    json!({"@collection":collection,"key":self.key})).await?;
+                    json!({"@collection":collection,"key":self.key}), false).await?;
             }
             for (collection, docs) in [
                 (CODEBASE.chunks, self.chunks), (CODEBASE.symbols, self.symbols),
@@ -142,11 +142,11 @@ pub(super) async fn store_relationships(
                     "bindVars":{"ids":ids},"batchSize":1,"ttl":30,"memoryLimit":33554432,
                     "options":{"maxRuntime":30,"failOnWarning":true}
                 })).await?;
-                let missing = found["result"].as_array()
+                let missing = Some(hades_core::db::query::completed_rows(&found).map_err(|_| ArangoError::Request(format!("invalid relationship endpoint check response for {collection}")))?)
                     .filter(|rows| rows.len() == 1)
                     .and_then(|rows| rows[0].as_array())
                     .filter(|ids| ids.iter().all(Value::is_string));
-                let missing = missing.filter(|_| found["hasMore"].as_bool() == Some(false))
+                let missing = missing
                     .ok_or_else(|| ArangoError::Request(format!(
                         "invalid relationship endpoint check response for {collection}")))?;
                 if !missing.is_empty() {
@@ -226,15 +226,10 @@ pub(super) async fn remap_inbound(
                 }),
             )
             .await?;
-        if response["hasMore"] == true {
-            return Err(ArangoError::Request(
-                "unexpected remap cursor continuation".into(),
-            ));
-        }
-        let found = response["result"]
-            .as_array()
-            .filter(|rows| rows.len() == 1)
-            .and_then(|rows| rows[0].as_array())
+        let rows = hades_core::db::query::completed_rows(&response)?;
+        let found = (rows.len() == 1)
+            .then(|| rows[0].as_array())
+            .flatten()
             .ok_or_else(|| ArangoError::Request("invalid remap snapshot response".into()))?;
         let mut rewritten = Vec::with_capacity(found.len());
         let mut superseded = Vec::new();
@@ -295,6 +290,7 @@ pub(super) async fn remap_inbound(
                 &client,
                 "FOR k IN @keys REMOVE k IN @@edges",
                 json!({"@edges":edges,"keys":batch}),
+                false,
             )
             .await?;
         }
@@ -306,6 +302,7 @@ pub(super) async fn query(
     client: &ArangoClient,
     aql: &str,
     binds: Value,
+    returns_marker: bool,
 ) -> Result<(), ArangoError> {
     let result = client
         .post(
@@ -314,9 +311,11 @@ pub(super) async fn query(
         "ttl":30,"options":{"maxRuntime":30,"failOnWarning":true}}),
         )
         .await?;
-    if result["hasMore"] == true {
+    let rows = hades_core::db::query::completed_rows(&result)?;
+    // The symbol purge's outer RETURN 1 differs from rowless mutations (#164).
+    if (returns_marker && rows.as_slice() != [json!(1)]) || (!returns_marker && !rows.is_empty()) {
         return Err(ArangoError::Request(
-            "unexpected persistence cursor continuation".into(),
+            "invalid persistence result rows".into(),
         ));
     }
     Ok(())
@@ -324,6 +323,47 @@ pub(super) async fn query(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn remap_snapshot_requires_explicit_complete_array() {
+        use axum::{Json, Router};
+        let valid_rows = json!([[]]);
+        for response in [
+            json!({}),
+            json!({"result":valid_rows}),
+            json!({"hasMore":null,"result":valid_rows}),
+            json!({"hasMore":"false","result":valid_rows}),
+            json!({"hasMore":0,"result":valid_rows}),
+            json!({"hasMore":true,"result":valid_rows}),
+            json!({"hasMore":false,"result":null}),
+            json!({"hasMore":false,"result":{}}),
+            json!({"hasMore":false,"result":[]}),
+            json!({"hasMore":false,"result":valid_rows}),
+        ] {
+            let valid = response == json!({"hasMore":false,"result":valid_rows});
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let served = response.clone();
+            let app = Router::new().fallback(move || {
+                let response = served.clone();
+                async move { Json(response) }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{"name":"fixture", "sockets":{"readonly":socket,"readwrite":socket}}})).unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            assert_eq!(
+                (remap_inbound(pool.writer(), &[("old".into(), "new".into())])
+                    .await
+                    .map(|_| ()))
+                .is_ok(),
+                valid,
+                "{response}"
+            );
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
 
@@ -413,6 +453,47 @@ mod tests {
                     "malformed cursor must abort before writing edges"
                 );
             }
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_query_requires_explicit_completion_and_empty_rows() {
+        use axum::{Json, Router};
+        for response in [
+            json!({}),
+            json!({"result":[]}),
+            json!({"hasMore":null,"result":[]}),
+            json!({"hasMore":"false","result":[]}),
+            json!({"hasMore":0,"result":[]}),
+            json!({"hasMore":true,"result":[]}),
+            json!({"hasMore":false,"result":null}),
+            json!({"hasMore":false,"result":[[]]}),
+            json!({"hasMore":false,"result":[]}),
+        ] {
+            let valid = response == json!({"hasMore":false,"result":[]});
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let app = Router::new().fallback(move || {
+                let response = response.clone();
+                async move { Json(response) }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{"name":"fixture", "sockets":{"readonly":socket,"readwrite":socket}}})).unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            assert_eq!(
+                query(
+                    pool.writer(),
+                    "FOR d IN fixture REMOVE d IN fixture",
+                    json!({}),
+                    false
+                )
+                .await
+                .is_ok(),
+                valid
+            );
             peer.abort();
             let _ = peer.await;
         }
