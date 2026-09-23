@@ -177,6 +177,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Build codebase file rows through one schema for semantic, structural and text
+  analysis: always include matching `path`/`rel_path`, preserving the existing
+  parser-only metrics and raw-file merge behavior (#172).
 - Omit bulk text and vectors from get, recent, traversal, neighbor and shortest-path
   vertex results by default; expose explicit `fields` projection through daemon,
   MCP and CLI without changing operation access tiers, and document all six
