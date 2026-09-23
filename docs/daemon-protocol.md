@@ -773,3 +773,21 @@ request-response socket model.
   `design-agent-memory-and-system-prompt.md`).
 - **`--seed memory`:** A memory ontology seed for agent memory databases,
   following the same `hades_schema` pattern as `--seed nl`.
+
+### Vertex field projection
+
+`db.get`, `db.recent`, `db.list`, `db.graph.traverse`, `db.graph.neighbors`, and
+`db.graph.shortest_path` exclude `full_text`, `embedding`, `text`, and `body`
+from returned vertices unless `params.fields` explicitly names them (#170).
+This bounds the default response by metadata rather than whole document bodies.
+An explicit field list selects only those fields; `[]` selects none. Recent
+results retain their `_collection` annotation. Connecting edges are unchanged.
+All these operations retain their existing Agent access tier.
+
+For example, `{"collection":"documents","key":"paper","fields":["_key","full_text"]}`
+opts a `db.get` request into its text. MCP `db_get`, `graph_traverse`, and
+`graph_neighbors` expose the same optional `fields` list. CLI equivalents include
+`hades db get documents paper --fields _key,full_text` and
+`hades db graph traverse documents/paper --graph research --fields _key,title`.
+`db recent`, graph `neighbors`, and graph `shortest-path` also accept `--fields`.
+Raw AQL remains an explicit query interface; search snippets are not vertex reads.

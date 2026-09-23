@@ -215,6 +215,69 @@ async fn recorded_smells_match_exact_files_across_roots_without_scanning() {
     .await;
 }
 
+#[tokio::test]
+async fn vertex_read_class_projects_bulk_fields_and_explicit_opt_ins() {
+    use hades_core::dispatch::{AccessTier, DaemonCommand};
+    use hades_core::service::{ConnectionPolicy, handle_request};
+    use serde_json::Value;
+    with_temp_db("vertex_projection", Fixtures::Empty, |pool| async move {
+        crud::create_collection(&pool,"documents",Some(2)).await.unwrap();
+        crud::create_collection(&pool,"links",Some(3)).await.unwrap();
+        let documents=vec![
+            json!({"_key":"plain","label":"ordinary vertex","path":"plain"}),
+            json!({"_key":"paper","label":"paper vertex","full_text":"entire paper","body":"paper body"}),
+            json!({"_key":"code","label":"code vertex","text":"fn example() {}","embedding":[1,0]}),
+        ];
+        crud::insert_documents(&pool,"documents",&documents,false).await.unwrap();
+        crud::insert_documents(&pool,"links",&[
+            json!({"_key":"paper","_from":"documents/plain","_to":"documents/paper","label":"edge retained"}),
+            json!({"_key":"code","_from":"documents/plain","_to":"documents/code","label":"edge retained"}),
+        ],false).await.unwrap();
+        pool.writer().post("gharial",&json!({"name":"fixture","edgeDefinitions":[{"collection":"links","from":["documents"],"to":["documents"]}]})).await.unwrap();
+        for fields in [None,Some(json!(["_key","label","full_text","embedding","text","body"])),Some(json!([]))] {
+            let mut cases=vec![
+                ("db.graph.traverse",json!({"start":"documents/plain","graph":"fixture","max_depth":2})),
+                ("db.graph.neighbors",json!({"vertex":"documents/plain","graph":"fixture"})),
+                ("db.recent",json!({})),
+                ("db.list",json!({})),
+            ];
+            for key in ["plain","paper","code"] {
+                cases.push(("db.get",json!({"collection":"documents","key":key})));
+                cases.push(("db.graph.shortest_path",json!({"source":"documents/plain","target":format!("documents/{key}"),"graph":"fixture"})));
+            }
+            for (operation, mut params) in cases {
+                if let Some(fields)=&fields {params["fields"]=fields.clone();}
+                let payload=json!({"command":operation,"params":params});
+                let command:DaemonCommand=serde_json::from_value(payload.clone()).unwrap();
+                assert_eq!(command.access_tier(),AccessTier::Agent);
+                let response=handle_request(&pool,&Default::default(),ConnectionPolicy::agent_only(),&serde_json::to_vec(&payload).unwrap(),std::time::Duration::from_secs(5)).await;
+                assert!(response.success,"{operation}: {response:?}");
+                let data=response.data.unwrap();
+                let vertices:Vec<&Value>=if operation=="db.get" {vec![&data]}
+                else if operation.starts_with("db.graph.") {
+                    data["results"].as_array().unwrap().iter().map(|row| {
+                        if !row["edge"].is_null() {assert_eq!(row["edge"]["label"],"edge retained");}
+                        &row["vertex"]
+                    }).collect()
+                } else {data["documents"].as_array().unwrap().iter().collect()};
+                assert!(!vertices.is_empty(),"{operation}");
+                for vertex in vertices {
+                    if fields.as_ref()==Some(&json!([])) {
+                        assert!(vertex.as_object().unwrap().keys().all(|key|key=="_collection"));
+                        continue;
+                    }
+                    let original=documents.iter().find(|d|d["_key"]==vertex["_key"]).unwrap();
+                    assert_eq!(vertex["label"],original["label"]);
+                    for field in ["full_text","embedding","text","body"] {
+                        if fields.is_none() { assert!(vertex.get(field).is_none(),"{operation}: {vertex}"); }
+                        else { assert_eq!(vertex.get(field),original.get(field),"{operation}: {field}"); }
+                    }
+                }
+            }
+        }
+    }).await;
+}
+
 #[test]
 fn weavertools_edge_endpoints_follow_document_format() {
     // Document Format v0.24 sections 3–4 at WeaverTools 13dd7db (#175).

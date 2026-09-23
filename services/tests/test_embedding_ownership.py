@@ -292,7 +292,7 @@ def test_backend_error_codes_and_no_detail_leak(server, late, failure_kind, stat
         sentinel = 'PRIVATE_BACKEND_DETAIL_DO_NOT_REFLECT'
         failures = {
             'large': server.InputTooLargeError(2, 2049, 2048),
-            'late_large': ValueError('PE_INPUT_TOO_LARGE: ' + sentinel),
+            'late_large': server.InputTooLargeError(2, 4096, 2048),
             'oom': server.BackendOutOfMemoryError(sentinel),
             'value': ValueError(sentinel),
             'runtime': RuntimeError(sentinel),
@@ -303,12 +303,17 @@ def test_backend_error_codes_and_no_detail_leak(server, late, failure_kind, stat
                 response = await client.post('/v1/embeddings', json=body(late))
                 assert response.status_code == status
                 error = response.json()['error']
-                assert set(error) == {'message', 'type', 'param', 'code'}
+                extra = {'reported_tokens', 'ceiling', 'input_index'} if code == 'PE_INPUT_TOO_LARGE' else set()
+                assert set(error) == {'message', 'type', 'param', 'code'} | extra
+                if extra:
+                    assert error['input_index'] == (0 if late else 2)
+                    assert error['ceiling'] == 2048
+                    assert error['reported_tokens'] == (2049 if failure_kind == 'large' else 4096)
                 assert error['code'] == code
                 assert error['type'] == ('invalid_request_error' if status == 400 else 'server_error')
                 assert sentinel not in response.text
                 if failure_kind == 'large':
-                    assert all(str(n) in error['message'] for n in [2, 2049, 2048])
+                    assert all(str(n) in error['message'] for n in [0 if late else 2, 2049, 2048])
                 assert state.active_requests == 0
                 assert state._idle.is_set()
         finally:

@@ -593,12 +593,8 @@ class JinaV4Embedder:
                 if n_tokens >= MAX_TOKENS:
                     over = [b for b in boundaries if b[1] > covered_chars]
                     if over:
-                        raise ValueError(
-                            f"input filled the {MAX_TOKENS}-token window and was "
-                            f"truncated at character {covered_chars} of {len(text)}, "
-                            f"so {len(over)} of {len(boundaries)} boundaries extend "
-                            f"past what the model saw. First: {over[0]}. Send smaller "
-                            f"windows."
+                        raise InputTooLargeError(
+                            0, len(self.tokenizer(prefixed, add_special_tokens=True)["input_ids"]), MAX_TOKENS
                         )
                 # Map each character range to the tokens covering it. A token
                 # counts as inside when it overlaps the range at all, so a
@@ -636,11 +632,8 @@ class JinaV4Embedder:
                 # response is HTTP 200 with fewer chunks than the text warrants:
                 # the caller cannot tell a short document from a truncated one.
                 if n_tokens >= MAX_TOKENS:
-                    raise ValueError(
-                        f"PE_INPUT_TOO_LARGE: input filled the {MAX_TOKENS}-token "
-                        f"window and was truncated at character {covered_chars} of "
-                        f"{len(text)}, so uniform windows would cover only the part "
-                        f"the model saw. Send a smaller input."
+                    raise InputTooLargeError(
+                        0, len(self.tokenizer(prefixed, add_special_tokens=True)["input_ids"]), MAX_TOKENS
                     )
                 step = chunk_size_tokens - overlap_tokens
                 start = first_doc_token

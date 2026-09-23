@@ -141,3 +141,11 @@ retains the existing `crates/` walk; this is not a general workspace-layout rewr
 `declared-in` remains the adapter's provenance bridge to ingested documents. This
 updates the reference schema, not existing databases or graph definitions. Applying
 it and rebuilding any affected production graph require separate authorization.
+### Declared-node locations
+
+Every declared node row carries its one-based `node:` stanza `line` and the nearest
+preceding Markdown heading as `section` (#174). ATX and Setext headings are read
+outside fenced code; a node before any heading has a null section. These locations
+are recomputed on every adapter run, so moving a block updates its source line.
+Source-code nodes are not duplicated by the adapter; their file identity remains
+in the code layer. Existing adapter rows are updated only when the adapter runs.
