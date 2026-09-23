@@ -3299,7 +3299,7 @@ async fn store_lsp_extractions(
             super::codebase_persist::query(&client,
                 "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
                 json!({"fkeys":batch.iter().map(|g| &g.key).collect::<Vec<_>>(),
-                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files}), false).await?;
             for group in &batch {
                 revisions.get_mut(&group.path).unwrap().revision = super::codebase_persist::revision(&client, &group.key).await?
                     .ok_or_else(|| hades_core::db::ArangoError::Request("enrichment file disappeared".into()))?;
@@ -3342,25 +3342,7 @@ fn build_python_symbol_index_scoped(
     file_symbols: &HashMap<String, Vec<Symbol>>,
     namespace: &str,
 ) -> HashMap<String, Vec<(String, String)>> {
-    let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for (rel_path, symbols) in file_symbols {
-        let fkey = keys::scoped_file_key(namespace, rel_path);
-        for sym in symbols {
-            // Match the vertex writer, excluding import and impl scaffolding.
-            if !sym.kind.is_primitive() {
-                continue;
-            }
-            // Index is keyed by the bare name (call sites use bare names), but
-            // the value must be the qualified-name-derived key so edges target
-            // the actual stored vertex (#113).
-            let skey = keys::symbol_key(&fkey, &sym.qualified_name(), sym.start_line);
-            index
-                .entry(sym.name.clone())
-                .or_default()
-                .push((rel_path.clone(), skey));
-        }
-    }
-    index
+    hades_core::code::python_calls::build_bare_index_scoped(file_symbols, namespace)
 }
 
 /// Build a mapping from Python module name → relative file path.

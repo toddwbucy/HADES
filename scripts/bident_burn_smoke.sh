@@ -103,9 +103,8 @@ curl -sf "$EMBEDDER_URL/v1/models" >/dev/null \
 echo "${G}✓${N} embedder reachable"
 
 # ── 1. Database + collections (rerunnable) ──────────────────────────────
-if ! h db collections >/dev/null; then
-    step "create database $DB" h db create-database "$DB"
-fi
+ensure_database() { h db collections >/dev/null || h db create-database "$DB"; }
+step "database available $DB" ensure_database
 for col in documents chunks embeddings persephone_tasks persephone_logs persephone_handoffs; do
     h db count "$col" >/dev/null || h db create "$col" >/dev/null
         # `--force` and not `--yes`: clap rejects `--yes`, and the bare form
@@ -118,7 +117,7 @@ step "collections provisioned" h db collections
 # Codebase collections are auto-created by ingest; truncate if present from
 # a prior run so counts start clean.
 for col in codebase_files codebase_chunks codebase_embeddings codebase_symbols codebase_calls_edges codebase_implements_edges codebase_imports_edges codebase_defines_edges; do
-    h db count "$col" >/dev/null 2>&1 && { h db truncate "$col" --yes >/dev/null 2>&1 || h db truncate "$col" >/dev/null 2>&1; }
+    h db count "$col" >/dev/null 2>&1 && { h db truncate "$col" --force >/dev/null 2>&1; }
 done
 
 # ── 2. Task lifecycle ───────────────────────────────────────────────────

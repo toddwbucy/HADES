@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Include structured token count, ceiling and input index in embedding size
+  refusals, with client precedence over legacy prose (#164).
+
 - Pre-chunk document and code inputs with backend-sized, configurable overlapping
   windows, adapt refused inputs using reported token counts, and persist window
   budgets and parent attribution with embeddings.
@@ -170,6 +173,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
+
+- Build resolver candidate ordering once, share Python index construction, and
+  require explicit completed cursor acknowledgments across persistence (#164).
+- Standardize CLI format selection: **breaking**, `-f` now means format on
+  `ingest` and `codebase ingest`; use long-only `--force` for reprocessing.
+  Correct missing-database stats, smoke checks, clean LSP EOF logging, and
+  expose structural-fusion disposition and missing smell collection context (#164).
 
 - Reconcile epic #12 acceptance evidence after worker, document and analyzer
   fixes, and retain sanitized deployment metadata with explicit provenance limits.
