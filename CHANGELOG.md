@@ -36,6 +36,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Align WeaverTools system identifiers/tags, Rust/CUDA/Python header census,
+  and declared relation endpoint collections with Document Format v0.24 (#175).
+
 - Record the fresh scratch rebuild and incremental TOML scope alignment,
   verified live counts except for the documented rust-analyzer calls variance,
   verified edge integrity, assertion-key compatibility warning,
