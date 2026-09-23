@@ -226,15 +226,10 @@ pub(super) async fn remap_inbound(
                 }),
             )
             .await?;
-        if response["hasMore"] == true {
-            return Err(ArangoError::Request(
-                "unexpected remap cursor continuation".into(),
-            ));
-        }
-        let found = response["result"]
-            .as_array()
-            .filter(|rows| rows.len() == 1)
-            .and_then(|rows| rows[0].as_array())
+        let rows = hades_core::db::query::completed_rows(&response)?;
+        let found = (rows.len() == 1)
+            .then(|| rows[0].as_array())
+            .flatten()
             .ok_or_else(|| ArangoError::Request("invalid remap snapshot response".into()))?;
         let mut rewritten = Vec::with_capacity(found.len());
         let mut superseded = Vec::new();
@@ -328,6 +323,47 @@ pub(super) async fn query(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn remap_snapshot_requires_explicit_complete_array() {
+        use axum::{Json, Router};
+        let valid_rows = json!([[]]);
+        for response in [
+            json!({}),
+            json!({"result":valid_rows}),
+            json!({"hasMore":null,"result":valid_rows}),
+            json!({"hasMore":"false","result":valid_rows}),
+            json!({"hasMore":0,"result":valid_rows}),
+            json!({"hasMore":true,"result":valid_rows}),
+            json!({"hasMore":false,"result":null}),
+            json!({"hasMore":false,"result":{}}),
+            json!({"hasMore":false,"result":[]}),
+            json!({"hasMore":false,"result":valid_rows}),
+        ] {
+            let valid = response == json!({"hasMore":false,"result":valid_rows});
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let served = response.clone();
+            let app = Router::new().fallback(move || {
+                let response = served.clone();
+                async move { Json(response) }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{"name":"fixture", "sockets":{"readonly":socket,"readwrite":socket}}})).unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            assert_eq!(
+                (remap_inbound(pool.writer(), &[("old".into(), "new".into())])
+                    .await
+                    .map(|_| ()))
+                .is_ok(),
+                valid,
+                "{response}"
+            );
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
     use super::*;
     use hades_core::test_support::{Fixtures, with_temp_db};
 

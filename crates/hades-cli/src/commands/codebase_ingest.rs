@@ -1900,13 +1900,9 @@ async fn collect_preserved_targets(
         "batchSize":1,"ttl":30,"memoryLimit":33554432,
         "options":{"maxRuntime":30,"failOnWarning":true}
     })).await?;
-    let rows = response["result"]
-        .as_array()
+    let rows = hades_core::db::query::completed_rows(&response)
         .context("invalid preserved target snapshot")?;
-    anyhow::ensure!(
-        response["hasMore"] != true && rows.len() == 1,
-        "incomplete preserved target snapshot"
-    );
+    anyhow::ensure!(rows.len() == 1, "incomplete preserved target snapshot");
     let row = &rows[0];
     let revision = row["file"]["_rev"]
         .as_str()
@@ -3593,6 +3589,54 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn preserved_snapshot_requires_explicit_complete_array() {
+        use axum::{Json, Router};
+        let valid_rows =
+            json!([{ "file": {"_rev":"revision", "language":"python"}, "symbols":[] }]);
+        for response in [
+            json!({}),
+            json!({"result":valid_rows}),
+            json!({"hasMore":null,"result":valid_rows}),
+            json!({"hasMore":"false","result":valid_rows}),
+            json!({"hasMore":0,"result":valid_rows}),
+            json!({"hasMore":true,"result":valid_rows}),
+            json!({"hasMore":false,"result":null}),
+            json!({"hasMore":false,"result":{}}),
+            json!({"hasMore":false,"result":[]}),
+            json!({"hasMore":false,"result":valid_rows}),
+        ] {
+            let valid = response == json!({"hasMore":false,"result":valid_rows});
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let served = response.clone();
+            let app = Router::new().fallback(move || {
+                let response = served.clone();
+                async move { Json(response) }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{"name":"fixture", "sockets":{"readonly":socket,"readwrite":socket}}})).unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            assert_eq!(
+                (collect_preserved_targets(
+                    &pool,
+                    "file",
+                    Some("revision"),
+                    "file.py",
+                    None,
+                    &mut ImportContext::default()
+                )
+                .await)
+                    .is_ok(),
+                valid,
+                "{response}"
+            );
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
     include!("codebase_embedding_retry_tests.rs");
     include!("codebase_enrichment_store_tests.rs");
     use super::*;

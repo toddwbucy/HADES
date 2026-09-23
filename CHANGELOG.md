@@ -39,6 +39,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Validate inbound-remap and preserved-target cursor snapshots with the common
+  completion contract, and warn when clean LSP EOF abandons pending requests (#164).
+
 - Record the fresh scratch rebuild and incremental TOML scope alignment,
   verified live counts except for the documented rust-analyzer calls variance,
   verified edge integrity, assertion-key compatibility warning,

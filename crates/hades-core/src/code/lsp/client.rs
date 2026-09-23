@@ -99,12 +99,14 @@ struct Transport {
 }
 impl Transport {
     fn close(&self, reason: &str) {
-        if reason == "peer closed" {
-            tracing::debug!(reason, "closing LSP transport");
-        } else {
-            tracing::warn!(reason, "closing LSP transport");
-        }
         let mut pending = self.pending.lock().unwrap();
+        let pending_count = pending.senders.len();
+        // Between-frame EOF is normal only after all requests completed (#164).
+        if reason == "peer closed" && pending_count == 0 {
+            tracing::debug!(reason, pending_count, "closing LSP transport");
+        } else {
+            tracing::warn!(reason, pending_count, "closing LSP transport");
+        }
         pending.closed = true;
         for (_, sender) in pending.senders.drain() {
             let _ = sender.send(Err(LspError::Process(reason.into())));
@@ -519,7 +521,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn peer_response_then_eof_is_debug_but_truncated_header_warns() {
+    async fn peer_eof_warns_for_pending_requests_or_truncated_headers() {
         use tracing::instrument::WithSubscriber;
         #[derive(Clone)]
         struct Capture(Arc<SyncMutex<String>>);
@@ -548,10 +550,10 @@ mod tests {
                 impl tracing::field::Visit for Visitor {
                     fn record_debug(
                         &mut self,
-                        _: &tracing::field::Field,
+                        field: &tracing::field::Field,
                         value: &dyn std::fmt::Debug,
                     ) {
-                        self.0.push_str(&format!("{value:?}"));
+                        self.0.push_str(&format!("{}={value:?};", field.name()));
                     }
                 }
                 let mut visitor = Visitor(event.metadata().level().to_string());
@@ -559,13 +561,17 @@ mod tests {
                 self.0.lock().unwrap().push_str(&visitor.0);
             }
         }
-        for truncated in [false, true] {
+        for shape in ["response", "truncated", "pending"] {
             let capture = Capture(Arc::new(SyncMutex::new(String::new())));
             let subscriber = capture.clone();
             let mut child = tokio::process::Command::new("/usr/bin/python3").args(["-c",
-                if truncated { "import sys; sys.stdout.write('Content-Length:')" }
+                if shape == "truncated" { "import sys; sys.stdout.write('Content-Length:')" }
+                else if shape == "pending" { "import sys; n=int(sys.stdin.buffer.readline().split(b':')[1]); sys.stdin.buffer.readline(); sys.stdin.buffer.read(n)" }
                 else { "import sys,json; b=json.dumps({'jsonrpc':'2.0','id':1,'result':42}); sys.stdout.write('Content-Length: '+str(len(b))+'\\r\\n\\r\\n'+b)" }
             ]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+            if shape == "pending" {
+                child.stdin.as_mut().unwrap().write_all(b"Content-Length: 43\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"fixture\"}").await.unwrap();
+            }
             let transport = Arc::new(Transport::default());
             let (tx, rx) = tokio::sync::oneshot::channel();
             transport.pending.lock().unwrap().senders.insert(1, tx);
@@ -580,7 +586,15 @@ mod tests {
             .await;
             child.wait().await.unwrap();
             let logs = capture.0.lock().unwrap().clone();
-            if truncated {
+            if shape == "pending" {
+                assert!(rx.await.unwrap().is_err());
+                assert!(
+                    logs.contains("WARN")
+                        && logs.contains("peer closed")
+                        && logs.contains("pending_count=1"),
+                    "{logs}"
+                );
+            } else if shape == "truncated" {
                 assert!(rx.await.unwrap().is_err());
                 assert!(
                     logs.contains("WARN") && logs.contains("incomplete"),
