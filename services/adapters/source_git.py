@@ -10,6 +10,8 @@ def resolve(root: Path):
     env = {k: v for k, v in os.environ.items() if k not in
            {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}}
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    # The non-repository diagnostic is parsed below (#171).
+    env["LC_ALL"] = "C"
     def git(*args):
         return subprocess.run(["git", "-C", str(directory), *args],
                               env=env, capture_output=True, check=False)

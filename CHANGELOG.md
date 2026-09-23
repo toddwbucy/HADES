@@ -21,7 +21,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Record observed source Git commit and dirty state on ingested file/document rows,
   ingest envelopes and job records, and the WeaverTools adapter report; non-Git
-  inputs explicitly carry null provenance (#171).
+  inputs explicitly carry null provenance. Missing Git is named explicitly and
+  Git diagnostics use the C locale consistently in Rust and Python (#171).
 
 - Pre-chunk document and code inputs with backend-sized, configurable overlapping
   windows, adapt refused inputs using reported token counts, and persist window

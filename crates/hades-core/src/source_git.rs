@@ -1,5 +1,5 @@
 //! Git provenance observations for ingestion (#171), not an atomic tree snapshot.
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::{
     path::Path,
@@ -32,8 +32,16 @@ pub fn resolve(root: &Path) -> Result<Option<SourceGit>> {
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
             .env("GIT_OPTIONAL_LOCKS", "0")
+            // The non-repository diagnostic is parsed below (#171).
+            .env("LC_ALL", "C")
             .output()
-            .context("cannot inspect source Git state")
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    anyhow!("git executable not found on PATH")
+                } else {
+                    anyhow!(error).context("cannot run git to inspect source state")
+                }
+            })
     };
     let inside = git(&["rev-parse", "--is-inside-work-tree"])?;
     if !inside.status.success() {
@@ -75,6 +83,34 @@ pub fn resolve(root: &Path) -> Result<Option<SourceGit>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_git_observation_forces_c_locale() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD: &str = "HADES_GIT_LOCALE_TEST_CHILD";
+        if let Some(root) = std::env::var_os(CHILD) {
+            assert_eq!(resolve(Path::new(&root)).unwrap(), None);
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let git = root.path().join("git");
+        std::fs::write(&git, "#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo 'fatal: not a git repository' >&2; else echo 'fatal: kein Git-Repository' >&2; fi\nexit 128\n").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "source_git::tests::non_git_observation_forces_c_locale",
+                "--nocapture",
+            ])
+            .env(CHILD, root.path())
+            .env("PATH", root.path())
+            .env("LANG", "de_DE.UTF-8")
+            .env("LC_ALL", "de_DE.UTF-8")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
     #[test]
     fn observes_committed_dirty_and_non_git_inputs() {
         let tree = tempfile::tempdir().unwrap();

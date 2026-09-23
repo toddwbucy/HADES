@@ -426,6 +426,46 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn missing_git_is_named_at_job_admission() {
+        const CHILD: &str = "HADES_MISSING_GIT_TEST_CHILD";
+        let root = tempfile::tempdir().unwrap();
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ingest_jobs::records::tests::missing_git_is_named_at_job_admission",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("PATH", root.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            return;
+        }
+        let mut mock = Mock::new(vec![]).await;
+        let error = start_with(
+            &mock.pool,
+            &HadesConfig::with_database("fixture"),
+            root.path().to_str().unwrap(),
+            false,
+            tokio::process::Command::new("/bin/false"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("git executable not found on PATH"),
+            "{error}"
+        );
+        assert!(
+            mock.events.try_recv().is_err(),
+            "missing git must fail before database admission"
+        );
+    }
+
     fn ok() -> Reply {
         Reply::page(json!({}))
     }

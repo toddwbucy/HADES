@@ -1538,3 +1538,26 @@ async fn non_ingest_command_does_not_validate_the_embedding_ceiling() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn missing_git_is_named_by_both_cli_ingest_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::write(input.join("source.py"), "def fixture():\n    return 1\n").unwrap();
+    for prefix in [vec!["ingest"], vec!["codebase", "ingest"]] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_hades"))
+            .args(["--db", "fixture"])
+            .args(prefix)
+            .arg(&input)
+            .env("PATH", root.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("git executable not found on PATH"),
+            "{stderr}"
+        );
+    }
+}

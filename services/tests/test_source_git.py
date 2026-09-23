@@ -44,3 +44,14 @@ def test_report_records_non_git_clean_and_dirty_tree(tmp_path, monkeypatch):
     (tmp_path / 'untracked').write_text('dirty')
     assert w.main() == 0
     assert reports[-1]['source_git'] == dict(commit=commit, dirty=True)
+
+
+def test_non_git_observation_forces_c_locale(tmp_path, monkeypatch):
+    from source_git import resolve
+    git = tmp_path / 'git'
+    git.write_text("#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo 'fatal: not a git repository' >&2; else echo 'fatal: kein Git-Repository' >&2; fi\nexit 128\n")
+    git.chmod(0o700)
+    monkeypatch.setenv('PATH', str(tmp_path))
+    monkeypatch.setenv('LANG', 'de_DE.UTF-8')
+    monkeypatch.setenv('LC_ALL', 'de_DE.UTF-8')
+    assert resolve(tmp_path) is None
