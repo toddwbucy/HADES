@@ -117,3 +117,12 @@ snapshot replacement. Rows absent from a later extraction are retained; the repo
 explicitly sets stale_retirement_performed to false and describes its coverage as
 present extracted rows only. Successful imports do not certify removal of stale
 declarations. In-place retirement/migration requires a separate reviewed procedure.
+
+### Declared-node locations
+
+Every declared node row carries its one-based `node:` stanza `line` and the nearest
+preceding Markdown heading as `section` (#174). ATX and Setext headings are read
+outside fenced code; a node before any heading has a null section. These locations
+are recomputed on every adapter run, so moving a block updates its source line.
+Source-code nodes are not duplicated by the adapter; their file identity remains
+in the code layer. Existing adapter rows are updated only when the adapter runs.

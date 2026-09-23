@@ -36,6 +36,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve each declared WeaverTools node’s source stanza line and enclosing
+  Markdown heading across every adapter node collection (#174).
+
 - Record the fresh scratch rebuild and incremental TOML scope alignment,
   verified live counts except for the documented rust-analyzer calls variance,
   verified edge integrity, assertion-key compatibility warning,
