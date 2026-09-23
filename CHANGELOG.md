@@ -39,6 +39,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve each declared WeaverTools node’s source stanza line and enclosing
+  Markdown heading across every adapter node collection (#174).
 - Validate inbound-remap and preserved-target cursor snapshots with the common
   completion contract, and warn when clean LSP EOF abandons pending requests (#164).
 

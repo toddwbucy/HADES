@@ -343,7 +343,7 @@ def _main() -> int:
             continue
         by_collection[target].append({
             "_key": key_for(node.ident), "ident": node.ident, "kind": node.kind,
-            "path": node.path, "line": node.line, "title": node.title,
+            "path": node.path, "line": node.line, "section": node.section, "title": node.title,
             "body": node.body, "tag": node.tag, "lang": node.lang,
             "basis": "declared", "adapter_identity_version": IDENTITY_VERSION,
         })

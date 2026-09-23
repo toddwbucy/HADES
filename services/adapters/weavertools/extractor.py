@@ -26,6 +26,7 @@ rewrite and a bare rule does not.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from pathlib import Path
 
 from .records import DECLARED, Edge, Extraction, Node
@@ -111,6 +112,37 @@ PRUNE_DIRS = {".git", "archive", "target", "node_modules"}
 RECORD_LINE = re.compile(r"^[a-z][a-z-]*: ")
 
 
+
+def _headings(text: str):
+    """Markdown headings outside fenced code, with source offsets (#174)."""
+    headings = []
+    fence = None
+    previous = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", stripped):
+                fence = None
+            previous = None
+        elif marker:
+            fence = marker.group(1)
+            previous = None
+        else:
+            atx = re.match(r"^ {0,3}#{1,6}(?:[ \t]+(.*)|$)", stripped)
+            if atx:
+                title = re.sub(r"[ \t]+#+[ \t]*$", "", atx.group(1) or "").strip()
+                headings.append((offset, title))
+                previous = None
+            elif previous and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", stripped):
+                headings.append(previous)
+                previous = None
+            else:
+                previous = (offset, stripped.strip()) if stripped.strip() and not stripped.startswith(("    ", "\t")) else None
+        offset += len(line)
+    return headings
+
 def _record_head(stanza: str) -> str:
     lines = []
     for line in stanza.splitlines():
@@ -182,11 +214,16 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
             # module docstring already makes for source files: a node that
             # duplicates one the ingest created is a join that proves nothing.
 
-            for block in GRAPH.findall(text):
+            headings = _headings(text)
+            heading_offsets = [offset for offset, _ in headings]
+            line_starts = [0] + [match.end() for match in re.finditer("\n", text)]
+            for block_match in GRAPH.finditer(text):
+                block = block_match.group(1)
                 # Either keyword starts a new record: mixed adjacent records
                 # must not contribute metadata or body text to their neighbor.
-                stanzas = re.split(r"(?=^(?:node|edge): )", block, flags=re.M)
-                for stanza in stanzas:
+                starts = [match.start() for match in re.finditer(r"^(?:node|edge): ", block, re.M)]
+                stanzas = [(start, block[start:end]) for start, end in zip(starts, starts[1:] + [len(block)])]
+                for stanza_offset, stanza in stanzas:
                     record = _record_head(stanza)
                     line = NODE_LINE.search(record)
                     if not line:
@@ -207,15 +244,19 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
                         )
                     seen[name] = rel
 
+                    source_offset = block_match.start(1) + stanza_offset + line.start()
+                    heading_index = bisect_right(heading_offsets, source_offset) - 1
                     out.nodes.append(
-                        Node(ident=name, kind=kind, path=rel, tag=tag, body=stanza.strip())
+                        Node(ident=name, kind=kind, path=rel, tag=tag, body=stanza.strip(),
+                             line=bisect_right(line_starts, source_offset),
+                             section=headings[heading_index][1] if heading_index >= 0 else None)
                     )
                     out.edges.append(
                         Edge(src=name, dst=rel, relation="declared-in", basis=DECLARED)
                     )
 
                 # Edge records within the same block.
-                for stanza in stanzas:
+                for _, stanza in stanzas:
                     record = _record_head(stanza)
                     rel_m = EDGE_REL.search(record)
                     src_m = EDGE_FROM.search(record)

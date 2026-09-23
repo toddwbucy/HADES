@@ -39,6 +39,7 @@ class Node:
     body: str | None = None
     tag: str | None = None
     lang: str | None = None
+    section: str | None = None
 
 
 @dataclass(frozen=True)
