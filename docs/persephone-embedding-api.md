@@ -255,6 +255,16 @@ PE-API-specific error codes:
 | `PE_MODEL_NOT_LOADED` | 503 | Model is unloaded (e.g., idle-timeout); retry after warm-up |
 | `PE_BACKEND_OOM` | 503 | GPU OOM on this batch; retry with smaller batch or wait |
 
+### Structured size refusals
+
+HADES emits `error.reported_tokens`, `error.ceiling`, and `error.input_index` on
+all `PE_INPUT_TOO_LARGE` responses (#164), alongside the existing error envelope.
+Counts use the backend tokenizer, including special tokens (and the task prefix
+for late-chunk saturation); `input_index` is the zero-based request input index.
+Clients prefer the structured count and retain sentence parsing for older servers.
+These additive fields do not change HTTP status 400 or the refusal code.
+
+
 ## Cohort identity (sketched, deferred to v1.1)
 
 A `cohort` field on the response is reserved for v1.1+. Its purpose is to enable forensic and cross-corpus queries to verify that two vector sets are geometrically comparable before running similarity operations.

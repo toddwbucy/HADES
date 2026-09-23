@@ -99,8 +99,14 @@ struct Transport {
 }
 impl Transport {
     fn close(&self, reason: &str) {
-        tracing::warn!(reason, "closing LSP transport");
         let mut pending = self.pending.lock().unwrap();
+        let pending_count = pending.senders.len();
+        // Between-frame EOF is normal only after all requests completed (#164).
+        if reason == "peer closed" && pending_count == 0 {
+            tracing::debug!(reason, pending_count, "closing LSP transport");
+        } else {
+            tracing::warn!(reason, pending_count, "closing LSP transport");
+        }
         pending.closed = true;
         for (_, sender) in pending.senders.drain() {
             let _ = sender.send(Err(LspError::Process(reason.into())));
@@ -391,7 +397,11 @@ async fn reader_loop(
     loop {
         // Read headers.
         let content_length = match read_headers(&mut reader).await {
-            Ok(len) => len,
+            Ok(Some(len)) => len,
+            Ok(None) => {
+                transport.close("peer closed");
+                break;
+            }
             Err(error) => {
                 transport.close(&error.to_string());
                 break;
@@ -451,7 +461,9 @@ async fn reader_loop(
 }
 
 /// Read LSP headers from the stream, return Content-Length.
-async fn read_headers<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<usize, LspError> {
+async fn read_headers<R: AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+) -> Result<Option<usize>, LspError> {
     let mut content_length = None;
     let mut used = 0;
     let mut line = Vec::new();
@@ -465,6 +477,9 @@ async fn read_headers<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<usiz
             .take(remaining as u64)
             .read_until(b'\n', &mut line)
             .await?;
+        if n == 0 && used == 0 {
+            return Ok(None);
+        }
         used += n;
         if n == 0 || !line.ends_with(b"\n") {
             return Err(LspError::Process(
@@ -476,6 +491,7 @@ async fn read_headers<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<usiz
             .trim();
         if text.is_empty() {
             return content_length
+                .map(Some)
                 .ok_or_else(|| LspError::Process("missing LSP Content-Length".into()));
         }
         let (name, value) = text
@@ -504,6 +520,96 @@ async fn read_headers<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<usiz
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn peer_eof_warns_for_pending_requests_or_truncated_headers() {
+        use tracing::instrument::WithSubscriber;
+        #[derive(Clone)]
+        struct Capture(Arc<SyncMutex<String>>);
+        impl tracing::Subscriber for Capture {
+            fn register_callsite(
+                &self,
+                _: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::always()
+            }
+            fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+                Some(tracing::metadata::LevelFilter::TRACE)
+            }
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct Visitor(String);
+                impl tracing::field::Visit for Visitor {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.push_str(&format!("{}={value:?};", field.name()));
+                    }
+                }
+                let mut visitor = Visitor(event.metadata().level().to_string());
+                event.record(&mut visitor);
+                self.0.lock().unwrap().push_str(&visitor.0);
+            }
+        }
+        for shape in ["response", "truncated", "pending"] {
+            let capture = Capture(Arc::new(SyncMutex::new(String::new())));
+            let subscriber = capture.clone();
+            let mut child = tokio::process::Command::new("/usr/bin/python3").args(["-c",
+                if shape == "truncated" { "import sys; sys.stdout.write('Content-Length:')" }
+                else if shape == "pending" { "import sys; n=int(sys.stdin.buffer.readline().split(b':')[1]); sys.stdin.buffer.readline(); sys.stdin.buffer.read(n)" }
+                else { "import sys,json; b=json.dumps({'jsonrpc':'2.0','id':1,'result':42}); sys.stdout.write('Content-Length: '+str(len(b))+'\\r\\n\\r\\n'+b)" }
+            ]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+            if shape == "pending" {
+                child.stdin.as_mut().unwrap().write_all(b"Content-Length: 43\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"fixture\"}").await.unwrap();
+            }
+            let transport = Arc::new(Transport::default());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            transport.pending.lock().unwrap().senders.insert(1, tx);
+            reader_loop(
+                child.stdout.take().unwrap(),
+                transport,
+                Arc::new(Mutex::new(Notifications::default())),
+                Arc::new(Notify::new()),
+                Arc::new(Mutex::new(child.stdin.take().unwrap())),
+            )
+            .with_subscriber(subscriber)
+            .await;
+            child.wait().await.unwrap();
+            let logs = capture.0.lock().unwrap().clone();
+            if shape == "pending" {
+                assert!(rx.await.unwrap().is_err());
+                assert!(
+                    logs.contains("WARN")
+                        && logs.contains("peer closed")
+                        && logs.contains("pending_count=1"),
+                    "{logs}"
+                );
+            } else if shape == "truncated" {
+                assert!(rx.await.unwrap().is_err());
+                assert!(
+                    logs.contains("WARN") && logs.contains("incomplete"),
+                    "{logs}"
+                );
+            } else {
+                assert_eq!(rx.await.unwrap().unwrap(), 42);
+                assert!(
+                    logs.contains("peer closed") && !logs.contains("WARN"),
+                    "{logs}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_read_headers_parsing() {
         // Verify the header parser in isolation using a mock stream.
@@ -516,7 +622,7 @@ mod tests {
             let mut reader = BufReader::new(&header[..]);
             read_headers(&mut reader).await
         });
-        assert_eq!(result.unwrap(), 42);
+        assert_eq!(result.unwrap(), Some(42));
     }
 
     #[test]
@@ -530,7 +636,7 @@ mod tests {
             let mut reader = BufReader::new(&header[..]);
             read_headers(&mut reader).await
         });
-        assert!(result.is_err());
+        assert_eq!(result.unwrap(), None);
     }
 
     #[tokio::test]
@@ -637,7 +743,7 @@ mod tests {
         exact.extend(b"\r\n\r\n");
         assert_eq!(
             read_headers(&mut BufReader::new(&exact[..])).await.unwrap(),
-            MAX_FRAME_BYTES
+            Some(MAX_FRAME_BYTES)
         );
         exact.insert(prefix.len(), b'x');
         assert!(read_headers(&mut BufReader::new(&exact[..])).await.is_err());

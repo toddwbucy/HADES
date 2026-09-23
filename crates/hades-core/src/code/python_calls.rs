@@ -46,6 +46,22 @@ pub fn build_qualified_index_scoped(
     file_symbols: &HashMap<String, Vec<Symbol>>,
     namespace: &str,
 ) -> HashMap<String, Vec<(String, String)>> {
+    build_index(file_symbols, namespace, qualified_name)
+}
+
+/// Bare lookup names retain qualified vertex keys and namespace isolation (#164).
+pub fn build_bare_index_scoped(
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    namespace: &str,
+) -> HashMap<String, Vec<(String, String)>> {
+    build_index(file_symbols, namespace, |symbol| symbol.name.clone())
+}
+
+fn build_index(
+    file_symbols: &HashMap<String, Vec<Symbol>>,
+    namespace: &str,
+    lookup_name: fn(&Symbol) -> String,
+) -> HashMap<String, Vec<(String, String)>> {
     let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for (rel_path, symbols) in file_symbols {
@@ -59,10 +75,11 @@ pub fn build_qualified_index_scoped(
             // `_key`; the index is *keyed* by qname for qualified-exact lookup.
             let skey = keys::symbol_key(&fkey, &qname, sym.start_line);
             let entry = (rel_path.clone(), skey);
-            index.entry(qname).or_default().push(entry);
+            index.entry(lookup_name(sym)).or_default().push(entry);
         }
     }
 
+    index.values_mut().for_each(|v| v.sort_unstable());
     index
 }
 
@@ -219,17 +236,11 @@ fn resolve_call_target<'a>(
 /// Prefers same-file matches over cross-file. Falls back to the first entry
 /// when no same-file match exists.
 fn pick_best<'a>(entries: &'a [(String, String)], prefer_file: &str) -> Option<(&'a str, &'a str)> {
-    if entries.is_empty() {
-        return None;
-    }
-    let mut candidates: Vec<_> = entries.iter().collect();
-    candidates.sort_unstable(); // Relative path, then symbol key.
-    for (path, skey) in &candidates {
-        if path == prefer_file {
-            return Some((path.as_str(), skey.as_str()));
-        }
-    }
-    candidates.first().map(|(p, k)| (p.as_str(), k.as_str()))
+    // Public callers can supply unsorted indexes; retain the same tie rule (#164).
+    entries
+        .iter()
+        .min_by_key(|(path, key)| (path != prefer_file, path, key))
+        .map(|(path, key)| (path.as_str(), key.as_str()))
 }
 
 #[cfg(test)]
@@ -275,23 +286,30 @@ mod tests {
     }
 
     fn build_bare_index(
-        file_symbols: &HashMap<String, Vec<Symbol>>,
+        files: &HashMap<String, Vec<Symbol>>,
     ) -> HashMap<String, Vec<(String, String)>> {
-        let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        for (rel_path, symbols) in file_symbols {
-            let fkey = keys::file_key(rel_path);
-            for sym in symbols {
-                if !sym.kind.is_primitive() {
-                    continue;
-                }
-                let skey = keys::symbol_key(&fkey, &sym.qualified_name(), sym.start_line);
-                index
-                    .entry(sym.name.clone())
-                    .or_default()
-                    .push((rel_path.clone(), skey));
-            }
-        }
-        index
+        build_bare_index_scoped(files, "")
+    }
+
+    #[test]
+    fn shipped_indexes_sort_and_share_qualified_vertex_keys() {
+        let files = HashMap::from([
+            (
+                "z.py".into(),
+                vec![func("load", Some("Config"), json!([])), import("load")],
+            ),
+            ("a.py".into(), vec![func("load", Some("Config"), json!([]))]),
+        ]);
+        let bare = build_bare_index_scoped(&files, "scope");
+        let qualified = build_qualified_index_scoped(&files, "scope");
+        assert_eq!(bare["load"], qualified["Config.load"]);
+        assert_eq!(bare["load"].len(), 2);
+        assert!(bare["load"].is_sorted());
+        assert_eq!(
+            bare["load"][0].1,
+            keys::symbol_key(&keys::scoped_file_key("scope", "a.py"), "Config.load", 1)
+        );
+        assert_ne!(bare, build_bare_index_scoped(&files, "other"));
     }
 
     #[test]

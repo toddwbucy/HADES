@@ -376,3 +376,84 @@ async fn competing_pipelines_commit_complete_generations() {
     })
     .await;
 }
+
+use hades_core::db::{ArangoClient, ArangoPool};
+#[allow(dead_code)] // Shared peer also supports cursor lifecycle tests.
+#[path = "common/cursor_mock.rs"]
+mod cursor_mock;
+
+#[tokio::test]
+async fn cleanup_acknowledgment_is_strict_before_document_writes() {
+    use cursor_mock::{Mock, Reply};
+    for response in [
+        json!({}),
+        json!({"result":[]}),
+        json!({"result":[],"hasMore":null}),
+        json!({"result":[],"hasMore":"false"}),
+        json!({"result":[],"hasMore":0}),
+        json!({"result":[],"hasMore":true}),
+        json!({"result":[[]],"hasMore":false}),
+        json!({"result":null,"hasMore":false}),
+        json!({"result":[],"hasMore":false}),
+    ] {
+        let valid = response == json!({"result":[],"hasMore":false});
+        let dir = tempfile::tempdir().unwrap();
+        let extract_path = dir.path().join("extract.sock");
+        let embed_path = dir.path().join("embed.sock");
+        let listener = tokio::net::UnixListener::bind(&extract_path).unwrap();
+        let incoming = futures::stream::unfold(listener, |listener| async {
+            Some((listener.accept().await.map(|(stream, _)| stream), listener))
+        });
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(ExtractionServiceServer::new(Extractor("replacement text")))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        let embedder = embedding_mock::start_embedder(&embed_path, 1).await;
+        let _peers = Peers(vec![server, embedder]);
+        let mut replies = vec![
+            Reply::page(json!({"result":{"id":"1"}})),
+            Reply::page(response),
+        ];
+        if valid {
+            replies.push(Reply::page(json!({"hasMore":false,"result":[]})));
+            for key in ["doc", "doc_chunk_0", "doc_chunk_0_emb"] {
+                replies.push(Reply::page(
+                    json!([{"_key":key,"_rev":"fixture","error":false}]),
+                ));
+            }
+            replies.push(Reply::page(json!({"result":{"status":"committed"}})));
+        }
+        let mut mock = Mock::new(replies).await;
+        let pipeline = Pipeline::new(
+            ExtractionClient::connect_unix_at(&extract_path)
+                .await
+                .unwrap(),
+            EmbeddingClient::connect_unix_at(&embed_path).await.unwrap(),
+            mock.pool.clone(),
+            PipelineConfig::default(),
+        );
+        let result = pipeline
+            .process_document(&dir.path().join("fixture.txt"), "doc", &OneChunk)
+            .await;
+        assert_eq!(result.success, valid, "{result:?}");
+        mock.event("POST transaction/begin").await;
+        mock.event("POST cursor").await;
+        if valid {
+            mock.event("POST cursor").await;
+            for collection in ["documents", "chunks", "embeddings"] {
+                mock.event(&format!("POST document/{collection}?overwriteMode=replace"))
+                    .await;
+            }
+            mock.event("PUT transaction/1").await;
+        } else {
+            mock.event("DELETE transaction/1").await;
+        }
+        assert!(
+            mock.events.try_recv().is_err(),
+            "no writes may follow an invalid cleanup acknowledgment"
+        );
+    }
+}

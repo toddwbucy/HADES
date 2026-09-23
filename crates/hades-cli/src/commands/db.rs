@@ -89,6 +89,9 @@ pub enum DbCmd {
 
     /// Show recently ingested papers.
     Recent {
+        /// Vertex fields to return, including bulk fields only when named (#170).
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
         /// Maximum results.
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: u32,
@@ -198,6 +201,9 @@ pub enum DbCmd {
 
     /// Get a single document by key.
     Get {
+        /// Vertex fields to return, including bulk fields only when named (#170).
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
         /// Collection name.
         collection: String,
 
@@ -326,6 +332,9 @@ pub enum DbGraphCmd {
 
     /// Traverse the graph from a starting vertex.
     Traverse {
+        /// Vertex fields to return, including bulk fields only when named (#170).
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
         /// Starting vertex ID.
         start: String,
 
@@ -352,6 +361,9 @@ pub enum DbGraphCmd {
 
     /// Find the shortest path between two vertices.
     ShortestPath {
+        /// Vertex fields to return, including bulk fields only when named (#170).
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
         /// Source vertex ID.
         source: String,
 
@@ -369,6 +381,9 @@ pub enum DbGraphCmd {
 
     /// Find neighbors of a vertex.
     Neighbors {
+        /// Vertex fields to return, including bulk fields only when named (#170).
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
         /// Vertex ID.
         vertex: String,
 
