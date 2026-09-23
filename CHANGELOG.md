@@ -45,6 +45,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep analyzer preflight probes executable from a checked-in launcher, avoiding transient text-file-busy failures while preserving process-lifecycle assertions (#179).
+
 - Report and retry failed Rust/Go semantic requests once after the file's other requests; refresh content while retaining affected prior semantic edges, recognize positively proven cfg-inactive NoCalls, and require explicit degraded-enrichment acceptance for remaining failures (#179).
 
 - Parse CLI indexed-lookup values as JSON, preserving strings, numbers and booleans and rejecting malformed JSON (#173).

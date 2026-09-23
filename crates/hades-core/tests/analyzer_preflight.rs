@@ -1,14 +1,17 @@
 //! Private synthetic analyzer probes; no installed analyzer or production data.
 use hades_core::code::lsp::{preflight_binary, resolve_and_probe_async};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
 fn fixture(directory: &Path, script: &str) -> String {
-    let path = directory.join("probe");
-    std::fs::write(&path, format!("#!/usr/bin/python3\n{script}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path.to_str().unwrap().to_owned()
+    // Execute a checked-in launcher so concurrent probes never exec a newly written inode.
+    // Only private test data changes; the launcher preserves argv and the probe's process group.
+    std::fs::write(directory.join("probe.py"), script).unwrap();
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/analyzer_preflight.py")
+        .to_str()
+        .unwrap()
+        .to_owned()
 }
 
 async fn marker(path: &Path) -> u32 {
