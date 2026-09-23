@@ -57,7 +57,7 @@ while True:
             result[0] = interface
     elif method == "textDocument/prepareCallHierarchy":
         if position == offset and mode == "empty-prepare":
-            result = []
+            result = None
         else:
             result = [item(caller if position == offset else "target", position)]
     elif method in ("callHierarchy/outgoingCalls", "callHierarchy/incomingCalls"):
