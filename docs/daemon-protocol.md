@@ -241,6 +241,7 @@ Fetch a single document by collection and key.
 
 Read-only equality lookup on one field in a named collection. MCP exposes
 `db_lookup`; the CLI is `hades db lookup COLLECTION FIELD JSON_VALUE`.
+Bare words are rejected as invalid JSON; strings need JSON double quotes inside shell quoting.
 For example: `hades --db scratch_173 db lookup wt_assertions ident '"example-slug"' --limit 2 --fields ident,full_text`.
 
 Required parameters are `collection` (string), `field` (string), and `value`

@@ -45,6 +45,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Parse CLI indexed-lookup values as JSON, preserving strings, numbers and booleans and rejecting malformed JSON (#173).
+
 - Align WeaverTools system identifiers/tags, Rust/CUDA/Python header census,
   and declared relation endpoint collections with Document Format v0.24 (#175).
 - Preserve each declared WeaverTools node’s source stanza line and enclosing
