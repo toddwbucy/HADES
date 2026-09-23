@@ -246,6 +246,14 @@ fn reported_tokens(error: &EmbeddingError) -> Option<usize> {
         return None;
     };
     let body: serde_json::Value = serde_json::from_str(message).ok()?;
+    if body["error"]["code"] == "PE_INPUT_TOO_LARGE"
+        && let Some(tokens) = body["error"]["reported_tokens"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+    {
+        return Some(tokens);
+    }
     let detail = if body["error"]["code"] == "PE_INPUT_TOO_LARGE" {
         body["error"]["message"].as_str()?.strip_prefix("Input ")?
     } else {
@@ -441,6 +449,11 @@ mod tests {
     #[test]
     fn refusal_sentence_forms_and_saturation_are_compatible() {
         for (body, expected) in [
+            (
+                serde_json::json!({"error":{"code":"PE_INPUT_TOO_LARGE", "reported_tokens":42000,
+                "ceiling":11892,"input_index":0,"message":"Input 0 has 3 tokens; ceiling is 2"}}),
+                Some(42000),
+            ),
             (
                 serde_json::json!({"detail":"PE_INPUT_TOO_LARGE: input 0 is 13173 tokens, which exceeds this profile's 11892-token ceiling."}),
                 Some(13173),

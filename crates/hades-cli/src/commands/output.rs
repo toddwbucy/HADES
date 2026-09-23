@@ -10,6 +10,15 @@ use anyhow::Result;
 use chrono::Utc;
 use serde_json::Value;
 
+// Global CLI choice also reaches handlers that historically hard-coded JSON (#164).
+static FORMAT: std::sync::OnceLock<OutputFormat> = std::sync::OnceLock::new();
+
+pub fn set_format(format: &str) {
+    if let Ok(format) = OutputFormat::parse(format) {
+        let _ = FORMAT.set(format);
+    }
+}
+
 /// Supported output formats.
 pub enum OutputFormat {
     Json,
@@ -66,6 +75,7 @@ pub fn error_envelope(command: &str, message: &str) -> Value {
 /// where every item failed misleads exactly the callers the JSON interface
 /// exists for (#166). Batch commands pass their real outcome here.
 pub fn print_output_with_success(command: &str, data: Value, format: &OutputFormat, success: bool) {
+    let format = FORMAT.get().unwrap_or(format);
     match format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             let mut wrapped = envelope(command, data);

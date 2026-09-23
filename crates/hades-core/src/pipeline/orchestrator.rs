@@ -434,9 +434,7 @@ impl Pipeline {
                         "batchSize":1,"ttl":30,
                         "options":{"maxRuntime":30,"failOnWarning":true}
                     })).await?;
-                    if response["hasMore"] == true || response["result"] != json!([]) {
-                        return Err(ArangoError::Request("invalid document cleanup response".into()));
-                    }
+                    crate::db::query::completed_mutation(&response)?;
                 }
             }
             let mode = if overwrite { "replace" } else { "conflict" };
