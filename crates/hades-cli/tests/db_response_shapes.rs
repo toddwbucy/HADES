@@ -865,3 +865,110 @@ async fn prune_requires_valid_count_acknowledgments() {
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[tokio::test]
+async fn stats_distinguishes_missing_database_from_empty_profiles() {
+    let missing = json!({"_fixture_status":404,"error":true,"errorNum":1228,"errorMessage":"database not found"});
+    let (output, calls) = run(&["stats"], vec![missing]).await;
+    failed(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("database 'fixture'"));
+    assert_eq!(calls.len(), 1);
+    let mut pages = vec![json!({"result":{"name":"fixture"}})];
+    pages.extend((0..6).map(|_| json!({"_fixture_status":404,"error":true,"errorNum":1203,"errorMessage":"collection not found"})));
+    let (output, _) = run(&["stats"], pages).await;
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["success"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn smell_report_names_missing_collection_before_embedding() {
+    let (output, calls) = run_root(
+        &["smell", "report", "."],
+        vec![
+            json!({"_fixture_status":404,"error":true,"errorNum":1203,"errorMessage":"not found"}),
+        ],
+    )
+    .await;
+    failed(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("smell_specs"));
+    assert_eq!(calls.len(), 1);
+}
+
+#[tokio::test]
+async fn search_envelope_reports_structural_disposition() {
+    let page = |rows| json!({"result":rows,"hasMore":false});
+    let mut vector = vec![0.; 2048];
+    vector[0] = 1.;
+    for (requested, present, expected) in [
+        (false, false, Some("not_requested")),
+        (true, false, Some("no_structural_embeddings")),
+        (true, true, None),
+    ] {
+        let mut pages = vec![
+            page(
+                json!([{"chunk_key":"chunk","parent_key":"doc","model":"jinaai/jina-embeddings-v4","dimension":2048,"embedding":vector} ]),
+            ),
+            page(json!([{"parent_key":"doc","score":1.0,"text":"fixture"}])),
+        ];
+        if requested {
+            pages.push(page(json!([{"_key":"doc","structural_embedding": if present {json!([1.,0.])}else{Value::Null}}])));
+        }
+        let args = if requested {
+            vec!["db", "query", "fixture", "--structural"]
+        } else {
+            vec!["db", "query", "fixture"]
+        };
+        let (output, _) = run_root_with_vectors(&args, pages, vec![vector.clone()]).await;
+        assert!(output.status.success(), "{output:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["data"]["structural_applied"], expected.is_none());
+        assert_eq!(envelope["data"]["structural_reason"], json!(expected));
+    }
+}
+
+#[tokio::test]
+async fn formerly_fixed_json_commands_honor_global_format() {
+    for format in ["json", "jsonl", "table"] {
+        let (output, _) = run(
+            &["count", "fixture", "-f", format],
+            vec![json!({"count":7})],
+        )
+        .await;
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        if format == "table" {
+            assert!(text.contains('7') && !text.contains("success"), "{text}");
+        } else {
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap()["data"]["count"],
+                7
+            );
+            assert_eq!(text.lines().count() == 1, format == "jsonl");
+        }
+    }
+}
+
+#[tokio::test]
+async fn get_cli_excludes_bulk_unless_fields_are_named() {
+    let document = json!({"_key":"doc","label":"fixture","full_text":"paper","embedding":[1,0],"body":"body","text":"text"});
+    for fields in [false, true] {
+        let mut args = vec!["get", "documents", "doc"];
+        if fields {
+            args.extend(["--fields", "_key,label,full_text,embedding,text,body"]);
+        }
+        let (output, _) = run(&args, vec![document.clone()]).await;
+        assert!(output.status.success(), "{output:?}");
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["data"]["label"], "fixture");
+        for key in ["full_text", "embedding", "text", "body"] {
+            if fields {
+                assert_eq!(response["data"][key], document[key]);
+            } else {
+                assert!(response["data"].get(key).is_none());
+            }
+        }
+    }
+}

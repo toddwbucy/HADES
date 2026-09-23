@@ -1561,3 +1561,122 @@ fn missing_git_is_named_by_both_cli_ingest_entries() {
         );
     }
 }
+
+#[tokio::test]
+async fn file_row_shape_is_independent_of_analysis_tier() {
+    with_temp_db("file_shape", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tree.path().join("semantic.py"),
+            "def greet():\n    return 'hello'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tree.path().join("structural.go"),
+            "package fixture\nfunc greet() string { return \"hello\" }\n",
+        )
+        .unwrap();
+        std::fs::write(tree.path().join("raw.toml"), "name = 'fixture'\n").unwrap();
+        let root = tree.path().to_str().unwrap();
+        for force in [false, true] {
+            let mut args = vec![
+                "codebase",
+                "ingest",
+                root,
+                "--unparsed-ext",
+                "toml",
+                "--allow-analysis-downgrade",
+            ];
+            if force {
+                args.push("--force");
+            }
+            let output = cli_command(&pool, &embedder, &args)
+                .env(
+                    "HADES_GOPLS_PATH",
+                    embedder._directory.path().join("absent-gopls"),
+                )
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let rows = hades_core::db::query::query(
+                &pool,
+                "FOR d IN codebase_files SORT d.path RETURN d",
+                None,
+                None,
+                false,
+                hades_core::db::query::ExecutionTarget::Reader,
+            )
+            .await
+            .unwrap()
+            .results;
+            assert_eq!(rows.len(), 3);
+            let keys: std::collections::BTreeSet<_> = rows[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|key| key.as_str() != "metrics")
+                .cloned()
+                .collect();
+            let mut tiers = std::collections::BTreeSet::new();
+            for row in &rows {
+                assert_eq!(
+                    row.as_object()
+                        .unwrap()
+                        .keys()
+                        .filter(|key| key.as_str() != "metrics")
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    keys,
+                    "{row}"
+                );
+                assert_eq!(row["path"], row["rel_path"]);
+                assert_eq!(row["ingest_root"], root);
+                assert_eq!(row["relationships_pending"], false);
+                tiers.insert(row["analysis_tier"].as_str().unwrap());
+                if row["analysis_tier"] == "text" {
+                    assert_eq!(row["analyzer"], "raw-text");
+                    assert!(row.get("metrics").is_none());
+                    assert_eq!(row["symbol_hash"], row["content_hash"]);
+                } else {
+                    assert!(row["metrics"].is_object());
+                }
+            }
+            assert_eq!(
+                tiers,
+                std::collections::BTreeSet::from(["semantic", "structural", "text"])
+            );
+            let symbols = hades_core::db::query::query(
+                &pool,
+                "FOR s IN codebase_symbols RETURN s",
+                None,
+                None,
+                false,
+                hades_core::db::query::ExecutionTarget::Reader,
+            )
+            .await
+            .unwrap()
+            .results;
+            assert!(symbols.len() >= 2);
+            let keys: std::collections::BTreeSet<_> =
+                symbols[0].as_object().unwrap().keys().cloned().collect();
+            for symbol in &symbols {
+                assert_eq!(
+                    symbol
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    keys
+                );
+            }
+        }
+    })
+    .await;
+}

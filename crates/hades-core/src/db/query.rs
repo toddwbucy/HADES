@@ -15,6 +15,25 @@ use super::error::ArangoError;
 use super::pool::ArangoPool;
 use super::transport::ArangoClient;
 
+/// Validate a deliberately unpaginated cursor, retaining caller-specific row shapes (#164).
+pub fn completed_rows(response: &Value) -> Result<&Vec<Value>, ArangoError> {
+    response
+        .get("result")
+        .and_then(Value::as_array)
+        .filter(|_| response["hasMore"].as_bool() == Some(false))
+        .ok_or_else(|| ArangoError::Request("invalid completed cursor acknowledgment".into()))
+}
+
+/// Mutation queries with no RETURN must acknowledge completion with no rows.
+pub fn completed_mutation(response: &Value) -> Result<(), ArangoError> {
+    if !completed_rows(response)?.is_empty() {
+        return Err(ArangoError::Request(
+            "unexpected mutation result rows".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Default batch size for AQL queries.
 const DEFAULT_BATCH_SIZE: u32 = 1000;
 

@@ -131,6 +131,7 @@ edge_definitions:
     to_collections: [wt_assertions]
     description: "Source code cites the assertion it conforms to."
 
+  # Endpoint kinds follow Document Format v0.24 sections 3–4 (#175).
   # ── the corpus's declarations ──────────────────────────────────────────────
   # `declared-in` ends at the ingested markdown, which carries the prose and its
   # vector. It pointed at a node minted per file until 2026-09-13, which left
@@ -143,101 +144,53 @@ edge_definitions:
     to_collections: [documents]
     description: "A declared record, and the markdown file declaring it."
   - name: wt_asserts_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A document asserts an assertion."
+    from_collections: [wt_crates]
+    to_collections: [wt_assertions]
+    description: "A crate asserts a claim stated by its Spec."
   - name: wt_defines_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A document defines a term."
+    from_collections: [wt_crates, wt_documents]
+    to_collections: [wt_vocabulary, wt_terms]
+    description: "A crate or contract defines a meaning."
   - name: wt_draws_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A record draws on another."
+    from_collections: [wt_documents]
+    to_collections: [wt_vocabulary, wt_terms]
+    description: "A contract draws a vocabulary or term meaning."
   - name: wt_elects_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "An election, in the corpus's sense."
+    from_collections: [wt_vocabulary]
+    to_collections: [wt_vocabulary]
+    description: "A field selects from another vocabulary node."
   - name: wt_floor_link_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A floor and what it links to."
+    from_collections: [wt_crates]
+    to_collections: [wt_crates]
+    description: "A crate links a floor crate."
   - name: wt_grounds_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "What grounds a claim."
+    from_collections: [wt_assertions]
+    to_collections: [wt_axioms]
+    description: "An assertion serves an axiom."
   - name: wt_holds_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A party holds an obligation."
+    from_collections: [wt_artifacts]
+    to_collections: [wt_vocabulary]
+    description: "An artifact holds a vocabulary field."
   - name: wt_parent_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A crate's parent crate."
+    from_collections: [wt_crates]
+    to_collections: [wt_crates, wt_systems]
+    description: "A crate belongs to its parent crate or the system."
   - name: wt_party_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A party to a contract."
+    from_collections: [wt_documents]
+    to_collections: [wt_crates]
+    description: "A contract binds a crate."
   - name: wt_reads_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A reader of a record."
+    from_collections: [wt_crates]
+    to_collections: [wt_artifacts]
+    description: "A crate reads an artifact."
   - name: wt_seam_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A seam between two crates, papered by the contract in `via`."
+    from_collections: [wt_crates]
+    to_collections: [wt_crates]
+    description: "A seam between crates, papered by its via contract."
   - name: wt_writes_edges
-    from_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    to_collections:
-      [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
-    description: "A writer of a record."
+    from_collections: [wt_crates]
+    to_collections: [wt_artifacts]
+    description: "A crate writes an artifact."
 
 named_graphs:
   - name: codebase_graph

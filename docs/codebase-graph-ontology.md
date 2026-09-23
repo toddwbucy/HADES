@@ -137,6 +137,7 @@ One document per ingested source file. Primitive kind: `file`. The primary verte
 |-------|------|----------|--------|-------------|
 | `_key` | string | yes | `keys::file_key(rel_path)` | Normalized path: `.` and `/` replaced with `_` |
 | `path` | string | yes | ingest | Relative path from project root (e.g., `src/lib.rs`) |
+| `rel_path` | string | yes | ingest | Same relative path on every analysis tier (#172) |
 | `language` | string | yes | ingest | Language identifier: `"rust"`, `"python"`, `"go"`, `"typescript"`, `"javascript"`, `"java"`, `"c"`, `"cpp"` |
 | `kind` | string | yes | ingest | Always `"file"` — the graph semantic primitive |
 | `status` | string | yes | ingest | Processing status: `"PROCESSED"` |
@@ -146,7 +147,7 @@ One document per ingested source file. Primitive kind: `file`. The primary verte
 | `chunk_count` | integer | yes | ingest | Number of text chunks produced |
 | `embedding_count` | integer | yes | ingest | Number of embeddings stored (0 if embedder unavailable) |
 | `total_lines` | integer | yes | ingest | Total line count |
-| `metrics` | object | yes | ingest | See **Metrics Object** below |
+| `metrics` | object | when parsed | analyzer | See **Metrics Object** below; raw text has no parser metrics |
 | `analysis_tier` | string | yes | analyzer dispatch | `"semantic"`, `"structural"`, or `"text"`; tiers are ordered and cannot silently downgrade on re-ingest |
 | `analyzer` | string | yes | analyzer dispatch | Producer such as `"libclang"`, `"syn"`, `"gopls"`, `"tree-sitter"`, or `"raw-text"` |
 | `fallback_reason` | string | no | analyzer dispatch | Why the preferred analyzer could not be used |
@@ -159,7 +160,11 @@ One document per ingested source file. Primitive kind: `file`. The primary verte
 
 #### Metrics Object
 
-Nested under `metrics` on every file document.
+Nested under `metrics` when parser analysis is available. The common file-row
+shape does not depend on the tier; parser metrics and optional LSP enrichment
+measurements are the exceptions. Raw text retains `total_lines` without inventing
+complexity measurements. Existing unchanged rows require re-ingestion with
+`--force` to refresh their persisted shape; this change does not migrate a corpus.
 
 | Field | Type | Description |
 |-------|------|-------------|

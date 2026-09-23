@@ -25,7 +25,10 @@ rewrite and a bare rule does not.
 
 from __future__ import annotations
 
+import io
 import re
+import tokenize
+from bisect import bisect_right
 from pathlib import Path
 
 from .records import DECLARED, Edge, Extraction, Node
@@ -33,6 +36,7 @@ from .records import DECLARED, Edge, Extraction, Node
 # Fixed by WeaverTools-Document-Format. A tag outside this set is a finding
 # rather than a silent miss.
 TAGS = {"compile-pin", "compile-fail", "perturbation", "manifest", "review"}
+SYSTEM_NODE = "WeaverTools"
 
 # A fence opens and closes on its own line.
 #
@@ -59,45 +63,17 @@ EDGE_VIA = re.compile(r"^via: (.*)$", re.M)
 # Identifiers are kebab-case, always.
 IDENT_OK = re.compile(r"^[a-z0-9-]+$")
 
-# **Citing and owing a header are different questions**, and one walk answers
-# both. The census records this as one of the nine bugs it paid for.
-#
-# HEADER_CITE is the file-level obligation: `//!` is an inner doc comment, so
-# it applies to the enclosing module, which is the unit the Document Format
-# names. A file lacking one owes a header.
-#
-# ITEM_CITE is membership in the cited set. The corpus also cites at item
-# level with `///` and plain `//`, 77 occurrences beyond the 436 file-level
-# headers, and an assertion cited only that way is cited. Measuring the cited
-# set with the anchored pattern alone moved 32 perturbations into the uncited
-# column here, against a baseline with a known answer.
-#
-# The trailing token is anchored: unanchored, `conforms: weaver_types-x`
-# captures `weaver` and the gate names an identifier present in no file, so a
-# reader grepping for the offender finds nothing.
-HEADER_CITE = re.compile(r"^//! conforms: ([a-z0-9-]+)\s*$", re.M)
-ITEM_CITE = re.compile(r"conforms: (\S+)")
-
-# A build script is cargo's unit, not the crate's, and conforms to nothing.
+# Document Format sections 1, 3 and 4 distinguish citation forms from the
+# file-header obligation. Python's leading comments head a unit; strings and
+# comments trailing code do not. Rust/CUDA use their file-level //! marker.
+HEADER_CITE = re.compile(r"^\s*//!\s*conforms:\s*([a-z0-9-]+)\s*$", re.M)
+HASH_HEADER = re.compile(r"^#[ \t]*conforms:[ \t]*([a-z0-9-]+)[ \t]*$", re.M)
+ITEM_CITE = re.compile(r"^[ \t]*(?://[/!]?|#)[ \t]*conforms:(.*)$", re.M)
+COMMENT_CITE = re.compile(r"^#[ \t]*conforms:(.*)$")
 NO_HEADER_OWED = {"build.rs"}
-
-# Suffixes excused the *header* obligation while still being read for citations.
-#
-# TOML has no inner doc comment, so `//! conforms:` cannot appear in one and a
-# manifest can never satisfy an obligation measured with HEADER_CITE. Excusing
-# only files named `Cargo.toml` was not enough: `askama.toml` and two
-# `*.example.toml` under crates/ moved `sources_without_a_header` from 48 to 51,
-# and 48 is a number the census verifies. The obligation follows the language,
-# not the filename.
+# Manifests are read for citations but have no module-header obligation.
 NO_HEADER_OWED_SUFFIXES = {".toml"}
-
-# Suffixes the conformance pass opens. `.toml` is here because three assertions
-# tagged `manifest` are cited only from a Cargo.toml, with `# conforms:` rather
-# than `//! conforms:`. ITEM_CITE is not anchored to a comment syntax, so it
-# reads both; the only reason those three were missing from the cited set is
-# that this walk never opened the file. That was the whole of the 478-against-481
-# discrepancy the census recorded.
-CONFORMANCE_SUFFIXES = (".rs", ".toml")
+CONFORMANCE_SUFFIXES = (".rs", ".toml", ".cu", ".py")
 PRUNE_DIRS = {".git", "archive", "target", "node_modules"}
 
 
@@ -110,6 +86,37 @@ PRUNE_DIRS = {".git", "archive", "target", "node_modules"}
 # something else, and no count would catch. Bounded here instead.
 RECORD_LINE = re.compile(r"^[a-z][a-z-]*: ")
 
+
+
+def _headings(text: str):
+    """Markdown headings outside fenced code, with source offsets (#174)."""
+    headings = []
+    fence = None
+    previous = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", stripped):
+                fence = None
+            previous = None
+        elif marker:
+            fence = marker.group(1)
+            previous = None
+        else:
+            atx = re.match(r"^ {0,3}#{1,6}(?:[ \t]+(.*)|$)", stripped)
+            if atx:
+                title = re.sub(r"[ \t]+#+[ \t]*$", "", atx.group(1) or "").strip()
+                headings.append((offset, title))
+                previous = None
+            elif previous and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", stripped):
+                headings.append(previous)
+                previous = None
+            else:
+                previous = (offset, stripped.strip()) if stripped.strip() and not stripped.startswith(("    ", "\t")) else None
+        offset += len(line)
+    return headings
 
 def _record_head(stanza: str) -> str:
     lines = []
@@ -182,11 +189,16 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
             # module docstring already makes for source files: a node that
             # duplicates one the ingest created is a join that proves nothing.
 
-            for block in GRAPH.findall(text):
+            headings = _headings(text)
+            heading_offsets = [offset for offset, _ in headings]
+            line_starts = [0] + [match.end() for match in re.finditer("\n", text)]
+            for block_match in GRAPH.finditer(text):
+                block = block_match.group(1)
                 # Either keyword starts a new record: mixed adjacent records
                 # must not contribute metadata or body text to their neighbor.
-                stanzas = re.split(r"(?=^(?:node|edge): )", block, flags=re.M)
-                for stanza in stanzas:
+                starts = [match.start() for match in re.finditer(r"^(?:node|edge): ", block, re.M)]
+                stanzas = [(start, block[start:end]) for start, end in zip(starts, starts[1:] + [len(block)])]
+                for stanza_offset, stanza in stanzas:
                     record = _record_head(stanza)
                     line = NODE_LINE.search(record)
                     if not line:
@@ -197,9 +209,13 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
                     tag = TAG.search(record)
                     tag = tag.group(1) if tag else None
 
-                    if not IDENT_OK.match(name):
+                    # Section 5 exempts only the named system record, not every
+                    # uppercase identifier or every record with kind=system.
+                    system = kind == "system" and name == SYSTEM_NODE
+                    if (kind == "system" and not system) or (not system and not IDENT_OK.match(name)):
                         out.notes.append(f"malformed node id in {rel}: {name!r}")
-                    if tag is not None and tag not in TAGS:
+                    allowed_tags = {"ratified"} if system else (TAGS if kind == "assertion" else set())
+                    if tag is not None and tag not in allowed_tags:
                         out.notes.append(f"unknown tag in {rel}: {name} ({tag})")
                     if name in seen and seen[name] != rel:
                         out.notes.append(
@@ -207,15 +223,19 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
                         )
                     seen[name] = rel
 
+                    source_offset = block_match.start(1) + stanza_offset + line.start()
+                    heading_index = bisect_right(heading_offsets, source_offset) - 1
                     out.nodes.append(
-                        Node(ident=name, kind=kind, path=rel, tag=tag, body=stanza.strip())
+                        Node(ident=name, kind=kind, path=rel, tag=tag, body=stanza.strip(),
+                             line=bisect_right(line_starts, source_offset),
+                             section=headings[heading_index][1] if heading_index >= 0 else None)
                     )
                     out.edges.append(
                         Edge(src=name, dst=rel, relation="declared-in", basis=DECLARED)
                     )
 
                 # Edge records within the same block.
-                for stanza in stanzas:
+                for _, stanza in stanzas:
                     record = _record_head(stanza)
                     rel_m = EDGE_REL.search(record)
                     src_m = EDGE_FROM.search(record)
@@ -243,6 +263,34 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
     return out
 
 
+
+def _header_citations(text: str, suffix: str) -> list[str]:
+    if suffix != ".py":
+        return HEADER_CITE.findall(text)
+    head = []
+    for line in text.splitlines():
+        if line.strip() and not line.startswith("#"):
+            break
+        head.append(line)
+    return HASH_HEADER.findall("\n".join(head))
+
+
+def _citations(text: str, suffix: str) -> tuple[list[str], str | None]:
+    if suffix != ".py":
+        return ITEM_CITE.findall(text), None
+    found = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type != tokenize.COMMENT or token.line[:token.start[1]].strip():
+                continue
+            match = COMMENT_CITE.match(token.string)
+            if match:
+                found.append(match.group(1))
+    except (tokenize.TokenError, SyntaxError, UnicodeDecodeError) as error:
+        # Never fall back to reading strings as declarations on malformed input.
+        return [], f"will not tokenize, citations unread ({type(error).__name__})"
+    return found, None
+
 def read_conformance(
     repo: Path, declared: set[str], scope: set[str] | None = None
 ) -> Extraction:
@@ -255,8 +303,8 @@ def read_conformance(
     here, which also means the header obligation is measured over the files the
     graph contains rather than over the files on disk.
 
-    The obligation follows the unit: every `.rs` a member owns, tests
-    included, `build.rs` excepted. Resolution is against *every* declared
+    The obligation follows supported Rust, CUDA and Python units, tests
+    included, with `build.rs` and manifests excepted. Resolution is against *every* declared
     identifier, not assertions alone.
 
     Manifests are walked for citations and excused the header obligation. They
@@ -278,21 +326,25 @@ def read_conformance(
     for path in sorted(paths):
         rel = str(path.relative_to(repo))
         text = path.read_text(encoding="utf-8", errors="replace")
+        citations, unreadable = _citations(text, path.suffix)
         if scope is not None and rel not in scope:
-            if ITEM_CITE.search(text):
+            if citations:
                 out_of_scope.append(rel)
             continue
         lang = "rust" if path.suffix == ".rs" else path.suffix.lstrip(".")
         out.nodes.append(Node(ident=rel, kind="source", path=rel, lang=lang))
 
-        headers = HEADER_CITE.findall(text)
+        headers = _header_citations(text, path.suffix)
         headers_seen += len(headers)
+        if unreadable:
+            out.notes.append(f"malformed citation in {rel}: {unreadable}")
 
         # Every citation, file-level or item-level, becomes an edge. Malformed
         # targets are reported under the identifier as written, never
         # truncated to a prefix, so grepping for the offender finds it.
-        for target in dict.fromkeys(ITEM_CITE.findall(text)):
-            if not IDENT_OK.match(target):
+        for raw in dict.fromkeys(citations):
+            target = raw.strip()
+            if (raw and not raw[0].isspace()) or not IDENT_OK.fullmatch(target):
                 out.notes.append(f"malformed citation in {rel}: conforms: {target}")
                 continue
             edge = Edge(src=rel, dst=target, relation="cites", basis=DECLARED)
