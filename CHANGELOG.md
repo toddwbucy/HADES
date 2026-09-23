@@ -173,7 +173,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Omit bulk text and vectors from get, recent, traversal, neighbor and shortest-path
   vertex results by default; expose explicit `fields` projection through daemon,
-  MCP and CLI without changing operation access tiers (#170).
+  MCP and CLI without changing operation access tiers, and document all six
+  selectors in the model operation vocabulary (#170).
 
 - Reconcile epic #12 acceptance evidence after worker, document and analyzer
   fixes, and retain sanitized deployment metadata with explicit provenance limits.
