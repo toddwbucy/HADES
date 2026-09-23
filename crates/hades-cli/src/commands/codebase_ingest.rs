@@ -1806,34 +1806,22 @@ async fn ingest_file(
         .filter_map(|d| d["_key"].as_str())
         .collect::<std::collections::HashSet<_>>()
         .len();
-    let file_doc = json!({
-        "_key": fkey,
-        "file_key_version": 2,
-        "ingest_root": namespace,
-        "path": rel_path,
-        "kind": "file",
-        "language": lang.name(),
-        "metrics": analysis.metrics,
-        "symbol_hash": analysis.symbol_hash,
-        // Full-source digest. **This is what gates incremental re-ingest**
-        // (#7) and what `codebase drift` compares. `symbol_hash` above is
-        // deliberately name-only (see compute_symbol_hash), so a rewritten
-        // body, changed signature, or edited comment leaves it identical; it
-        // gated the skip until #7 and let exactly those edits through, leaving
-        // stale chunks that semantic search served as current. `symbol_hash` is
-        // still stored, for the cross-file question of whether dependents need
-        // re-resolution (#183).
-        "content_hash": content_hash,
-        "symbol_count": primitive_count,
-        "relationships_pending": true,
-        "chunk_count": num_chk,
-        "embedding_count": num_embeddings_written,
-        "total_lines": analysis.metrics.total_lines,
-        "status": "PROCESSED",
-        "analysis_tier": analysis.analysis_tier.as_str(),
-        "analyzer": analysis.analyzer,
-        "fallback_reason": analysis.fallback_reason,
-        "ingested_at": chrono::Utc::now().to_rfc3339(),
+    let file_doc = file_document(FileRow {
+        key: &fkey,
+        namespace,
+        path: rel_path,
+        language: lang.name(),
+        content_hash: &content_hash,
+        symbol_hash: &analysis.symbol_hash,
+        metrics: Some(&analysis.metrics),
+        symbol_count: primitive_count,
+        relationships_pending: true,
+        chunk_count: num_chk,
+        embedding_count: num_embeddings_written,
+        total_lines: analysis.metrics.total_lines,
+        tier: analysis.analysis_tier,
+        analyzer: &analysis.analyzer,
+        fallback_reason: analysis.fallback_reason.as_deref(),
     });
 
     let remapped_symbols = symbol_key_remap.len();
@@ -1883,6 +1871,55 @@ async fn ingest_file(
     })
 }
 
+/// One common file schema across analyzers; parser metrics remain optional (#172).
+struct FileRow<'a> {
+    key: &'a str,
+    namespace: &'a str,
+    path: &'a str,
+    language: &'a str,
+    content_hash: &'a str,
+    symbol_hash: &'a str,
+    metrics: Option<&'a hades_core::code::CodeMetrics>,
+    symbol_count: usize,
+    relationships_pending: bool,
+    chunk_count: usize,
+    embedding_count: usize,
+    total_lines: usize,
+    tier: AnalysisTier,
+    analyzer: &'a str,
+    fallback_reason: Option<&'a str>,
+}
+
+fn file_document(row: FileRow<'_>) -> Value {
+    let mut document = json!({
+        "_key": row.key,
+        "file_key_version": 2,
+        "ingest_root": row.namespace,
+        "path": row.path,
+        "rel_path": row.path,
+        "kind": "file",
+        "language": row.language,
+        "symbol_hash": row.symbol_hash,
+        // Full-source hash remains the incremental/drift digest, independent
+        // of the name-only symbol hash used by dependency resolution (#172).
+        "content_hash": row.content_hash,
+        "symbol_count": row.symbol_count,
+        "relationships_pending": row.relationships_pending,
+        "chunk_count": row.chunk_count,
+        "embedding_count": row.embedding_count,
+        "total_lines": row.total_lines,
+        "status": "PROCESSED",
+        "analysis_tier": row.tier.as_str(),
+        "analyzer": row.analyzer,
+        "fallback_reason": row.fallback_reason,
+        "ingested_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(metrics) = row.metrics {
+        document["metrics"] = json!(metrics);
+    }
+    document
+}
+
 /// Retain durable targets when incoming analysis is deliberately not applied.
 /// Stored call metadata is excluded: this path must not rewrite outgoing edges.
 async fn collect_preserved_targets(
@@ -1900,13 +1937,9 @@ async fn collect_preserved_targets(
         "batchSize":1,"ttl":30,"memoryLimit":33554432,
         "options":{"maxRuntime":30,"failOnWarning":true}
     })).await?;
-    let rows = response["result"]
-        .as_array()
+    let rows = hades_core::db::query::completed_rows(&response)
         .context("invalid preserved target snapshot")?;
-    anyhow::ensure!(
-        response["hasMore"] != true && rows.len() == 1,
-        "incomplete preserved target snapshot"
-    );
+    anyhow::ensure!(rows.len() == 1, "incomplete preserved target snapshot");
     let row = &rows[0];
     let revision = row["file"]["_rev"]
         .as_str()
@@ -2224,28 +2257,23 @@ async fn ingest_unparsed_file(
     // Merge the file node — preserve any pre-existing fields, set only ours,
     // create if absent.
     let total_lines = source.lines().count();
-    let fields = json!({
-        "file_key_version": 2,
-        "ingest_root": namespace,
-        "path": rel_path,
-        "rel_path": rel_path,
-        "kind": "file",
-        "language": lang_label,
-        // The parser-free path has no symbols, so its change-detection digest is
-        // already the full-source hash. Recorded under both names so drift has a
-        // single uniform column across parsed and unparsed files.
-        "symbol_hash": content_hash,
-        "content_hash": content_hash,
-        "symbol_count": 0,
-        "relationships_pending": false,
-        "chunk_count": num_chk,
-        "embedding_count": num_embeddings_written,
-        "total_lines": total_lines,
-        "status": "PROCESSED",
-        "analysis_tier": "text",
-        "analyzer": "raw-text",
-        "fallback_reason": fallback_reason,
-        "ingested_at": chrono::Utc::now().to_rfc3339(),
+    let fields = file_document(FileRow {
+        key: &fkey,
+        namespace,
+        path: rel_path,
+        language: lang_label,
+        // With no parser, both digests are the full-source hash, as before.
+        content_hash: &content_hash,
+        symbol_hash: &content_hash,
+        metrics: None,
+        symbol_count: 0,
+        relationships_pending: false,
+        chunk_count: num_chk,
+        embedding_count: num_embeddings_written,
+        total_lines,
+        tier: AnalysisTier::Text,
+        analyzer: "raw-text",
+        fallback_reason: Some(fallback_reason),
     });
     super::codebase_persist::Replacement {
         key: fkey.clone(),
@@ -3299,7 +3327,7 @@ async fn store_lsp_extractions(
             super::codebase_persist::query(&client,
                 "FOR fk IN @fkeys LET c = LENGTH(FOR s IN @@sym FILTER s.file_key == fk RETURN 1) UPDATE fk WITH { symbol_count: c } IN @@files",
                 json!({"fkeys":batch.iter().map(|g| &g.key).collect::<Vec<_>>(),
-                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files})).await?;
+                    "@sym":CODEBASE.symbols,"@files":CODEBASE.files}), false).await?;
             for group in &batch {
                 revisions.get_mut(&group.path).unwrap().revision = super::codebase_persist::revision(&client, &group.key).await?
                     .ok_or_else(|| hades_core::db::ArangoError::Request("enrichment file disappeared".into()))?;
@@ -3342,25 +3370,7 @@ fn build_python_symbol_index_scoped(
     file_symbols: &HashMap<String, Vec<Symbol>>,
     namespace: &str,
 ) -> HashMap<String, Vec<(String, String)>> {
-    let mut index: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for (rel_path, symbols) in file_symbols {
-        let fkey = keys::scoped_file_key(namespace, rel_path);
-        for sym in symbols {
-            // Match the vertex writer, excluding import and impl scaffolding.
-            if !sym.kind.is_primitive() {
-                continue;
-            }
-            // Index is keyed by the bare name (call sites use bare names), but
-            // the value must be the qualified-name-derived key so edges target
-            // the actual stored vertex (#113).
-            let skey = keys::symbol_key(&fkey, &sym.qualified_name(), sym.start_line);
-            index
-                .entry(sym.name.clone())
-                .or_default()
-                .push((rel_path.clone(), skey));
-        }
-    }
-    index
+    hades_core::code::python_calls::build_bare_index_scoped(file_symbols, namespace)
 }
 
 /// Build a mapping from Python module name → relative file path.
@@ -3611,6 +3621,54 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn preserved_snapshot_requires_explicit_complete_array() {
+        use axum::{Json, Router};
+        let valid_rows =
+            json!([{ "file": {"_rev":"revision", "language":"python"}, "symbols":[] }]);
+        for response in [
+            json!({}),
+            json!({"result":valid_rows}),
+            json!({"hasMore":null,"result":valid_rows}),
+            json!({"hasMore":"false","result":valid_rows}),
+            json!({"hasMore":0,"result":valid_rows}),
+            json!({"hasMore":true,"result":valid_rows}),
+            json!({"hasMore":false,"result":null}),
+            json!({"hasMore":false,"result":{}}),
+            json!({"hasMore":false,"result":[]}),
+            json!({"hasMore":false,"result":valid_rows}),
+        ] {
+            let valid = response == json!({"hasMore":false,"result":valid_rows});
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("db.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let served = response.clone();
+            let app = Router::new().fallback(move || {
+                let response = served.clone();
+                async move { Json(response) }
+            });
+            let peer = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let config = serde_json::from_value(json!({"database":{"name":"fixture", "sockets":{"readonly":socket,"readwrite":socket}}})).unwrap();
+            let pool = ArangoPool::from_config(&config).unwrap();
+            assert_eq!(
+                (collect_preserved_targets(
+                    &pool,
+                    "file",
+                    Some("revision"),
+                    "file.py",
+                    None,
+                    &mut ImportContext::default()
+                )
+                .await)
+                    .is_ok(),
+                valid,
+                "{response}"
+            );
+            peer.abort();
+            let _ = peer.await;
+        }
+    }
+
     include!("codebase_embedding_retry_tests.rs");
     include!("codebase_enrichment_store_tests.rs");
     use super::*;

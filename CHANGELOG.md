@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Include structured token count, ceiling and input index in embedding size
+  refusals, with client precedence over legacy prose (#164).
+
 - Pre-chunk document and code inputs with backend-sized, configurable overlapping
   windows, adapt refused inputs using reported token counts, and persist window
   budgets and parent attribution with embeddings.
@@ -38,6 +41,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Preserve each declared WeaverTools node’s source stanza line and enclosing
   Markdown heading across every adapter node collection (#174).
+- Validate inbound-remap and preserved-target cursor snapshots with the common
+  completion contract, and warn when clean LSP EOF abandons pending requests (#164).
 
 - Record the fresh scratch rebuild and incremental TOML scope alignment,
   verified live counts except for the documented rust-analyzer calls variance,
@@ -173,6 +178,20 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
+
+- Build codebase file rows through one schema for semantic, structural and text
+  analysis: always include matching `path`/`rel_path`, preserving the existing
+  parser-only metrics and raw-file merge behavior (#172).
+- Omit bulk text and vectors from get, recent, traversal, neighbor and shortest-path
+  vertex results by default; expose explicit `fields` projection through daemon,
+  MCP and CLI without changing operation access tiers, and document all six
+  selectors in the model operation vocabulary (#170).
+- Build resolver candidate ordering once, share Python index construction, and
+  require explicit completed cursor acknowledgments across persistence (#164).
+- Standardize CLI format selection: **breaking**, `-f` now means format on
+  `ingest` and `codebase ingest`; use long-only `--force` for reprocessing.
+  Correct missing-database stats, smoke checks, clean LSP EOF logging, and
+  expose structural-fusion disposition and missing smell collection context (#164).
 
 - Reconcile epic #12 acceptance evidence after worker, document and analyzer
   fixes, and retain sanitized deployment metadata with explicit provenance limits.

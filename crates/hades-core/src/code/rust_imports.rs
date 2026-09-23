@@ -170,6 +170,7 @@ pub fn build_symbol_index_scoped(
         }
     }
 
+    index.values_mut().for_each(|v| v.sort_unstable());
     index
 }
 
@@ -308,18 +309,13 @@ fn pick_best_import_target<'a>(
 
     // Convert use-path segments to path-like form for matching.
     // "db::keys::file_key" → ["db", "keys"]  (drop leaf, it's the symbol name)
-    let segments: Vec<&str> = use_path.split("::").collect();
-    let module_segments = if segments.len() > 1 {
-        &segments[..segments.len() - 1]
-    } else {
-        &segments[..]
-    };
+    let module_path = use_path
+        .rsplit_once("::")
+        .map_or(use_path, |(modules, _)| modules);
 
     let mut best: Option<(&str, &str, usize)> = None;
 
-    let mut candidates: Vec<_> = targets.iter().collect();
-    candidates.sort_unstable(); // Relative path, then symbol key.
-    for (rel_path, skey) in candidates {
+    for (rel_path, skey) in targets {
         // Skip same-file matches.
         if rel_path == source_path {
             continue;
@@ -327,18 +323,20 @@ fn pick_best_import_target<'a>(
 
         // Split rel_path into discrete components for segment matching.
         // "src/db/keys.rs" → ["src", "db", "keys"]
-        let path_parts: Vec<&str> = rel_path
-            .trim_end_matches(".rs")
-            .split(['/', '\\'])
-            .collect();
-
-        // Score: how many module segments match a discrete path component?
-        let score = module_segments
-            .iter()
-            .filter(|seg| path_parts.contains(seg))
+        let score = module_path
+            .split("::")
+            .filter(|segment| {
+                rel_path
+                    .trim_end_matches(".rs")
+                    .split(['/', '\\'])
+                    .any(|part| part == *segment)
+            })
             .count();
 
-        if best.is_none() || score > best.unwrap().2 {
+        if best.is_none_or(|(path, key, previous)| {
+            score > previous
+                || (score == previous && (rel_path.as_str(), skey.as_str()) < (path, key))
+        }) {
             best = Some((rel_path.as_str(), skey.as_str(), score));
         }
     }

@@ -28,6 +28,10 @@ use commands::{
 #[derive(Parser)]
 #[command(name = "hades", version, about)]
 struct Cli {
+    /// Output format for every command (#164).
+    #[arg(short = 'f', long, global = true, value_parser = ["json", "jsonl", "table"])]
+    format: Option<String>,
+
     /// Target ArangoDB database name (overrides config/env).
     #[arg(long = "database", alias = "db", global = true)]
     database: Option<String>,
@@ -116,7 +120,7 @@ enum Commands {
         collection: Option<String>,
 
         /// Force re-processing of existing documents.
-        #[arg(short = 'f', long)]
+        #[arg(long)]
         force: bool,
 
         /// Reset batch state (clear previous checkpoint).
@@ -298,6 +302,9 @@ fn run_codebase_ingest(
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(format) = &cli.format {
+        commands::output::set_format(format);
+    }
 
     let mut config = if let Some(fd) = cli.resolved_config_fd {
         anyhow::ensure!(
@@ -700,6 +707,7 @@ fn main() -> anyhow::Result<()> {
         }
         // ── Native DB read commands ─────────────────────────────────────
         Commands::Db(commands::db::DbCmd::Get {
+            fields,
             collection,
             key,
             format,
@@ -711,6 +719,7 @@ fn main() -> anyhow::Result<()> {
                 &collection,
                 &key,
                 &format,
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Count { collection }) => {
@@ -728,10 +737,19 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_check(&config, &document_id))
         }
-        Commands::Db(commands::db::DbCmd::Recent { limit, format }) => {
+        Commands::Db(commands::db::DbCmd::Recent {
+            limit,
+            format,
+            fields,
+        }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(commands::db_read::run_recent(&config, limit, &format))
+            rt.block_on(commands::db_read::run_recent(
+                &config,
+                limit,
+                &format,
+                fields.as_deref(),
+            ))
         }
         Commands::Db(commands::db::DbCmd::List {
             collection,
@@ -904,6 +922,7 @@ fn main() -> anyhow::Result<()> {
             min_depth,
             max_depth,
             graph,
+            fields,
             format: _,
         })) => {
             init_tracing();
@@ -915,12 +934,14 @@ fn main() -> anyhow::Result<()> {
                 min_depth,
                 max_depth,
                 graph.as_deref(),
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::ShortestPath {
             source,
             target,
             graph,
+            fields,
             format: _,
         })) => {
             init_tracing();
@@ -930,6 +951,7 @@ fn main() -> anyhow::Result<()> {
                 &source,
                 &target,
                 graph.as_deref(),
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::Neighbors {
@@ -937,6 +959,7 @@ fn main() -> anyhow::Result<()> {
             direction,
             limit,
             graph,
+            fields,
             format: _,
         })) => {
             init_tracing();
@@ -947,6 +970,7 @@ fn main() -> anyhow::Result<()> {
                 &direction,
                 limit,
                 graph.as_deref(),
+                fields.as_deref(),
             ))
         }
         Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::List { format: _ })) => {
@@ -1284,5 +1308,48 @@ fn main() -> anyhow::Result<()> {
                 &config, &source_id, &claims, force,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod format_contract_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_rendered_command_accepts_format_and_ingest_force_is_long_only() {
+        fn visit(mut command: clap::Command, path: Vec<String>) {
+            let help = command.render_long_help().to_string();
+            assert!(help.contains("--format"), "{}: {help}", path.join(" "));
+            for format in ["json", "jsonl", "table"] {
+                let mut args = path.clone();
+                args.extend(["-f".into(), format.into(), "--help".into()]);
+                let error = Cli::try_parse_from(args).err().expect("help must exit");
+                assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            }
+            for child in command.get_subcommands() {
+                if child.get_name() == "help" {
+                    continue;
+                }
+                let mut path = path.clone();
+                path.push(child.get_name().into());
+                visit(child.clone(), path);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        visit(command, vec!["hades".into()]);
+        assert!(matches!(
+            Cli::try_parse_from(["hades", "ingest", "--force", "-f", "json"])
+                .unwrap()
+                .command,
+            Commands::Ingest { force: true, .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["hades", "codebase", "ingest", ".", "--force", "-f", "json"])
+                .unwrap()
+                .command,
+            Commands::Codebase(CodebaseCmd::Ingest { force: true, .. })
+        ));
     }
 }

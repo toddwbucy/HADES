@@ -62,19 +62,19 @@ Every daemon command is classified into exactly one tier:
 
 | Command | Parameters | Returns | Purpose |
 |---------|-----------|---------|---------|
-| `db.get` | `collection`, `key` | Single document | Fetch by known key |
-| `db.list` | `collection?`, `limit?`, `paper?` | Document array | Browse with pagination |
+| `db.get` | `collection`, `key`, `fields?` | Single document | Fetch by known key |
+| `db.list` | `collection?`, `limit?`, `paper?`, `fields?` | Document array | Browse with pagination |
 | `db.count` | `collection` | Integer count | Collection size |
 | `db.check` | `document_id` | Existence flag + metadata | Verify document exists before acting |
-| `db.recent` | `limit?` | Recently added documents | Discover new content |
+| `db.recent` | `limit?`, `fields?` | Recently added documents | Discover new content |
 
 ### 3.4 Graph Traversal
 
 | Command | Parameters | Returns | Purpose |
 |---------|-----------|---------|---------|
-| `db.graph.traverse` | `start`, `direction?`, `min_depth?`, `max_depth?`, `limit?`, `graph?` | Vertices and edges along paths | Walk the graph from a starting point |
-| `db.graph.neighbors` | `vertex`, `direction?`, `limit?`, `graph?` | Adjacent vertices | One-hop exploration |
-| `db.graph.shortest_path` | `source`, `target`, `direction?`, `graph?` | Path vertices and edges | Find connection between two nodes |
+| `db.graph.traverse` | `start`, `direction?`, `min_depth?`, `max_depth?`, `limit?`, `graph?`, `fields?` | Vertices and edges along paths | Walk the graph from a starting point |
+| `db.graph.neighbors` | `vertex`, `direction?`, `limit?`, `graph?`, `fields?` | Adjacent vertices | One-hop exploration |
+| `db.graph.shortest_path` | `source`, `target`, `direction?`, `graph?`, `fields?` | Path vertices and edges | Find connection between two nodes |
 
 **Defaults**: `direction=outbound` for traverse, `direction=any` for neighbors/shortest_path, `min_depth=1`, `max_depth=1`.
 
