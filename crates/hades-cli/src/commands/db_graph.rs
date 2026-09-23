@@ -33,10 +33,12 @@ pub async fn run_traverse(
     min_depth: u32,
     max_depth: u32,
     graph: Option<&str>,
+    fields: Option<&[String]>,
 ) -> Result<()> {
     dispatch_and_print(
         config,
         DaemonCommand::DbGraphTraverse(dispatch::DbGraphTraverseParams {
+            fields: fields.map(|v| v.to_vec()),
             start: start.to_string(),
             direction: direction.to_string(),
             min_depth,
@@ -55,10 +57,12 @@ pub async fn run_shortest_path(
     source: &str,
     target: &str,
     graph: Option<&str>,
+    fields: Option<&[String]>,
 ) -> Result<()> {
     dispatch_and_print(
         config,
         DaemonCommand::DbGraphShortestPath(dispatch::DbGraphShortestPathParams {
+            fields: fields.map(|v| v.to_vec()),
             source: source.to_string(),
             target: target.to_string(),
             direction: "any".to_string(),
@@ -76,10 +80,12 @@ pub async fn run_neighbors(
     direction: &str,
     limit: u32,
     graph: Option<&str>,
+    fields: Option<&[String]>,
 ) -> Result<()> {
     dispatch_and_print(
         config,
         DaemonCommand::DbGraphNeighbors(dispatch::DbGraphNeighborsParams {
+            fields: fields.map(|v| v.to_vec()),
             vertex: vertex.to_string(),
             direction: direction.to_string(),
             limit: Some(limit),

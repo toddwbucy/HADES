@@ -177,6 +177,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Omit bulk text and vectors from get, recent, traversal, neighbor and shortest-path
+  vertex results by default; expose explicit `fields` projection through daemon,
+  MCP and CLI without changing operation access tiers, and document all six
+  selectors in the model operation vocabulary (#170).
 - Build resolver candidate ordering once, share Python index construction, and
   require explicit completed cursor acknowledgments across persistence (#164).
 - Standardize CLI format selection: **breaking**, `-f` now means format on

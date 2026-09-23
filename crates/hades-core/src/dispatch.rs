@@ -205,6 +205,9 @@ pub struct DbAqlParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DbGetParams {
+    /// Explicit vertex projection; absent fields omit bulk text/vectors (#170).
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
     pub collection: String,
     pub key: String,
 }
@@ -280,6 +283,9 @@ pub struct DbCheckParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DbRecentParams {
+    /// Explicit vertex projection; absent fields omit bulk text/vectors (#170).
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
     #[serde(default)]
     pub limit: Option<u32>,
 }
@@ -331,6 +337,9 @@ pub struct GraphEmbedNeighborsParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DbGraphTraverseParams {
+    /// Explicit vertex projection; absent fields omit bulk text/vectors (#170).
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
     pub start: String,
     #[serde(default = "default_direction")]
     pub direction: String,
@@ -347,6 +356,9 @@ pub struct DbGraphTraverseParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DbGraphShortestPathParams {
+    /// Explicit vertex projection; absent fields omit bulk text/vectors (#170).
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
     pub source: String,
     pub target: String,
     #[serde(default = "default_direction_any")]
@@ -358,6 +370,9 @@ pub struct DbGraphShortestPathParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DbGraphNeighborsParams {
+    /// Explicit vertex projection; absent fields omit bulk text/vectors (#170).
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
     pub vertex: String,
     #[serde(default = "default_direction_any")]
     pub direction: String,
@@ -1103,9 +1118,14 @@ pub async fn dispatch(
         }
 
         // ── Database read commands ─────────────────────────────────────
-        DaemonCommand::DbGet(params) => handlers::db_get(pool, &params.collection, &params.key)
-            .await
-            .map_err(DispatchError::Handler),
+        DaemonCommand::DbGet(params) => handlers::db_get(
+            pool,
+            &params.collection,
+            &params.key,
+            params.fields.as_deref(),
+        )
+        .await
+        .map_err(DispatchError::Handler),
         DaemonCommand::DbCount(params) => handlers::db_count(pool, &params.collection)
             .await
             .map_err(DispatchError::Handler),
@@ -1117,7 +1137,7 @@ pub async fn dispatch(
             .map_err(DispatchError::Handler),
         DaemonCommand::DbRecent(params) => {
             let limit = params.limit.unwrap_or(10).min(MAX_LIMIT);
-            handlers::db_recent(pool, limit)
+            handlers::db_recent(pool, limit, params.fields.as_deref())
                 .await
                 .map_err(DispatchError::Handler)
         }
@@ -1187,6 +1207,7 @@ pub async fn dispatch(
                 params.max_depth,
                 limit,
                 params.graph.as_deref(),
+                params.fields.as_deref(),
             )
             .await
             .map_err(DispatchError::Handler)
@@ -1197,6 +1218,7 @@ pub async fn dispatch(
             &params.target,
             &params.direction,
             params.graph.as_deref(),
+            params.fields.as_deref(),
         )
         .await
         .map_err(DispatchError::Handler),
@@ -1208,6 +1230,7 @@ pub async fn dispatch(
                 &params.direction,
                 limit,
                 params.graph.as_deref(),
+                params.fields.as_deref(),
             )
             .await
             .map_err(DispatchError::Handler)
@@ -1518,9 +1541,11 @@ mod handlers {
         pool: &ArangoPool,
         collection: &str,
         key: &str,
+        fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
         crud::get_document(pool, collection, key)
             .await
+            .map(|document| project_vertex(document, fields))
             .map_err(|e| {
                 if e.is_not_found() {
                     HandlerError::DocumentNotFound {
@@ -1542,6 +1567,19 @@ mod handlers {
     /// so returning them by default made the payload proportional to the corpus
     /// rather than to the number of rows.
     pub(super) const BULK_FIELDS: &[&str] = &["full_text", "embedding", "text", "body"];
+
+    /// Match db.list's KEEP/UNSET policy for document-API reads (#170).
+    fn project_vertex(mut document: Value, fields: Option<&[String]>) -> Value {
+        if let Some(object) = document.as_object_mut() {
+            object.retain(|key, _| {
+                fields.map_or_else(
+                    || !BULK_FIELDS.contains(&key.as_str()),
+                    |keep| keep.contains(key),
+                )
+            });
+        }
+        document
+    }
 
     /// Count documents in a collection.
     pub async fn db_count(pool: &ArangoPool, collection: &str) -> Result<Value, HandlerError> {
@@ -1611,16 +1649,21 @@ mod handlers {
     }
 
     /// Return recently created/updated documents across collection profiles.
-    pub async fn db_recent(pool: &ArangoPool, limit: u32) -> Result<Value, HandlerError> {
+    pub async fn db_recent(
+        pool: &ArangoPool,
+        limit: u32,
+        fields: Option<&[String]>,
+    ) -> Result<Value, HandlerError> {
         let profile = CollectionProfile::default_profile();
         let aql = "FOR d IN @@col \
                     SORT d.created_at DESC, d._rev DESC \
                     LIMIT @limit \
-                    RETURN MERGE(d, { _collection: @col_name })";
+                    RETURN MERGE(@keep == null ? UNSET(d, @drop) : KEEP(d, @keep), { _collection: @col_name })";
 
         let bind = json!({
             "@col": profile.metadata,
             "col_name": profile.metadata,
+            "keep": fields, "drop": BULK_FIELDS,
             "limit": limit,
         });
 
@@ -2735,6 +2778,7 @@ mod handlers {
     const MAX_TRAVERSAL_DEPTH: u32 = 20;
 
     /// Graph traversal from a starting vertex.
+    #[allow(clippy::too_many_arguments)]
     pub async fn db_graph_traverse(
         pool: &ArangoPool,
         start: &str,
@@ -2743,6 +2787,7 @@ mod handlers {
         max_depth: u32,
         limit: u32,
         graph: Option<&str>,
+        fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
         // Validate start vertex format.
         parse_node_id(start)?;
@@ -2771,7 +2816,7 @@ mod handlers {
         let aql = format!(
             "FOR v, e IN @min_depth..@max_depth {dir_kw} @start GRAPH @graph \
              LIMIT @limit \
-             RETURN {{vertex: v, edge: e}}"
+             RETURN {{vertex: (@keep == null ? UNSET(v, @drop) : KEEP(v, @keep)), edge: e}}"
         );
 
         let bind = json!({
@@ -2780,6 +2825,7 @@ mod handlers {
             "start": start,
             "graph": graph_name,
             "limit": limit,
+            "keep": fields, "drop": BULK_FIELDS,
         });
 
         let result = query::query(
@@ -2811,6 +2857,7 @@ mod handlers {
         target: &str,
         direction: &str,
         graph: Option<&str>,
+        fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
         parse_node_id(source)?;
         parse_node_id(target)?;
@@ -2819,13 +2866,14 @@ mod handlers {
 
         let aql = format!(
             "FOR v, e IN {dir_kw} SHORTEST_PATH @from_v TO @to_v GRAPH @graph \
-             RETURN {{vertex: v, edge: e}}"
+             RETURN {{vertex: (@keep == null ? UNSET(v, @drop) : KEEP(v, @keep)), edge: e}}"
         );
 
         let bind = json!({
             "from_v": source,
             "to_v": target,
             "graph": graph_name,
+            "keep": fields, "drop": BULK_FIELDS,
         });
 
         let result = query::query(
@@ -2858,9 +2906,10 @@ mod handlers {
         direction: &str,
         limit: u32,
         graph: Option<&str>,
+        fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
         let traverse_result =
-            db_graph_traverse(pool, vertex, direction, 1, 1, limit, graph).await?;
+            db_graph_traverse(pool, vertex, direction, 1, 1, limit, graph, fields).await?;
 
         Ok(json!({
             "results": traverse_result["results"],
@@ -8347,12 +8396,14 @@ mod tests {
         assert!(cmd.is_agent_safe());
 
         let cmd = DaemonCommand::DbGet(DbGetParams {
+            fields: None,
             collection: "test".into(),
             key: "k".into(),
         });
         assert_eq!(cmd.access_tier(), AccessTier::Agent);
 
         let cmd = DaemonCommand::DbGraphTraverse(DbGraphTraverseParams {
+            fields: None,
             start: "c/k".into(),
             direction: "outbound".into(),
             min_depth: 1,

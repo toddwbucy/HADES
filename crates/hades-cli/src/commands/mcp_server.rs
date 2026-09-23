@@ -381,6 +381,10 @@ struct DbQueryArgs {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DbGetArgs {
+    #[schemars(
+        description = "Vertex fields to return. Omit to exclude full_text, embedding, text and body; name bulk fields explicitly to retrieve them."
+    )]
+    fields: Option<Vec<String>>,
     #[schemars(description = db_field_doc!())]
     db: Option<String>,
     #[schemars(description = "Collection holding the document")]
@@ -417,6 +421,10 @@ struct DbCountArgs {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct GraphNeighborsArgs {
+    #[schemars(
+        description = "Vertex fields to return. Omit to exclude full_text, embedding, text and body; name bulk fields explicitly to retrieve them."
+    )]
+    fields: Option<Vec<String>>,
     #[schemars(description = db_field_doc!())]
     db: Option<String>,
     #[schemars(description = "Start vertex as collection/_key, e.g. 'wt_assertions/trace-01'")]
@@ -435,6 +443,10 @@ struct GraphNeighborsArgs {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct GraphTraverseArgs {
+    #[schemars(
+        description = "Vertex fields to return. Omit to exclude full_text, embedding, text and body; name bulk fields explicitly to retrieve them."
+    )]
+    fields: Option<Vec<String>>,
     #[schemars(description = db_field_doc!())]
     db: Option<String>,
     #[schemars(description = "Start vertex as collection/_key")]
@@ -711,6 +723,7 @@ impl HadesMcpServer {
         self.run(
             a.db,
             DaemonCommand::DbGet(DbGetParams {
+                fields: a.fields,
                 collection: a.collection,
                 key: a.key,
             }),
@@ -761,6 +774,7 @@ impl HadesMcpServer {
         self.run(
             a.db,
             DaemonCommand::DbGraphNeighbors(DbGraphNeighborsParams {
+                fields: a.fields,
                 vertex: a.vertex,
                 direction: a.direction.unwrap_or_else(|| "any".to_string()),
                 limit: a.limit,
@@ -780,6 +794,7 @@ impl HadesMcpServer {
         self.run(
             a.db,
             DaemonCommand::DbGraphTraverse(DbGraphTraverseParams {
+                fields: a.fields,
                 start: a.start,
                 direction: a.direction.unwrap_or_else(|| "outbound".to_string()),
                 min_depth: a.min_depth.unwrap_or(1),
