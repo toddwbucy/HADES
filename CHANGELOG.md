@@ -171,6 +171,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Build codebase file rows through one schema for semantic, structural and text
+  analysis: always include matching `path`/`rel_path`, preserving the existing
+  parser-only metrics and raw-file merge behavior (#172).
+
 - Reconcile epic #12 acceptance evidence after worker, document and analyzer
   fixes, and retain sanitized deployment metadata with explicit provenance limits.
 
