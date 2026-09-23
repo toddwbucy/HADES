@@ -118,6 +118,29 @@ explicitly sets stale_retirement_performed to false and describes its coverage a
 present extracted rows only. Successful imports do not certify removal of stale
 declarations. In-place retirement/migration requires a separate reviewed procedure.
 
+### Document Format allowances and census
+
+Validation follows WeaverTools Document Format v0.24, sections 1, 3–5 (#175).
+Only the `WeaverTools` record with `kind: system` receives the identifier exception
+and `ratified` tag; assertions retain their instrument vocabulary. Rust, CUDA and
+Python owe file headers, except `build.rs`; TOML is read for citations but owes no
+header. Python headers belong to the opening comment block, and citation extraction
+uses comment tokens so strings and comments trailing code do not create edges.
+Malformed citations are reported rather than truncated into valid identifiers.
+
+The 34-versus-38 headerless discrepancy at upstream commit `13dd7db` was exactly
+three Python files (`alpha_loop.py`, `basic_loop.py`, `bravo_loop.py` under
+`crates/weaver-harness/src/bin/pyworker/dev_python/`) and
+`crates/weaver-spu/kernels/transformer.cu`, omitted by the old suffix list. The
+corrected source-only pass and upstream census both report 38 on that same tree.
+Comparisons must use the same source scope: an adapter scope supplied by the graph
+can exclude files that an unbounded corpus census includes. Workspace discovery
+retains the existing `crates/` walk; this is not a general workspace-layout rewrite.
+
+`schema.yaml` now names the endpoint collections allowed for each relation;
+`declared-in` remains the adapter's provenance bridge to ingested documents. This
+updates the reference schema, not existing databases or graph definitions. Applying
+it and rebuilding any affected production graph require separate authorization.
 ### Declared-node locations
 
 Every declared node row carries its one-based `node:` stanza `line` and the nearest

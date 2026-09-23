@@ -277,3 +277,64 @@ async fn vertex_read_class_projects_bulk_fields_and_explicit_opt_ins() {
         }
     }).await;
 }
+
+#[test]
+fn weavertools_edge_endpoints_follow_document_format() {
+    // Document Format v0.24 sections 3–4 at WeaverTools 13dd7db (#175).
+    // Read the actual YAML, not a parallel runtime table or a text-pattern proxy.
+    let schema: serde_json::Value = serde_yaml::from_str(include_str!(
+        "../../../services/adapters/weavertools/schema.yaml"
+    ))
+    .unwrap();
+    let expected = [
+        ("cites", vec!["codebase_files"], vec!["wt_assertions"]),
+        (
+            "declared_in",
+            vec![
+                "wt_artifacts",
+                "wt_assertions",
+                "wt_axioms",
+                "wt_crates",
+                "wt_documents",
+                "wt_systems",
+                "wt_terms",
+                "wt_vocabulary",
+            ],
+            vec!["documents"],
+        ),
+        ("asserts", vec!["wt_crates"], vec!["wt_assertions"]),
+        (
+            "defines",
+            vec!["wt_crates", "wt_documents"],
+            vec!["wt_vocabulary", "wt_terms"],
+        ),
+        (
+            "draws",
+            vec!["wt_documents"],
+            vec!["wt_vocabulary", "wt_terms"],
+        ),
+        ("elects", vec!["wt_vocabulary"], vec!["wt_vocabulary"]),
+        ("floor_link", vec!["wt_crates"], vec!["wt_crates"]),
+        ("grounds", vec!["wt_assertions"], vec!["wt_axioms"]),
+        ("holds", vec!["wt_artifacts"], vec!["wt_vocabulary"]),
+        ("parent", vec!["wt_crates"], vec!["wt_crates", "wt_systems"]),
+        ("party", vec!["wt_documents"], vec!["wt_crates"]),
+        ("reads", vec!["wt_crates"], vec!["wt_artifacts"]),
+        ("seam", vec!["wt_crates"], vec!["wt_crates"]),
+        ("writes", vec!["wt_crates"], vec!["wt_artifacts"]),
+    ];
+    let definitions = schema["edge_definitions"].as_array().unwrap();
+    assert_eq!(
+        definitions
+            .iter()
+            .filter(|row| row["name"].as_str().unwrap().starts_with("wt_"))
+            .count(),
+        expected.len()
+    );
+    for (relation, from, to) in expected {
+        let name = format!("wt_{relation}_edges");
+        let row = definitions.iter().find(|row| row["name"] == name).unwrap();
+        assert_eq!(row["from_collections"], json!(from), "{name}");
+        assert_eq!(row["to_collections"], json!(to), "{name}");
+    }
+}

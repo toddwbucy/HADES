@@ -39,6 +39,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Align WeaverTools system identifiers/tags, Rust/CUDA/Python header census,
+  and declared relation endpoint collections with Document Format v0.24 (#175).
 - Preserve each declared WeaverTools node’s source stanza line and enclosing
   Markdown heading across every adapter node collection (#174).
 - Validate inbound-remap and preserved-target cursor snapshots with the common
