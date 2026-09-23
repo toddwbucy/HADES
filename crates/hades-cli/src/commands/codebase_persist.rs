@@ -82,7 +82,9 @@ impl Replacement {
             let moved = remap_inbound(&client, &self.symbol_remap).await?;
             self.file["_key"] = json!(self.key);
             let mode = if self.merge_file { "update" } else { "replace" };
-            let response = client.post(&format!("document/{}?overwriteMode={mode}", CODEBASE.files), &self.file).await?;
+            // POST update defaults to removing nulls; preserve explicit non-Git
+            // provenance through repeated raw-file replacement (#171).
+            let response = client.post(&format!("document/{}?overwriteMode={mode}&keepNull=true", CODEBASE.files), &self.file).await?;
             let revision = response["_rev"].as_str()
                 .ok_or_else(|| ArangoError::Request("file write returned no revision".into()))?.to_owned();
             Ok(StoredFile { moved_edges: moved, revision })

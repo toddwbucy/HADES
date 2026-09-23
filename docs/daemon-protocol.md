@@ -138,6 +138,13 @@ that grants the tier and forgets the bounds has granted no reach. Both refusals
 name what was permitted, because a client that cannot tell "not allowed" from
 "broken" will retry.
 
+Ingest envelopes and job records include `source_git`: an observed `{commit, dirty}`
+for a Git worktree, or explicit null outside Git. Job provenance is captured at
+admission; the completed result carries the child's own ingestion envelope. These
+observations do not lock the source tree or establish an atomic snapshot. Written
+file/document rows retain their ingestion observation; skipped rows keep their
+prior provenance. Dirty includes untracked files and submodule changes (#171).
+
 `ingest.start` returns a job id rather than blocking: real ingests run for
 minutes and the network transport caps a request at 60 seconds, so a blocking
 call would report failure for work that is still succeeding. `ingest.status` is

@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Record observed source Git commit and dirty state on ingested file/document rows,
+  ingest envelopes and job records, and the WeaverTools adapter report; non-Git
+  inputs explicitly carry null provenance. Missing Git is named explicitly and
+  Git diagnostics use the C locale consistently in Rust and Python (#171).
 - Include structured token count, ceiling and input index in embedding size
   refusals, with client precedence over legacy prose (#164).
 

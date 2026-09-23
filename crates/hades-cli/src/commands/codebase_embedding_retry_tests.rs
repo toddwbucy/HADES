@@ -68,7 +68,7 @@ async fn recovered_embedding_windows_determine_file_outcome() {
             *state.lock().unwrap() = (0,0);
             let mut imports = ImportContext::default();
             let seed = ingest_file(&pool,Some(&embedder),&config,&path,&rel,None,&mut imports,None,
-                true,false,false,9000,namespace).await.unwrap();
+                true,false,false,9000,namespace,&None).await.unwrap();
             assert!(seed.success, "seed must succeed: {:?}", seed.error);
             let windows = state.lock().unwrap().1;
             assert!(windows >= 2, "fixture must span multiple real late windows");
@@ -88,7 +88,7 @@ async fn recovered_embedding_windows_determine_file_outcome() {
             *state.lock().unwrap() = (mode,0);
             let mut imports = ImportContext::default();
             let result = ingest_file(&pool,Some(&embedder),&config,&path,&rel,None,&mut imports,None,
-                true,false,false,9000,namespace).await.unwrap();
+                true,false,false,9000,namespace,&None).await.unwrap();
             let calls = state.lock().unwrap().1;
             let after = snapshot(pool.clone(),key.clone()).await;
             println!("EMBED_RETRY_OUTCOME {}",json!({"case":case,"success":result.success,

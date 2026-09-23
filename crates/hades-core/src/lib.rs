@@ -14,6 +14,7 @@ pub mod pipeline;
 pub mod retrieval;
 pub mod schema_apply;
 pub mod service;
+pub mod source_git;
 /// Throwaway-database harness for write tests. Feature-gated: see the module.
 #[cfg(feature = "test-support")]
 pub mod test_support;

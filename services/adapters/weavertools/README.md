@@ -118,6 +118,19 @@ explicitly sets stale_retirement_performed to false and describes its coverage a
 present extracted rows only. Successful imports do not certify removal of stale
 declarations. In-place retirement/migration requires a separate reviewed procedure.
 
+### Source revision
+
+`wt_ingest_report/latest.source_git` records `{commit, dirty}` observed before
+extraction (#171), matching the Rust ingest field. Non-Git inputs carry explicit
+null; an unborn Git branch has a null commit. Dirty includes untracked files and
+submodule changes across the worktree. This is an observation, not an atomic
+snapshot or a guarantee that files stayed unchanged during ingestion.
+
+File/document rows record the observation when rewritten; incremental skips keep
+their prior provenance. The CLI envelope describes the current invocation, while
+MCP job provenance describes admission and its result contains the child output.
+Explicit-file batches retain per-item provenance and use null at envelope level
+when observations differ. Older rows are not backfilled.
 ### Document Format allowances and census
 
 Validation follows WeaverTools Document Format v0.24, sections 1, 3–5 (#175).
