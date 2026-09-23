@@ -47,3 +47,60 @@ async fn schema_apply_real_imports_replace_preserve_and_fail_explicitly() {
             "prior_seed_value":2,"unrelated_value":9,"document_count":2,"metadata_revision_unchanged":true}));
     }).await;
 }
+
+#[tokio::test]
+async fn weavertools_schema_apply_ensures_lookup_indexes_idempotently() {
+    with_temp_db("lookup_schema", Fixtures::Empty, |pool| async move {
+        let embedder=Embedder::new().await;
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../services/adapters/weavertools/schema.yaml");
+        let mut previous=std::collections::BTreeMap::new();
+        for pass in 0..2 {
+            let output=cli_command(&pool,&embedder,&["schema","apply",path.to_str().unwrap()]).output().await.unwrap();
+            assert!(output.status.success(),"{output:?}");
+            for suffix in ["assertions","documents","vocabulary","crates","terms","axioms","artifacts","systems"] {
+                let collection=format!("wt_{suffix}");
+                let indexes=hades_core::db::index::list_indexes(&pool,&collection).await.unwrap();
+                let matches:Vec<_>=indexes.iter().filter(|i|i.index_type=="persistent" && i.fields==["ident"]).collect();
+                assert_eq!(matches.len(),1,"{collection}: {indexes:?}");
+                if pass==0 { previous.insert(collection,matches[0].id.clone()); }
+                else { assert_eq!(previous[&collection],matches[0].id); }
+            }
+        }
+    }).await;
+}
+
+#[tokio::test]
+async fn lookup_cli_preserves_json_value_types() {
+    with_temp_db("lookup_cli_json", Fixtures::Empty, |pool| async move {
+        use hades_core::db::{crud, index};
+        crud::create_collection(&pool, "lookup_values", Some(2)).await.unwrap();
+        index::ensure_lookup_index(&pool, "lookup_values", "value").await.unwrap();
+        crud::insert_documents(&pool, "lookup_values", &[
+            json!({"_key":"string","value":"weaver-spu"}),
+            json!({"_key":"quoted","value":"\"weaver-spu\""}),
+            json!({"_key":"number","value":42}),
+            json!({"_key":"number_string","value":"42"}),
+            json!({"_key":"boolean","value":true}),
+            json!({"_key":"boolean_string","value":"true"}),
+        ], false).await.unwrap();
+        let embedder=Embedder::new().await;
+        for (argument, key) in [
+            ("\"weaver-spu\"", "string"),
+            ("\"\\\"weaver-spu\\\"\"", "quoted"),
+            ("42", "number"), ("true", "boolean"),
+            ("\"42\"", "number_string"), ("\"true\"", "boolean_string"),
+        ] {
+            let output=cli_command(&pool,&embedder,&["db","lookup","lookup_values","value",argument]).output().await.unwrap();
+            assert!(output.status.success(),"{argument}: {output:?}");
+            let envelope:Value=serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(envelope["data"]["count"],1,"{argument}: {envelope}");
+            assert_eq!(envelope["data"]["documents"][0]["_key"],key,"{argument}: {envelope}");
+        }
+        for argument in ["weaver-spu", "{broken", "\"unterminated"] {
+            let output=cli_command(&pool,&embedder,&["db","lookup","lookup_values","value",argument]).output().await.unwrap();
+            assert_eq!(output.status.code(),Some(2),"{output:?}");
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("invalid JSON"),"{output:?}");
+        }
+    }).await;
+}

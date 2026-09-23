@@ -4,6 +4,11 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 
+// clap otherwise prefers Value::from(String), preserving quotes and losing JSON types (#173).
+fn parse_json_value(input: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str(input).map_err(|error| format!("invalid JSON: {error}"))
+}
+
 #[derive(Debug, Subcommand)]
 pub enum DbCmd {
     /// Semantic search across the knowledge base.
@@ -197,6 +202,19 @@ pub enum DbCmd {
     Count {
         /// Collection name.
         collection: String,
+    },
+
+    /// Lookup documents by equality on a persistently indexed field.
+    Lookup {
+        collection: String,
+        field: String,
+        /// Equality value as JSON (quote JSON strings, e.g. '"weaver-spu"').
+        #[arg(value_parser = parse_json_value)]
+        value: serde_json::Value,
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: u32,
+        #[arg(long, value_delimiter = ',')]
+        fields: Option<Vec<String>>,
     },
 
     /// Get a single document by key.

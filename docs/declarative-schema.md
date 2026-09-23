@@ -642,3 +642,31 @@ $ hades --db my_project_db db count my_concepts
 # 5. Capture current state back to YAML (optional)
 $ hades --db my_project_db schema export > my-project/snapshot.yaml
 ```
+
+## Lookup indexes (`lookup_fields`)
+
+A collection may declare fields for Agent-tier `db.lookup` / MCP `db_lookup`:
+
+```yaml
+collections:
+  - name: wt_assertions
+    type: document
+    lookup_fields: [ident]
+```
+
+`hades schema apply` ensures one non-unique, non-sparse persistent index per
+listed field after creating collections and before inserting seeds. Reapplying
+reuses equivalent indexes; `--dry-run` reports `ensure_lookup_index` operations
+without writing. Existing in-use guards still apply. No live database is migrated
+by editing the reference YAML.
+
+Dot-separated nested paths are supported; empty paths, array-expansion syntax,
+and duplicate declarations are rejected before writes. The WeaverTools reference
+schema declares `ident` on all eight declared-node collections; `wt_ingest_report`
+is an operational report, not a declared-node collection.
+
+Lookup accepts only persistent indexes beginning with the requested field and
+forces their use. A second compound-index field alone does not qualify. The
+[ArangoDB forced-index contract](https://docs.arango.ai/arangodb/stable/aql/high-level-operations/for/#forceindexhint)
+rejects an unusable hint rather than silently scanning. Lookup never creates an
+index: eligibility is the schema owner's decision.

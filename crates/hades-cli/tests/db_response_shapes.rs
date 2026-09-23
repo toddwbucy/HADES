@@ -972,3 +972,30 @@ async fn get_cli_excludes_bulk_unless_fields_are_named() {
         }
     }
 }
+
+#[tokio::test]
+async fn lookup_refuses_before_opening_cursor() {
+    let indexes = json!({"indexes":[
+        {"id":"nodes/1","name":"primary","type":"primary","fields":["_key"]},
+        {"id":"nodes/2","name":"by_ident","type":"persistent","fields":["ident","other"]}
+    ]});
+    for field in ["unknown", "other", "_key"] {
+        let (output, calls) = run(
+            &["lookup", "nodes", field, "\"wanted\""],
+            vec![indexes.clone()],
+        )
+        .await;
+        failed(&output);
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("indexed fields available") && message.contains("ident"),
+            "{message}"
+        );
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].ends_with("/index"), "{calls:?}");
+    }
+    let (output,calls)=run(&["lookup","missing_nodes","ident","\"wanted\""],vec![json!({"_fixture_status":404,"error":true,"errorNum":1203,"errorMessage":"collection not found"})]).await;
+    failed(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("missing_nodes"));
+    assert_eq!(calls.len(), 1);
+}

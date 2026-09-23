@@ -706,6 +706,19 @@ fn main() -> anyhow::Result<()> {
             process::exit(1);
         }
         // ── Native DB read commands ─────────────────────────────────────
+        Commands::Db(commands::db::DbCmd::Lookup {
+            collection,
+            field,
+            value,
+            limit,
+            fields,
+        }) => {
+            init_tracing();
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::db_read::run_lookup(
+                &config, collection, field, value, limit, fields,
+            ))
+        }
         Commands::Db(commands::db::DbCmd::Get {
             fields,
             collection,
