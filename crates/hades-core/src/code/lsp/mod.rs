@@ -6,6 +6,7 @@ pub mod go_symbols;
 pub mod gopls;
 mod preflight;
 mod process;
+mod requests;
 pub mod rust_analyzer;
 pub mod rust_symbols;
 pub mod session;
@@ -23,6 +24,8 @@ use thiserror::Error;
 pub enum LspError {
     #[error("language server not found: {0}")]
     NotFound(String),
+    #[error("invalid LSP response: {0}")]
+    InvalidResponse(String),
     #[error("LSP process error: {0}")]
     Process(String),
     #[error("JSON-RPC error {code}: {message}")]

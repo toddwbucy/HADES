@@ -97,6 +97,7 @@ pub struct CodebaseIngestFailure {
 /// import edges can be resolved in a batch pass after all files are processed.
 #[derive(Default)]
 struct ImportContext {
+    prepared_sources: HashMap<String, String>,
     /// Python: rel_path → list of import symbols (with metadata for resolution).
     python_imports: HashMap<String, Vec<Symbol>>,
     /// Python: rel_path → all definition symbols (for building the resolution index).
@@ -268,6 +269,7 @@ pub async fn run_phase(
     let mut rewritten_file_keys: Vec<String> = Vec::new();
     // Accumulators for cross-file import resolution.
     let mut imports = ImportContext {
+        prepared_sources: HashMap::new(),
         python_imports: HashMap::new(),
         python_file_symbols: HashMap::new(),
         rust_imports: HashMap::new(),
@@ -278,11 +280,34 @@ pub async fn run_phase(
         committed_revisions: HashMap::new(),
         remapped_symbols: 0,
     };
-    // Collect absolute paths for Rust files — used for rust-analyzer post-loop phase.
-    let mut rust_abs_paths: Vec<PathBuf> = Vec::new();
-    // Go starts with Tree-sitter and is semantically enriched by gopls after
-    // the full module file set is available.
-    let mut go_abs_paths: Vec<PathBuf> = Vec::new();
+    let rust_abs_paths: Vec<_> = files
+        .iter()
+        .filter(|path| is_semantic_target(path, lang_override, &unparsed_set, Language::Rust, "rs"))
+        .cloned()
+        .collect();
+    let go_abs_paths: Vec<_> = files
+        .iter()
+        .filter(|path| is_semantic_target(path, lang_override, &unparsed_set, Language::Go, "go"))
+        .cloned()
+        .collect();
+    // Discover incomplete semantic results BEFORE replacing any stored file.
+    // A later warning cannot recover edges already purged by replacement (#179).
+    let rust_prepared = if rust_analyzer_cmd.is_some() {
+        prepare_rust_analyzer_phase(&base, &rust_abs_paths, rust_analyzer_cmd.as_deref()).await?
+    } else {
+        PreparedLsp::default()
+    };
+    let go_prepared = if gopls_cmd.is_some() {
+        prepare_gopls_phase(&base, &go_abs_paths, gopls_cmd.as_deref()).await?
+    } else {
+        PreparedLsp::default()
+    };
+    imports
+        .prepared_sources
+        .extend(rust_prepared.source_hashes.clone());
+    imports
+        .prepared_sources
+        .extend(go_prepared.source_hashes.clone());
 
     // Auto-activate batch mode for large input sets.
     let batch_mode = batch || files.len() > 5;
@@ -338,25 +363,21 @@ pub async fn run_phase(
                 .is_some_and(|e| unparsed_set.contains(e))
                 || (has_shebang && shebang_lang.is_none() && lang_override.is_none()));
 
-        // Track Rust/Go files for post-loop semantic enrichment (parsed only).
-        // Uses the SAME predicate as the preflight gate above, so the set the
-        // gate protects and the set the phases process cannot diverge — a
-        // divergence here is exactly how `--language rust` on non-.rs files
-        // would skip the preflight and silently lose enrichment (#164).
-        if is_semantic_target(
-            file_path,
-            lang_override,
-            &unparsed_set,
-            Language::Rust,
-            "rs",
-        ) {
-            rust_abs_paths.push(file_path.clone());
-        }
-        if is_semantic_target(file_path, lang_override, &unparsed_set, Language::Go, "go") {
-            go_abs_paths.push(file_path.clone());
-        }
-
-        let result = if is_unparsed {
+        let result = if rust_prepared.failed_file(file_path) || go_prepared.failed_file(file_path) {
+            async {
+                let key = keys::scoped_file_key(namespace, &rel_path);
+                let observed = super::codebase_persist::revision(db.writer(), &key).await?;
+                if observed.is_some() {
+                    collect_preserved_targets(&db, &key, observed.as_deref(), &rel_path, None, &mut imports).await?;
+                }
+                Ok::<_, anyhow::Error>(FileResult {
+                    path: rel_path.clone(), success: true, skipped: Some(true),
+                    language: None, num_symbols: None, num_chunks: None, num_embeddings: None,
+                    embedding_error: None, duration_ms: 0,
+                    error: Some("semantic requests incomplete; file replacement withheld and any stored graph retained".into()),
+                })
+            }.await
+        } else if is_unparsed {
             async {
                 let key = keys::scoped_file_key(namespace, &rel_path);
                 let observed = super::codebase_persist::revision(db.writer(), &key).await?;
@@ -508,39 +529,15 @@ pub async fn run_phase(
     let mut enrichment_failure: Option<String> = None;
 
     // ── rust-analyzer deep analysis ────────────────────────────────────
-    // When Rust files were ingested, optionally use rust-analyzer for richer
-    // symbol extraction: qualified names, call hierarchy, impl-trait edges,
-    // PyO3/FFI detection. This enrichment phase runs after the syn-based loop.
+    // Persist complete results prepared before replacement. The storage pass
+    // augments syn symbols with qualified names, calls and impl-trait edges.
     let ra_stats = if relationship_error.is_none()
         && !rust_abs_paths.is_empty()
         && rust_analyzer_cmd.is_some()
     {
-        match run_rust_analyzer_phase(&db, &base, &rust_abs_paths, rust_analyzer_cmd.as_deref())
-            .await
-        {
-            Ok(stats) => {
-                info!(
-                    symbols = stats.symbols,
-                    edges = stats.edges,
-                    crates = stats.workspaces,
-                    store_errors = stats.store_errors,
-                    "rust-analyzer enrichment complete"
-                );
-                stats
-            }
-            Err(e) => {
-                // `{e:#}` prints the full anyhow context chain — plain `{e}`
-                // shows only the outermost context and swallows the underlying
-                // cause (#180).
-                warn!(error = %format!("{e:#}"), "rust-analyzer enrichment failed, syn-based data retained");
-                if !allow_analysis_downgrade {
-                    enrichment_failure = Some(format!("rust-analyzer enrichment failed: {e:#}"));
-                }
-                SemanticLspStats::default()
-            }
-        }
+        rust_prepared.store(&db, &base, "rust-analyzer", "ra").await
     } else {
-        SemanticLspStats::default()
+        rust_prepared.stats
     };
 
     // Total enrichment failure is loud, not an info line (#164). The preflight
@@ -584,32 +581,12 @@ pub async fn run_phase(
         });
     }
 
-    let gopls_stats = if relationship_error.is_none()
-        && !go_abs_paths.is_empty()
-        && gopls_cmd.is_some()
-    {
-        match run_gopls_phase(&db, &base, &go_abs_paths, gopls_cmd.as_deref()).await {
-            Ok(stats) => {
-                info!(
-                    symbols = stats.symbols,
-                    edges = stats.edges,
-                    modules = stats.workspaces,
-                    "gopls semantic enrichment complete"
-                );
-                stats
-            }
-            Err(error) => {
-                warn!(error = %format!("{error:#}"), "gopls enrichment failed; Tree-sitter Go data retained");
-                if !allow_analysis_downgrade {
-                    enrichment_failure
-                        .get_or_insert_with(|| format!("gopls enrichment failed: {error:#}"));
-                }
-                SemanticLspStats::default()
-            }
-        }
-    } else {
-        SemanticLspStats::default()
-    };
+    let gopls_stats =
+        if relationship_error.is_none() && !go_abs_paths.is_empty() && gopls_cmd.is_some() {
+            go_prepared.store(&db, &base, "gopls", "gopls").await
+        } else {
+            go_prepared.stats
+        };
 
     // Enrichment failures are recorded rather than raised here, and returned
     // after the summary JSON is printed. `codebase ingest` writes the graph
@@ -698,6 +675,11 @@ pub async fn run_phase(
                  them was rewritten this run, so nothing was lost"
             );
         }
+    }
+
+    let failed_requests = ra_stats.failed_request_count + gopls_stats.failed_request_count;
+    if failed_requests > 0 && !allow_analysis_downgrade {
+        enrichment_failure.get_or_insert_with(|| format!("{failed_requests} semantic request(s) failed after retry; affected file graphs retained; retry or explicitly accept degraded enrichment with --allow-analysis-downgrade"));
     }
 
     // Report inbound edges left dangling by this run's rebuilds.
@@ -799,6 +781,8 @@ pub async fn run_phase(
             "crates_analyzed": ra_stats.workspaces,
             "failed_workspaces": ra_stats.failed_workspaces,
             "failed_files": ra_stats.failed_files,
+            "failed_requests": ra_stats.failed_requests,
+            "failed_request_count": ra_stats.failed_request_count,
             "store_errors": ra_stats.store_errors,
             "store_failed": ra_stats.store_failed,
         },
@@ -808,6 +792,8 @@ pub async fn run_phase(
             "modules_analyzed": gopls_stats.workspaces,
             "failed_workspaces": gopls_stats.failed_workspaces,
             "failed_files": gopls_stats.failed_files,
+            "failed_requests": gopls_stats.failed_requests,
+            "failed_request_count": gopls_stats.failed_request_count,
             "store_errors": gopls_stats.store_errors,
             "store_failed": gopls_stats.store_failed,
         },
@@ -1499,6 +1485,12 @@ async fn ingest_file(
     let expected_revision = super::codebase_persist::revision(db.writer(), &fkey).await?;
     let source = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
+
+    if let Some(expected) = imports.prepared_sources.get(rel_path)
+        && *expected != code::compute_content_hash(&source)
+    {
+        anyhow::bail!("source changed since semantic preparation; retry ingestion");
+    }
 
     // Detect language.
     let lang = lang_override
@@ -2822,6 +2814,8 @@ async fn check_unchanged(
 /// reserved for the analyzer itself producing nothing (#164).
 #[derive(Default)]
 struct SemanticLspStats {
+    failed_requests: Vec<hades_core::code::lsp::symbols::FailedRequest>,
+    failed_request_count: usize,
     /// Symbol documents actually stored (created + updated).
     symbols: usize,
     /// Edge documents actually stored (created + updated).
@@ -2874,25 +2868,18 @@ fn failed_enrichment_paths<'a>(
         .collect()
 }
 
-/// Run rust-analyzer over ingested Rust files to produce rich symbols and edges.
-///
-/// Groups files by crate root, spawns a `RustAnalyzerSession` per crate,
-/// extracts qualified symbols with call hierarchy and impl-trait info, then
-/// stores the enriched symbol documents and edges to ArangoDB.
-///
-/// This phase is additive: it overwrites top-level symbol documents (same
-/// keys as syn) and adds new method-level symbols and cross-file edges
-/// that syn cannot produce.
-async fn run_rust_analyzer_phase(
-    db: &ArangoPool,
+/// Prepare rust-analyzer results before any file graph is replaced (#179).
+/// Failed requests must be known while the previous graph still exists.
+/// Complete results are stored after the syn pass using the same symbol keys.
+async fn prepare_rust_analyzer_phase(
     base: &Path,
     rust_files: &[PathBuf],
     command: Option<&str>,
-) -> Result<SemanticLspStats> {
-    let revisions = enrichment_revisions(db, base, rust_files).await?;
+) -> Result<PreparedLsp> {
+    let source_hashes = semantic_source_hashes(base, rust_files)?;
     let groups = group_files_by_crate(rust_files);
     if groups.is_empty() {
-        return Ok(SemanticLspStats::default());
+        return Ok(PreparedLsp::default());
     }
 
     info!(
@@ -2963,35 +2950,32 @@ async fn run_rust_analyzer_phase(
         }
     }
 
-    let mut stats = store_lsp_extractions(
-        db,
+    Ok(PreparedLsp::new(
         all_extractions,
-        revisions,
-        crates_analyzed,
-        groups.len(),
-        "rust-analyzer",
-        "ra",
-        base.to_str().context("ingest root must be valid UTF-8")?,
-    )
-    .await?;
-    stats.failed_workspaces = failed_workspaces;
-    stats.failed_files = failed_files;
-    Ok(stats)
+        source_hashes,
+        SemanticLspStats {
+            workspaces: crates_analyzed,
+            workspaces_attempted: groups.len(),
+            failed_workspaces,
+            failed_files,
+            ..Default::default()
+        },
+        base,
+    ))
 }
 
 /// Run gopls over each discovered Go module. Tree-sitter artifacts remain in
 /// place when gopls is absent or a module fails, satisfying the #152 fallback
 /// contract without a database-wide language mode.
-async fn run_gopls_phase(
-    db: &ArangoPool,
+async fn prepare_gopls_phase(
     base: &Path,
     go_files: &[PathBuf],
     command: Option<&str>,
-) -> Result<SemanticLspStats> {
-    let revisions = enrichment_revisions(db, base, go_files).await?;
+) -> Result<PreparedLsp> {
+    let source_hashes = semantic_source_hashes(base, go_files)?;
     let groups = group_files_by_go_module(go_files);
     if groups.is_empty() {
-        return Ok(SemanticLspStats::default());
+        return Ok(PreparedLsp::default());
     }
     info!(
         module_count = groups.len(),
@@ -3044,20 +3028,135 @@ async fn run_gopls_phase(
             debug!(%error, "gopls shutdown warning (non-fatal)");
         }
     }
-    let mut stats = store_lsp_extractions(
-        db,
+    Ok(PreparedLsp::new(
         all_extractions,
-        revisions,
-        modules_analyzed,
-        groups.len(),
-        "gopls",
-        "gopls",
-        base.to_str().context("ingest root must be valid UTF-8")?,
-    )
-    .await?;
-    stats.failed_workspaces = failed_modules;
-    stats.failed_files = failed_files;
-    Ok(stats)
+        source_hashes,
+        SemanticLspStats {
+            workspaces: modules_analyzed,
+            workspaces_attempted: groups.len(),
+            failed_workspaces: failed_modules,
+            failed_files,
+            ..Default::default()
+        },
+        base,
+    ))
+}
+
+#[derive(Default)]
+struct PreparedLsp {
+    protected_files: std::collections::HashSet<PathBuf>,
+    extractions: HashMap<String, FileExtraction>,
+    source_hashes: HashMap<String, String>,
+    stats: SemanticLspStats,
+}
+
+fn semantic_source_hashes(base: &Path, paths: &[PathBuf]) -> Result<HashMap<String, String>> {
+    paths
+        .iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path)?;
+            Ok((
+                path.strip_prefix(base)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned(),
+                code::compute_content_hash(&source),
+            ))
+        })
+        .collect()
+}
+
+impl PreparedLsp {
+    fn new(
+        mut extractions: HashMap<String, FileExtraction>,
+        source_hashes: HashMap<String, String>,
+        mut stats: SemanticLspStats,
+        base: &Path,
+    ) -> Self {
+        let mut protected_files = std::collections::HashSet::new();
+        let mut paths: Vec<_> = extractions.keys().cloned().collect();
+        paths.sort();
+        for path in paths {
+            let extraction = &extractions[&path];
+            stats.failed_request_count += extraction.failed_request_count;
+            let remaining = hades_core::code::lsp::symbols::FAILED_REQUEST_LIMIT
+                .saturating_sub(stats.failed_requests.len());
+            stats
+                .failed_requests
+                .extend(extraction.failed_requests.iter().take(remaining).cloned());
+            if extraction.failed_request_count > 0 {
+                protected_files.insert(base.join(&path));
+                stats.failed_files.push(base.join(&path));
+                extractions.remove(&path);
+            }
+        }
+        Self {
+            protected_files,
+            extractions,
+            source_hashes,
+            stats,
+        }
+    }
+
+    fn failed_file(&self, path: &Path) -> bool {
+        self.protected_files.contains(path)
+    }
+
+    async fn store(
+        mut self,
+        db: &ArangoPool,
+        base: &Path,
+        analyzer: &'static str,
+        prefix: &'static str,
+    ) -> SemanticLspStats {
+        let result = async {
+            let files: Vec<_> = self
+                .extractions
+                .keys()
+                .map(|path| base.join(path))
+                .collect();
+            let revisions = enrichment_revisions(db, base, &files).await?;
+            for (path, input) in &revisions {
+                anyhow::ensure!(
+                    self.source_hashes.get(path) == Some(&input.content_hash),
+                    "source changed since semantic preparation; retry ingestion"
+                );
+            }
+            store_lsp_extractions(
+                db,
+                self.extractions,
+                revisions,
+                self.stats.workspaces,
+                self.stats.workspaces_attempted,
+                analyzer,
+                prefix,
+                base.to_str().context("ingest root must be valid UTF-8")?,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(stored) => {
+                self.stats.symbols = stored.symbols;
+                self.stats.edges = stored.edges;
+                self.stats.store_failed = stored.store_failed;
+                self.stats.store_errors = stored.store_errors;
+            }
+            Err(error) => {
+                warn!(analyzer, %error, "prepared enrichment could not be stored");
+                self.stats.store_failed = true;
+            }
+        }
+        info!(
+            analyzer,
+            symbols = self.stats.symbols,
+            edges = self.stats.edges,
+            failed_requests = self.stats.failed_request_count,
+            store_failed = self.stats.store_failed,
+            "semantic enrichment storage complete"
+        );
+        self.stats
+    }
 }
 
 #[derive(Clone)]

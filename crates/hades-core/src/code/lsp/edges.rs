@@ -513,6 +513,8 @@ mod tests {
 
     fn make_extraction(symbols: Vec<ExtractedSymbol>) -> FileExtraction {
         FileExtraction {
+            failed_requests: Vec::new(),
+            failed_request_count: 0,
             symbols,
             impl_blocks: Vec::new(),
             implementations: Vec::new(),

@@ -270,3 +270,7 @@ async fn cancelled_partial_did_open_does_not_publish_open_state() {
         .unwrap()
         .unwrap();
 }
+
+mod request_outcomes {
+    include!("fixtures/lsp_request_outcomes.rs");
+}

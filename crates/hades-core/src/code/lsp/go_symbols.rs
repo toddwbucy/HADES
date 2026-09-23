@@ -11,6 +11,7 @@ use tracing::{debug, warn};
 
 use super::LspError;
 use super::gopls::GoplsSession;
+use super::requests::{self, RequestKind, SymbolRequest};
 use super::session::uri_to_path;
 use super::symbols::{
     CallTarget, ExtractedSymbol, FileExtraction, ImplementationTarget, symbol_kind_name,
@@ -47,9 +48,33 @@ impl<'a> GoSymbolExtractor<'a> {
         let raw_symbols = self.session.document_symbols(file_path).await?;
         let uri = self.session.open_file(file_path).await?;
         let mut extraction = FileExtraction::empty();
+        let mut requests = Vec::new();
         for symbol in &raw_symbols {
-            self.walk_symbol(symbol, &uri, None, None, &mut extraction)
+            self.walk_symbol(symbol, None, None, &mut extraction, &mut requests)
                 .await;
+        }
+        let file = uri_relative_path(&uri, self.path_root);
+        for (request, value) in
+            requests::resolve(self.session, &uri, &file, requests, &mut extraction).await
+        {
+            match request.kind {
+                RequestKind::Calls => {
+                    extraction.symbols[request.index].calls =
+                        self.call_targets(value.as_array().expect("resolved calls are a list"))
+                }
+                RequestKind::Hover => {
+                    if let Some(signature) = extract_signature_from_hover(&value) {
+                        extraction.symbols[request.index].signature = signature;
+                    }
+                }
+                RequestKind::Implementations { interface } => self.add_implementations(
+                    &interface,
+                    value
+                        .as_array()
+                        .expect("resolved implementations are a list"),
+                    &mut extraction,
+                ),
+            }
         }
         Ok(extraction)
     }
@@ -93,10 +118,10 @@ impl<'a> GoSymbolExtractor<'a> {
     fn walk_symbol<'b>(
         &'b self,
         symbol: &'b Value,
-        uri: &'b str,
         parent: Option<&'b str>,
         interface_owner: Option<&'b str>,
         extraction: &'b mut FileExtraction,
+        requests: &'b mut Vec<SymbolRequest>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'b>> {
         Box::pin(async move {
             let raw_name = symbol["name"].as_str().unwrap_or("");
@@ -132,22 +157,24 @@ impl<'a> GoSymbolExtractor<'a> {
                 .filter(|character| character.is_uppercase())
                 .map_or("private", |_| "pub")
                 .to_string();
-            let mut signature = symbol["detail"].as_str().unwrap_or("").to_string();
-            if should_request_hover(&visibility, kind)
-                && let Ok(Some(hover)) = self
-                    .session
-                    .hover(uri, selection_line, selection_character)
-                    .await
-                && let Some(value) = extract_signature_from_hover(&hover)
-            {
-                signature = value;
+            let signature = symbol["detail"].as_str().unwrap_or("").to_string();
+            let index = extraction.symbols.len();
+            if should_request_hover(&visibility, kind) {
+                requests.push(SymbolRequest {
+                    index,
+                    line: selection_line,
+                    character: selection_character,
+                    kind: RequestKind::Hover,
+                });
             }
-            let calls = if self.include_calls && matches!(kind, "function" | "method") {
-                self.outgoing_calls(uri, selection_line, selection_character)
-                    .await
-            } else {
-                Vec::new()
-            };
+            if self.include_calls && matches!(kind, "function" | "method") {
+                requests.push(SymbolRequest {
+                    index,
+                    line: selection_line,
+                    character: selection_character,
+                    kind: RequestKind::Calls,
+                });
+            }
 
             extraction.symbols.push(ExtractedSymbol {
                 name: name.to_string(),
@@ -164,7 +191,7 @@ impl<'a> GoSymbolExtractor<'a> {
                 is_unsafe: false,
                 derives: Vec::new(),
                 python_name: None,
-                calls,
+                calls: Vec::new(),
             });
 
             // gopls resolves interface satisfaction from an interface method,
@@ -174,31 +201,14 @@ impl<'a> GoSymbolExtractor<'a> {
             if let Some(interface_name) = interface_owner
                 && matches!(kind, "function" | "method")
             {
-                for target in self
-                    .session
-                    .implementations(uri, selection_line, selection_character)
-                    .await
-                    .unwrap_or_default()
-                {
-                    let target_uri = target["uri"]
-                        .as_str()
-                        .or_else(|| target["targetUri"].as_str())
-                        .unwrap_or("");
-                    let target_line = target
-                        .pointer("/range/start/line")
-                        .or_else(|| target.pointer("/targetRange/start/line"))
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as u32;
-                    let file = uri_relative_path(target_uri, self.path_root);
-                    if !file.is_empty() {
-                        extraction.implementations.push(ImplementationTarget {
-                            interface_name: interface_name.to_string(),
-                            interface_qualified_name: interface_name.to_string(),
-                            implementor_file: file,
-                            implementor_line: target_line,
-                        });
-                    }
-                }
+                requests.push(SymbolRequest {
+                    index,
+                    line: selection_line,
+                    character: selection_character,
+                    kind: RequestKind::Implementations {
+                        interface: interface_name.to_string(),
+                    },
+                });
             }
 
             let child_parent = matches!(kind, "struct" | "interface" | "class" | "module")
@@ -211,19 +221,49 @@ impl<'a> GoSymbolExtractor<'a> {
             };
             if let Some(children) = symbol.get("children").and_then(Value::as_array) {
                 for child in children {
-                    self.walk_symbol(child, uri, child_parent, child_interface_owner, extraction)
-                        .await;
+                    self.walk_symbol(
+                        child,
+                        child_parent,
+                        child_interface_owner,
+                        extraction,
+                        requests,
+                    )
+                    .await;
                 }
             }
         })
     }
 
-    async fn outgoing_calls(&self, uri: &str, line: u32, character: u32) -> Vec<CallTarget> {
-        self.session
-            .call_hierarchy_outgoing(uri, line, character)
-            .await
-            .unwrap_or_default()
-            .iter()
+    fn add_implementations(
+        &self,
+        interface_name: &str,
+        targets: &[Value],
+        extraction: &mut FileExtraction,
+    ) {
+        for target in targets {
+            let target_uri = target["uri"]
+                .as_str()
+                .or_else(|| target["targetUri"].as_str())
+                .unwrap_or("");
+            let target_line = target
+                .pointer("/range/start/line")
+                .or_else(|| target.pointer("/targetRange/start/line"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let file = uri_relative_path(target_uri, self.path_root);
+            if !file.is_empty() {
+                extraction.implementations.push(ImplementationTarget {
+                    interface_name: interface_name.to_string(),
+                    interface_qualified_name: interface_name.to_string(),
+                    implementor_file: file,
+                    implementor_line: target_line,
+                });
+            }
+        }
+    }
+
+    fn call_targets(&self, raw: &[Value]) -> Vec<CallTarget> {
+        raw.iter()
             .filter_map(|call| {
                 let target = call.get("to")?;
                 let raw_name = target["name"].as_str()?;

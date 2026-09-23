@@ -45,6 +45,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Report and retry failed Rust/Go semantic requests once after the file's other requests; retain affected stored file graphs and require explicit degraded-enrichment acceptance (#179).
+
 - Parse CLI indexed-lookup values as JSON, preserving strings, numbers and booleans and rejecting malformed JSON (#173).
 
 - Align WeaverTools system identifiers/tags, Rust/CUDA/Python header census,

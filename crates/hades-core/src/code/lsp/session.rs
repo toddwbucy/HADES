@@ -126,6 +126,13 @@ impl<S: LanguageServer> LspSession<S> {
         Ok(session)
     }
 
+    /// Test peers use a short real deadline instead of sleeping for production timeouts.
+    #[cfg(feature = "test-support")]
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.root
     }
@@ -272,7 +279,9 @@ impl<S: LanguageServer> LspSession<S> {
             .position_request("textDocument/prepareCallHierarchy", uri, line, character)
             .await?;
         let Some(item) = items.as_array().and_then(|items| items.first()) else {
-            return Ok(Vec::new());
+            return Err(LspError::InvalidResponse(
+                "empty prepareCallHierarchy for callable symbol".into(),
+            ));
         };
         let outgoing = self
             .client
@@ -282,7 +291,7 @@ impl<S: LanguageServer> LspSession<S> {
                 self.request_timeout,
             )
             .await?;
-        Ok(outgoing.as_array().cloned().unwrap_or_default())
+        response_list(outgoing, "callHierarchy/outgoingCalls", false)
     }
 
     pub async fn call_hierarchy_incoming(
@@ -295,7 +304,9 @@ impl<S: LanguageServer> LspSession<S> {
             .position_request("textDocument/prepareCallHierarchy", uri, line, character)
             .await?;
         let Some(item) = items.as_array().and_then(|items| items.first()) else {
-            return Ok(Vec::new());
+            return Err(LspError::InvalidResponse(
+                "empty prepareCallHierarchy for callable symbol".into(),
+            ));
         };
         let incoming = self
             .client
@@ -305,7 +316,7 @@ impl<S: LanguageServer> LspSession<S> {
                 self.request_timeout,
             )
             .await?;
-        Ok(incoming.as_array().cloned().unwrap_or_default())
+        response_list(incoming, "callHierarchy/incomingCalls", false)
     }
 
     /// Resolve implementations for an interface/type at a source position.
@@ -318,7 +329,7 @@ impl<S: LanguageServer> LspSession<S> {
         let result = self
             .position_request("textDocument/implementation", uri, line, character)
             .await?;
-        Ok(result.as_array().cloned().unwrap_or_default())
+        response_list(result, "textDocument/implementation", true)
     }
 
     pub async fn shutdown(self) -> Result<(), LspError> {
@@ -752,5 +763,26 @@ mod document_operation_tests {
         drop(held);
         drop(first);
         assert!(state.lock().unwrap().operations.is_empty());
+    }
+}
+
+// LSP permits null for no result and a single Location for implementation.
+// Wrong-shaped responses cannot establish that the symbol has no relations.
+fn response_list(
+    value: Value,
+    method: &str,
+    single_location: bool,
+) -> Result<Vec<Value>, LspError> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(values) => Ok(values),
+        Value::Object(ref object)
+            if single_location && object.contains_key("uri") && object.contains_key("range") =>
+        {
+            Ok(vec![value])
+        }
+        _ => Err(LspError::InvalidResponse(format!(
+            "{method}: expected a result list"
+        ))),
     }
 }

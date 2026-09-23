@@ -69,7 +69,8 @@ pub enum CodebaseCmd {
 
         /// Permit a lower-fidelity analyzer to replace previously stored
         /// semantic artifacts. This is separate from `--force` so a temporary
-        /// analyzer outage cannot silently degrade the graph.
+        /// analyzer outage cannot silently degrade the graph. Also accepts reported
+        /// semantic request failures; affected stored file graphs are retained.
         #[arg(long = "allow-analysis-downgrade")]
         allow_analysis_downgrade: bool,
     },

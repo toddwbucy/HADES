@@ -77,6 +77,10 @@ pub struct ImplementationTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileExtraction {
+    #[serde(default)]
+    pub failed_requests: Vec<FailedRequest>,
+    #[serde(default)]
+    pub failed_request_count: usize,
     pub symbols: Vec<ExtractedSymbol>,
     pub impl_blocks: Vec<ImplBlock>,
     pub implementations: Vec<ImplementationTarget>,
@@ -95,6 +99,8 @@ pub struct ImplBlock {
 impl FileExtraction {
     pub fn empty() -> Self {
         Self {
+            failed_requests: Vec::new(),
+            failed_request_count: 0,
             symbols: Vec::new(),
             impl_blocks: Vec::new(),
             implementations: Vec::new(),
@@ -103,4 +109,16 @@ impl FileExtraction {
             analyzed_at: chrono::Utc::now().to_rfc3339(),
         }
     }
+}
+
+/// Details are capped independently from the total, so large files cannot
+/// inflate the ingest envelope without bound (#179).
+pub const FAILED_REQUEST_LIMIT: usize = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedRequest {
+    pub file: String,
+    pub symbol: String,
+    pub request: String,
+    pub reason: String,
 }

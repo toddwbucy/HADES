@@ -243,6 +243,21 @@ Symbols may be written twice during a single ingest run:
 
 Both passes use the same file, qualified name, and source line identity. The semantic pass uses `overwrite: true` (ArangoDB replace semantics); if the language server is absent or fails, the structural artifact remains available.
 
+Semantic requests are prepared before file replacement. A failed request or an
+empty `prepareCallHierarchy` response for an analyzer-reported callable is retried
+once after the file's other requests. A prepared item followed by an empty call
+list remains a successful no-calls result. Hover errors and Go implementation
+lookup errors use the same deferred retry; valid absent results remain valid.
+
+After retry, `rust_analyzer` / `gopls` in the ingest envelope report
+`failed_request_count` and up to 100 `failed_requests` details (file, symbol,
+request, reason). Each failure is logged at WARN. The affected file's existing
+graph is retained; a new file with failed requests is withheld. The overall run
+fails unless `codebase ingest --allow-analysis-downgrade` explicitly accepts
+degraded enrichment. Acceptance does not erase the diagnostics or permit these
+failed requests to purge the stored graph. Unified `ingest` has no such override.
+
+
 ---
 
 ### 4.3 `codebase_chunks` — Text Chunks
