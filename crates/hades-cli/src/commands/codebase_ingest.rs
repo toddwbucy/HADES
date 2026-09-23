@@ -98,6 +98,9 @@ pub struct CodebaseIngestFailure {
 #[derive(Default)]
 struct ImportContext {
     prepared_sources: HashMap<String, String>,
+    protected_edges: HashMap<String, super::codebase_persist::EdgeProtection>,
+    prepared_symbols: HashMap<String, Vec<Value>>,
+    protected_sources: std::collections::HashSet<String>,
     /// Python: rel_path → list of import symbols (with metadata for resolution).
     python_imports: HashMap<String, Vec<Symbol>>,
     /// Python: rel_path → all definition symbols (for building the resolution index).
@@ -270,6 +273,9 @@ pub async fn run_phase(
     // Accumulators for cross-file import resolution.
     let mut imports = ImportContext {
         prepared_sources: HashMap::new(),
+        protected_edges: HashMap::new(),
+        prepared_symbols: HashMap::new(),
+        protected_sources: Default::default(),
         python_imports: HashMap::new(),
         python_file_symbols: HashMap::new(),
         rust_imports: HashMap::new(),
@@ -308,6 +314,23 @@ pub async fn run_phase(
     imports
         .prepared_sources
         .extend(go_prepared.source_hashes.clone());
+
+    for (prepared, analyzer) in [(&rust_prepared, "rust-analyzer"), (&go_prepared, "gopls")] {
+        for (path, protection) in &prepared.protected_files {
+            imports
+                .protected_edges
+                .insert(rel_path_for(&base, path), protection.clone());
+        }
+        let resolver =
+            LspEdgeResolver::new_scoped(prepared.extractions.clone(), analyzer, namespace);
+        for symbol in resolver.build_symbol_documents() {
+            imports
+                .prepared_symbols
+                .entry(symbol.file_path.clone())
+                .or_default()
+                .push(serde_json::to_value(symbol)?);
+        }
+    }
 
     // Auto-activate batch mode for large input sets.
     let batch_mode = batch || files.len() > 5;
@@ -363,21 +386,7 @@ pub async fn run_phase(
                 .is_some_and(|e| unparsed_set.contains(e))
                 || (has_shebang && shebang_lang.is_none() && lang_override.is_none()));
 
-        let result = if rust_prepared.failed_file(file_path) || go_prepared.failed_file(file_path) {
-            async {
-                let key = keys::scoped_file_key(namespace, &rel_path);
-                let observed = super::codebase_persist::revision(db.writer(), &key).await?;
-                if observed.is_some() {
-                    collect_preserved_targets(&db, &key, observed.as_deref(), &rel_path, None, &mut imports).await?;
-                }
-                Ok::<_, anyhow::Error>(FileResult {
-                    path: rel_path.clone(), success: true, skipped: Some(true),
-                    language: None, num_symbols: None, num_chunks: None, num_embeddings: None,
-                    embedding_error: None, duration_ms: 0,
-                    error: Some("semantic requests incomplete; file replacement withheld and any stored graph retained".into()),
-                })
-            }.await
-        } else if is_unparsed {
+        let result = if is_unparsed {
             async {
                 let key = keys::scoped_file_key(namespace, &rel_path);
                 let observed = super::codebase_persist::revision(db.writer(), &key).await?;
@@ -444,7 +453,7 @@ pub async fn run_phase(
                 })
             }
             Err(e) => {
-                error!(path = %rel_path, error = %e, "ingest failed");
+                error!(path = %rel_path, error = %format!("{e:#}"), "ingest failed");
                 results.push(FileResult {
                     path: rel_path,
                     success: false,
@@ -454,7 +463,7 @@ pub async fn run_phase(
                     num_embeddings: None,
                     embedding_error: None,
                     skipped: None,
-                    error: Some(e.to_string()),
+                    error: Some(format!("{e:#}")),
                     duration_ms: duration,
                 });
             }
@@ -488,7 +497,7 @@ pub async fn run_phase(
     let cpp_call_edges =
         cpp_edges::resolve_cpp_calls_scoped(&base, &imports.cpp_file_symbols, namespace);
 
-    let structural_edges =
+    let mut structural_edges =
         tree_sitter_edges::resolve_scoped(&imports.structural_file_symbols, namespace);
 
     // Resolve Rust import graph edges (file → symbol).
@@ -502,6 +511,11 @@ pub async fn run_phase(
 
     // This separate enrichment stage is all-or-nothing. File replacements
     // preceding it remain committed, but failures cannot masquerade as success.
+    structural_edges.calls.retain(|edge| {
+        !edge["_from"]
+            .as_str()
+            .is_some_and(|id| imports.protected_sources.contains(id))
+    });
     let relationship_error = if results.iter().any(|result| !result.success) {
         Some(
             "relationship stage deferred because file preparation failed; retry ingestion"
@@ -535,7 +549,9 @@ pub async fn run_phase(
         && !rust_abs_paths.is_empty()
         && rust_analyzer_cmd.is_some()
     {
-        rust_prepared.store(&db, &base, "rust-analyzer", "ra").await
+        rust_prepared
+            .store(&db, &base, "rust-analyzer", "ra", &results)
+            .await
     } else {
         rust_prepared.stats
     };
@@ -571,11 +587,9 @@ pub async fn run_phase(
     if ra_stats.store_failed && !allow_analysis_downgrade {
         enrichment_failure.get_or_insert_with(|| {
             format!(
-                "rust-analyzer analyzed {} crate(s) but storing the enrichment to \
-             ArangoDB failed (see the store warnings above for the database \
-             error). The graph keeps syn symbols but loses calls/implements \
-             edges. Fix the store error and re-run, or pass \
-             --allow-analysis-downgrade to accept the loss explicitly.",
+                "rust-analyzer analyzed {} crate(s) but enrichment storage failed (see warnings \
+             for source/revision validation or database errors). Earlier commits may remain; \
+             retry or explicitly accept incomplete enrichment with --allow-analysis-downgrade.",
                 ra_stats.workspaces
             )
         });
@@ -583,7 +597,9 @@ pub async fn run_phase(
 
     let gopls_stats =
         if relationship_error.is_none() && !go_abs_paths.is_empty() && gopls_cmd.is_some() {
-            go_prepared.store(&db, &base, "gopls", "gopls").await
+            go_prepared
+                .store(&db, &base, "gopls", "gopls", &results)
+                .await
         } else {
             go_prepared.stats
         };
@@ -602,11 +618,9 @@ pub async fn run_phase(
     if gopls_stats.store_failed && !allow_analysis_downgrade {
         enrichment_failure.get_or_insert_with(|| {
             format!(
-                "gopls analyzed {} module(s) but storing the enrichment to ArangoDB \
-             failed (see the store warnings above for the database error). The \
-             graph keeps Tree-sitter symbols but loses calls/implements edges. \
-             Fix the store error and re-run, or pass --allow-analysis-downgrade \
-             to accept the loss explicitly.",
+                "gopls analyzed {} module(s) but enrichment storage failed (see warnings \
+             for source/revision validation or database errors). Earlier commits may remain; \
+             retry or explicitly accept incomplete enrichment with --allow-analysis-downgrade.",
                 gopls_stats.workspaces
             )
         });
@@ -655,11 +669,9 @@ pub async fn run_phase(
                 format!(
                     "gopls analyzed {} of {} Go module(s); {} workspace/file failures \
                  (see the warnings above). {} file(s) under the failed module(s) were \
-                 re-ingested this run, so their gopls symbols and calls/implements \
-                 edges are gone — the fidelity guard stands aside for Go on the \
-                 expectation that this phase re-supplies them. Fix the failing \
-                 module(s) and re-run, or pass --allow-analysis-downgrade to accept \
-                 the loss explicitly.",
+                 refreshed from source with prior semantic edges retained where available. \
+                 Fix the failing module(s) and re-run, or pass --allow-analysis-downgrade \
+                 to accept incomplete enrichment explicitly.",
                     gopls_stats.workspaces,
                     gopls_stats.workspaces_attempted,
                     gopls_stats.failed_workspaces.len() + gopls_stats.failed_files.len(),
@@ -679,7 +691,7 @@ pub async fn run_phase(
 
     let failed_requests = ra_stats.failed_request_count + gopls_stats.failed_request_count;
     if failed_requests > 0 && !allow_analysis_downgrade {
-        enrichment_failure.get_or_insert_with(|| format!("{failed_requests} semantic request(s) failed after retry; affected file graphs retained; retry or explicitly accept degraded enrichment with --allow-analysis-downgrade"));
+        enrichment_failure.get_or_insert_with(|| format!("{failed_requests} semantic request(s) failed after retry; content refreshed; prior affected semantic edges retained; retry or explicitly accept degraded enrichment with --allow-analysis-downgrade"));
     }
 
     // Report inbound edges left dangling by this run's rebuilds.
@@ -783,6 +795,8 @@ pub async fn run_phase(
             "failed_files": ra_stats.failed_files,
             "failed_requests": ra_stats.failed_requests,
             "failed_request_count": ra_stats.failed_request_count,
+            "no_calls": ra_stats.no_calls,
+            "no_call_count": ra_stats.no_call_count,
             "store_errors": ra_stats.store_errors,
             "store_failed": ra_stats.store_failed,
         },
@@ -794,6 +808,8 @@ pub async fn run_phase(
             "failed_files": gopls_stats.failed_files,
             "failed_requests": gopls_stats.failed_requests,
             "failed_request_count": gopls_stats.failed_request_count,
+            "no_calls": gopls_stats.no_calls,
+            "no_call_count": gopls_stats.no_call_count,
             "store_errors": gopls_stats.store_errors,
             "store_failed": gopls_stats.store_failed,
         },
@@ -1489,7 +1505,7 @@ async fn ingest_file(
     if let Some(expected) = imports.prepared_sources.get(rel_path)
         && *expected != code::compute_content_hash(&source)
     {
-        anyhow::bail!("source changed since semantic preparation; retry ingestion");
+        anyhow::bail!("source changed since semantic preparation for {rel_path}; retry ingestion");
     }
 
     // Detect language.
@@ -1726,7 +1742,7 @@ async fn ingest_file(
         .collect();
 
     // Build symbol documents (primitives only — imports and impl blocks are not vertices).
-    let symbol_docs: Vec<Value> = analysis
+    let mut symbol_docs: Vec<Value> = analysis
         .symbols
         .iter()
         .filter(|s| s.kind.is_primitive())
@@ -1749,6 +1765,37 @@ async fn ingest_file(
             })
         })
         .collect();
+
+    // Keep source-derived LSP identities present even when their own requests fail.
+    // This also lets moved semantic edge sources be paired before the atomic purge.
+    if let Some(prepared) = imports.prepared_symbols.get(rel_path) {
+        for doc in prepared {
+            if !symbol_docs
+                .iter()
+                .any(|existing| existing["_key"] == doc["_key"])
+            {
+                symbol_docs.push(doc.clone());
+            }
+        }
+    }
+    let protection = imports
+        .protected_edges
+        .get(rel_path)
+        .cloned()
+        .unwrap_or_default();
+    for doc in &symbol_docs {
+        if protection.all
+            || doc["qualified_name"]
+                .as_str()
+                .is_some_and(|name| protection.symbols.contains(name))
+        {
+            imports.protected_sources.insert(format!(
+                "{}/{}",
+                CODEBASE.symbols,
+                doc["_key"].as_str().unwrap()
+            ));
+        }
+    }
 
     // Build defines edges (file → symbol) for primitives only.
     let define_edges: Vec<Value> = analysis
@@ -1833,6 +1880,11 @@ async fn ingest_file(
         defines: define_edges,
         file: file_doc,
         purge_symbols: true,
+        protected_edges: imports
+            .protected_edges
+            .iter()
+            .map(|(path, protection)| (keys::scoped_file_key(namespace, path), protection.clone()))
+            .collect(),
         merge_file: false,
         symbol_remap: symbol_key_remap,
     }
@@ -2287,6 +2339,7 @@ async fn ingest_unparsed_file(
         defines: Vec::new(),
         file: fields,
         purge_symbols: allow_analysis_downgrade,
+        protected_edges: Default::default(),
         merge_file: true,
         symbol_remap: Vec::new(),
     }
@@ -2816,6 +2869,8 @@ async fn check_unchanged(
 struct SemanticLspStats {
     failed_requests: Vec<hades_core::code::lsp::symbols::FailedRequest>,
     failed_request_count: usize,
+    no_calls: Vec<hades_core::code::lsp::symbols::FailedRequest>,
+    no_call_count: usize,
     /// Symbol documents actually stored (created + updated).
     symbols: usize,
     /// Edge documents actually stored (created + updated).
@@ -2876,7 +2931,7 @@ async fn prepare_rust_analyzer_phase(
     rust_files: &[PathBuf],
     command: Option<&str>,
 ) -> Result<PreparedLsp> {
-    let source_hashes = semantic_source_hashes(base, rust_files)?;
+    let source_hashes = semantic_source_hashes(base, rust_files);
     let groups = group_files_by_crate(rust_files);
     if groups.is_empty() {
         return Ok(PreparedLsp::default());
@@ -2972,7 +3027,7 @@ async fn prepare_gopls_phase(
     go_files: &[PathBuf],
     command: Option<&str>,
 ) -> Result<PreparedLsp> {
-    let source_hashes = semantic_source_hashes(base, go_files)?;
+    let source_hashes = semantic_source_hashes(base, go_files);
     let groups = group_files_by_go_module(go_files);
     if groups.is_empty() {
         return Ok(PreparedLsp::default());
@@ -3044,50 +3099,78 @@ async fn prepare_gopls_phase(
 
 #[derive(Default)]
 struct PreparedLsp {
-    protected_files: std::collections::HashSet<PathBuf>,
+    protected_files: HashMap<PathBuf, super::codebase_persist::EdgeProtection>,
     extractions: HashMap<String, FileExtraction>,
     source_hashes: HashMap<String, String>,
     stats: SemanticLspStats,
 }
 
-fn semantic_source_hashes(base: &Path, paths: &[PathBuf]) -> Result<HashMap<String, String>> {
-    paths
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)?;
-            Ok((
-                path.strip_prefix(base)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned(),
-                code::compute_content_hash(&source),
-            ))
-        })
-        .collect()
+fn semantic_source_hashes(base: &Path, paths: &[PathBuf]) -> HashMap<String, String> {
+    paths.iter().filter_map(|path| match std::fs::read_to_string(path) {
+        Ok(source) => Some((rel_path_for(base, path), code::compute_content_hash(&source))),
+        Err(error) => {
+            warn!(path = %path.display(), %error, "failed to read semantic input; this file will report its own ingest failure");
+            None
+        }
+    }).collect()
 }
 
 impl PreparedLsp {
     fn new(
-        mut extractions: HashMap<String, FileExtraction>,
+        extractions: HashMap<String, FileExtraction>,
         source_hashes: HashMap<String, String>,
         mut stats: SemanticLspStats,
         base: &Path,
     ) -> Self {
-        let mut protected_files = std::collections::HashSet::new();
+        let mut protected_files = HashMap::new();
+        for path in &stats.failed_files {
+            protected_files.insert(
+                path.clone(),
+                super::codebase_persist::EdgeProtection {
+                    all: true,
+                    ..Default::default()
+                },
+            );
+        }
+        for path in source_hashes.keys().map(|path| base.join(path)) {
+            if stats
+                .failed_workspaces
+                .iter()
+                .any(|root| path.starts_with(root))
+            {
+                protected_files.insert(
+                    path,
+                    super::codebase_persist::EdgeProtection {
+                        all: true,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
         let mut paths: Vec<_> = extractions.keys().cloned().collect();
         paths.sort();
         for path in paths {
             let extraction = &extractions[&path];
             stats.failed_request_count += extraction.failed_request_count;
+            stats.no_call_count += extraction.no_call_count;
+            let remaining = hades_core::code::lsp::symbols::FAILED_REQUEST_LIMIT
+                .saturating_sub(stats.no_calls.len());
+            stats
+                .no_calls
+                .extend(extraction.no_calls.iter().take(remaining).cloned());
             let remaining = hades_core::code::lsp::symbols::FAILED_REQUEST_LIMIT
                 .saturating_sub(stats.failed_requests.len());
             stats
                 .failed_requests
                 .extend(extraction.failed_requests.iter().take(remaining).cloned());
-            if extraction.failed_request_count > 0 {
-                protected_files.insert(base.join(&path));
-                stats.failed_files.push(base.join(&path));
-                extractions.remove(&path);
+            if !extraction.failed_edge_symbols.is_empty() {
+                protected_files.insert(
+                    base.join(&path),
+                    super::codebase_persist::EdgeProtection {
+                        all: false,
+                        symbols: extraction.failed_edge_symbols.clone(),
+                    },
+                );
             }
         }
         Self {
@@ -3098,28 +3181,33 @@ impl PreparedLsp {
         }
     }
 
-    fn failed_file(&self, path: &Path) -> bool {
-        self.protected_files.contains(path)
-    }
-
     async fn store(
         mut self,
         db: &ArangoPool,
         base: &Path,
         analyzer: &'static str,
         prefix: &'static str,
+        results: &[FileResult],
     ) -> SemanticLspStats {
         let result = async {
+            let successful: std::collections::HashSet<_> = results
+                .iter()
+                .filter(|r| r.success)
+                .map(|r| r.path.as_str())
+                .collect();
+            self.extractions
+                .retain(|path, _| successful.contains(path.as_str()));
             let files: Vec<_> = self
-                .extractions
+                .source_hashes
                 .keys()
+                .filter(|path| successful.contains(path.as_str()))
                 .map(|path| base.join(path))
                 .collect();
             let revisions = enrichment_revisions(db, base, &files).await?;
             for (path, input) in &revisions {
                 anyhow::ensure!(
                     self.source_hashes.get(path) == Some(&input.content_hash),
-                    "source changed since semantic preparation; retry ingestion"
+                    "source changed since semantic preparation for {path}; retry ingestion"
                 );
             }
             store_lsp_extractions(
@@ -3143,7 +3231,7 @@ impl PreparedLsp {
                 self.stats.store_errors = stored.store_errors;
             }
             Err(error) => {
-                warn!(analyzer, %error, "prepared enrichment could not be stored");
+                warn!(analyzer, error = %format!("{error:#}"), "prepared enrichment could not be stored");
                 self.stats.store_failed = true;
             }
         }
@@ -3271,7 +3359,25 @@ async fn store_lsp_extractions(
             )
         })
         .collect();
-    let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace);
+    let fkeys: Vec<_> = revisions
+        .keys()
+        .filter(|path| !all_extractions.contains_key(*path))
+        .map(|path| keys::scoped_file_key(namespace, path))
+        .collect();
+    let targets = if fkeys.is_empty() {
+        Vec::new()
+    } else {
+        let targets = hades_core::db::query::query(db,
+        "FOR s IN @@symbols FILTER s.file_key IN @keys RETURN KEEP(s, '_key', 'file_path', 'name', 'qualified_name', 'start_line', 'end_line')",
+        Some(&json!({"@symbols":CODEBASE.symbols,"keys":fkeys})), None, false, ExecutionTarget::Writer).await?;
+        targets
+            .results
+            .into_iter()
+            .map(serde_json::from_value::<hades_core::code::lsp::edges::StoredTarget>)
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace)
+        .with_stored_targets(targets);
     let symbols = resolver
         .build_symbol_documents()
         .into_iter()

@@ -22,6 +22,12 @@ use thiserror::Error;
 /// Errors shared by all language-server integrations.
 #[derive(Debug, Error)]
 pub enum LspError {
+    #[error("{method}: {source}")]
+    Request {
+        method: &'static str,
+        #[source]
+        source: Box<LspError>,
+    },
     #[error("language server not found: {0}")]
     NotFound(String),
     #[error("invalid LSP response: {0}")]

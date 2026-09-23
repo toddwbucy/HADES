@@ -93,6 +93,9 @@ pub struct LspSession<S: LanguageServer> {
     ready: bool,
     request_timeout: Duration,
     open_documents: SyncMutex<DocumentState>,
+    diagnostics: Mutex<HashMap<String, Vec<Value>>>,
+    diagnostic_provider: bool,
+    pulled_diagnostics: Mutex<HashSet<String>>,
     _server: PhantomData<S>,
 }
 
@@ -117,6 +120,9 @@ impl<S: LanguageServer> LspSession<S> {
             ready: false,
             request_timeout: Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS),
             open_documents: SyncMutex::new(DocumentState::default()),
+            diagnostics: Mutex::new(HashMap::new()),
+            diagnostic_provider: false,
+            pulled_diagnostics: Mutex::new(HashSet::new()),
             _server: PhantomData,
         };
         session.initialize().await?;
@@ -190,6 +196,8 @@ impl<S: LanguageServer> LspSession<S> {
             )
             .await?;
         self.open_documents.lock().unwrap().opened.remove(uri);
+        self.diagnostics.lock().await.remove(uri);
+        self.pulled_diagnostics.lock().await.remove(uri);
         Ok(())
     }
 
@@ -269,6 +277,74 @@ impl<S: LanguageServer> LspSession<S> {
         Ok(None)
     }
 
+    async fn diagnostics_for(&self, uri: &str) -> Vec<Value> {
+        let mut latest = self.diagnostics.lock().await;
+        for notification in self
+            .client
+            .drain_notifications(Some("textDocument/publishDiagnostics"))
+            .await
+        {
+            let params = &notification["params"];
+            if let (Some(uri), Some(items)) =
+                (params["uri"].as_str(), params["diagnostics"].as_array())
+            {
+                latest.insert(uri.to_owned(), items.clone());
+            }
+        }
+        // Current rust-analyzer advertises pull diagnostics and does not publish
+        // them to this client. Request once per immutable opened source snapshot.
+        if self.diagnostic_provider && self.pulled_diagnostics.lock().await.insert(uri.into()) {
+            match self
+                .client
+                .request(
+                    "textDocument/diagnostic",
+                    serde_json::json!({"textDocument":{"uri":uri},"identifier":"rust-analyzer"}),
+                    self.request_timeout,
+                )
+                .await
+            {
+                Ok(value) if value["kind"] == "full" => {
+                    if let Some(items) = value["items"].as_array() {
+                        latest.insert(uri.into(), items.clone());
+                    }
+                }
+                Err(error) => {
+                    warn!(uri, %error, "inactivity evidence unavailable; empty preparation remains failed")
+                }
+                _ => {}
+            }
+        }
+        latest.get(uri).cloned().unwrap_or_default()
+    }
+
+    /// Positive evidence: an inactive-code range, or an explicitly unlinked
+    /// file under a module declaration which the analyzer diagnoses inactive.
+    /// Null preparation, absent diagnostics and Go constraints never suffice.
+    pub(super) async fn cfg_inactive(&self, uri: &str, range: &Value) -> bool {
+        if S::LANGUAGE_ID != "rust" {
+            return false;
+        }
+        let own = self.diagnostics_for(uri).await;
+        if inactive_range(&own, range) {
+            return true;
+        }
+        if !own.iter().any(|item| item["code"] == "unlinked-file") {
+            return false;
+        }
+        let Some(path) = uri_to_path(uri) else {
+            return false;
+        };
+        for (parent, range) in inactive_module_candidates(&path, &self.root) {
+            let Ok(parent_uri) = path_to_uri(&parent) else {
+                continue;
+            };
+            if inactive_range(&self.diagnostics_for(&parent_uri).await, &range) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub async fn call_hierarchy_outgoing(
         &self,
         uri: &str,
@@ -277,11 +353,25 @@ impl<S: LanguageServer> LspSession<S> {
     ) -> Result<Vec<Value>, LspError> {
         let items = self
             .position_request("textDocument/prepareCallHierarchy", uri, line, character)
-            .await?;
-        let Some(item) = items.as_array().and_then(|items| items.first()) else {
-            return Err(LspError::InvalidResponse(
-                "empty prepareCallHierarchy for callable symbol".into(),
-            ));
+            .await
+            .map_err(|source| LspError::Request {
+                method: "textDocument/prepareCallHierarchy",
+                source: Box::new(source),
+            })?;
+        let items =
+            response_list(items, "textDocument/prepareCallHierarchy", false).map_err(|source| {
+                LspError::Request {
+                    method: "textDocument/prepareCallHierarchy",
+                    source: Box::new(source),
+                }
+            })?;
+        let Some(item) = items.first() else {
+            return Err(LspError::Request {
+                method: "textDocument/prepareCallHierarchy",
+                source: Box::new(LspError::InvalidResponse(
+                    "empty prepareCallHierarchy for callable symbol".into(),
+                )),
+            });
         };
         let outgoing = self
             .client
@@ -302,11 +392,25 @@ impl<S: LanguageServer> LspSession<S> {
     ) -> Result<Vec<Value>, LspError> {
         let items = self
             .position_request("textDocument/prepareCallHierarchy", uri, line, character)
-            .await?;
-        let Some(item) = items.as_array().and_then(|items| items.first()) else {
-            return Err(LspError::InvalidResponse(
-                "empty prepareCallHierarchy for callable symbol".into(),
-            ));
+            .await
+            .map_err(|source| LspError::Request {
+                method: "textDocument/prepareCallHierarchy",
+                source: Box::new(source),
+            })?;
+        let items =
+            response_list(items, "textDocument/prepareCallHierarchy", false).map_err(|source| {
+                LspError::Request {
+                    method: "textDocument/prepareCallHierarchy",
+                    source: Box::new(source),
+                }
+            })?;
+        let Some(item) = items.first() else {
+            return Err(LspError::Request {
+                method: "textDocument/prepareCallHierarchy",
+                source: Box::new(LspError::InvalidResponse(
+                    "empty prepareCallHierarchy for callable symbol".into(),
+                )),
+            });
         };
         let incoming = self
             .client
@@ -390,6 +494,9 @@ impl<S: LanguageServer> LspSession<S> {
                 Duration::from_secs(60),
             )
             .await?;
+        self.diagnostic_provider = result
+            .pointer("/capabilities/diagnosticProvider")
+            .is_some_and(Value::is_object);
         debug!(server = S::NAME, capabilities = %result["capabilities"], "LSP initialized");
         self.client
             .notify("initialized", serde_json::json!({}))
@@ -785,4 +892,74 @@ fn response_list(
             "{method}: expected a result list"
         ))),
     }
+}
+
+// Both endpoints must be covered, not merely a neighbouring inactive item.
+fn inactive_range(items: &[Value], range: &Value) -> bool {
+    fn position(value: &Value) -> Option<(u64, u64)> {
+        Some((value["line"].as_u64()?, value["character"].as_u64()?))
+    }
+    let (Some(start), Some(end)) = (position(&range["start"]), position(&range["end"])) else {
+        return false;
+    };
+    start <= end
+        && items.iter().any(|item| {
+            item["code"] == "inactive-code"
+                && position(&item["range"]["start"]).is_some_and(|pos| pos <= start)
+                && position(&item["range"]["end"]).is_some_and(|pos| pos >= end)
+        })
+}
+
+/// Locate standard external-module declarations. Custom #[path] and inline
+/// module layouts are deliberately not guessed: without direct diagnostics
+/// those cases remain Failed. syn is the existing Rust parser, not a cfg evaluator.
+fn inactive_module_candidates(path: &Path, root: &Path) -> Vec<(PathBuf, Value)> {
+    use syn::spanned::Spanned;
+    let mut candidates = Vec::new();
+    let mut child = if path.file_name().is_some_and(|name| name == "mod.rs") {
+        path.parent().unwrap_or(path).to_path_buf()
+    } else {
+        path.with_extension("")
+    };
+    while let Some(dir) = child.parent().filter(|dir| dir.starts_with(root)) {
+        let Some(name) = child.file_name().and_then(|s| s.to_str()) else {
+            break;
+        };
+        for parent in [
+            dir.join("mod.rs"),
+            dir.with_extension("rs"),
+            dir.join("lib.rs"),
+            dir.join("main.rs"),
+        ] {
+            if parent == path || !parent.starts_with(root) {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&parent) else {
+                continue;
+            };
+            let Ok(parsed) = syn::parse_file(&source) else {
+                continue;
+            };
+            for item in parsed.items {
+                if let syn::Item::Mod(module) = item
+                    && module.ident == name
+                    && module.content.is_none()
+                    && !module.attrs.iter().any(|attr| attr.path().is_ident("path"))
+                {
+                    let position = |span: proc_macro2::LineColumn| {
+                        let line = span.line.saturating_sub(1);
+                        let character = source
+                            .lines()
+                            .nth(line)
+                            .and_then(|text| text.get(..span.column))
+                            .map_or(0, |text| text.encode_utf16().count());
+                        serde_json::json!({"line":line,"character":character})
+                    };
+                    candidates.push((parent.clone(), serde_json::json!({"start":position(module.ident.span().start()),"end":position(module.span().end())})));
+                }
+            }
+        }
+        child = dir.to_path_buf();
+    }
+    candidates
 }

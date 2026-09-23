@@ -251,12 +251,27 @@ lookup errors use the same deferred retry; valid absent results remain valid.
 
 After retry, `rust_analyzer` / `gopls` in the ingest envelope report
 `failed_request_count` and up to 100 `failed_requests` details (file, symbol,
-request, reason). Each failure is logged at WARN. The affected file's existing
-graph is retained; a new file with failed requests is withheld. The overall run
+request, reason, including both attempts). Each failure is logged at WARN. File
+content, symbols, chunks and embeddings still refresh. Only affected symbols'
+prior semantic edges are retained; there are no prior semantic edges on a first
+ingest. File/workspace failures protect their semantic edges too. Hover failure
+degrades the signature, without withholding the file. Resolver targets remain
+available even when their own requests fail. If a protected edge needs a prior
+semantic-only endpoint with no fresh counterpart, that endpoint is retained
+with `enrichment_stale: true`; fresh syntactic symbols and content still replace
+their predecessors. The overall run
 fails unless `codebase ingest --allow-analysis-downgrade` explicitly accepts
 degraded enrichment. Acceptance does not erase the diagnostics or permit these
-failed requests to purge the stored graph. Unified `ingest` has no such override.
+failed requests to purge their prior semantic edges. Unified `ingest` has no such override.
 
+Only positive rust-analyzer evidence permits NoCalls with reason `cfg_inactive`:
+an `inactive-code` diagnostic covering the symbol, or an `unlinked-file` diagnostic
+together with an inactive external-module declaration in a standard parent path.
+Both published and advertised pull diagnostics are supported. Custom `#[path]`
+and inline-module ancestry are not inferred when direct evidence is absent. The
+envelope reports `no_call_count` and up to 100 `no_calls` details. Unexplained
+null/empty preparation remains Failed; Go build exclusion has no implemented
+positive signal and remains Failed. Diagnostic absence is never inactivity.
 
 ---
 

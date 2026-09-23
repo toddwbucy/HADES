@@ -124,6 +124,9 @@ impl<'a> RustSymbolExtractor<'a> {
             .collect();
 
         let mut extraction = FileExtraction {
+            failed_edge_symbols: Default::default(),
+            no_calls: Vec::new(),
+            no_call_count: 0,
             failed_requests: Vec::new(),
             failed_request_count: 0,
             symbols,
@@ -290,6 +293,7 @@ impl<'a> RustSymbolExtractor<'a> {
             && matches!(kind, "function" | "method" | "struct" | "enum" | "constant")
         {
             requests.push(SymbolRequest {
+                range: sym["range"].clone(),
                 index: out.len(),
                 line: sel_line,
                 character: sel_char,
@@ -313,6 +317,7 @@ impl<'a> RustSymbolExtractor<'a> {
         // Call hierarchy.
         if self.include_calls && matches!(kind, "function" | "method") {
             requests.push(SymbolRequest {
+                range: sym["range"].clone(),
                 index: out.len(),
                 line: sel_line,
                 character: sel_char,

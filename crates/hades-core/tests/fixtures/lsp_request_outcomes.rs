@@ -10,6 +10,9 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
         for mode in [
             "timeout",
             "empty-prepare",
+            "cfg-inactive",
+            "cfg-outside",
+            "cfg-other-code",
             "error",
             "recover",
             "no-calls",
@@ -50,7 +53,7 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
                 let session = GoplsSession::start_with_options(path, peer.to_str(), 1)
                     .await
                     .unwrap()
-                    .with_request_timeout(Duration::from_millis(100));
+                    .with_request_timeout(if mode == "timeout" { Duration::from_millis(100) } else { Duration::from_secs(30) });
                 let result = GoSymbolExtractor::new(&session, true)
                     .extract_file(&source)
                     .await
@@ -61,7 +64,7 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
                 let session = RustAnalyzerSession::start_with_options(path, peer.to_str(), 1)
                     .await
                     .unwrap()
-                    .with_request_timeout(Duration::from_millis(100));
+                    .with_request_timeout(if mode == "timeout" { Duration::from_millis(100) } else { Duration::from_secs(30) });
                 let result = RustSymbolExtractor::new(&session, true)
                     .extract_file(&source)
                     .await
@@ -71,8 +74,10 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
             };
             let failed = matches!(
                 mode,
-                "timeout" | "empty-prepare" | "error" | "hover-error" | "impl-error"
-            );
+                "timeout" | "empty-prepare" | "error" | "hover-error" | "impl-error" | "cfg-outside" | "cfg-other-code"
+            ) || (go && mode == "cfg-inactive");
+            assert_eq!(extraction.no_call_count, usize::from(!go && mode == "cfg-inactive"));
+            if !go && mode == "cfg-inactive" { assert_eq!(extraction.no_calls[0].reason, "cfg_inactive"); }
             assert_eq!(
                 extraction.failed_request_count,
                 usize::from(failed),
@@ -95,6 +100,8 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
                         "textDocument/hover"
                     } else if mode.starts_with("impl") {
                         "textDocument/implementation"
+                    } else if mode == "empty-prepare" || mode.starts_with("cfg-") {
+                        "textDocument/prepareCallHierarchy"
                     } else {
                         "callHierarchy/outgoingCalls"
                     }
@@ -107,7 +114,7 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
                         .iter()
                         .map(|symbol| symbol.calls.len())
                         .sum::<usize>(),
-                    usize::from(mode != "no-calls")
+                    usize::from(mode != "no-calls" && mode != "cfg-inactive")
                 );
             }
             let log: Vec<serde_json::Value> = std::fs::read_to_string(path.join(".lsp-requests"))
@@ -159,5 +166,23 @@ async fn rust_and_go_requests_distinguish_failure_recovery_and_no_calls() {
                 "deferred retry: {log:?}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn unlinked_file_needs_a_positive_inactive_parent_diagnostic() {
+    for mode in ["parent-inactive", "parent-unproven", "parent-outside"] {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n").unwrap();
+        std::fs::write(root.path().join("lib.rs"), "#[cfg(feature = \"off\")] mod gated;\n").unwrap();
+        let source = root.path().join("gated.rs");
+        std::fs::write(&source, "fn caller() { target(); }\nfn target() {}\n").unwrap();
+        std::fs::write(root.path().join(".lsp-mode"), mode).unwrap();
+        let peer = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp_requests.py");
+        let session = RustAnalyzerSession::start_with_options(root.path(), peer.to_str(), 1).await.unwrap();
+        let extraction = RustSymbolExtractor::new(&session, true).extract_file(&source).await.unwrap();
+        assert_eq!(extraction.failed_request_count, usize::from(mode != "parent-inactive"), "{extraction:?}");
+        assert_eq!(extraction.no_call_count, usize::from(mode == "parent-inactive"));
+        session.shutdown().await.unwrap();
     }
 }

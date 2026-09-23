@@ -161,6 +161,7 @@ impl<'a> GoSymbolExtractor<'a> {
             let index = extraction.symbols.len();
             if should_request_hover(&visibility, kind) {
                 requests.push(SymbolRequest {
+                    range: symbol["range"].clone(),
                     index,
                     line: selection_line,
                     character: selection_character,
@@ -169,6 +170,7 @@ impl<'a> GoSymbolExtractor<'a> {
             }
             if self.include_calls && matches!(kind, "function" | "method") {
                 requests.push(SymbolRequest {
+                    range: symbol["range"].clone(),
                     index,
                     line: selection_line,
                     character: selection_character,
@@ -202,6 +204,7 @@ impl<'a> GoSymbolExtractor<'a> {
                 && matches!(kind, "function" | "method")
             {
                 requests.push(SymbolRequest {
+                    range: symbol["range"].clone(),
                     index,
                     line: selection_line,
                     character: selection_character,

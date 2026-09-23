@@ -21,6 +21,13 @@ pub(super) async fn revision(
     }
 }
 
+#[derive(Clone, Default, serde::Serialize)]
+pub(super) struct EdgeProtection {
+    #[serde(rename = "all_symbols")]
+    pub all: bool,
+    pub symbols: std::collections::HashSet<String>,
+}
+
 pub(super) struct Replacement {
     pub key: String,
     pub expected_revision: Option<String>,
@@ -30,6 +37,7 @@ pub(super) struct Replacement {
     pub defines: Vec<Value>,
     pub file: Value,
     pub purge_symbols: bool,
+    pub protected_edges: std::collections::HashMap<String, EdgeProtection>,
     pub merge_file: bool,
     pub symbol_remap: Vec<(String, String)>,
 }
@@ -52,15 +60,49 @@ impl Replacement {
                 return Err(ArangoError::Request("file changed during preparation; retry ingestion".into()));
             }
             if self.purge_symbols {
+                // Failed semantic requests do not justify erasing prior answers.
+                // Select identities before replacing vertices, in this transaction.
+                let protected = if self.protected_edges.is_empty() { Vec::new() } else {
+                let response = client.post("cursor", &json!({
+                    "query":"RETURN (FOR s IN @@symbols FILTER @protection[s.file_key] != null AND (@protection[s.file_key].all_symbols OR s.qualified_name IN @protection[s.file_key].symbols) LET connected = LENGTH(FOR e IN @@calls FILTER e._from == s._id AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic') LIMIT 1 RETURN 1) + LENGTH(FOR e IN @@implements FILTER (e._from == s._id OR e._to == s._id) AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic') LIMIT 1 RETURN 1) RETURN {symbol:s, connected:connected > 0})",
+                    "bindVars":{"@symbols":CODEBASE.symbols,"@calls":CODEBASE.calls_edges,"@implements":CODEBASE.implements_edges,"protection":self.protected_edges},
+                    "batchSize":1,"memoryLimit":33554432,"options":{"maxRuntime":30,"failOnWarning":true}
+                })).await?;
+                let rows = hades_core::db::query::completed_rows(&response)?;
+                rows.first().filter(|_| rows.len() == 1).and_then(Value::as_array)
+                    .filter(|rows| rows.iter().all(|row| row["symbol"]["_id"].is_string() && row["symbol"]["_key"].is_string() && row["connected"].is_boolean()))
+                    .ok_or_else(|| ArangoError::Request("invalid semantic protection identity response".into()))?.clone()
+                };
+                // If an analyzer failed before listing its symbols, a prior
+                // semantic-only endpoint may have no fresh syntactic counterpart.
+                // Retain only endpoints needed by protected edges, explicitly stale;
+                // never manufacture dangling edges or present old content as fresh.
+                for row in &protected {
+                    let old = &row["symbol"];
+                    let key = old["_key"].as_str().unwrap();
+                    if row["connected"] != true || old["file_key"] != self.key
+                        || self.symbols.iter().any(|s| s["_key"] == key)
+                        || self.symbol_remap.iter().any(|(from, _)| from == key) { continue; }
+                    let mut retained = old.clone();
+                    let object = retained.as_object_mut().unwrap();
+                    object.remove("_id"); object.remove("_rev");
+                    object.insert("enrichment_stale".into(), json!(true));
+                    self.defines.push(json!({"_key":keys::edge_key(&self.key,"defines",key),
+                        "_from":format!("{}/{}",CODEBASE.files,self.key),"_to":old["_id"],
+                        "analysis_tier":"semantic","resolution":"semantic","enrichment_stale":true}));
+                    self.symbols.push(retained);
+                }
+                self.file["symbol_count"] = json!(self.symbols.iter().filter_map(|s| s["_key"].as_str()).collect::<std::collections::HashSet<_>>().len());
+                let protected: Vec<_> = protected.iter().map(|row| &row["symbol"]["_id"]).collect();
                 let aql = "LET ids = APPEND((FOR s IN @@symbols FILTER s.file_key == @key RETURN s._id), [CONCAT(@files_name, '/', @key)]) \
                     LET syms = (FOR d IN @@symbols FILTER d.file_key == @key REMOVE d IN @@symbols RETURN 1) \
                     LET defs = (FOR e IN @@defines FILTER e._from IN ids REMOVE e IN @@defines RETURN 1) \
-                    LET calls = (FOR e IN @@calls FILTER e._from IN ids REMOVE e IN @@calls RETURN 1) \
-                    LET impls = (FOR e IN @@implements FILTER e._from IN ids REMOVE e IN @@implements RETURN 1) \
+                    LET calls = (FOR e IN @@calls FILTER e._from IN ids FILTER !(e._from IN @protected AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic')) REMOVE e IN @@calls RETURN 1) \
+                    LET impls = (FOR e IN @@implements FILTER e._from IN ids FILTER !((e._from IN @protected OR (e._to IN @protected AND e._from IN @surviving)) AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic')) REMOVE e IN @@implements RETURN 1) \
                     LET imps = (FOR e IN @@imports FILTER e._from IN ids REMOVE e IN @@imports RETURN 1) RETURN 1";
                 query(&client, aql, json!({"@symbols":CODEBASE.symbols,"@defines":CODEBASE.defines_edges,
                     "@calls":CODEBASE.calls_edges,"@implements":CODEBASE.implements_edges,
-                    "@imports":CODEBASE.imports_edges,"files_name":CODEBASE.files,"key":self.key}), true).await?;
+                    "@imports":CODEBASE.imports_edges,"files_name":CODEBASE.files,"key":self.key,"protected":protected,"surviving":self.symbols.iter().filter_map(|s| s["_key"].as_str()).chain(self.symbol_remap.iter().map(|(old,_)| old.as_str())).map(|key| format!("{}/{key}", CODEBASE.symbols)).collect::<Vec<_>>()}), true).await?;
             }
             for collection in [CODEBASE.chunks, CODEBASE.embeddings] {
                 query(&client, "FOR d IN @@collection FILTER d.file_key == @key REMOVE d IN @@collection",
@@ -79,7 +121,8 @@ impl Replacement {
                     }
                 }
             }
-            let moved = remap_inbound(&client, &self.symbol_remap).await?;
+            let moved = remap_inbound(&client, &self.symbol_remap).await?
+                + remap_edges(&client, &self.symbol_remap, true).await?;
             self.file["_key"] = json!(self.key);
             let mode = if self.merge_file { "update" } else { "replace" };
             // POST update defaults to removing nulls; preserve explicit non-Git
@@ -196,6 +239,14 @@ pub(super) async fn remap_inbound(
     client: &ArangoClient,
     remap: &[(String, String)],
 ) -> Result<u64, ArangoError> {
+    remap_edges(client, remap, false).await
+}
+
+async fn remap_edges(
+    client: &ArangoClient,
+    remap: &[(String, String)],
+    outgoing: bool,
+) -> Result<u64, ArangoError> {
     use std::collections::{HashMap, HashSet};
     if remap.is_empty() {
         return Ok(0);
@@ -221,7 +272,7 @@ pub(super) async fn remap_inbound(
             .post(
                 "cursor",
                 &json!({
-                    "query":"RETURN (FOR e IN @@edges FILTER e._to IN @olds RETURN e)",
+                    "query":if outgoing {"RETURN (FOR e IN @@edges FILTER e._from IN @olds RETURN e)"} else {"RETURN (FOR e IN @@edges FILTER e._to IN @olds RETURN e)"},
                     "bindVars":{"@edges":edges,"olds":olds}, "batchSize":1, "ttl":30,
                     "memoryLimit":33554432,
                     "options":{"maxRuntime":30,"failOnWarning":true}
@@ -237,8 +288,8 @@ pub(super) async fn remap_inbound(
         let mut superseded = Vec::new();
         for doc in found {
             let (Some(old_id), Some(from_id), Some(old_key)) = (
-                doc["_to"].as_str(),
-                doc["_from"].as_str(),
+                doc[if outgoing { "_from" } else { "_to" }].as_str(),
+                doc[if outgoing { "_to" } else { "_from" }].as_str(),
                 doc["_key"].as_str(),
             ) else {
                 return Err(ArangoError::Request("invalid inbound edge identity".into()));
@@ -248,7 +299,11 @@ pub(super) async fn remap_inbound(
                 .get(old_suffix)
                 .ok_or_else(|| ArangoError::Request("unexpected inbound edge target".into()))?;
             let from_suffix = from_id.rsplit('/').next().unwrap_or(from_id);
-            let new_key = keys::edge_key(from_suffix, kind, new_suffix);
+            let new_key = if outgoing {
+                keys::edge_key(new_suffix, kind, from_suffix)
+            } else {
+                keys::edge_key(from_suffix, kind, new_suffix)
+            };
             let mut next = doc.clone();
             let object = next
                 .as_object_mut()
@@ -257,7 +312,7 @@ pub(super) async fn remap_inbound(
             object.remove("_rev");
             object.insert("_key".into(), json!(new_key));
             object.insert(
-                "_to".into(),
+                (if outgoing { "_from" } else { "_to" }).into(),
                 json!(format!("{}/{}", CODEBASE.symbols, new_suffix)),
             );
             if new_key != old_key {
@@ -511,6 +566,7 @@ mod tests {
             defines: Vec::new(),
             file: json!({"path":"file.sh","content_hash":text,"chunk_count":1}),
             purge_symbols: false,
+            protected_edges: Default::default(),
             merge_file: true,
             symbol_remap: Vec::new(),
         }

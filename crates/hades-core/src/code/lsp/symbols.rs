@@ -77,6 +77,13 @@ pub struct ImplementationTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileExtraction {
+    /// Unbounded identity set for protection; never derive safety from capped diagnostics.
+    #[serde(default)]
+    pub failed_edge_symbols: std::collections::HashSet<String>,
+    #[serde(default)]
+    pub no_calls: Vec<FailedRequest>,
+    #[serde(default)]
+    pub no_call_count: usize,
     #[serde(default)]
     pub failed_requests: Vec<FailedRequest>,
     #[serde(default)]
@@ -99,6 +106,9 @@ pub struct ImplBlock {
 impl FileExtraction {
     pub fn empty() -> Self {
         Self {
+            failed_edge_symbols: Default::default(),
+            no_calls: Vec::new(),
+            no_call_count: 0,
             failed_requests: Vec::new(),
             failed_request_count: 0,
             symbols: Vec::new(),
