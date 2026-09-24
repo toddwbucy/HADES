@@ -816,6 +816,7 @@ pub async fn run_phase(
             "failed_files": ra_stats.failed_files,
             "failed_requests": ra_stats.failed_requests,
             "failed_request_count": ra_stats.failed_request_count,
+            "failed_requests_truncated": ra_stats.failed_request_count > ra_stats.failed_requests.len(),
             "no_calls": ra_stats.no_calls,
             "no_call_count": ra_stats.no_call_count,
             "store_errors": ra_stats.store_errors,
@@ -829,6 +830,7 @@ pub async fn run_phase(
             "failed_files": gopls_stats.failed_files,
             "failed_requests": gopls_stats.failed_requests,
             "failed_request_count": gopls_stats.failed_request_count,
+            "failed_requests_truncated": gopls_stats.failed_request_count > gopls_stats.failed_requests.len(),
             "no_calls": gopls_stats.no_calls,
             "no_call_count": gopls_stats.no_call_count,
             "store_errors": gopls_stats.store_errors,
@@ -3120,10 +3122,13 @@ impl PreparedLsp {
             stats
                 .no_calls
                 .extend(extraction.no_calls.iter().take(remaining).cloned());
-            // Accepted degraded runs must retain the complete failure list (#179).
-            stats
-                .failed_requests
-                .extend(extraction.failed_requests.iter().cloned());
+            // Reapply the sample budget across files; the count above stays exact (#185).
+            for failure in &extraction.failed_requests {
+                hades_core::code::lsp::symbols::retain_failure(
+                    &mut stats.failed_requests,
+                    failure.clone(),
+                );
+            }
         }
         Self {
             extractions,
@@ -3922,7 +3927,7 @@ fn is_semantic_target(
 mod tests {
 
     #[test]
-    fn prepared_enrichment_retains_every_failed_request() {
+    fn prepared_enrichment_bounds_diagnostics_but_counts_every_failure() {
         use hades_core::code::lsp::symbols::FailedRequest;
         let extractions = (0..105)
             .map(|n| {
@@ -3945,8 +3950,8 @@ mod tests {
             Path::new("/fixture"),
         );
         assert_eq!(prepared.stats.failed_request_count, 105);
-        assert_eq!(prepared.stats.failed_requests.len(), 105);
-        assert_eq!(prepared.stats.failed_requests[104].file, "104.rs");
+        assert_eq!(prepared.stats.failed_requests.len(), 100);
+        assert_eq!(prepared.stats.failed_requests[99].file, "099.rs");
     }
     #[tokio::test]
     async fn raw_fallback_leaves_semantic_edges_to_enrichment_cleanup() {

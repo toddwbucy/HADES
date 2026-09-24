@@ -127,7 +127,7 @@ impl FileExtraction {
     }
 }
 
-/// Non-failure cfg-inactive details remain bounded; failures are complete (#179).
+/// Samples cannot turn an accepted degraded run into an output-limit failure (#185).
 pub const FAILED_REQUEST_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,4 +136,55 @@ pub struct FailedRequest {
     pub symbol: String,
     pub request: String,
     pub reason: String,
+}
+
+/// Compact serialized JSON limit for one failure sample, including its array (#185).
+pub const FAILED_REQUEST_BYTES: usize = 64 * 1024;
+
+/// Retain diagnostics only; callers count all failures and retain graph ownership.
+/// The same bound is reapplied across files and analyzers so aggregation cannot
+/// multiply the payload limit. Oversized entries are omitted, never clipped silently.
+pub fn retain_failure<T: Serialize>(sample: &mut Vec<T>, failure: T) {
+    if sample.len() >= FAILED_REQUEST_LIMIT {
+        return;
+    }
+    sample.push(failure);
+    if !serde_json::to_vec(&*sample).is_ok_and(|bytes| bytes.len() <= FAILED_REQUEST_BYTES) {
+        sample.pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_samples_bound_entries_and_escaped_json_bytes() {
+        let mut short = Vec::new();
+        for n in 0..10_000 {
+            retain_failure(&mut short, n);
+        }
+        assert_eq!(short.len(), FAILED_REQUEST_LIMIT);
+        let mut escaped = Vec::new();
+        for _ in 0..200 {
+            retain_failure(
+                &mut escaped,
+                FailedRequest {
+                    file: "λ".repeat(4096),
+                    symbol: "\u{0001}".repeat(1024),
+                    request: "callHierarchy/outgoingCalls".into(),
+                    reason: "\u{0002}".repeat(2048),
+                },
+            );
+        }
+        assert!(!escaped.is_empty());
+        assert!(
+            escaped.len() < FAILED_REQUEST_LIMIT,
+            "byte cap must be exercised"
+        );
+        assert!(serde_json::to_vec(&escaped).unwrap().len() <= FAILED_REQUEST_BYTES);
+        let mut oversized = Vec::new();
+        retain_failure(&mut oversized, "x".repeat(FAILED_REQUEST_BYTES));
+        assert!(oversized.is_empty());
+    }
 }

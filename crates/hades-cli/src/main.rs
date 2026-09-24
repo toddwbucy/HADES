@@ -123,7 +123,7 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
-        /// Accept failed semantic requests while reporting every failure (#179).
+        /// Accept failed semantic requests while reporting exact counts and bounded diagnostics (#179, #185).
         #[arg(long)]
         allow_degraded_enrichment: bool,
 

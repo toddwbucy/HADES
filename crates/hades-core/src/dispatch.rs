@@ -439,7 +439,7 @@ pub struct IngestStartParams {
     /// Re-ingest files whose digest is unchanged.
     #[serde(default)]
     pub force: bool,
-    /// Accept failed semantic requests, retaining their full diagnostics (#179).
+    /// Accept failed semantic requests, retaining an explicit diagnostic sample and exact count (#179, #185).
     #[serde(default)]
     pub allow_degraded_enrichment: bool,
 }

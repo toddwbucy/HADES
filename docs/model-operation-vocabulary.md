@@ -246,7 +246,7 @@ All other names use standard vocabulary that models handle well:
 - **Param validation**: All param structs use `#[serde(deny_unknown_fields)]`
 - **Limit enforcement**: `MAX_LIMIT = 1000` enforced on all paginated operations
 
-### Explicit degraded enrichment (#179)
+### Explicit degraded enrichment (#179, #185)
 
 `hades ingest <directory> --allow-degraded-enrichment` accepts semantic requests
 that still fail after retry. Daemon `ingest.start` and MCP `ingest_start` expose
@@ -254,16 +254,30 @@ the optional boolean `allow_degraded_enrichment` (default `false`).
 `ingest.start` remains **Provisioning**; `ingest.status` remains **Agent**.
 
 Without the override these requests make the terminal ingest envelope
-`success: false`. With it, an otherwise successful run reports `success: true`,
-`data.enrichment_degraded: true`, and the full `data.failed_requests` list
-(file, symbol, request and reason), also retained in the per-analyzer reports.
-Clean runs report `enrichment_degraded: false` and an empty list.
-The persisted job records the chosen override and captures this same envelope
-in `result`; `ingest_status` / `ingest.status` return that record.
+`success: false`. With it, an otherwise successful run reports `success: true`
+and `data.enrichment_degraded: true`. `data.failed_request_count` is exact;
+`data.failed_requests` is one diagnostic sample (file, symbol, request, reason),
+bounded to 100 entries and 64 KiB of compact serialized JSON. The same limits
+apply at extraction and aggregation. `data.failed_requests_truncated` is true
+whenever the retained sample is shorter than the count. Degradation is derived
+from the count, so even an empty sample cannot conceal failures.
+
+Unified output retains per-analyzer counts but removes the nested failure lists
+and their sampling flags: each retained failure is emitted once, at the top
+level. Standalone `codebase ingest` keeps per-analyzer bounded lists, exact
+counts and truncation flags. Clean unified runs report zero failures, an empty
+sample, and both booleans false. The persisted job records the chosen override
+and captures this same envelope in `result`; `ingest_status` / `ingest.status`
+return that record.
 
 Like codebase ingest's `--allow-analysis-downgrade`, this explicit acceptance
 retains prior affected semantic edges and refreshes eligible content. The new
 option accepts request failures only: missing analyzers, storage failures and
 other code/document failures still fail the run. It does not authorize a tier
-downgrade. Existing bounded job capture still fails visibly on output overflow;
-no successful degraded job silently truncates its failed-request list.
+downgrade. Diagnostic samples leave room under the existing 8 MiB job-output
+limit; unrelated output/resource failures retain their existing behavior.
+
+Every failure still emits a WARN, which a direct CLI caller can capture from
+stderr. Daemon jobs capture only a bounded stderr tail, and successful job
+records do not store that tail. The bounded-summary contract does not promise
+a complete diagnostic archive for daemon/MCP jobs.

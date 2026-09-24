@@ -215,9 +215,9 @@ async fn document_symbols_reject_null_and_wrong_shape_but_accept_empty() {
     }
 }
 
-// The explicit degraded override must not lose failures after the old cap (#179).
+// Sampling limits diagnostics, never the count or graph ownership (#185).
 #[tokio::test]
-async fn all_failed_requests_survive_large_files() {
+async fn large_failure_counts_survive_bounded_samples() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n").unwrap();
     std::fs::write(root.path().join(".lsp-mode"), "many-error").unwrap();
@@ -228,6 +228,7 @@ async fn all_failed_requests_survive_large_files() {
     let extraction = RustSymbolExtractor::new(&session, true).extract_file(&source).await.unwrap();
     session.shutdown().await.unwrap();
     assert_eq!(extraction.failed_request_count, 105);
-    assert_eq!(extraction.failed_requests.len(), 105);
-    assert_eq!(extraction.failed_requests[104].symbol, "caller104");
+    assert_eq!(extraction.failed_requests.len(), 100);
+    assert_eq!(extraction.failed_edge_symbols.len(), 105);
+    assert_eq!(extraction.failed_requests[99].symbol, "caller99");
 }

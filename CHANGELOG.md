@@ -20,7 +20,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Added
 
 - Add explicit degraded semantic enrichment acceptance to unified ingest, daemon
-  and MCP ingestion, retaining the full failed-request list and job outcome (#179).
+  and MCP ingestion, retaining exact failure counts, bounded diagnostic samples,
+  explicit truncation flags and the job outcome (#179, #185).
 
 - Add Agent-tier indexed equality lookup across CLI, daemon and MCP, with schema-owned lookup indexes and fail-closed index hints (#173).
 
@@ -47,6 +48,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   filesystem, and partial-write limitations for the full audit (#12).
 
 ### Fixed
+
+- Bound degraded enrichment diagnostic samples by entry count and serialized
+  bytes, remove duplicated unified failure lists, and preserve exact totals so
+  accepted runs do not overflow job capture solely from failure diagnostics (#185).
 
 - Give enrichment ownership of semantic edges by request identity, preserving structural fallback and pruning invalid endpoints after skipped stores; distinguish source macros, explicit cfg module paths, and malformed document-symbol responses (#179).
 

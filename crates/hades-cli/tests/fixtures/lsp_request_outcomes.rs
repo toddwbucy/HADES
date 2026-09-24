@@ -39,6 +39,7 @@ async fn semantic_request_failures_are_visible_and_preserve_stored_edges() {
                 assert_eq!(report["success"], !failed || accept, "{report}");
                 let stats = &report["data"][stats_key];
                 assert_eq!(stats["failed_request_count"], usize::from(failed), "{report}");
+                assert_eq!(stats["failed_requests_truncated"], false, "{report}");
                 if failed {
                     assert_eq!(stats["failed_requests"][0]["symbol"], "caller");
                     assert_eq!(stats["failed_requests"][0]["file"], source.file_name().unwrap().to_str().unwrap());
@@ -204,11 +205,94 @@ fn assert_degraded_result(report: &Value, accept: bool) {
     assert_eq!(report["success"], accept, "{report}");
     let data = &report["data"];
     assert_eq!(data["enrichment_degraded"], true, "{report}");
-    assert_eq!(data["failed_requests"], data["code"]["rust_analyzer"]["failed_requests"]);
+    assert_eq!(data["failed_request_count"], 1);
+    assert_eq!(data["failed_requests_truncated"], false);
+    assert!(data["code"]["rust_analyzer"].get("failed_requests").is_none());
+    assert_eq!(data["code"]["rust_analyzer"]["failed_request_count"], 1);
     let failures = data["failed_requests"].as_array().unwrap();
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0]["file"], "lib.rs");
     assert_eq!(failures[0]["symbol"], "caller");
     assert_eq!(failures[0]["request"], "callHierarchy/outgoingCalls");
     assert!(!failures[0]["reason"].as_str().unwrap().is_empty());
+}
+
+
+// Diagnostics alone must not overflow an accepted MCP job (#185, #179).
+#[tokio::test]
+async fn mcp_accepts_ten_thousand_failures_with_bounded_result() {
+    with_temp_db("bounded_degraded", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\npath=\"lib.rs\"\n").unwrap();
+        // Small files stay below both graph and enrichment transaction budgets
+        // while exercising 10,000 real request failures in one job (#185).
+        for file in 0..20 {
+            let name = if file == 0 { "lib.rs".to_owned() } else { format!("part{file}.rs") };
+            std::fs::write(root.join(name), (0..500).map(|n| format!("fn caller{n}() {{ target(); }} // fixture padding\n")).collect::<String>()).unwrap();
+        }
+        std::fs::write(root.join(".lsp-mode"), "ten-thousand-error").unwrap();
+        let peer = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hades-core/tests/fixtures/lsp_requests.py");
+        let socket = tree.path().join("daemon.sock");
+        let token = tree.path().join("token");
+        std::fs::write(&token, "private-fixture-token").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let child = cli_command(&pool, &embedder, &["daemon", "--socket", socket.to_str().unwrap(),
+            "--mcp-bind", &address.to_string(), "--mcp-token-file", token.to_str().unwrap(),
+            "--mcp-db-prefix", pool.database(), "--mcp-ingest-root", root.to_str().unwrap()])
+            // Embedding is optional for code. This regression needs no vectors.
+            .env("HADES_EMBEDDER_SOCKET", tree.path().join("absent-embedder.sock"))
+            .env("HADES_RUST_ANALYZER_PATH", &peer).env("HADES_USE_GPU", "false")
+            .env("CUDA_VISIBLE_DEVICES", "").env("TOKIO_WORKER_THREADS", "2")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(tree.path().join("daemon.log")).unwrap()).spawn().unwrap();
+        let mut daemon = PrivateDaemon { child, ingests: Vec::new() };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                assert!(daemon.child.try_wait().unwrap().is_none());
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let mcp = PrivateMcp::connect(address).await;
+        let started = mcp.call_tool("ingest_start", json!({"db":pool.database(), "path":root, "force":true, "allow_degraded_enrichment":true})).await;
+        assert_eq!(started["success"], true, "{started}");
+        let job = started["data"]["job_id"].as_str().unwrap();
+        daemon.ingests.push((started["data"]["pid"].as_u64().unwrap() as u32, root.clone()));
+        let row = tokio::time::timeout(std::time::Duration::from_secs(240), async {
+            loop {
+                let status = mcp.call_tool("ingest_status", json!({"db":pool.database(), "job_id":job})).await;
+                assert_eq!(status["success"], true, "{status}");
+                let row = status["data"].clone();
+                if matches!(row["status"].as_str(), Some("completed" | "failed")) { break row; }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(row["status"], "completed", "detail={} code_results={}",
+            row["detail"].as_str().unwrap_or("").chars().rev().take(2000).collect::<String>().chars().rev().collect::<String>(),
+            row["result"]["data"]["code"]["results"]);
+        assert_eq!(row["result"]["success"], true);
+        let data = &row["result"]["data"];
+        assert_eq!(data["enrichment_degraded"], true);
+        assert_eq!(data["failed_request_count"], 10_000);
+        assert_eq!(data["failed_requests_truncated"], true);
+        assert!(!data["failed_requests"].as_array().unwrap().is_empty());
+        assert!(data["failed_requests"].as_array().unwrap().len() <= 100);
+        assert!(serde_json::to_vec(&data["failed_requests"]).unwrap().len() <= 64 * 1024);
+        for analyzer in ["rust_analyzer", "gopls"] {
+            assert!(data["code"][analyzer].get("failed_requests").is_none(), "duplicated diagnostics");
+        }
+        assert_eq!(data["code"]["rust_analyzer"]["failed_request_count"], 10_000);
+        let stored = hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", job).await.unwrap();
+        assert_eq!(stored["result"], row["result"]);
+        let bytes = serde_json::to_vec_pretty(&stored["result"]).unwrap().len() + 1;
+        assert!(bytes < 8 * 1024 * 1024, "stored envelope is {bytes} bytes");
+        assert!(bytes < 128 * 1024, "diagnostics should leave room for other fields");
+        println!("Bounded MCP diagnostics: {}", json!({"status":row["status"],"success":row["result"]["success"],"failed_request_count":data["failed_request_count"],"retained":data["failed_requests"].as_array().unwrap().len(),"failed_requests_truncated":data["failed_requests_truncated"],"stored_result_bytes":bytes}));
+        unsafe { libc::kill(daemon.child.id().unwrap() as i32, libc::SIGTERM); }
+        assert!(daemon.child.wait().await.unwrap().success());
+    }).await;
 }
