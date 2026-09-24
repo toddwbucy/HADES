@@ -98,6 +98,8 @@ pub async fn run_unified(
     unparsed_ext: &[String],
     collection: Option<&str>,
     task: Option<&str>,
+    allow_degraded_enrichment: bool,
+    request_failure_option: &'static str,
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
@@ -116,7 +118,7 @@ pub async fn run_unified(
     // Code first. The two phases write disjoint collections, so the order is
     // only about which failure an operator sees first, and losing the code
     // graph's edges is the more serious of the two.
-    let code = if found.code.is_empty() {
+    let mut code = if found.code.is_empty() {
         None
     } else {
         Some(
@@ -129,6 +131,8 @@ pub async fn run_unified(
                 None,
                 force,
                 false,
+                allow_degraded_enrichment,
+                request_failure_option,
             )
             .await?,
         )
@@ -169,11 +173,16 @@ pub async fn run_unified(
         }
     };
 
+    let (failed_request_count, failed_requests) = take_enrichment_failures(&mut code);
     let code_failure = code.as_ref().and_then(|o| o.failure.as_ref());
     let doc_failure = documents.as_ref().and_then(|o| o.failure.as_ref());
     let success = code_failure.is_none() && doc_failure.is_none() && document_setup_error.is_none();
 
     let result_data = json!({
+        "enrichment_degraded": failed_request_count > 0,
+        "failed_request_count": failed_request_count,
+        "failed_requests_truncated": failed_request_count > failed_requests.len() as u64,
+        "failed_requests": failed_requests,
         "root": root.display().to_string(),
         "source_git": source_git,
         "routed": {
@@ -210,6 +219,30 @@ pub async fn run_unified(
     Ok(())
 }
 
+// Unified output owns one sample, not a copy of each analyzer's list (#185).
+// Counts survive both extraction-level and aggregation-level sampling.
+fn take_enrichment_failures(code: &mut Option<PhaseOutcome>) -> (u64, Vec<Value>) {
+    let mut count = 0;
+    let mut sample = Vec::new();
+    if let Some(code) = code {
+        for analyzer in ["rust_analyzer", "gopls"] {
+            if let Some(stats) = code.data[analyzer].as_object_mut() {
+                count += stats
+                    .get("failed_request_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                stats.remove("failed_requests_truncated");
+                if let Some(Value::Array(failures)) = stats.remove("failed_requests") {
+                    for failure in failures {
+                        hades_core::code::lsp::symbols::retain_failure(&mut sample, failure);
+                    }
+                }
+            }
+        }
+    }
+    (count, sample)
+}
+
 /// Run the document ingest command, printing its own envelope.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -227,7 +260,7 @@ pub async fn run(
     concurrency: Option<usize>,
     root: Option<PathBuf>,
 ) -> Result<()> {
-    let outcome = run_phase(
+    let mut outcome = run_phase(
         config,
         inputs,
         batch,
@@ -243,6 +276,11 @@ pub async fn run(
         root,
     )
     .await?;
+    // Named files have no semantic analyzer but retain the unified result shape (#185).
+    outcome.data["enrichment_degraded"] = json!(false);
+    outcome.data["failed_request_count"] = json!(0);
+    outcome.data["failed_requests_truncated"] = json!(false);
+    outcome.data["failed_requests"] = json!([]);
     let success = outcome.failure.is_none();
     output::print_output_with_success("ingest", outcome.data, &OutputFormat::Json, success);
     match outcome.failure {
@@ -800,6 +838,32 @@ fn is_code_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn enrichment_summary_merges_counts_without_duplicating_samples() {
+        let mut code = Some(super::PhaseOutcome {
+            failure: None,
+            data: serde_json::json!({
+                "rust_analyzer": {"failed_request_count": 10000, "failed_requests_truncated":true, "failed_requests":[{"symbol":"rust"}]},
+                "gopls": {"failed_request_count": 3, "failed_requests_truncated":true, "failed_requests":[{"symbol":"go"}]}
+            }),
+        });
+        let (count, sample) = super::take_enrichment_failures(&mut code);
+        assert_eq!(count, 10003);
+        assert_eq!(
+            sample,
+            vec![
+                serde_json::json!({"symbol":"rust"}),
+                serde_json::json!({"symbol":"go"})
+            ]
+        );
+        let data = code.unwrap().data;
+        for analyzer in ["rust_analyzer", "gopls"] {
+            assert!(data[analyzer].get("failed_requests").is_none());
+            assert!(data[analyzer].get("failed_requests_truncated").is_none());
+        }
+        assert_eq!(super::take_enrichment_failures(&mut None), (0, Vec::new()));
+    }
     use super::*;
 
     /// The defect this exists for: eleven `README.md` files, one key.

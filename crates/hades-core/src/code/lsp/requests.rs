@@ -5,7 +5,7 @@ use tracing::warn;
 use super::{
     LspError,
     session::{LanguageServer, LspSession},
-    symbols::{FAILED_REQUEST_LIMIT, FailedRequest, FileExtraction},
+    symbols::{FAILED_REQUEST_LIMIT, FailedRequest, FileExtraction, retain_failure},
 };
 
 pub(super) enum RequestKind {
@@ -111,8 +111,10 @@ pub(super) async fn resolve<S: LanguageServer>(
                     continue;
                 }
                 extraction.failed_request_count += 1;
-                if extraction.failed_requests.len() < FAILED_REQUEST_LIMIT {
-                    extraction.failed_requests.push(FailedRequest {
+                // Count and ownership stay exact even when diagnostics are sampled (#185).
+                retain_failure(
+                    &mut extraction.failed_requests,
+                    FailedRequest {
                         file: file.chars().take(4096).collect(),
                         symbol: symbol.chars().take(1024).collect(),
                         request: method.into(),
@@ -120,8 +122,8 @@ pub(super) async fn resolve<S: LanguageServer>(
                             .chars()
                             .take(2048)
                             .collect(),
-                    });
-                }
+                    },
+                );
             }
         }
     }

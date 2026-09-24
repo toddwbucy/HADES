@@ -151,6 +151,8 @@ pub async fn run(
         compile_commands,
         force,
         allow_analysis_downgrade,
+        false,
+        "--allow-analysis-downgrade",
     )
     .await?;
     output::print_output_with_success(
@@ -177,6 +179,8 @@ pub async fn run_phase(
     compile_commands: Option<&Path>,
     force: bool,
     allow_analysis_downgrade: bool,
+    allow_degraded_enrichment: bool,
+    request_failure_option: &'static str,
 ) -> Result<PhaseOutcome> {
     let cmd_start = Instant::now();
 
@@ -700,8 +704,9 @@ pub async fn run_phase(
     }
 
     let failed_requests = ra_stats.failed_request_count + gopls_stats.failed_request_count;
-    if failed_requests > 0 && !allow_analysis_downgrade {
-        enrichment_failure.get_or_insert_with(|| format!("{failed_requests} semantic request(s) failed after retry; content refreshed; prior affected semantic edges retained; retry or explicitly accept degraded enrichment with --allow-analysis-downgrade"));
+    // Unified ingest accepts request failures only, not tier loss or store errors (#179).
+    if failed_requests > 0 && !(allow_analysis_downgrade || allow_degraded_enrichment) {
+        enrichment_failure.get_or_insert_with(|| format!("{failed_requests} semantic request(s) failed after retry; content refreshed; prior affected semantic edges retained; retry or explicitly accept degraded enrichment with {request_failure_option}"));
     }
 
     // Earlier file commits survive a skipped/failed enrichment store. Cleanup
@@ -813,6 +818,7 @@ pub async fn run_phase(
             "failed_files": ra_stats.failed_files,
             "failed_requests": ra_stats.failed_requests,
             "failed_request_count": ra_stats.failed_request_count,
+            "failed_requests_truncated": ra_stats.failed_request_count > ra_stats.failed_requests.len(),
             "no_calls": ra_stats.no_calls,
             "no_call_count": ra_stats.no_call_count,
             "store_errors": ra_stats.store_errors,
@@ -826,6 +832,7 @@ pub async fn run_phase(
             "failed_files": gopls_stats.failed_files,
             "failed_requests": gopls_stats.failed_requests,
             "failed_request_count": gopls_stats.failed_request_count,
+            "failed_requests_truncated": gopls_stats.failed_request_count > gopls_stats.failed_requests.len(),
             "no_calls": gopls_stats.no_calls,
             "no_call_count": gopls_stats.no_call_count,
             "store_errors": gopls_stats.store_errors,
@@ -3117,11 +3124,13 @@ impl PreparedLsp {
             stats
                 .no_calls
                 .extend(extraction.no_calls.iter().take(remaining).cloned());
-            let remaining = hades_core::code::lsp::symbols::FAILED_REQUEST_LIMIT
-                .saturating_sub(stats.failed_requests.len());
-            stats
-                .failed_requests
-                .extend(extraction.failed_requests.iter().take(remaining).cloned());
+            // Reapply the sample budget across files; the count above stays exact (#185).
+            for failure in &extraction.failed_requests {
+                hades_core::code::lsp::symbols::retain_failure(
+                    &mut stats.failed_requests,
+                    failure.clone(),
+                );
+            }
         }
         Self {
             extractions,
@@ -3918,6 +3927,34 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn prepared_enrichment_bounds_diagnostics_but_counts_every_failure() {
+        use hades_core::code::lsp::symbols::FailedRequest;
+        let extractions = (0..105)
+            .map(|n| {
+                let mut extraction = FileExtraction::empty();
+                let file = format!("{n:03}.rs");
+                extraction.failed_request_count = 1;
+                extraction.failed_requests.push(FailedRequest {
+                    file: file.clone(),
+                    symbol: "caller".into(),
+                    request: "callHierarchy/outgoingCalls".into(),
+                    reason: "fixture".into(),
+                });
+                (file, extraction)
+            })
+            .collect();
+        let prepared = PreparedLsp::new(
+            extractions,
+            HashMap::new(),
+            SemanticLspStats::default(),
+            Path::new("/fixture"),
+        );
+        assert_eq!(prepared.stats.failed_request_count, 105);
+        assert_eq!(prepared.stats.failed_requests.len(), 100);
+        assert_eq!(prepared.stats.failed_requests[99].file, "099.rs");
+    }
     #[tokio::test]
     async fn raw_fallback_leaves_semantic_edges_to_enrichment_cleanup() {
         with_temp_db("raw_edge_ownership", Fixtures::Codebase, |pool| async move {

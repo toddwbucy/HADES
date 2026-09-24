@@ -267,3 +267,52 @@ HADES_EMBEDDER_DEVICE=cuda:0     # relative to the above
 `loginctl enable-linger todd` if the daemon should survive logout, otherwise
 systemd stops user services when the last session closes and remote clients
 lose the endpoint.
+
+### Explicit degraded enrichment (#179, #185)
+
+`hades ingest <directory> --allow-degraded-enrichment` accepts semantic requests
+that still fail after retry. Daemon `ingest.start` and MCP `ingest_start` expose
+the optional boolean `allow_degraded_enrichment` (default `false`).
+`ingest.start` remains **Provisioning**; `ingest.status` remains **Agent**.
+
+The override applies only to a directory ingest. CLI named-file ingestion
+rejects `--allow-degraded-enrichment`; daemon/MCP `ingest.start` rejects
+`allow_degraded_enrichment: true` for a file before creating a job. Pass the
+directory to use semantic enrichment. Named-file ingestion with the option
+omitted or false keeps its document behavior and reports
+`enrichment_degraded: false`, `failed_request_count: 0`,
+`failed_requests_truncated: false`, and `failed_requests: []`, including in
+persisted job results and status. Semantic-request failure messages name the
+applicable option: `--allow-analysis-downgrade` for `codebase ingest`,
+`--allow-degraded-enrichment` for CLI directory `ingest`, and
+`allow_degraded_enrichment` for daemon/MCP jobs.
+
+
+Without the override these requests make the terminal ingest envelope
+`success: false`. With it, an otherwise successful run reports `success: true`
+and `data.enrichment_degraded: true`. `data.failed_request_count` is exact;
+`data.failed_requests` is one diagnostic sample (file, symbol, request, reason),
+bounded to 100 entries and 64 KiB of compact serialized JSON. The same limits
+apply at extraction and aggregation. `data.failed_requests_truncated` is true
+whenever the retained sample is shorter than the count. Degradation is derived
+from the count, so even an empty sample cannot conceal failures.
+
+Unified output retains per-analyzer counts but removes the nested failure lists
+and their sampling flags: each retained failure is emitted once, at the top
+level. Standalone `codebase ingest` keeps per-analyzer bounded lists, exact
+counts and truncation flags. Clean unified runs report zero failures, an empty
+sample, and both booleans false. The persisted job records the chosen override
+and captures this same envelope in `result`; `ingest_status` / `ingest.status`
+return that record.
+
+Like codebase ingest's `--allow-analysis-downgrade`, this explicit acceptance
+retains prior affected semantic edges and refreshes eligible content. The new
+option accepts request failures only: missing analyzers, storage failures and
+other code/document failures still fail the run. It does not authorize a tier
+downgrade. Diagnostic samples leave room under the existing 8 MiB job-output
+limit; unrelated output/resource failures retain their existing behavior.
+
+Every failure still emits a WARN, which a direct CLI caller can capture from
+stderr. Daemon jobs capture only a bounded stderr tail, and successful job
+records do not store that tail. The bounded-summary contract does not promise
+a complete diagnostic archive for daemon/MCP jobs.
