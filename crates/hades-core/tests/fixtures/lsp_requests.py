@@ -105,6 +105,15 @@ while True:
             response["error"] = {"code": -32603, "message": "injected implementation failure"}
         else:
             result = {"uri": uri, "range": item("target", offset + 1)["range"]}
+    if mode in ("many-error", "ten-thousand-error"):
+        if method == "textDocument/documentSymbol":
+            result = [item(f"caller{n}", n) for n in range(500 if mode == "ten-thousand-error" else 105)]
+        elif method == "textDocument/prepareCallHierarchy":
+            result = [item(f"caller{position}", position)]
+        elif method == "callHierarchy/outgoingCalls":
+            response["error"] = {"code": -32603, "message": "injected request failure"}
+    if mode == "ten-thousand-error" and "error" in response:
+        response["error"]["message"] += "x" * 600
     if multi:
         request_uri = params.get("textDocument", {}).get("uri", params.get("item", {}).get("uri", uri))
         stem = Path(request_uri).stem

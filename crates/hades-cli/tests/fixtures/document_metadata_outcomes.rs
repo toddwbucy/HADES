@@ -15,6 +15,106 @@ mod document_metadata_outcomes {
     struct Peer(JoinHandle<()>);
     impl Drop for Peer { fn drop(&mut self) { self.0.abort(); } }
 
+    // A document-only path must not silently discard the semantic override (#185).
+    #[tokio::test]
+    async fn single_file_ingest_rejects_override_and_reports_clean_enrichment() {
+        with_temp_db("file_override", Fixtures::Empty, |pool| async move {
+            let tree = tempfile::tempdir().unwrap();
+            let root = tree.path().join("source");
+            std::fs::create_dir(&root).unwrap();
+            let document = root.join("doc.md");
+            std::fs::write(&document, "Private document fixture").unwrap();
+            let extractor_socket = tree.path().join("extractor.sock");
+            let listener = tokio::net::UnixListener::bind(&extractor_socket).unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async {
+                let next = listener.accept().await.map(|(stream,_)| stream); Some((next, listener))
+            });
+            let _peer = Peer(tokio::spawn(async move {
+                tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor))
+                    .serve_with_incoming(incoming).await.unwrap();
+            }));
+            let embedder = Embedder::for_task("retrieval.passage").await;
+            for paths in [vec![document.to_str().unwrap()], vec![document.to_str().unwrap(), document.to_str().unwrap()]] {
+                let output = cli_command(&pool, &embedder, &["ingest"]).args(paths)
+                    .arg("--allow-degraded-enrichment").env("HADES_EXTRACTOR_SOCKET", &extractor_socket).output().await.unwrap();
+                assert!(!output.status.success(), "file override was silently accepted: {output:?}");
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(error.contains("--allow-degraded-enrichment") && error.contains("directory"), "{error}");
+            }
+            let output = cli_command(&pool, &embedder, &["ingest", document.to_str().unwrap()])
+                .env("HADES_EXTRACTOR_SOCKET", &extractor_socket).output().await.unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_clean_enrichment(&result);
+
+            let socket = tree.path().join("daemon.sock");
+            let token = tree.path().join("token");
+            std::fs::write(&token, "private-fixture-token").unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap(); drop(listener);
+            let child = cli_command(&pool, &embedder, &["daemon", "--socket", socket.to_str().unwrap(),
+                "--mcp-bind", &address.to_string(), "--mcp-token-file", token.to_str().unwrap(),
+                "--mcp-db-prefix", pool.database(), "--mcp-ingest-root", root.to_str().unwrap()])
+                .env("HADES_EXTRACTOR_SOCKET", &extractor_socket).env("HADES_USE_GPU", "false")
+                .env("CUDA_VISIBLE_DEVICES", "").env("TOKIO_WORKER_THREADS", "2")
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(tree.path().join("daemon.log")).unwrap()).spawn().unwrap();
+            let mut daemon = PrivateDaemon { child, ingests: Vec::new() };
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                    assert!(daemon.child.try_wait().unwrap().is_none());
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            let mcp = PrivateMcp::connect(address).await;
+            for remote in [false, true] {
+                let mut params = json!({"path":document,"allow_degraded_enrichment":true});
+                let rejected = if remote {
+                    params["db"] = json!(pool.database());
+                    mcp.call_tool("ingest_start", params).await
+                } else { daemon_request(&socket, json!({"command":"ingest.start","params":params})).await };
+                assert_eq!(rejected["success"], false, "{rejected}");
+                assert!(rejected.to_string().contains("allow_degraded_enrichment"), "{rejected}");
+                assert!(rejected.to_string().contains("directory"), "{rejected}");
+            }
+            // Rejection precedes record creation, not merely child execution.
+            let collections = hades_core::db::crud::list_collections(&pool, false).await.unwrap();
+            assert!(!collections.iter().any(|c| c.name == "hades_ingest_jobs"));
+            for option in [None, Some(false)] {
+                let mut params = json!({"db":pool.database(),"path":document,"force":true});
+                if let Some(option) = option { params["allow_degraded_enrichment"] = json!(option); }
+                let started = mcp.call_tool("ingest_start", params).await;
+                assert_eq!(started["success"], true, "{started}");
+                let job = started["data"]["job_id"].as_str().unwrap();
+                daemon.ingests.push((started["data"]["pid"].as_u64().unwrap() as u32, document.clone()));
+                let row = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    loop {
+                        let status = mcp.call_tool("ingest_status", json!({"db":pool.database(),"job_id":job})).await;
+                        assert_eq!(status["success"], true, "{status}");
+                        let row = status["data"].clone();
+                        if matches!(row["status"].as_str(), Some("completed" | "failed")) { break row; }
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                }).await.unwrap();
+                assert_eq!(row["status"], "completed", "{row}");
+                assert_eq!(row["allow_degraded_enrichment"], false);
+                assert_clean_enrichment(&row["result"]);
+                let stored = hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", job).await.unwrap();
+                assert_eq!(stored["result"], row["result"]);
+            }
+            unsafe { libc::kill(daemon.child.id().unwrap() as i32, libc::SIGTERM); }
+            assert!(daemon.child.wait().await.unwrap().success());
+        }).await;
+    }
+
+    fn assert_clean_enrichment(result: &Value) {
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["data"]["enrichment_degraded"], false);
+        assert_eq!(result["data"]["failed_request_count"], 0);
+        assert_eq!(result["data"]["failed_requests_truncated"], false);
+        assert_eq!(result["data"]["failed_requests"], json!([]));
+    }
+
     #[tokio::test]
     async fn final_document_metadata_failure_is_not_ingestion_success() {
         with_temp_db("document_metadata",Fixtures::Empty,|pool| async move {

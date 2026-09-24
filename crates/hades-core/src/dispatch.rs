@@ -439,6 +439,9 @@ pub struct IngestStartParams {
     /// Re-ingest files whose digest is unchanged.
     #[serde(default)]
     pub force: bool,
+    /// Accept failed semantic requests for a directory; rejected for a file (#179, #185).
+    #[serde(default)]
+    pub allow_degraded_enrichment: bool,
 }
 
 /// Params for `ingest.status`.
@@ -1454,9 +1457,11 @@ pub async fn dispatch(
         DaemonCommand::DbCreateDatabase(p) => handlers::db_create_database(config, &p.name)
             .await
             .map_err(Into::into),
-        DaemonCommand::IngestStart(p) => handlers::ingest_start(pool, config, &p.path, p.force)
-            .await
-            .map_err(Into::into),
+        DaemonCommand::IngestStart(p) => {
+            handlers::ingest_start(pool, config, &p.path, p.force, p.allow_degraded_enrichment)
+                .await
+                .map_err(Into::into)
+        }
         DaemonCommand::IngestStatus(p) => handlers::ingest_status(pool, &p.job_id)
             .await
             .map_err(Into::into),
@@ -1544,8 +1549,10 @@ mod handlers {
         config: &crate::config::HadesConfig,
         path: &str,
         force: bool,
+        allow_degraded_enrichment: bool,
     ) -> Result<Value, HandlerError> {
-        crate::ingest_jobs::records::start(pool, config, path, force).await
+        crate::ingest_jobs::records::start(pool, config, path, force, allow_degraded_enrichment)
+            .await
     }
 
     pub async fn ingest_status(pool: &ArangoPool, job_id: &str) -> Result<Value, HandlerError> {
@@ -6862,6 +6869,7 @@ mod tests {
                     &HadesConfig::with_database(&format!("database-{index}")),
                     path.to_str().unwrap(),
                     false,
+                    false,
                 )
                 .await
             }));
@@ -6873,10 +6881,15 @@ mod tests {
         let fresh = roots.path().join("fresh");
         std::fs::create_dir(&fresh).unwrap();
         for path in [roots.path().join("tree-0"), fresh.clone()] {
-            let error =
-                handlers::ingest_start(&rejected.pool, &config, path.to_str().unwrap(), false)
-                    .await
-                    .unwrap_err();
+            let error = handlers::ingest_start(
+                &rejected.pool,
+                &config,
+                path.to_str().unwrap(),
+                false,
+                false,
+            )
+            .await
+            .unwrap_err();
             assert!(error.to_string().contains("already"), "{error}");
         }
         assert!(rejected.events.try_recv().is_err());
@@ -6898,9 +6911,10 @@ mod tests {
                 },
             ])
             .await;
-            let error = handlers::ingest_start(&mock.pool, &config, fresh.to_str().unwrap(), false)
-                .await
-                .unwrap_err();
+            let error =
+                handlers::ingest_start(&mock.pool, &config, fresh.to_str().unwrap(), false, false)
+                    .await
+                    .unwrap_err();
             assert!(
                 error.to_string().contains("cannot verify ingest admission"),
                 "{error}"
