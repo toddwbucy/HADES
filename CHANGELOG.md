@@ -19,6 +19,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add explicit degraded semantic enrichment acceptance to unified ingest, daemon
+  and MCP ingestion, retaining the full failed-request list and job outcome (#179).
+
 - Add Agent-tier indexed equality lookup across CLI, daemon and MCP, with schema-owned lookup indexes and fail-closed index hints (#173).
 
 - Record observed source Git commit and dirty state on ingested file/document rows,

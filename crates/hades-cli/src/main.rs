@@ -123,6 +123,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
+        /// Accept failed semantic requests while reporting every failure (#179).
+        #[arg(long)]
+        allow_degraded_enrichment: bool,
+
         /// Reset batch state (clear previous checkpoint).
         #[arg(long, conflicts_with = "resume")]
         reset: bool,
@@ -333,6 +337,7 @@ fn main() -> anyhow::Result<()> {
             concurrency,
             root,
             unparsed_ext,
+            allow_degraded_enrichment,
         } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -385,6 +390,7 @@ fn main() -> anyhow::Result<()> {
                     &unparsed_ext,
                     collection.as_deref(),
                     task.as_deref(),
+                    allow_degraded_enrichment,
                 ));
                 return match result {
                     Ok(()) => Ok(()),

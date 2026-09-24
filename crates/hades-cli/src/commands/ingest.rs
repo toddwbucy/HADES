@@ -98,6 +98,7 @@ pub async fn run_unified(
     unparsed_ext: &[String],
     collection: Option<&str>,
     task: Option<&str>,
+    allow_degraded_enrichment: bool,
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
@@ -129,6 +130,7 @@ pub async fn run_unified(
                 None,
                 force,
                 false,
+                allow_degraded_enrichment,
             )
             .await?,
         )
@@ -173,7 +175,23 @@ pub async fn run_unified(
     let doc_failure = documents.as_ref().and_then(|o| o.failure.as_ref());
     let success = code_failure.is_none() && doc_failure.is_none() && document_setup_error.is_none();
 
+    // Explicit acceptance must still name every failed semantic request (#179).
+    let failed_requests: Vec<Value> = code
+        .as_ref()
+        .into_iter()
+        .flat_map(|o| {
+            ["rust_analyzer", "gopls"].into_iter().flat_map(|key| {
+                o.data[key]["failed_requests"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+            })
+        })
+        .collect();
     let result_data = json!({
+        "enrichment_degraded": !failed_requests.is_empty(),
+        "failed_requests": failed_requests,
         "root": root.display().to_string(),
         "source_git": source_git,
         "routed": {

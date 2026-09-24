@@ -327,6 +327,10 @@ struct IngestStartArgs {
     path: String,
     #[schemars(description = "Re-ingest files whose content digest is unchanged. Default false.")]
     force: Option<bool>,
+    #[schemars(
+        description = "Accept failed semantic requests; enrichment_degraded and the full failed_requests list remain in the result. Default false."
+    )]
+    allow_degraded_enrichment: Option<bool>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -668,6 +672,7 @@ impl HadesMcpServer {
             DaemonCommand::IngestStart(IngestStartParams {
                 path: a.path,
                 force: a.force.unwrap_or(false),
+                allow_degraded_enrichment: a.allow_degraded_enrichment.unwrap_or(false),
             }),
         )
         .await

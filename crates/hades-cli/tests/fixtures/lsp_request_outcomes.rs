@@ -117,3 +117,98 @@ async fn incomplete_enrichment_refreshes_content_and_keeps_cross_file_targets() 
         }
     }).await;
 }
+
+
+// Exercise CLI, daemon and MCP with the same failed semantic request (#179).
+#[tokio::test]
+async fn unified_and_remote_degraded_enrichment_is_explicit() {
+    with_temp_db("degraded_override", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\npath=\"lib.rs\"\n").unwrap();
+        std::fs::write(root.join("lib.rs"), "fn caller() { target(); }\nfn target() {}\n").unwrap();
+        std::fs::write(root.join(".lsp-mode"), "error").unwrap();
+        let peer = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hades-core/tests/fixtures/lsp_requests.py");
+        for accept in [false, true] {
+            let mut args = vec!["ingest", root.to_str().unwrap(), "--force"];
+            if accept { args.push("--allow-degraded-enrichment"); }
+            let output = cli_command(&pool, &embedder, &args).env("HADES_RUST_ANALYZER_PATH", &peer).output().await.unwrap();
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
+            assert_eq!(output.status.success(), accept, "{report}");
+            assert_degraded_result(&report, accept);
+        }
+        let socket = tree.path().join("daemon.sock");
+        let token = tree.path().join("token");
+        std::fs::write(&token, "private-fixture-token").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let child = cli_command(&pool, &embedder, &["daemon", "--socket", socket.to_str().unwrap(),
+            "--mcp-bind", &address.to_string(), "--mcp-token-file", token.to_str().unwrap(),
+            "--mcp-db-prefix", pool.database(), "--mcp-ingest-root", root.to_str().unwrap()])
+            .env("HADES_RUST_ANALYZER_PATH", &peer).env("HADES_USE_GPU", "false")
+            .env("CUDA_VISIBLE_DEVICES", "").env("TOKIO_WORKER_THREADS", "2")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(tree.path().join("daemon.log")).unwrap()).spawn().unwrap();
+        let mut daemon = PrivateDaemon { child, ingests: Vec::new() };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                assert!(daemon.child.try_wait().unwrap().is_none());
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let mcp = PrivateMcp::connect(address).await;
+        let listed = PrivateMcp::message(mcp.post(json!({"jsonrpc":"2.0","id":900,"method":"tools/list"})).await, 900).await;
+        let tool = listed["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "ingest_start").unwrap();
+        assert!(tool["inputSchema"]["properties"].get("allow_degraded_enrichment").is_some(), "{tool}");
+        for remote in [false, true] {
+            for accept in [false, true] {
+                let mut params = json!({"path":root,"force":true});
+                // Omission exercises the backwards-compatible default.
+                if accept { params["allow_degraded_enrichment"] = json!(true); }
+                let parsed: hades_core::dispatch::IngestStartParams = serde_json::from_value(params.clone()).unwrap();
+                assert_eq!(hades_core::dispatch::DaemonCommand::IngestStart(parsed).access_tier(), hades_core::dispatch::AccessTier::Provisioning);
+                let started = if remote {
+                    params["db"] = json!(pool.database());
+                    mcp.call_tool("ingest_start", params).await
+                } else {
+                    daemon_request(&socket, json!({"command":"ingest.start","params":params})).await
+                };
+                assert_eq!(started["success"], true, "{started}");
+                let job = started["data"]["job_id"].as_str().unwrap();
+                daemon.ingests.push((started["data"]["pid"].as_u64().unwrap() as u32, root.clone()));
+                let row = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                    loop {
+                        let status = mcp.call_tool("ingest_status", json!({"db":pool.database(),"job_id":job})).await;
+                        assert_eq!(status["success"], true, "{status}");
+                        let row = status["data"].clone();
+                        if matches!(row["status"].as_str(), Some("completed" | "failed")) { break row; }
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                }).await.unwrap();
+                assert_eq!(row["status"], if accept {"completed"} else {"failed"}, "{row}");
+                assert_eq!(row["allow_degraded_enrichment"], accept);
+                assert_degraded_result(&row["result"], accept);
+                let stored = hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", job).await.unwrap();
+                assert_eq!(stored["result"], row["result"]);
+            }
+        }
+        unsafe { libc::kill(daemon.child.id().unwrap() as i32, libc::SIGTERM); }
+        assert!(daemon.child.wait().await.unwrap().success());
+    }).await;
+}
+
+fn assert_degraded_result(report: &Value, accept: bool) {
+    assert_eq!(report["success"], accept, "{report}");
+    let data = &report["data"];
+    assert_eq!(data["enrichment_degraded"], true, "{report}");
+    assert_eq!(data["failed_requests"], data["code"]["rust_analyzer"]["failed_requests"]);
+    let failures = data["failed_requests"].as_array().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0]["file"], "lib.rs");
+    assert_eq!(failures[0]["symbol"], "caller");
+    assert_eq!(failures[0]["request"], "callHierarchy/outgoingCalls");
+    assert!(!failures[0]["reason"].as_str().unwrap().is_empty());
+}

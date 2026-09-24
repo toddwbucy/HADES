@@ -111,17 +111,16 @@ pub(super) async fn resolve<S: LanguageServer>(
                     continue;
                 }
                 extraction.failed_request_count += 1;
-                if extraction.failed_requests.len() < FAILED_REQUEST_LIMIT {
-                    extraction.failed_requests.push(FailedRequest {
-                        file: file.chars().take(4096).collect(),
-                        symbol: symbol.chars().take(1024).collect(),
-                        request: method.into(),
-                        reason: format!("first attempt: {first_error}; retry: {error}")
-                            .chars()
-                            .take(2048)
-                            .collect(),
-                    });
-                }
+                // Never silently truncate the failed requests of an accepted run (#179).
+                extraction.failed_requests.push(FailedRequest {
+                    file: file.chars().take(4096).collect(),
+                    symbol: symbol.chars().take(1024).collect(),
+                    request: method.into(),
+                    reason: format!("first attempt: {first_error}; retry: {error}")
+                        .chars()
+                        .take(2048)
+                        .collect(),
+                });
             }
         }
     }

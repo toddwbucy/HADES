@@ -214,3 +214,20 @@ async fn document_symbols_reject_null_and_wrong_shape_but_accept_empty() {
         }
     }
 }
+
+// The explicit degraded override must not lose failures after the old cap (#179).
+#[tokio::test]
+async fn all_failed_requests_survive_large_files() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n").unwrap();
+    std::fs::write(root.path().join(".lsp-mode"), "many-error").unwrap();
+    let source = root.path().join("lib.rs");
+    std::fs::write(&source, (0..105).map(|n| format!("fn caller{n}() {{ target(); }}\n")).collect::<String>()).unwrap();
+    let peer = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp_requests.py");
+    let session = RustAnalyzerSession::start_with_options(root.path(), peer.to_str(), 1).await.unwrap();
+    let extraction = RustSymbolExtractor::new(&session, true).extract_file(&source).await.unwrap();
+    session.shutdown().await.unwrap();
+    assert_eq!(extraction.failed_request_count, 105);
+    assert_eq!(extraction.failed_requests.len(), 105);
+    assert_eq!(extraction.failed_requests[104].symbol, "caller104");
+}

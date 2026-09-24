@@ -127,8 +127,7 @@ impl FileExtraction {
     }
 }
 
-/// Details are capped independently from the total, so large files cannot
-/// inflate the ingest envelope without bound (#179).
+/// Non-failure cfg-inactive details remain bounded; failures are complete (#179).
 pub const FAILED_REQUEST_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

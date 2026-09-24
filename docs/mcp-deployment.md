@@ -267,3 +267,25 @@ HADES_EMBEDDER_DEVICE=cuda:0     # relative to the above
 `loginctl enable-linger todd` if the daemon should survive logout, otherwise
 systemd stops user services when the last session closes and remote clients
 lose the endpoint.
+
+### Explicit degraded enrichment (#179)
+
+`hades ingest <directory> --allow-degraded-enrichment` accepts semantic requests
+that still fail after retry. Daemon `ingest.start` and MCP `ingest_start` expose
+the optional boolean `allow_degraded_enrichment` (default `false`).
+`ingest.start` remains **Provisioning**; `ingest.status` remains **Agent**.
+
+Without the override these requests make the terminal ingest envelope
+`success: false`. With it, an otherwise successful run reports `success: true`,
+`data.enrichment_degraded: true`, and the full `data.failed_requests` list
+(file, symbol, request and reason), also retained in the per-analyzer reports.
+Clean runs report `enrichment_degraded: false` and an empty list.
+The persisted job records the chosen override and captures this same envelope
+in `result`; `ingest_status` / `ingest.status` return that record.
+
+Like codebase ingest's `--allow-analysis-downgrade`, this explicit acceptance
+retains prior affected semantic edges and refreshes eligible content. The new
+option accepts request failures only: missing analyzers, storage failures and
+other code/document failures still fail the run. It does not authorize a tier
+downgrade. Existing bounded job capture still fails visibly on output overflow;
+no successful degraded job silently truncates its failed-request list.

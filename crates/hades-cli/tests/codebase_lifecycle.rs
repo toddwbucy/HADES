@@ -290,6 +290,13 @@ impl PrivateMcp {
             .unwrap_or_else(|| panic!("missing private MCP response {id}: {body}"))
     }
 
+    async fn call_tool(&self, name: &str, arguments: Value) -> Value {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let response = self.post(json!({"jsonrpc":"2.0","id":id,"method":"tools/call", "params":{"name":name,"arguments":arguments}})).await;
+        let message = Self::message(response, id).await;
+        serde_json::from_str(message["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
     async fn start(&self, db: &str, path: &Path) -> Value {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let response = self

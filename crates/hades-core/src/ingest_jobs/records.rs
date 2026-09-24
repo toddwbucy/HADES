@@ -23,9 +23,18 @@ pub(crate) async fn start(
     config: &HadesConfig,
     path: &str,
     force: bool,
+    allow_degraded_enrichment: bool,
 ) -> Result<Value, HandlerError> {
     let exe = std::env::current_exe().map_err(service)?;
-    start_with(pool, config, path, force, tokio::process::Command::new(exe)).await
+    start_with(
+        pool,
+        config,
+        path,
+        force,
+        allow_degraded_enrichment,
+        tokio::process::Command::new(exe),
+    )
+    .await
 }
 
 async fn start_with(
@@ -33,6 +42,7 @@ async fn start_with(
     config: &HadesConfig,
     path: &str,
     force: bool,
+    allow_degraded_enrichment: bool,
     mut command: tokio::process::Command,
 ) -> Result<Value, HandlerError> {
     let bounded_pool = ArangoPool::new(
@@ -98,7 +108,7 @@ async fn start_with(
     }
     reservation.identify(&database, &job).map_err(service)?;
     let row = json!({"_key":job,"status":"starting","owner_instance":super::instance(),
-        "database":database,"path":resolved,"source_git":source_git,"force":force,"started_at":chrono::Utc::now().to_rfc3339(),
+        "database":database,"path":resolved,"source_git":source_git,"force":force,"allow_degraded_enrichment":allow_degraded_enrichment,"started_at":chrono::Utc::now().to_rfc3339(),
         "output_storage":"bounded_job_record","log_path":null,"stderr_path":null});
     command
         .arg("--db")
@@ -107,6 +117,9 @@ async fn start_with(
         .arg(&resolved);
     if force {
         command.arg("--force");
+    }
+    if allow_degraded_enrichment {
+        command.arg("--allow-degraded-enrichment");
     }
     let pool = pool.clone();
     let (reply, receive) = oneshot::channel();
@@ -403,6 +416,7 @@ mod tests {
                 &config,
                 root.path().to_str().unwrap(),
                 false,
+                false,
                 python("print('{}')"),
             )
             .await
@@ -449,6 +463,7 @@ mod tests {
             &mock.pool,
             &HadesConfig::with_database("fixture"),
             root.path().to_str().unwrap(),
+            false,
             false,
             tokio::process::Command::new("/bin/false"),
         )
@@ -521,7 +536,7 @@ mod tests {
             let mut replies = admission();
             replies.extend([ok(), ok(), ok()]);
             let mut mock = Mock::new(replies).await;
-            let started = start_with(&mock.pool, &config, path, false, python(script))
+            let started = start_with(&mock.pool, &config, path, false, false, python(script))
                 .await
                 .unwrap();
             let row = inserted(&mut mock).await;
@@ -562,7 +577,7 @@ mod tests {
         let mut replies = admission();
         replies.extend([ok(), ok(), ok()]);
         let mut mock = Mock::new(replies).await;
-        start_with(&mock.pool, &effective, path, false, command)
+        start_with(&mock.pool, &effective, path, false, false, command)
             .await
             .unwrap();
         let row = inserted(&mut mock).await;
@@ -585,6 +600,7 @@ mod tests {
             &mock.pool,
             &config,
             path,
+            false,
             false,
             tokio::process::Command::new(root.path().join("missing-executable")),
         )
@@ -611,6 +627,7 @@ mod tests {
                 &mock.pool,
                 &config,
                 path,
+                false,
                 false,
                 python("import time;time.sleep(10)")
             )
@@ -643,9 +660,16 @@ mod tests {
         let mut replies = admission();
         replies.extend([ok(), ok(), unavailable(), unavailable(), unavailable()]);
         let mut mock = Mock::new(replies).await;
-        let started = start_with(&mock.pool, &config, path, false, python("print('{}')"))
-            .await
-            .unwrap();
+        let started = start_with(
+            &mock.pool,
+            &config,
+            path,
+            false,
+            false,
+            python("print('{}')"),
+        )
+        .await
+        .unwrap();
         let row = inserted(&mut mock).await;
         let job = row["_key"].as_str().unwrap();
         mock.event(&format!("PATCH document/{COLLECTION}/{job}"))
@@ -713,6 +737,7 @@ mod tests {
                 &HadesConfig::with_database("fixture"),
                 path.to_str().unwrap(),
                 false,
+                false,
                 command,
             )
             .await
@@ -753,7 +778,7 @@ mod tests {
         replies.extend([unavailable(), ok()]);
         let mut mock = Mock::new(replies).await;
         assert!(
-            start_with(&mock.pool, &config, path, false, python(&script))
+            start_with(&mock.pool, &config, path, false, false, python(&script))
                 .await
                 .unwrap_err()
                 .to_string()
@@ -785,7 +810,7 @@ mod tests {
             ])
             .await;
             assert!(
-                start_with(&mock.pool, &config, path, false, python(&script))
+                start_with(&mock.pool, &config, path, false, false, python(&script))
                     .await
                     .unwrap_err()
                     .to_string()
@@ -818,6 +843,7 @@ mod tests {
                 &mock.pool,
                 &config,
                 alias.to_str().unwrap(),
+                false,
                 false,
                 python(&script)
             )
