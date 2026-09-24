@@ -47,3 +47,36 @@ async fn batch_insert_partial_failure_is_not_reported_as_success() {
 
     }).await;
 }
+
+// Execute projection and lookup against ArangoDB, not an already-projected mock (#186).
+#[tokio::test]
+async fn db_get_projects_and_validates_against_real_database() {
+    use hades_core::dispatch::{dispatch, DaemonCommand, DbGetParams, DispatchError, HandlerError};
+    use hades_core::db::crud;
+    with_temp_db("get_projection", Fixtures::Empty, |pool| async move {
+        crud::create_collection(&pool, "documents", Some(2)).await.unwrap();
+        crud::insert_document(&pool, "documents", &json!({"_key":"doc","label":"fixture","text":"bulk","full_text":"paper","body":"body","embedding":[1,0]})).await.unwrap();
+        let config = hades_core::HadesConfig::with_database(pool.database());
+        for fields in [None, Some(vec!["label".into(), "full_text".into()]), Some(vec![])] {
+            let result = dispatch(&pool, &config, DaemonCommand::DbGet(DbGetParams {collection:"documents".into(),key:"doc".into(),fields:fields.clone()})).await.unwrap();
+            match fields {
+                None => {
+                    assert_eq!(result["label"], "fixture");
+                    assert_eq!(result["_key"], "doc");
+                    for field in ["text","full_text","body","embedding"] { assert!(result.get(field).is_none(), "{result}"); }
+                }
+                Some(fields) if fields.is_empty() => assert_eq!(result, json!({})),
+                Some(_) => assert_eq!(result, json!({"label":"fixture","full_text":"paper"})),
+            }
+        }
+        let missing = dispatch(&pool, &config, DaemonCommand::DbGet(DbGetParams {collection:"documents".into(),key:"missing".into(),fields:None})).await.unwrap_err();
+        assert!(matches!(missing, DispatchError::Handler(HandlerError::DocumentNotFound {..})), "{missing}");
+        for (collection,key,parameter) in [("", "documents/doc", "collection"), ("documents", "documents/doc", "key")] {
+            let error = dispatch(&pool, &config, DaemonCommand::DbGet(DbGetParams {collection:collection.into(),key:key.into(),fields:None})).await.unwrap_err();
+            assert!(matches!(error, DispatchError::Handler(HandlerError::InvalidParameter {ref name,..}) if name == parameter), "{error}");
+        }
+        let embedder = Embedder::new().await;
+        let row = cli(&pool,&embedder,&["db","get","documents","doc","--fields","label,full_text"],true).await;
+        assert_eq!(row,json!({"label":"fixture","full_text":"paper"}));
+    }).await;
+}

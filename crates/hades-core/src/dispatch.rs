@@ -1569,9 +1569,21 @@ mod handlers {
         fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
         // Project inside ArangoDB so bulk fields never cross the socket by default (#170).
-        let aql = "LET d = DOCUMENT(@collection, @key) RETURN d == null ? null : \
-                   (@keep == null ? UNSET(d, @drop) : KEEP(d, @keep))";
-        let bind = json!({"collection":collection,"key":key,"keep":fields,"drop":BULK_FIELDS});
+        if collection.is_empty() {
+            return Err(HandlerError::InvalidParameter {
+                name: "collection".into(),
+                reason: "must not be empty".into(),
+            });
+        }
+        if key.contains('/') {
+            return Err(HandlerError::InvalidParameter {
+                name: "key".into(),
+                reason: "must be a document key, without '/'".into(),
+            });
+        }
+        let aql = "FOR d IN @@col FILTER d._key == @key LIMIT 1 \
+                   RETURN @keep == null ? UNSET(d, @drop) : KEEP(d, @keep)";
+        let bind = json!({"@col":collection,"key":key,"keep":fields,"drop":BULK_FIELDS});
         let result = query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader)
             .await
             .map_err(|source| {
@@ -1598,7 +1610,9 @@ mod handlers {
             })
     }
 
-    /// Large vertex fields omitted unless explicitly requested (#170).
+    /// Vertex reads default to metadata: corpus text and vectors can dwarf the
+    /// useful context and overflow client responses. Project these fields out on
+    /// the server, before transfer; explicit fields opt back in (#170).
     pub(super) const BULK_FIELDS: &[&str] = &["full_text", "embedding", "text", "body"];
 
     /// Count documents in a collection.
@@ -3902,8 +3916,9 @@ mod handlers {
         let mut schema_fields: Vec<String> = sample
             .map(serde_json::from_value)
             .transpose()
-            .map_err(|error| {
-                HandlerError::ServiceError(format!("invalid orientation attributes: {error}"))
+            .map_err(|error| HandlerError::Query {
+                context: format!("orientation attributes decoding for '{collection}'"),
+                source: crate::db::ArangoError::Json(error),
             })?
             .unwrap_or_default();
         // ATTRIBUTES does not guarantee order; retain the prior sorted shape (#170).
@@ -6829,7 +6844,7 @@ mod tests {
             assert_eq!(route, "POST cursor", "db.get must project on the server");
             let aql = request["query"].as_str().unwrap();
             assert!(
-                aql.contains("DOCUMENT(") && aql.contains("KEEP(") && aql.contains("UNSET("),
+                aql.contains("FOR d IN @@col") && aql.contains("KEEP(") && aql.contains("UNSET("),
                 "{aql}"
             );
             assert_eq!(request["bindVars"]["keep"], serde_json::json!(fields));
@@ -6866,6 +6881,31 @@ mod tests {
             result["schema_fields"],
             serde_json::json!(["_key", "text", "title"])
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_orientation_attributes_name_the_query_stage() {
+        use cursor_mock::{Mock, Reply};
+        for row in [
+            serde_json::json!({"title":"wrong"}),
+            serde_json::json!(["title", 4]),
+        ] {
+            let mut mock = Mock::new(vec![
+                Reply::page(serde_json::json!({"count":1})),
+                Reply::page(serde_json::json!({"result":[row],"hasMore":false})),
+            ])
+            .await;
+            let error = handlers::orient(&mock.pool, Some("documents"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, HandlerError::Query {context,..} if context.contains("documents") && context.contains("attributes decoding")),
+                "{error}"
+            );
+            mock.event("GET collection/documents/count").await;
+            mock.event("POST cursor").await;
+            assert!(mock.events.try_recv().is_err());
+        }
     }
 
     async fn guarded_dispatch(

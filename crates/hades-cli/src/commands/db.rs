@@ -228,7 +228,7 @@ pub enum DbCmd {
         data: Option<String>,
     },
 
-    /// Export a collection to file.
+    /// Export a collection as jsonl (default and only supported format).
     Export {
         /// Collection name.
         collection: String,

@@ -70,7 +70,9 @@ impl Embedder {
                     release.notified().await;
                 }
                 if fault.load(Ordering::SeqCst) { return Json(json!({"error":"injected embedding failure"})); }
-                assert_eq!(body["task"], expected_task, "ingest/query must agree on the adapter");
+                if expected_task == "mixed" {
+                    assert!(matches!(body["task"].as_str(), Some("code" | "retrieval.passage")));
+                } else { assert_eq!(body["task"], expected_task, "ingest/query must agree on the adapter"); }
                 let inputs = body["input"].as_array().unwrap();
                 let mut data = Vec::new();
                 if let Some(bounds) = body["late_chunk"]["boundaries"].as_array() {

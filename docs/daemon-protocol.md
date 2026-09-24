@@ -872,3 +872,15 @@ Every failure still emits a WARN, which a direct CLI caller can capture from
 stderr. Daemon jobs capture only a bounded stderr tail, and successful job
 records do not store that tail. The bounded-summary contract does not promise
 a complete diagnostic archive for daemon/MCP jobs.
+
+### Ingest provenance handoff (#186)
+
+Admission records a repository observation and passes it to the ingest child
+through version 2 of the internal sealed configuration envelope (version 1
+remains readable). It carries no extra public request parameter. The child
+shares this observation across code and document ingestion instead of running
+another `git status` for that repository. Each new job takes a fresh observation.
+The reserved checkpoint at the job's working directory is excluded from dirty
+state; checkpoint placement and resume behavior remain unchanged. Distinct
+repositories retain distinct observations, and mixed summaries are null when
+those observations differ. The handoff retains its 64 KiB limit and sealing.

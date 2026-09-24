@@ -88,7 +88,7 @@ while True:
             result = None
         else:
             result = [item(caller if position == offset else "target", position)]
-    elif method in ("callHierarchy/outgoingCalls", "callHierarchy/incomingCalls"):
+    elif method == "callHierarchy/outgoingCalls":
         if params["item"]["name"] == caller and mode == "timeout":
             continue
         if params["item"]["name"] == caller and (mode == "error" or (mode == "recover" and counts[key] == 1)):

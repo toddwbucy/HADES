@@ -52,10 +52,6 @@ struct Cli {
 enum Commands {
     /// System status for workspace discovery.
     Status {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-
         /// Verbose output.
         #[arg(short = 'V', long)]
         verbose: bool,
@@ -66,20 +62,12 @@ enum Commands {
         /// Collection to orient on.
         #[arg(short = 'c', long)]
         collection: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Extract text from documents (PDF, LaTeX, etc).
     Extract {
         /// File path to extract from.
         file: PathBuf,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
 
         /// Output file path.
         #[arg(short = 'o', long)]
@@ -310,17 +298,24 @@ fn main() -> anyhow::Result<()> {
         commands::output::set_format(format);
     }
 
-    // One global format definition avoids shadowing at db/task subcommands (#164).
+    // One global format definition avoids shadowing at subcommands (#164).
     let format = cli.format.clone().unwrap_or_else(|| "json".into());
 
-    let mut config = if let Some(fd) = cli.resolved_config_fd {
+    let (mut config, provenance) = if let Some(fd) = cli.resolved_config_fd {
         anyhow::ensure!(
             matches!(&cli.command, Commands::Ingest { .. }),
             "resolved configuration is only accepted for ingestion"
         );
-        config::snapshot::load_inherited(fd)?
+        let (config, snapshot) = config::snapshot::load_ingest(fd)?;
+        (
+            config,
+            std::sync::Arc::new(hades_core::source_git::Batch::from_snapshot(snapshot)),
+        )
     } else {
-        config::load_config()?
+        (
+            config::load_config()?,
+            std::sync::Arc::new(hades_core::source_git::Batch::default()),
+        )
     };
     config.apply_cli_overrides(cli.database.as_deref(), cli.gpu);
 
@@ -394,6 +389,7 @@ fn main() -> anyhow::Result<()> {
                     collection.as_deref(),
                     task.as_deref(),
                     allow_degraded_enrichment,
+                    provenance,
                     if cli.resolved_config_fd.is_some() {
                         "allow_degraded_enrichment"
                     } else {
@@ -475,6 +471,7 @@ fn main() -> anyhow::Result<()> {
                 reset,
                 concurrency.map(NonZeroUsize::get),
                 root,
+                provenance,
             ));
             match result {
                 Ok(()) => Ok(()),
@@ -1060,12 +1057,12 @@ fn main() -> anyhow::Result<()> {
             rt.block_on(commands::db_schema::run_version(&config))
         }
         // ── Native system commands ────────────────────────────────────
-        Commands::Status { format, verbose } => {
+        Commands::Status { verbose } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::system::run_status(&config, verbose, &format))
         }
-        Commands::Orient { collection, format } => {
+        Commands::Orient { collection } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::system::run_orient(
@@ -1247,7 +1244,7 @@ fn main() -> anyhow::Result<()> {
         // All TaskCmd variants are handled natively above.
 
         // ── Embed commands ────────────────────────────────────────────
-        Commands::Embed(EmbedCmd::Text { text, format }) => {
+        Commands::Embed(EmbedCmd::Text { text }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::embed_mgmt::run_embed_text(
@@ -1277,18 +1274,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Embed(EmbedCmd::Gpu(EmbedGpuCmd::List)) => commands::embed_mgmt::run_gpu_list(),
 
         // ── Extract command ───────────────────────────────────────────
-        Commands::Extract {
-            file,
-            format,
-            output,
-        } => commands::embed_mgmt::run_extract(&file, &format, output.as_deref()),
+        Commands::Extract { file, output } => {
+            commands::embed_mgmt::run_extract(&file, &format, output.as_deref())
+        }
 
         // ── Smell & compliance commands ──────────────────────────────
-        Commands::Smell(SmellCmd::Check {
-            path,
-            format,
-            verbose,
-        }) => {
+        Commands::Smell(SmellCmd::Check { path, verbose }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::smell_mgmt::run_smell_check(
@@ -1302,11 +1293,7 @@ fn main() -> anyhow::Result<()> {
                 &config, &path, &claims,
             ))
         }
-        Commands::Smell(SmellCmd::Report {
-            path,
-            output,
-            format,
-        }) => {
+        Commands::Smell(SmellCmd::Report { path, output }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::smell_mgmt::run_smell_report(
@@ -1334,6 +1321,19 @@ fn main() -> anyhow::Result<()> {
 mod format_contract_tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn export_help_states_its_jsonl_default() {
+        let error = Cli::try_parse_from(["hades", "db", "export", "--help"])
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(
+            error
+                .to_string()
+                .contains("jsonl (default and only supported format)")
+        );
+    }
 
     #[test]
     fn every_rendered_command_accepts_format_and_ingest_force_is_long_only() {

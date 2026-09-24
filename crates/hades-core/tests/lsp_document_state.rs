@@ -274,11 +274,3 @@ async fn cancelled_partial_did_open_does_not_publish_open_state() {
 mod request_outcomes {
     include!("fixtures/lsp_request_outcomes.rs");
 }
-
-// The unused incoming API duplicated preparation and must not return (#179).
-// This is an API-removal contract; existing fake peers cover outgoing behavior.
-#[test]
-fn review_followup_removes_unused_incoming_hierarchy_api() {
-    let source = include_str!("../src/code/lsp/session.rs");
-    assert!(!source.contains("pub async fn call_hierarchy_incoming("));
-}
