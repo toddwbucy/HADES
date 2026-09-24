@@ -1681,3 +1681,5 @@ async fn file_row_shape_is_independent_of_analysis_tier() {
     })
     .await;
 }
+
+include!("fixtures/lsp_ownership.rs");

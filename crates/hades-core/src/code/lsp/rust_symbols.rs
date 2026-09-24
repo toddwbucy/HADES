@@ -86,7 +86,8 @@ impl<'a> RustSymbolExtractor<'a> {
         let lines: Vec<&str> = content.lines().collect();
 
         // Get document symbols.
-        let raw_symbols = self.session.document_symbols(file_path).await?;
+        let mut raw_symbols = self.session.document_symbols(file_path).await?;
+        mark_source_macros(&content, &mut raw_symbols);
 
         // Get the file URI for hover/call requests.
         let uri = self.session.open_file(file_path).await?;
@@ -125,6 +126,7 @@ impl<'a> RustSymbolExtractor<'a> {
 
         let mut extraction = FileExtraction {
             failed_edge_symbols: Default::default(),
+            failed_implementation_interfaces: Default::default(),
             no_calls: Vec::new(),
             no_call_count: 0,
             failed_requests: Vec::new(),
@@ -315,7 +317,10 @@ impl<'a> RustSymbolExtractor<'a> {
         };
 
         // Call hierarchy.
-        if self.include_calls && matches!(kind, "function" | "method") {
+        if self.include_calls
+            && matches!(kind, "function" | "method")
+            && sym["hades_source_macro"] != true
+        {
             requests.push(SymbolRequest {
                 range: sym["range"].clone(),
                 index: out.len(),
@@ -505,6 +510,62 @@ fn extract_signature_from_hover(hover: &Value) -> Option<String> {
     }
 
     None
+}
+
+// rust-analyzer may label macro definitions FUNCTION; source identity, not
+// a null preparation response, establishes that call hierarchy is inapplicable.
+fn mark_source_macros(source: &str, symbols: &mut [Value]) {
+    use syn::visit::Visit;
+    #[derive(Default)]
+    struct Macros(std::collections::HashSet<(String, usize, usize)>);
+    impl<'ast> Visit<'ast> for Macros {
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            if let Some(name) = &item.ident {
+                let position = name.span().start();
+                self.0.insert((
+                    name.to_string(),
+                    position.line.saturating_sub(1),
+                    position.column,
+                ));
+            }
+            syn::visit::visit_item_macro(self, item);
+        }
+    }
+    fn mark(symbols: &mut [Value], macros: &Macros, source: &str) {
+        for symbol in symbols {
+            let line = symbol
+                .pointer("/selectionRange/start/line")
+                .and_then(Value::as_u64);
+            let column = symbol
+                .pointer("/selectionRange/start/character")
+                .and_then(Value::as_u64);
+            if let (Some(name), Some(line), Some(column)) = (symbol["name"].as_str(), line, column)
+            {
+                let matched = macros.0.iter().any(|(candidate, row, character)| {
+                    candidate == name
+                        && *row == line as usize
+                        && source.lines().nth(*row).is_some_and(|text| {
+                            text.chars()
+                                .take(*character)
+                                .map(char::len_utf16)
+                                .sum::<usize>()
+                                == column as usize
+                        })
+                });
+                if matched {
+                    symbol["hades_source_macro"] = Value::Bool(true);
+                }
+            }
+            if let Some(children) = symbol.get_mut("children").and_then(Value::as_array_mut) {
+                mark(children, macros, source);
+            }
+        }
+    }
+    if let Ok(parsed) = syn::parse_file(source) {
+        let mut macros = Macros::default();
+        macros.visit_file(&parsed);
+        mark(symbols, &macros, source);
+    }
 }
 
 /// Extract derive macro names from attributes.

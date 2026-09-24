@@ -95,7 +95,7 @@ pub struct LspSession<S: LanguageServer> {
     open_documents: SyncMutex<DocumentState>,
     diagnostics: Mutex<HashMap<String, Vec<Value>>>,
     diagnostic_provider: bool,
-    pulled_diagnostics: Mutex<HashSet<String>>,
+    pulled_diagnostics: Mutex<HashMap<String, Vec<Value>>>,
     _server: PhantomData<S>,
 }
 
@@ -122,7 +122,7 @@ impl<S: LanguageServer> LspSession<S> {
             open_documents: SyncMutex::new(DocumentState::default()),
             diagnostics: Mutex::new(HashMap::new()),
             diagnostic_provider: false,
-            pulled_diagnostics: Mutex::new(HashSet::new()),
+            pulled_diagnostics: Mutex::new(HashMap::new()),
             _server: PhantomData,
         };
         session.initialize().await?;
@@ -161,6 +161,7 @@ impl<S: LanguageServer> LspSession<S> {
             return Ok(uri);
         }
         let content = tokio::fs::read_to_string(&abs_path).await?;
+        self.client.watch_diagnostics(&uri).await;
         self.client
             .notify(
                 "textDocument/didOpen",
@@ -196,6 +197,7 @@ impl<S: LanguageServer> LspSession<S> {
             )
             .await?;
         self.open_documents.lock().unwrap().opened.remove(uri);
+        self.client.forget_diagnostics(uri).await;
         self.diagnostics.lock().await.remove(uri);
         self.pulled_diagnostics.lock().await.remove(uri);
         Ok(())
@@ -211,7 +213,12 @@ impl<S: LanguageServer> LspSession<S> {
                 self.request_timeout,
             )
             .await?;
-        Ok(result.as_array().cloned().unwrap_or_default())
+        match result {
+            Value::Array(items) => Ok(items),
+            _ => Err(LspError::InvalidResponse(
+                "textDocument/documentSymbol: expected a result list (null is not an empty document)".into(),
+            )),
+        }
     }
 
     /// Synchronization request useful after opening a batch of workspace files.
@@ -279,21 +286,10 @@ impl<S: LanguageServer> LspSession<S> {
 
     async fn diagnostics_for(&self, uri: &str) -> Vec<Value> {
         let mut latest = self.diagnostics.lock().await;
-        for notification in self
-            .client
-            .drain_notifications(Some("textDocument/publishDiagnostics"))
-            .await
-        {
-            let params = &notification["params"];
-            if let (Some(uri), Some(items)) =
-                (params["uri"].as_str(), params["diagnostics"].as_array())
-            {
-                latest.insert(uri.to_owned(), items.clone());
-            }
-        }
+        latest.extend(self.client.take_diagnostics().await);
         // Current rust-analyzer advertises pull diagnostics and does not publish
         // them to this client. Request once per immutable opened source snapshot.
-        if self.diagnostic_provider && self.pulled_diagnostics.lock().await.insert(uri.into()) {
+        if self.diagnostic_provider && !self.pulled_diagnostics.lock().await.contains_key(uri) {
             match self
                 .client
                 .request(
@@ -305,7 +301,10 @@ impl<S: LanguageServer> LspSession<S> {
             {
                 Ok(value) if value["kind"] == "full" => {
                     if let Some(items) = value["items"].as_array() {
-                        latest.insert(uri.into(), items.clone());
+                        self.pulled_diagnostics
+                            .lock()
+                            .await
+                            .insert(uri.into(), items.clone());
                     }
                 }
                 Err(error) => {
@@ -314,7 +313,13 @@ impl<S: LanguageServer> LspSession<S> {
                 _ => {}
             }
         }
-        latest.get(uri).cloned().unwrap_or_default()
+        // Published diagnostics (e.g. flycheck) and pull diagnostics are distinct
+        // sources. An empty publication must not erase positive pull evidence.
+        let mut items = latest.get(uri).cloned().unwrap_or_default();
+        if let Some(pulled) = self.pulled_diagnostics.lock().await.get(uri) {
+            items.extend(pulled.iter().cloned());
+        }
+        items
     }
 
     /// Positive evidence: an inactive-code range, or an explicitly unlinked
@@ -324,7 +329,10 @@ impl<S: LanguageServer> LspSession<S> {
         if S::LANGUAGE_ID != "rust" {
             return false;
         }
-        let own = self.diagnostics_for(uri).await;
+        let mut own = self.diagnostics_for(uri).await;
+        if self.diagnostic_provider && !self.pulled_diagnostics.lock().await.contains_key(uri) {
+            own = self.diagnostics_for(uri).await;
+        }
         if inactive_range(&own, range) {
             return true;
         }
@@ -335,7 +343,7 @@ impl<S: LanguageServer> LspSession<S> {
             return false;
         };
         for (parent, range) in inactive_module_candidates(&path, &self.root) {
-            let Ok(parent_uri) = path_to_uri(&parent) else {
+            let Ok(parent_uri) = self.open_file(&parent).await else {
                 continue;
             };
             if inactive_range(&self.diagnostics_for(&parent_uri).await, &range) {
@@ -910,9 +918,8 @@ fn inactive_range(items: &[Value], range: &Value) -> bool {
         })
 }
 
-/// Locate standard external-module declarations. Custom #[path] and inline
-/// module layouts are deliberately not guessed: without direct diagnostics
-/// those cases remain Failed. syn is the existing Rust parser, not a cfg evaluator.
+/// Locate external declarations, including explicit #[path] in main/lib roots.
+/// Matching a path supplies a candidate only; analyzer diagnostics prove inactivity.
 fn inactive_module_candidates(path: &Path, root: &Path) -> Vec<(PathBuf, Value)> {
     use syn::spanned::Spanned;
     let mut candidates = Vec::new();
@@ -942,17 +949,45 @@ fn inactive_module_candidates(path: &Path, root: &Path) -> Vec<(PathBuf, Value)>
             };
             for item in parsed.items {
                 if let syn::Item::Mod(module) = item
-                    && module.ident == name
                     && module.content.is_none()
-                    && !module.attrs.iter().any(|attr| attr.path().is_ident("path"))
+                    && {
+                        let explicit = module
+                            .attrs
+                            .iter()
+                            .find(|attr| attr.path().is_ident("path"));
+                        if let Some(attr) = explicit {
+                            if let syn::Meta::NameValue(value) = &attr.meta
+                                && let syn::Expr::Lit(value) = &value.value
+                                && let syn::Lit::Str(value) = &value.lit
+                            {
+                                parent
+                                    .parent()
+                                    .unwrap()
+                                    .join(value.value())
+                                    .canonicalize()
+                                    .ok()
+                                    .zip(path.canonicalize().ok())
+                                    .is_some_and(|(a, b)| a == b)
+                            } else {
+                                false
+                            }
+                        } else {
+                            module.ident == name
+                        }
+                    }
                 {
                     let position = |span: proc_macro2::LineColumn| {
                         let line = span.line.saturating_sub(1);
                         let character = source
                             .lines()
                             .nth(line)
-                            .and_then(|text| text.get(..span.column))
-                            .map_or(0, |text| text.encode_utf16().count());
+                            .map(|text| {
+                                text.chars()
+                                    .take(span.column)
+                                    .map(char::len_utf16)
+                                    .sum::<usize>()
+                            })
+                            .expect("parsed module span must refer to a source line");
                         serde_json::json!({"line":line,"character":character})
                     };
                     candidates.push((parent.clone(), serde_json::json!({"start":position(module.ident.span().start()),"end":position(module.span().end())})));

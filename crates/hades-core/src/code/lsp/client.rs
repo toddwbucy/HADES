@@ -6,7 +6,7 @@
 //! Uses an async reader task for response correlation and notification
 //! buffering.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::{
     Arc, Mutex as SyncMutex,
@@ -38,9 +38,34 @@ struct Notifications {
     // Wire byte accounting is a bound on input size, not exact parsed heap usage.
     entries: VecDeque<(usize, Value)>,
     bytes: usize,
+    diagnostics: HashMap<String, Vec<Value>>,
+    watched_diagnostics: HashSet<String>,
 }
 impl Notifications {
     fn push(&mut self, bytes: usize, message: Value) -> bool {
+        // Preserve latest published evidence before the general queue can evict
+        // it. Sessions drain this separately; an empty publication clears evidence.
+        if message["method"] == "textDocument/publishDiagnostics"
+            && let (Some(uri), Some(items)) = (
+                message["params"]["uri"].as_str(),
+                message["params"]["diagnostics"].as_array(),
+            )
+            && self.watched_diagnostics.contains(uri)
+        {
+            self.diagnostics.insert(
+                uri.to_owned(),
+                items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item["code"].as_str(),
+                            Some("inactive-code" | "unlinked-file")
+                        )
+                    })
+                    .map(|item| serde_json::json!({"code":item["code"],"range":item["range"]}))
+                    .collect(),
+            );
+        }
         // Notifications are best-effort observations, not pending responses.
         // Keep the latest bounded window without killing unrelated requests.
         if bytes > MAX_NOTIFICATION_BYTES {
@@ -296,6 +321,24 @@ impl LspClient {
         self.notifications.lock().await.drain(method)
     }
 
+    pub(super) async fn watch_diagnostics(&self, uri: &str) {
+        self.notifications
+            .lock()
+            .await
+            .watched_diagnostics
+            .insert(uri.into());
+    }
+
+    pub(super) async fn take_diagnostics(&self) -> HashMap<String, Vec<Value>> {
+        std::mem::take(&mut self.notifications.lock().await.diagnostics)
+    }
+
+    pub(super) async fn forget_diagnostics(&self, uri: &str) {
+        let mut notifications = self.notifications.lock().await;
+        notifications.diagnostics.remove(uri);
+        notifications.watched_diagnostics.remove(uri);
+    }
+
     /// Wait for a notification to arrive (with timeout).
     pub async fn wait_for_notification(&self, timeout: std::time::Duration) -> bool {
         tokio::time::timeout(timeout, self.notification_signal.notified())
@@ -519,6 +562,29 @@ async fn read_headers<R: AsyncBufReadExt + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watched_diagnostics_survive_notification_eviction() {
+        let mut notifications = Notifications::default();
+        notifications
+            .watched_diagnostics
+            .insert("file:///private.rs".into());
+        let diagnostic = serde_json::json!({"method":"textDocument/publishDiagnostics","params":{"uri":"file:///private.rs","diagnostics":[{"code":"inactive-code","range":{"start":{"line":0,"character":0},"end":{"line":1,"character":0}}}]}});
+        notifications.push(200, diagnostic.clone());
+        for _ in 0..MAX_NOTIFICATIONS + 1 {
+            notifications.push(20, serde_json::json!({"method":"$/progress"}));
+        }
+        assert!(
+            notifications
+                .drain(Some("textDocument/publishDiagnostics"))
+                .is_empty()
+        );
+        assert_eq!(notifications.diagnostics["file:///private.rs"].len(), 1);
+        let mut cleared = diagnostic;
+        cleared["params"]["diagnostics"] = serde_json::json!([]);
+        notifications.push(100, cleared);
+        assert!(notifications.diagnostics["file:///private.rs"].is_empty());
+    }
 
     #[tokio::test]
     async fn peer_eof_warns_for_pending_requests_or_truncated_headers() {

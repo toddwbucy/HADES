@@ -67,8 +67,8 @@ impl<'a> GoSymbolExtractor<'a> {
                         extraction.symbols[request.index].signature = signature;
                     }
                 }
-                RequestKind::Implementations { interface } => self.add_implementations(
-                    &interface,
+                RequestKind::Implementations { owner, .. } => self.add_implementations(
+                    owner,
                     value
                         .as_array()
                         .expect("resolved implementations are a list"),
@@ -119,7 +119,7 @@ impl<'a> GoSymbolExtractor<'a> {
         &'b self,
         symbol: &'b Value,
         parent: Option<&'b str>,
-        interface_owner: Option<&'b str>,
+        interface_owner: Option<usize>,
         extraction: &'b mut FileExtraction,
         requests: &'b mut Vec<SymbolRequest>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'b>> {
@@ -200,7 +200,7 @@ impl<'a> GoSymbolExtractor<'a> {
             // not from the interface type declaration. Its result points at
             // the corresponding concrete method, which becomes the source of
             // an `implements` edge to the owning interface.
-            if let Some(interface_name) = interface_owner
+            if let Some(owner) = interface_owner
                 && matches!(kind, "function" | "method")
             {
                 requests.push(SymbolRequest {
@@ -208,9 +208,7 @@ impl<'a> GoSymbolExtractor<'a> {
                     index,
                     line: selection_line,
                     character: selection_character,
-                    kind: RequestKind::Implementations {
-                        interface: interface_name.to_string(),
-                    },
+                    kind: RequestKind::Implementations { owner },
                 });
             }
 
@@ -218,7 +216,7 @@ impl<'a> GoSymbolExtractor<'a> {
                 .then_some(qualified_name.as_str())
                 .or(parent);
             let child_interface_owner = if kind == "interface" {
-                Some(qualified_name.as_str())
+                Some(index)
             } else {
                 interface_owner
             };
@@ -239,10 +237,11 @@ impl<'a> GoSymbolExtractor<'a> {
 
     fn add_implementations(
         &self,
-        interface_name: &str,
+        interface_symbol: usize,
         targets: &[Value],
         extraction: &mut FileExtraction,
     ) {
+        let interface_name = extraction.symbols[interface_symbol].qualified_name.clone();
         for target in targets {
             let target_uri = target["uri"]
                 .as_str()
@@ -256,6 +255,7 @@ impl<'a> GoSymbolExtractor<'a> {
             let file = uri_relative_path(target_uri, self.path_root);
             if !file.is_empty() {
                 extraction.implementations.push(ImplementationTarget {
+                    interface_symbol,
                     interface_name: interface_name.to_string(),
                     interface_qualified_name: interface_name.to_string(),
                     implementor_file: file,

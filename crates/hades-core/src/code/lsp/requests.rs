@@ -11,7 +11,7 @@ use super::{
 pub(super) enum RequestKind {
     Calls,
     Hover,
-    Implementations { interface: String },
+    Implementations { owner: usize },
 }
 
 pub(super) struct SymbolRequest {
@@ -97,14 +97,19 @@ pub(super) async fn resolve<S: LanguageServer>(
                 }
                 match &request.kind {
                     RequestKind::Calls => {
-                        extraction.failed_edge_symbols.insert(symbol.clone());
+                        extraction.failed_edge_symbols.insert(request.index);
                     }
-                    RequestKind::Implementations { interface } => {
-                        extraction.failed_edge_symbols.insert(interface.clone());
+                    RequestKind::Implementations { owner, .. } => {
+                        extraction.failed_implementation_interfaces.insert(*owner);
                     }
                     RequestKind::Hover => {}
                 }
                 warn!(file, symbol, request = method, %first_error, %error, "semantic request failed after retry; content remains eligible for refresh");
+                // Hover has no graph authority: its failure degrades the signature
+                // and emits a warning, but does not turn the file into a failed run.
+                if matches!(request.kind, RequestKind::Hover) {
+                    continue;
+                }
                 extraction.failed_request_count += 1;
                 if extraction.failed_requests.len() < FAILED_REQUEST_LIMIT {
                     extraction.failed_requests.push(FailedRequest {

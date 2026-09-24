@@ -93,12 +93,9 @@ async fn incomplete_enrichment_refreshes_content_and_keeps_cross_file_targets() 
                 for name in ["a", "b", "c"] {
                     let key = keys::scoped_file_key(root.to_str().unwrap(), &format!("{name}.{}", if go {"go"} else {"rs"}));
                     assert!(graph["codebase_files"].as_array().unwrap().iter().any(|r| r["_key"] == key), "file missing: {graph}");
-                    let symbol = graph["codebase_symbols"].as_array().unwrap().iter().find(|r| r["file_key"] == key && r["name"] == name).unwrap();
+                    let symbol = graph["codebase_symbols"].as_array().unwrap().iter().find(|r| r["file_key"] == key && r["name"] == if name == "b" && matches!(mode,"workspace-error"|"bad-utf8") {"renamed"} else {name}).unwrap();
                     ids.push(symbol["_id"].clone());
-                    if mode == "workspace-error" && name == "b" {
-                        assert_eq!(symbol["enrichment_stale"], true, "old semantic-only endpoint must be identified: {symbol}");
-                        assert!(graph["codebase_symbols"].as_array().unwrap().iter().any(|s| s["file_key"] == key && s["name"] == "renamed"), "fresh syn symbol missing: {graph}");
-                    }
+                    assert!(symbol.get("enrichment_stale").is_none(), "stale endpoint must not be manufactured");
                     if name == "b" {
                         assert!(graph["codebase_chunks"].as_array().unwrap().iter().any(|r| r["file_key"] == key && r["text"].as_str().is_some_and(|s| s.contains(&format!("fresh {mode}")))), "B content withheld: {report} {graph}");
                     }
@@ -107,6 +104,8 @@ async fn incomplete_enrichment_refreshes_content_and_keeps_cross_file_targets() 
                     assert_eq!(report["data"]["rust_analyzer"]["no_calls"][0]["reason"], "cfg_inactive");
                     assert_eq!(report["data"]["rust_analyzer"]["no_calls"][0]["symbol"], "b");
                 }
+                assert_ownership_endpoints(&graph);
+                if mode == "workspace-error" { continue; }
                 if mode == "bad-utf8" {
                     assert!(report["data"]["results"].as_array().unwrap().iter().any(|r| r["path"] == (if go {"bad.go"} else {"bad.rs"}) && r["success"] == false), "{report}");
                     continue;

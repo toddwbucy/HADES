@@ -67,16 +67,24 @@ while True:
         code = "unlinked-file" if target.endswith("/gated.rs") else "inactive-code"
         items = [] if mode == "parent-unproven" and code == "inactive-code" else [{"code": code, "range": {"start": {"line": 100 if mode == "parent-outside" else 0, "character": 0}, "end": {"line": 101, "character": 0}}}]
         result = {"kind": "full", "items": items}
+        if mode == "parent-retry" and counts[key] == 1:
+            response["error"] = {"code": -32603, "message": "temporary diagnostic failure"}
     elif method == "textDocument/documentSymbol":
         uri = params["textDocument"]["uri"]
         result = [item(caller, offset), item("target", offset + 1)]
+        if mode == "document-null":
+            result = None
+        elif mode == "document-object":
+            result = {"unexpected": True}
+        elif mode == "document-empty":
+            result = []
         if mode.startswith("impl"):
             interface = item("runner", offset)
             interface["kind"] = 11
             interface["children"] = [item(caller, offset)]
             result[0] = interface
     elif method == "textDocument/prepareCallHierarchy":
-        if position == offset and (mode == "empty-prepare" or mode.startswith("cfg-") or mode.startswith("parent-")):
+        if mode == "parent-empty-publish" or (position == offset and (mode == "empty-prepare" or mode.startswith("cfg-") or mode.startswith("parent-"))):
             result = None
         else:
             result = [item(caller if position == offset else "target", position)]
@@ -123,3 +131,8 @@ while True:
     body = json.dumps(response).encode()
     sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
     sys.stdout.buffer.flush()
+    if method == "textDocument/diagnostic" and mode == "parent-empty-publish" and not params["textDocument"]["uri"].endswith("/gated.rs"):
+        publication = {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":params["textDocument"]["uri"],"diagnostics":[]}}
+        body = json.dumps(publication).encode()
+        sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+        sys.stdout.buffer.flush()

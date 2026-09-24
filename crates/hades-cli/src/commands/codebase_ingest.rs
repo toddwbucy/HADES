@@ -98,9 +98,7 @@ pub struct CodebaseIngestFailure {
 #[derive(Default)]
 struct ImportContext {
     prepared_sources: HashMap<String, String>,
-    protected_edges: HashMap<String, super::codebase_persist::EdgeProtection>,
     prepared_symbols: HashMap<String, Vec<Value>>,
-    protected_sources: std::collections::HashSet<String>,
     /// Python: rel_path → list of import symbols (with metadata for resolution).
     python_imports: HashMap<String, Vec<Symbol>>,
     /// Python: rel_path → all definition symbols (for building the resolution index).
@@ -265,6 +263,30 @@ pub async fn run_phase(
         None
     };
 
+    // Snapshot old endpoint identities once, before any file replaces vertices.
+    // The final indexed orphan pass needs deleted identities as well as survivors.
+    let affected_keys: Vec<_> = files
+        .iter()
+        .map(|path| keys::scoped_file_key(namespace, &rel_path_for(&base, path)))
+        .collect();
+    let affected_ids = hades_core::db::query::query(
+        &db,
+        "FOR fk IN @keys FOR s IN @@symbols FILTER s.file_key == fk RETURN s._id",
+        Some(&json!({"keys":affected_keys,"@symbols":CODEBASE.symbols})),
+        None,
+        false,
+        ExecutionTarget::Writer,
+    )
+    .await?
+    .results
+    .into_iter()
+    .map(|id| {
+        id.as_str()
+            .map(str::to_owned)
+            .context("invalid prior symbol identity")
+    })
+    .collect::<Result<Vec<_>>>()?;
+
     // Process each file with per-file error isolation.
     let mut results: Vec<FileResult> = Vec::with_capacity(files.len());
     // File keys whose symbol set was rebuilt this run — the inputs to the
@@ -273,9 +295,7 @@ pub async fn run_phase(
     // Accumulators for cross-file import resolution.
     let mut imports = ImportContext {
         prepared_sources: HashMap::new(),
-        protected_edges: HashMap::new(),
         prepared_symbols: HashMap::new(),
-        protected_sources: Default::default(),
         python_imports: HashMap::new(),
         python_file_symbols: HashMap::new(),
         rust_imports: HashMap::new(),
@@ -316,11 +336,6 @@ pub async fn run_phase(
         .extend(go_prepared.source_hashes.clone());
 
     for (prepared, analyzer) in [(&rust_prepared, "rust-analyzer"), (&go_prepared, "gopls")] {
-        for (path, protection) in &prepared.protected_files {
-            imports
-                .protected_edges
-                .insert(rel_path_for(&base, path), protection.clone());
-        }
         let resolver =
             LspEdgeResolver::new_scoped(prepared.extractions.clone(), analyzer, namespace);
         for symbol in resolver.build_symbol_documents() {
@@ -497,7 +512,7 @@ pub async fn run_phase(
     let cpp_call_edges =
         cpp_edges::resolve_cpp_calls_scoped(&base, &imports.cpp_file_symbols, namespace);
 
-    let mut structural_edges =
+    let structural_edges =
         tree_sitter_edges::resolve_scoped(&imports.structural_file_symbols, namespace);
 
     // Resolve Rust import graph edges (file → symbol).
@@ -511,11 +526,6 @@ pub async fn run_phase(
 
     // This separate enrichment stage is all-or-nothing. File replacements
     // preceding it remain committed, but failures cannot masquerade as success.
-    structural_edges.calls.retain(|edge| {
-        !edge["_from"]
-            .as_str()
-            .is_some_and(|id| imports.protected_sources.contains(id))
-    });
     let relationship_error = if results.iter().any(|result| !result.success) {
         Some(
             "relationship stage deferred because file preparation failed; retry ingestion"
@@ -692,6 +702,14 @@ pub async fn run_phase(
     let failed_requests = ra_stats.failed_request_count + gopls_stats.failed_request_count;
     if failed_requests > 0 && !allow_analysis_downgrade {
         enrichment_failure.get_or_insert_with(|| format!("{failed_requests} semantic request(s) failed after retry; content refreshed; prior affected semantic edges retained; retry or explicitly accept degraded enrichment with --allow-analysis-downgrade"));
+    }
+
+    // Earlier file commits survive a skipped/failed enrichment store. Cleanup
+    // therefore runs unconditionally and reports failure without masking it.
+    if let Err(error) = super::codebase_persist::prune_semantic_orphans(&db, affected_ids).await {
+        enrichment_failure.get_or_insert_with(|| {
+            format!("semantic orphan cleanup failed; graph may retain invalid endpoints: {error:#}")
+        });
     }
 
     // Report inbound edges left dangling by this run's rebuilds.
@@ -1778,43 +1796,18 @@ async fn ingest_file(
             }
         }
     }
-    let protection = imports
-        .protected_edges
-        .get(rel_path)
-        .cloned()
-        .unwrap_or_default();
-    for doc in &symbol_docs {
-        if protection.all
-            || doc["qualified_name"]
-                .as_str()
-                .is_some_and(|name| protection.symbols.contains(name))
-        {
-            imports.protected_sources.insert(format!(
-                "{}/{}",
-                CODEBASE.symbols,
-                doc["_key"].as_str().unwrap()
-            ));
-        }
-    }
-
-    // Build defines edges (file → symbol) for primitives only.
-    let define_edges: Vec<Value> = analysis
-        .symbols
+    // Defines belongs to the refreshed content, including analyzer-only symbols
+    // prepared before this write. A later skipped enrichment store cannot omit it.
+    let define_edges: Vec<Value> = symbol_docs
         .iter()
-        .filter(|s| s.kind.is_primitive())
-        .map(|s| {
-            let skey = keys::symbol_key(&fkey, &s.qualified_name(), s.start_line);
-            let edge_key = keys::edge_key(&fkey, "defines", &skey);
-            json!({
-                "_key": edge_key,
-                "_from": format!("{}/{}", CODEBASE.files, fkey),
-                "_to": format!("{}/{}", CODEBASE.symbols, skey),
-                "file_path": rel_path,
-                "symbol_name": s.name,
-                "analysis_tier": analysis.analysis_tier.as_str(),
-                "analyzer": analysis.analyzer,
-                "resolution": if analysis.analysis_tier == AnalysisTier::Semantic { "semantic" } else { "syntactic" },
-            })
+        .map(|symbol| {
+            let skey = symbol["_key"].as_str().expect("prepared symbol key");
+            json!({"_key":keys::edge_key(&fkey,"defines",skey),
+            "_from":format!("{}/{}",CODEBASE.files,fkey),
+            "_to":format!("{}/{}",CODEBASE.symbols,skey),
+            "file_path":rel_path,"symbol_name":symbol["name"],
+            "analysis_tier":symbol["analysis_tier"],"analyzer":symbol["analyzer"],
+            "resolution":if symbol["analysis_tier"] == "semantic" {"semantic"} else {"syntactic"}})
         })
         .collect();
 
@@ -1880,11 +1873,6 @@ async fn ingest_file(
         defines: define_edges,
         file: file_doc,
         purge_symbols: true,
-        protected_edges: imports
-            .protected_edges
-            .iter()
-            .map(|(path, protection)| (keys::scoped_file_key(namespace, path), protection.clone()))
-            .collect(),
         merge_file: false,
         symbol_remap: symbol_key_remap,
     }
@@ -2339,7 +2327,6 @@ async fn ingest_unparsed_file(
         defines: Vec::new(),
         file: fields,
         purge_symbols: allow_analysis_downgrade,
-        protected_edges: Default::default(),
         merge_file: true,
         symbol_remap: Vec::new(),
     }
@@ -2914,10 +2901,6 @@ fn failed_enrichment_paths<'a>(
         .filter(|result| {
             let path = base.join(&result.path);
             stats.failed_files.contains(&path)
-                || stats
-                    .failed_workspaces
-                    .iter()
-                    .any(|root| path.starts_with(root))
         })
         .map(|result| result.path.as_str())
         .collect()
@@ -2972,6 +2955,7 @@ async fn prepare_rust_analyzer_phase(
                     "failed to start rust-analyzer session, skipping crate"
                 );
                 failed_workspaces.push(crate_root.clone());
+                failed_files.extend(crate_files.iter().cloned());
                 continue;
             }
         };
@@ -3057,6 +3041,7 @@ async fn prepare_gopls_phase(
                     "gopls unavailable for module; Tree-sitter data retained"
                 );
                 failed_modules.push(module_root.clone());
+                failed_files.extend(module_files.iter().cloned());
                 continue;
             }
         };
@@ -3099,7 +3084,6 @@ async fn prepare_gopls_phase(
 
 #[derive(Default)]
 struct PreparedLsp {
-    protected_files: HashMap<PathBuf, super::codebase_persist::EdgeProtection>,
     extractions: HashMap<String, FileExtraction>,
     source_hashes: HashMap<String, String>,
     stats: SemanticLspStats,
@@ -3120,33 +3104,8 @@ impl PreparedLsp {
         extractions: HashMap<String, FileExtraction>,
         source_hashes: HashMap<String, String>,
         mut stats: SemanticLspStats,
-        base: &Path,
+        _base: &Path,
     ) -> Self {
-        let mut protected_files = HashMap::new();
-        for path in &stats.failed_files {
-            protected_files.insert(
-                path.clone(),
-                super::codebase_persist::EdgeProtection {
-                    all: true,
-                    ..Default::default()
-                },
-            );
-        }
-        for path in source_hashes.keys().map(|path| base.join(path)) {
-            if stats
-                .failed_workspaces
-                .iter()
-                .any(|root| path.starts_with(root))
-            {
-                protected_files.insert(
-                    path,
-                    super::codebase_persist::EdgeProtection {
-                        all: true,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
         let mut paths: Vec<_> = extractions.keys().cloned().collect();
         paths.sort();
         for path in paths {
@@ -3163,18 +3122,8 @@ impl PreparedLsp {
             stats
                 .failed_requests
                 .extend(extraction.failed_requests.iter().take(remaining).cloned());
-            if !extraction.failed_edge_symbols.is_empty() {
-                protected_files.insert(
-                    base.join(&path),
-                    super::codebase_persist::EdgeProtection {
-                        all: false,
-                        symbols: extraction.failed_edge_symbols.clone(),
-                    },
-                );
-            }
         }
         Self {
-            protected_files,
             extractions,
             source_hashes,
             stats,
@@ -3326,6 +3275,8 @@ struct EnrichmentFileGroup {
     patch: Value,
     symbols: Vec<Value>,
     edges: Vec<(EdgeKind, Value)>,
+    successful_calls: Vec<String>,
+    successful_implements: Vec<String>,
 }
 
 /// Commit whole-file enrichment groups. A later failure retains earlier complete
@@ -3333,7 +3284,7 @@ struct EnrichmentFileGroup {
 #[allow(clippy::too_many_arguments)]
 async fn store_lsp_extractions(
     db: &ArangoPool,
-    all_extractions: HashMap<String, FileExtraction>,
+    mut all_extractions: HashMap<String, FileExtraction>,
     mut revisions: HashMap<String, EnrichmentInput>,
     workspaces: usize,
     workspaces_attempted: usize,
@@ -3359,31 +3310,123 @@ async fn store_lsp_extractions(
             )
         })
         .collect();
-    let fkeys: Vec<_> = revisions
-        .keys()
-        .filter(|path| !all_extractions.contains_key(*path))
-        .map(|path| keys::scoped_file_key(namespace, path))
-        .collect();
-    let targets = if fkeys.is_empty() {
-        Vec::new()
-    } else {
-        let targets = hades_core::db::query::query(db,
-        "FOR s IN @@symbols FILTER s.file_key IN @keys RETURN KEEP(s, '_key', 'file_path', 'name', 'qualified_name', 'start_line', 'end_line')",
-        Some(&json!({"@symbols":CODEBASE.symbols,"keys":fkeys})), None, false, ExecutionTarget::Writer).await?;
-        targets
-            .results
-            .into_iter()
-            .map(serde_json::from_value::<hades_core::code::lsp::edges::StoredTarget>)
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace)
-        .with_stored_targets(targets);
+    // Request outcomes are keyed by the exact persisted symbol identity. Go
+    // implementation queries own incoming interface edges, not implementor calls.
+    let mut outcomes = HashMap::new();
+    for (path, extraction) in &all_extractions {
+        let fkey = keys::scoped_file_key(namespace, path);
+        let mut calls = Vec::new();
+        let mut implementations = Vec::new();
+        for (index, symbol) in extraction.symbols.iter().enumerate() {
+            let id = format!(
+                "{}/{}",
+                CODEBASE.symbols,
+                keys::symbol_key(
+                    &fkey,
+                    &symbol.qualified_name,
+                    symbol.start_line as usize + 1
+                )
+            );
+            if !extraction.failed_edge_symbols.contains(&index) {
+                calls.push(id.clone());
+                if analyzer != "gopls" {
+                    implementations.push(id.clone());
+                }
+            }
+            if analyzer == "gopls"
+                && symbol.kind == "interface"
+                && !extraction.failed_implementation_interfaces.contains(&index)
+            {
+                implementations.push(id);
+            }
+        }
+        outcomes.insert(fkey, (calls, implementations));
+    }
+    // Resolve against current source for every successfully stored input, even
+    // when its documentSymbol request failed. These are resolver-only syntactic
+    // identities, never injected from old database rows or stored as semantic output.
+    let semantic_files: std::collections::HashSet<_> = all_extractions.keys().cloned().collect();
+    for (path, input) in &revisions {
+        if all_extractions.contains_key(path) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&input.path)
+            .with_context(|| format!("reading resolver source {path}"))?;
+        if code::compute_content_hash(&source) != input.content_hash {
+            warn!(
+                path,
+                "resolver source changed before enrichment; no enrichment stored"
+            );
+            return Ok(SemanticLspStats {
+                workspaces,
+                workspaces_attempted,
+                store_failed: true,
+                ..Default::default()
+            });
+        }
+        let analysis = code::analyze_with_language(
+            &source,
+            if analyzer == "gopls" {
+                Language::Go
+            } else {
+                Language::Rust
+            },
+            path,
+        )
+        .with_context(|| format!("parsing resolver source {path}"))?;
+        let mut extraction = FileExtraction::empty();
+        extraction.symbols = analysis
+            .symbols
+            .iter()
+            .filter(|s| s.kind.is_primitive())
+            .map(|s| hades_core::code::lsp::symbols::ExtractedSymbol {
+                name: s.name.clone(),
+                qualified_name: s.qualified_name(),
+                kind: match s.kind.universal_kind() {
+                    Some("callable") => "function",
+                    Some("type") => "struct",
+                    Some("module") => "module",
+                    _ => "variable",
+                }
+                .into(),
+                start_line: s.start_line.saturating_sub(1) as u32,
+                end_line: s.end_line.saturating_sub(1) as u32,
+                visibility: String::new(),
+                signature: String::new(),
+                parent_symbol: None,
+                impl_trait: None,
+                is_pyo3: false,
+                is_ffi: false,
+                is_unsafe: false,
+                derives: Vec::new(),
+                python_name: None,
+                calls: Vec::new(),
+            })
+            .collect();
+        all_extractions.insert(path.clone(), extraction);
+    }
+    let resolver = LspEdgeResolver::new_scoped(all_extractions, analyzer, namespace);
     let symbols = resolver
         .build_symbol_documents()
         .into_iter()
+        .filter(|symbol| semantic_files.contains(&symbol.file_path))
         .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let semantic_edges = resolver.build_edges();
+    let semantic_file_ids: std::collections::HashSet<_> = semantic_files
+        .iter()
+        .map(|path| {
+            format!(
+                "{}/{}",
+                CODEBASE.files,
+                keys::scoped_file_key(namespace, path)
+            )
+        })
+        .collect();
+    let semantic_edges: Vec<_> = resolver
+        .build_edges()
+        .into_iter()
+        .filter(|edge| edge.kind != EdgeKind::Defines || semantic_file_ids.contains(&edge.from))
+        .collect();
     let edge_docs: Vec<(EdgeKind, Value)> = semantic_edges
         .iter()
         .map(|e| {
@@ -3413,6 +3456,7 @@ async fn store_lsp_extractions(
     let mut groups: HashMap<String, EnrichmentFileGroup> = file_patches
         .into_iter()
         .map(|(path, key, count, analyzed_at)| {
+            let (successful_calls, successful_implements) = outcomes.remove(&key).unwrap();
             let patch = json!({format!("{metadata_prefix}_analyzed"):true,
                 format!("{metadata_prefix}_symbol_count"):count,
                 format!("{metadata_prefix}_analyzed_at"):analyzed_at});
@@ -3422,6 +3466,8 @@ async fn store_lsp_extractions(
                     path,
                     key,
                     patch,
+                    successful_calls,
+                    successful_implements,
                     ..Default::default()
                 },
             )
@@ -3461,13 +3507,30 @@ async fn store_lsp_extractions(
         let owner = if kind == EdgeKind::Defines {
             source.rsplit('/').next().unwrap()
         } else {
-            owners.get(source).context("edge has no source file")?
+            owners
+                .get(if kind == EdgeKind::Implements && analyzer == "gopls" {
+                    edge["_to"]
+                        .as_str()
+                        .context("interface edge missing target")?
+                } else {
+                    source
+                })
+                .context("edge has no request owner file")?
         };
-        groups
+        let group = groups
             .get_mut(owner)
-            .context("edge has no enrichment file")?
-            .edges
-            .push((kind, edge));
+            .context("edge has no enrichment file")?;
+        let eligible = match kind {
+            EdgeKind::Calls => group.successful_calls.iter().any(|id| edge["_from"] == *id),
+            EdgeKind::Implements => group
+                .successful_implements
+                .iter()
+                .any(|id| edge[if analyzer == "gopls" { "_to" } else { "_from" }] == *id),
+            _ => true,
+        };
+        if eligible {
+            group.edges.push((kind, edge));
+        }
     }
     let mut groups: Vec<_> = groups.into_values().collect();
     groups.sort_by(|a, b| a.path.cmp(&b.path));
@@ -3475,8 +3538,15 @@ async fn store_lsp_extractions(
     let mut batch = Vec::new();
     let mut bytes = 0;
     for group in groups {
-        let size = serde_json::to_vec(&(&group.symbols, &group.edges, &group.patch, &group.key))?
-            .len()
+        let size = serde_json::to_vec(&(
+            &group.symbols,
+            &group.edges,
+            &group.patch,
+            &group.key,
+            &group.successful_calls,
+            &group.successful_implements,
+        ))?
+        .len()
             + ENRICHMENT_FILE_RESERVE;
         if size > ENRICHMENT_PAYLOAD_BUDGET {
             warn!(file = %group.path, size, analyzer, "enrichment file exceeds transaction payload budget; no enrichment stored");
@@ -3526,6 +3596,17 @@ async fn store_lsp_extractions(
                 }
             }
             for group in &batch {
+                // Empty successful answers deliberately remove obsolete edges.
+                // Failed request owners are absent, leaving their prior answers intact.
+                for (collection, ids, incoming) in [
+                    (CODEBASE.calls_edges, &group.successful_calls, false),
+                    (CODEBASE.implements_edges, &group.successful_implements, analyzer == "gopls"),
+                ] {
+                    super::codebase_persist::query(&client,
+                        if incoming {"FOR id IN @ids FOR e IN @@edges FILTER e._to == id FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' REMOVE e IN @@edges"}
+                        else {"FOR id IN @ids FOR e IN @@edges FILTER e._from == id FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' REMOVE e IN @@edges"},
+                        json!({"ids":ids,"@edges":collection}), false).await?;
+                }
                 let mut docs = vec![(CODEBASE.symbols, group.symbols.clone())];
                 for kind in [EdgeKind::Defines, EdgeKind::Calls, EdgeKind::Implements] {
                     docs.push((kind.collection(), group.edges.iter().filter(|(k, _)| *k == kind).map(|(_, d)| d.clone()).collect()));
@@ -3837,6 +3918,29 @@ fn is_semantic_target(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn raw_fallback_leaves_semantic_edges_to_enrichment_cleanup() {
+        with_temp_db("raw_edge_ownership", Fixtures::Codebase, |pool| async move {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("main.rs");
+            std::fs::write(&source,"unparsed replacement content").unwrap();
+            let namespace = root.path().to_str().unwrap();
+            let file = keys::scoped_file_key(namespace,"main.rs");
+            let old = keys::symbol_key(&file,"old",1);
+            pool.writer().post(&format!("document/{}",CODEBASE.files), &json!({"_key":file,"analysis_tier":"semantic","content_hash":"old","file_key_version":2,"path":"main.rs","ingest_root":namespace})).await.unwrap();
+            pool.writer().post(&format!("document/{}",CODEBASE.symbols), &json!({"_key":old,"file_key":file})).await.unwrap();
+            let endpoint=format!("{}/{}",CODEBASE.symbols,old);
+            pool.writer().post(&format!("document/{}",CODEBASE.calls_edges), &json!({"_key":"prior","_from":endpoint,"_to":endpoint,"resolution":"semantic"})).await.unwrap();
+            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
+            assert!(result.success);
+            assert!(pool.writer().get(&format!("document/{}/prior",CODEBASE.calls_edges)).await.is_ok(),"raw replacement purged semantic edge");
+            super::super::codebase_persist::prune_semantic_orphans(&pool,vec![endpoint]).await.unwrap();
+            assert!(pool.writer().get(&format!("document/{}/prior",CODEBASE.calls_edges)).await.unwrap_err().is_not_found());
+            let row=pool.writer().get(&format!("document/{}/{file}",CODEBASE.files)).await.unwrap();
+            assert_eq!(row["analyzer"],"raw-text");
+        }).await;
+    }
+
     #[tokio::test]
     async fn preserved_snapshot_requires_explicit_complete_array() {
         use axum::{Json, Router};

@@ -249,29 +249,41 @@ once after the file's other requests. A prepared item followed by an empty call
 list remains a successful no-calls result. Hover errors and Go implementation
 lookup errors use the same deferred retry; valid absent results remain valid.
 
-After retry, `rust_analyzer` / `gopls` in the ingest envelope report
-`failed_request_count` and up to 100 `failed_requests` details (file, symbol,
-request, reason, including both attempts). Each failure is logged at WARN. File
-content, symbols, chunks and embeddings still refresh. Only affected symbols'
-prior semantic edges are retained; there are no prior semantic edges on a first
-ingest. File/workspace failures protect their semantic edges too. Hover failure
-degrades the signature, without withholding the file. Resolver targets remain
-available even when their own requests fail. If a protected edge needs a prior
-semantic-only endpoint with no fresh counterpart, that endpoint is retained
-with `enrichment_stale: true`; fresh syntactic symbols and content still replace
-their predecessors. The overall run
-fails unless `codebase ingest --allow-analysis-downgrade` explicitly accepts
-degraded enrichment. Acceptance does not erase the diagnostics or permit these
-failed requests to purge their prior semantic edges. Unified `ingest` has no such override.
+After retry, `rust_analyzer` / `gopls` report `failed_request_count` and up to
+100 `failed_requests` details (file, symbol, actual request, and both attempts).
+Failures are logged at WARN. Hover failure only degrades the signature and does
+not fail the run. A null or malformed `documentSymbol` response fails the file's
+enrichment; an empty array is a valid empty document.
 
-Only positive rust-analyzer evidence permits NoCalls with reason `cfg_inactive`:
-an `inactive-code` diagnostic covering the symbol, or an `unlinked-file` diagnostic
-together with an inactive external-module declaration in a standard parent path.
-Both published and advertised pull diagnostics are supported. Custom `#[path]`
-and inline-module ancestry are not inferred when direct evidence is absent. The
-envelope reports `no_call_count` and up to 100 `no_calls` details. Unexplained
-null/empty preparation remains Failed; Go build exclusion has no implemented
-positive signal and remains Failed. Diagnostic absence is never inactivity.
+File replacement refreshes content and defines every stored symbol, but does not
+purge semantic calls or implements. Enrichment replaces calls for successful
+source symbol identities, including successful NoCalls. For Go, incoming implements
+edges are replaced by interface identity only after all its method implementation
+queries succeed. Failed owners retain prior valid answers. Structural fallback
+is stored without overwriting a retained semantic edge with the same key.
+
+An indexed pass prunes semantic edges with missing endpoints even when enrichment
+storage was skipped. Removed source symbols are not retained as stale vertices.
+Endpoint remapping, source validation and transaction revision checks still apply;
+earlier file commits remain durable if a later stage fails. Current syntactic
+source identities remain resolver targets when their own semantic analysis fails.
+
+The run fails on incomplete enrichment unless `codebase ingest
+--allow-analysis-downgrade` explicitly accepts it. Acceptance does not erase
+failure diagnostics. Unified `ingest` and MCP have no such override in this change.
+
+Source macro definitions are identified before requesting call hierarchy. Only
+positive rust-analyzer evidence permits NoCalls with reason `cfg_inactive`: an
+`inactive-code` diagnostic covering the symbol, or an `unlinked-file` diagnostic
+plus a positively inactive parent declaration. External `#[path]` declarations
+are resolved explicitly, including main.rs and lib.rs roots; a cfg attribute
+alone is not evidence. Published evidence is cached before notification eviction;
+failed diagnostic pulls remain retryable. Positions use UTF-16 columns.
+
+The envelope reports `no_call_count` and up to 100 `no_calls` details. Unexplained
+null/empty preparation remains Failed. Inline-module layouts without established
+parent evidence and Go build exclusion remain limitations; missing evidence is
+never classified as inactivity.
 
 ---
 

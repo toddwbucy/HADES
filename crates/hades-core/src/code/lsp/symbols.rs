@@ -68,6 +68,8 @@ pub struct CallTarget {
 /// Go's implicit interface satisfaction discovered by gopls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImplementationTarget {
+    /// Index of the interface declaration in this file extraction.
+    pub interface_symbol: usize,
     pub interface_name: String,
     pub interface_qualified_name: String,
     pub implementor_file: String,
@@ -77,9 +79,12 @@ pub struct ImplementationTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileExtraction {
-    /// Unbounded identity set for protection; never derive safety from capped diagnostics.
+    /// Uncapped symbol indices; the store maps these to scoped graph keys, never names.
     #[serde(default)]
-    pub failed_edge_symbols: std::collections::HashSet<String>,
+    pub failed_edge_symbols: std::collections::HashSet<usize>,
+    /// Interface symbol indices with an incomplete implementation query.
+    #[serde(default)]
+    pub failed_implementation_interfaces: std::collections::HashSet<usize>,
     #[serde(default)]
     pub no_calls: Vec<FailedRequest>,
     #[serde(default)]
@@ -107,6 +112,7 @@ impl FileExtraction {
     pub fn empty() -> Self {
         Self {
             failed_edge_symbols: Default::default(),
+            failed_implementation_interfaces: Default::default(),
             no_calls: Vec::new(),
             no_call_count: 0,
             failed_requests: Vec::new(),

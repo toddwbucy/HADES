@@ -130,20 +130,8 @@ pub struct SymbolDocument {
 /// a language-specific semantic extractor) and produces:
 /// - Symbol documents for the `codebase_symbols` collection
 /// - Edge documents for the `codebase_edges` collection
-#[derive(Debug, Clone, Deserialize)]
-pub struct StoredTarget {
-    #[serde(rename = "_key")]
-    pub key: String,
-    pub file_path: String,
-    pub name: String,
-    pub qualified_name: String,
-    pub start_line: u32,
-    pub end_line: u32,
-}
-
 pub struct LspEdgeResolver {
     namespace: String,
-    stored_targets: Vec<StoredTarget>,
     /// Input: rel_path → extraction data.
     file_data: HashMap<String, FileExtraction>,
     /// Index: qualified_name → vec of (rel_path, symbol_key).
@@ -165,26 +153,12 @@ impl LspEdgeResolver {
     ) -> Self {
         let mut resolver = Self {
             namespace: namespace.into(),
-            stored_targets: Vec::new(),
             file_data,
             symbol_index: HashMap::new(),
             analyzer,
         };
         resolver.build_index();
         resolver
-    }
-
-    /// Content-only targets participate in resolution without being claimed as
-    /// successful semantic extractions or rewritten with analyzer provenance.
-    pub fn with_stored_targets(mut self, targets: Vec<StoredTarget>) -> Self {
-        for target in &targets {
-            self.symbol_index
-                .entry(target.qualified_name.clone())
-                .or_default()
-                .push((target.file_path.clone(), target.key.clone()));
-        }
-        self.stored_targets = targets;
-        self
     }
 
     /// Build symbol documents for the `codebase_symbols` collection.
@@ -309,18 +283,12 @@ impl LspEdgeResolver {
             // implementing type locations; convert those into explicit graph
             // edges without pretending Tree-sitter inferred them.
             for implementation in &extraction.implementations {
-                let Some(interface_key) = self
-                    .symbol_index
-                    .get(&implementation.interface_qualified_name)
-                    .and_then(|entries| pick_best_match(entries, rel_path))
-                    .or_else(|| {
-                        self.symbol_index
-                            .get(&implementation.interface_name)
-                            .and_then(|entries| pick_best_match(entries, rel_path))
-                    })
-                else {
-                    continue;
-                };
+                let interface = &extraction.symbols[implementation.interface_symbol];
+                let interface_key = keys::symbol_key(
+                    &fk,
+                    &interface.qualified_name,
+                    interface.start_line as usize + 1,
+                );
                 let Some(implementor_key) = self.resolve_location(
                     &implementation.implementor_file,
                     implementation.implementor_line,
@@ -454,17 +422,6 @@ impl LspEdgeResolver {
         expected_name: Option<&str>,
     ) -> Option<String> {
         self.resolve_extracted_location(file, line, expected_name)
-            .or_else(|| {
-                // LSP targets are normalized against the ingest root by both extractors.
-                self.stored_targets
-                    .iter()
-                    .filter(|s| {
-                        s.file_path == file && expected_name.is_none_or(|name| name == s.name)
-                    })
-                    .filter(|s| s.start_line.saturating_sub(1) <= line && line < s.end_line)
-                    .min_by_key(|s| s.end_line.saturating_sub(s.start_line))
-                    .map(|s| s.key.clone())
-            })
     }
 
     fn resolve_extracted_location(
@@ -560,6 +517,7 @@ mod tests {
     fn make_extraction(symbols: Vec<ExtractedSymbol>) -> FileExtraction {
         FileExtraction {
             failed_edge_symbols: Default::default(),
+            failed_implementation_interfaces: Default::default(),
             no_calls: Vec::new(),
             no_call_count: 0,
             failed_requests: Vec::new(),

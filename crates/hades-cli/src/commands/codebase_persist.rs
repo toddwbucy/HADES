@@ -21,13 +21,6 @@ pub(super) async fn revision(
     }
 }
 
-#[derive(Clone, Default, serde::Serialize)]
-pub(super) struct EdgeProtection {
-    #[serde(rename = "all_symbols")]
-    pub all: bool,
-    pub symbols: std::collections::HashSet<String>,
-}
-
 pub(super) struct Replacement {
     pub key: String,
     pub expected_revision: Option<String>,
@@ -37,7 +30,6 @@ pub(super) struct Replacement {
     pub defines: Vec<Value>,
     pub file: Value,
     pub purge_symbols: bool,
-    pub protected_edges: std::collections::HashMap<String, EdgeProtection>,
     pub merge_file: bool,
     pub symbol_remap: Vec<(String, String)>,
 }
@@ -60,49 +52,15 @@ impl Replacement {
                 return Err(ArangoError::Request("file changed during preparation; retry ingestion".into()));
             }
             if self.purge_symbols {
-                // Failed semantic requests do not justify erasing prior answers.
-                // Select identities before replacing vertices, in this transaction.
-                let protected = if self.protected_edges.is_empty() { Vec::new() } else {
-                let response = client.post("cursor", &json!({
-                    "query":"RETURN (FOR s IN @@symbols FILTER @protection[s.file_key] != null AND (@protection[s.file_key].all_symbols OR s.qualified_name IN @protection[s.file_key].symbols) LET connected = LENGTH(FOR e IN @@calls FILTER e._from == s._id AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic') LIMIT 1 RETURN 1) + LENGTH(FOR e IN @@implements FILTER (e._from == s._id OR e._to == s._id) AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic') LIMIT 1 RETURN 1) RETURN {symbol:s, connected:connected > 0})",
-                    "bindVars":{"@symbols":CODEBASE.symbols,"@calls":CODEBASE.calls_edges,"@implements":CODEBASE.implements_edges,"protection":self.protected_edges},
-                    "batchSize":1,"memoryLimit":33554432,"options":{"maxRuntime":30,"failOnWarning":true}
-                })).await?;
-                let rows = hades_core::db::query::completed_rows(&response)?;
-                rows.first().filter(|_| rows.len() == 1).and_then(Value::as_array)
-                    .filter(|rows| rows.iter().all(|row| row["symbol"]["_id"].is_string() && row["symbol"]["_key"].is_string() && row["connected"].is_boolean()))
-                    .ok_or_else(|| ArangoError::Request("invalid semantic protection identity response".into()))?.clone()
-                };
-                // If an analyzer failed before listing its symbols, a prior
-                // semantic-only endpoint may have no fresh syntactic counterpart.
-                // Retain only endpoints needed by protected edges, explicitly stale;
-                // never manufacture dangling edges or present old content as fresh.
-                for row in &protected {
-                    let old = &row["symbol"];
-                    let key = old["_key"].as_str().unwrap();
-                    if row["connected"] != true || old["file_key"] != self.key
-                        || self.symbols.iter().any(|s| s["_key"] == key)
-                        || self.symbol_remap.iter().any(|(from, _)| from == key) { continue; }
-                    let mut retained = old.clone();
-                    let object = retained.as_object_mut().unwrap();
-                    object.remove("_id"); object.remove("_rev");
-                    object.insert("enrichment_stale".into(), json!(true));
-                    self.defines.push(json!({"_key":keys::edge_key(&self.key,"defines",key),
-                        "_from":format!("{}/{}",CODEBASE.files,self.key),"_to":old["_id"],
-                        "analysis_tier":"semantic","resolution":"semantic","enrichment_stale":true}));
-                    self.symbols.push(retained);
-                }
-                self.file["symbol_count"] = json!(self.symbols.iter().filter_map(|s| s["_key"].as_str()).collect::<std::collections::HashSet<_>>().len());
-                let protected: Vec<_> = protected.iter().map(|row| &row["symbol"]["_id"]).collect();
                 let aql = "LET ids = APPEND((FOR s IN @@symbols FILTER s.file_key == @key RETURN s._id), [CONCAT(@files_name, '/', @key)]) \
                     LET syms = (FOR d IN @@symbols FILTER d.file_key == @key REMOVE d IN @@symbols RETURN 1) \
-                    LET defs = (FOR e IN @@defines FILTER e._from IN ids REMOVE e IN @@defines RETURN 1) \
-                    LET calls = (FOR e IN @@calls FILTER e._from IN ids FILTER !(e._from IN @protected AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic')) REMOVE e IN @@calls RETURN 1) \
-                    LET impls = (FOR e IN @@implements FILTER e._from IN ids FILTER !((e._from IN @protected OR (e._to IN @protected AND e._from IN @surviving)) AND (e.resolution == 'semantic' OR e.analysis_tier == 'semantic')) REMOVE e IN @@implements RETURN 1) \
+                    LET defs = (FOR e IN @@defines FILTER e._from IN ids FILTER e.resolution != 'semantic' AND e.analysis_tier != 'semantic' REMOVE e IN @@defines RETURN 1) \
+                    LET calls = (FOR e IN @@calls FILTER e._from IN ids FILTER e.resolution != 'semantic' AND e.analysis_tier != 'semantic' REMOVE e IN @@calls RETURN 1) \
+                    LET impls = (FOR e IN @@implements FILTER e._from IN ids FILTER e.resolution != 'semantic' AND e.analysis_tier != 'semantic' REMOVE e IN @@implements RETURN 1) \
                     LET imps = (FOR e IN @@imports FILTER e._from IN ids REMOVE e IN @@imports RETURN 1) RETURN 1";
                 query(&client, aql, json!({"@symbols":CODEBASE.symbols,"@defines":CODEBASE.defines_edges,
                     "@calls":CODEBASE.calls_edges,"@implements":CODEBASE.implements_edges,
-                    "@imports":CODEBASE.imports_edges,"files_name":CODEBASE.files,"key":self.key,"protected":protected,"surviving":self.symbols.iter().filter_map(|s| s["_key"].as_str()).chain(self.symbol_remap.iter().map(|(old,_)| old.as_str())).map(|key| format!("{}/{key}", CODEBASE.symbols)).collect::<Vec<_>>()}), true).await?;
+                    "@imports":CODEBASE.imports_edges,"files_name":CODEBASE.files,"key":self.key}), true).await?;
             }
             for collection in [CODEBASE.chunks, CODEBASE.embeddings] {
                 query(&client, "FOR d IN @@collection FILTER d.file_key == @key REMOVE d IN @@collection",
@@ -202,6 +160,13 @@ pub(super) async fn store_relationships(
                         missing_ids.len(), missing_ids.len().min(10), &missing_ids[..missing_ids.len().min(10)]
                     )));
                 }
+                if collection == CODEBASE.calls_edges {
+                    // Structural calls cannot overwrite retained semantic answers.
+                    query(&client,
+                        "FOR doc IN @docs LET old = DOCUMENT(@collection, doc._key) FILTER old == null OR (old.resolution != 'semantic' AND old.analysis_tier != 'semantic') OR doc.resolution == 'semantic' OR doc.analysis_tier == 'semantic' INSERT doc IN @@edges OPTIONS {overwriteMode: 'replace'}",
+                        json!({"docs":batch,"collection":collection,"@edges":collection}), false).await
+                        .map_err(|error| ArangoError::Request(format!("failed to store {collection} relationships: {error}")))?;
+                } else {
                 let response = client
                     .post(
                         &format!("document/{collection}?overwriteMode=replace"),
@@ -215,6 +180,7 @@ pub(super) async fn store_relationships(
                     return Err(ArangoError::Request(format!(
                         "failed to store {collection} relationships"
                     )));
+                }
                 }
             }
         }
@@ -353,6 +319,28 @@ async fn remap_edges(
         }
     }
     Ok(moved)
+}
+
+/// Recheck only endpoints affected by this run. Edge lookups use the endpoint
+/// indexes and DOCUMENT uses the primary index; no per-file collection scans.
+/// Also called when the separate enrichment store was skipped or failed.
+pub(super) async fn prune_semantic_orphans(
+    pool: &ArangoPool,
+    ids: Vec<String>,
+) -> Result<(), ArangoError> {
+    let collections = CODEBASE
+        .all_collections()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    transaction::run(pool, collections, move |client| async move {
+        for collection in [CODEBASE.calls_edges, CODEBASE.implements_edges, CODEBASE.defines_edges] {
+            query(&client,
+                "LET candidates = (FOR id IN @ids LET outgoing = (FOR e IN @@edges FILTER e._from == id RETURN e) LET incoming = (FOR e IN @@edges FILTER e._to == id RETURN e) FOR e IN UNION_DISTINCT(outgoing, incoming) RETURN e) FOR e IN UNIQUE(candidates) FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' FILTER DOCUMENT(e._from) == null OR DOCUMENT(e._to) == null REMOVE e IN @@edges",
+                json!({"ids":ids,"@edges":collection}), false).await?;
+        }
+        Ok(())
+    }).await
 }
 
 pub(super) async fn query(
@@ -566,7 +554,6 @@ mod tests {
             defines: Vec::new(),
             file: json!({"path":"file.sh","content_hash":text,"chunk_count":1}),
             purge_symbols: false,
-            protected_edges: Default::default(),
             merge_file: true,
             symbol_remap: Vec::new(),
         }
