@@ -380,9 +380,10 @@ pub async fn run_phase(
     };
 
     let processor = BatchProcessor::new(batch_config);
+    let provenance = Arc::new(hades_core::source_git::Batch::default());
     let source_git = root
         .as_deref()
-        .map(hades_core::source_git::resolve)
+        .map(|path| provenance.resolve(path))
         .transpose()?
         .flatten();
 
@@ -408,7 +409,7 @@ pub async fn run_phase(
             let custom_id = custom_id.clone();
             let extra_metadata = extra_metadata.clone();
             let root = root.clone();
-            let source_git = source_git.clone();
+            let provenance = provenance.clone();
 
             async move {
                 ingest_file(
@@ -421,7 +422,7 @@ pub async fn run_phase(
                     extra_metadata.as_deref(),
                     custom_id.as_deref(),
                     root.as_deref(),
-                    source_git.as_ref(),
+                    &provenance,
                 )
                 .await
             }
@@ -528,7 +529,7 @@ async fn ingest_file(
     extra_metadata: Option<&Value>,
     custom_id: Option<&str>,
     root: Option<&Path>,
-    root_git: Option<&hades_core::source_git::SourceGit>,
+    provenance: &hades_core::source_git::Batch,
 ) -> Result<Value> {
     // Identity FIRST, from the path as the caller wrote it: the key comes from
     // the caller's own path, so a symlinked input keeps the name the caller used
@@ -544,10 +545,7 @@ async fn ingest_file(
     let path: PathBuf = std::fs::canonicalize(path)
         .with_context(|| format!("input path not found or unreadable: {}", path.display()))?;
     let path = path.as_path();
-    let source_git = match root_git {
-        Some(git) => Some(git.clone()),
-        None => hades_core::source_git::resolve(root.unwrap_or(path))?,
-    };
+    let source_git = provenance.resolve(root.unwrap_or(path))?;
 
     // Who already holds this key, and is it this same file?
     //

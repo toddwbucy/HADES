@@ -47,20 +47,12 @@ pub enum TaskCmd {
         /// Maximum results.
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: u32,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Show task details.
     Show {
         /// Task key (e.g. task_abc123).
         key: String,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Update a task's fields.
@@ -159,10 +151,6 @@ pub enum TaskCmd {
     HandoffShow {
         /// Task key.
         key: String,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Get rich context for a task (description + history + handoffs).
@@ -209,9 +197,5 @@ pub enum TaskCmd {
     Usage,
 
     /// Integrate task with the knowledge graph.
-    GraphIntegration {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-    },
+    GraphIntegration {},
 }

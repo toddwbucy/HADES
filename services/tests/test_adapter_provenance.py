@@ -58,3 +58,19 @@ def test_node_before_any_heading_has_explicit_absent_section(tmp_path):
     nodes = read_documents(tmp_path).nodes
     assert [(node.ident, node.line, node.section) for node in nodes] == [
         ('first', 2, None), ('second', 5, None)]
+
+
+def test_yaml_front_matter_does_not_assign_a_section(tmp_path):
+    # Closing YAML --- was mistaken for a Setext underline (#174).
+    path = tmp_path / 'docs' / 'fixture.md'
+    path.parent.mkdir()
+    text = ('---\ntitle: Metadata only\n---\n\n'
+            '```graph\nnode: before\nkind: assertion\n```\n\n'
+            'Real section\n------------\n\n'
+            '```graph\nnode: after\nkind: term\n```\n')
+    path.write_text(text)
+    nodes = read_documents(tmp_path).nodes
+    assert [(node.ident, node.section) for node in nodes] == [
+        ('before', None), ('after', 'Real section')]
+    for node in nodes:
+        assert node.line == text.splitlines().index(f'node: {node.ident}') + 1

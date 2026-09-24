@@ -1561,43 +1561,38 @@ mod handlers {
         key: &str,
         fields: Option<&[String]>,
     ) -> Result<Value, HandlerError> {
-        crud::get_document(pool, collection, key)
+        // Project inside ArangoDB so bulk fields never cross the socket by default (#170).
+        let aql = "LET d = DOCUMENT(@collection, @key) RETURN d == null ? null : \
+                   (@keep == null ? UNSET(d, @drop) : KEEP(d, @keep))";
+        let bind = json!({"collection":collection,"key":key,"keep":fields,"drop":BULK_FIELDS});
+        let result = query::query(pool, aql, Some(&bind), None, false, ExecutionTarget::Reader)
             .await
-            .map(|document| project_vertex(document, fields))
-            .map_err(|e| {
-                if e.is_not_found() {
+            .map_err(|source| {
+                if source.is_not_found() {
                     HandlerError::DocumentNotFound {
-                        collection: collection.to_string(),
-                        key: key.to_string(),
+                        collection: collection.into(),
+                        key: key.into(),
                     }
                 } else {
                     HandlerError::Query {
                         context: format!("failed to get {collection}/{key}"),
-                        source: e,
+                        source,
                     }
                 }
+            })?;
+        result
+            .results
+            .into_iter()
+            .next()
+            .filter(|document| !document.is_null())
+            .ok_or_else(|| HandlerError::DocumentNotFound {
+                collection: collection.into(),
+                key: key.into(),
             })
     }
 
-    /// Fields excluded from `db.list` unless asked for by name.
-    ///
-    /// Each one holds an entire document's worth of text or a 2048-float vector,
-    /// so returning them by default made the payload proportional to the corpus
-    /// rather than to the number of rows.
+    /// Large vertex fields omitted unless explicitly requested (#170).
     pub(super) const BULK_FIELDS: &[&str] = &["full_text", "embedding", "text", "body"];
-
-    /// Match db.list's KEEP/UNSET policy for document-API reads (#170).
-    fn project_vertex(mut document: Value, fields: Option<&[String]>) -> Value {
-        if let Some(object) = document.as_object_mut() {
-            object.retain(|key, _| {
-                fields.map_or_else(
-                    || !BULK_FIELDS.contains(&key.as_str()),
-                    |keep| keep.contains(key),
-                )
-            });
-        }
-        document
-    }
 
     /// Count documents in a collection.
     pub async fn db_count(pool: &ArangoPool, collection: &str) -> Result<Value, HandlerError> {
@@ -3874,8 +3869,8 @@ mod handlers {
             }
         };
 
-        // Schema sample: first document
-        let sample_aql = "FOR d IN @@col LIMIT 1 RETURN d";
+        // Orientation needs field names, never the sample's bulk values (#170).
+        let sample_aql = "FOR d IN @@col LIMIT 1 RETURN ATTRIBUTES(d)";
         let sample_bind = json!({ "@col": collection });
         let sample = match query::query(
             pool,
@@ -3897,12 +3892,15 @@ mod handlers {
             }
         };
 
-        // Extract field names from sample for schema overview
-        let schema_fields: Vec<String> = sample
-            .as_ref()
-            .and_then(|doc| doc.as_object())
-            .map(|obj| obj.keys().cloned().collect())
+        let mut schema_fields: Vec<String> = sample
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                HandlerError::ServiceError(format!("invalid orientation attributes: {error}"))
+            })?
             .unwrap_or_default();
+        // ATTRIBUTES does not guarantee order; retain the prior sorted shape (#170).
+        schema_fields.sort();
 
         // Recent docs
         let recent = recent_docs(pool, collection, 10).await?;
@@ -6803,6 +6801,65 @@ mod handlers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Verify transfer shape, not only client-side filtering (#170).
+    #[tokio::test]
+    async fn review_followup_db_get_projects_before_transfer() {
+        use cursor_mock::{Mock, Reply};
+        for fields in [
+            None,
+            Some(vec!["title".into(), "text".into()]),
+            Some(vec![]),
+        ] {
+            let mut mock = Mock::new(vec![Reply::page(
+                serde_json::json!({"result":[{"title":"fixture"}],"hasMore":false}),
+            )])
+            .await;
+            let result = handlers::db_get(&mock.pool, "documents", "doc", fields.as_deref())
+                .await
+                .unwrap();
+            let (route, request) = mock.events.recv().await.unwrap();
+            assert_eq!(route, "POST cursor", "db.get must project on the server");
+            let aql = request["query"].as_str().unwrap();
+            assert!(
+                aql.contains("DOCUMENT(") && aql.contains("KEEP(") && aql.contains("UNSET("),
+                "{aql}"
+            );
+            assert_eq!(request["bindVars"]["keep"], serde_json::json!(fields));
+            assert_eq!(
+                request["bindVars"]["drop"],
+                serde_json::json!(handlers::BULK_FIELDS)
+            );
+            assert_eq!(result, serde_json::json!({"title":"fixture"}));
+        }
+    }
+
+    #[tokio::test]
+    async fn review_followup_orient_transfers_only_attribute_names() {
+        use cursor_mock::{Mock, Reply};
+        let mut mock = Mock::new(vec![
+            Reply::page(serde_json::json!({"count":1})),
+            Reply::page(serde_json::json!({"result":[["title","_key","text"]],"hasMore":false})),
+            Reply::page(serde_json::json!({"result":[],"hasMore":false})),
+            Reply::page(serde_json::json!({"indexes":[]})),
+        ])
+        .await;
+        let result = handlers::orient(&mock.pool, Some("documents"))
+            .await
+            .unwrap();
+        mock.event("GET collection/documents/count").await;
+        let request = mock.event("POST cursor").await;
+        assert!(
+            request["query"]
+                .as_str()
+                .unwrap()
+                .contains("RETURN ATTRIBUTES(d)")
+        );
+        assert_eq!(
+            result["schema_fields"],
+            serde_json::json!(["_key", "text", "title"])
+        );
+    }
 
     async fn guarded_dispatch(
         pool: &ArangoPool,

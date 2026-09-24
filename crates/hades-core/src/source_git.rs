@@ -2,14 +2,48 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::{
-    path::Path,
+    collections::HashMap,
+    path::{Path, PathBuf},
     process::{Command, Output},
+    sync::Mutex,
 };
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct SourceGit {
     pub commit: Option<String>,
     pub dirty: bool,
+}
+
+/// Observations are shared only within one batch, including non-Git directories.
+/// Canonical directory keys coalesce aliases; nested repositories remain distinct (#171).
+#[derive(Default)]
+pub struct Batch {
+    observations: Mutex<HashMap<PathBuf, Option<SourceGit>>>,
+}
+
+impl Batch {
+    pub fn resolve(&self, input: &Path) -> Result<Option<SourceGit>> {
+        let input = input
+            .canonicalize()
+            .context("cannot resolve provenance input")?;
+        let directory = if input.is_file() {
+            input.parent().unwrap()
+        } else {
+            &input
+        };
+        // Hold the lock through resolution so concurrent named files cannot all
+        // miss the cache and launch N git status processes for one directory (#171).
+        let mut observations = self
+            .observations
+            .lock()
+            .map_err(|_| anyhow!("source Git observation lock poisoned"))?;
+        if let Some(observed) = observations.get(directory) {
+            return Ok(observed.clone());
+        }
+        let observed = resolve(directory)?;
+        observations.insert(directory.to_owned(), observed.clone());
+        Ok(observed)
+    }
 }
 
 /// Non-Git inputs serialize as null; failures inside a repository are errors.

@@ -12,6 +12,56 @@ mod document_metadata_outcomes {
             Ok(tonic::Response::new(ExtractorInfo::default()))
         }
     }
+
+    // N named files share one directory observation per batch (#171).
+    #[tokio::test]
+    async fn named_file_batch_observes_git_once_per_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_db("git_batch", Fixtures::Empty, |pool| async move {
+            let services = tempfile::tempdir().unwrap();
+            let tree = tempfile::tempdir().unwrap();
+            for name in ["a.md", "b.md", "c.md"] { std::fs::write(tree.path().join(name), "Fixture document.").unwrap(); }
+            let git = |args: &[&str]| {
+                let out = std::process::Command::new("/usr/bin/git").arg("-C").arg(tree.path()).args(args).output().unwrap();
+                assert!(out.status.success(), "{out:?}");
+            };
+            git(&["init", "-q"]); git(&["add", "."]);
+            git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+            let bin = services.path().join("bin"); std::fs::create_dir(&bin).unwrap();
+            let wrapper = bin.join("git");
+            std::fs::write(&wrapper, "#!/bin/sh\nif [ \"$3\" = status ]; then printf '%s\\n' \"$2\" >> \"$HADES_GIT_STATUS_LOG\"; fi\nexec /usr/bin/git \"$@\"\n").unwrap();
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let count = services.path().join("status.log");
+            let socket = services.path().join("extract.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async {
+                let next = listener.accept().await.map(|(stream,_)|stream); Some((next,listener))
+            });
+            let _peer = Peer(tokio::spawn(async move {
+                tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor))
+                    .serve_with_incoming(incoming).await.unwrap();
+            }));
+            let embedder = Embedder::new().await;
+            for dirty in [false, true] {
+                if dirty { std::fs::write(tree.path().join("untracked"), "new").unwrap(); }
+                std::fs::write(&count, "").unwrap();
+                let files: Vec<_> = ["a.md", "b.md", "c.md"].map(|name|tree.path().join(name)).into_iter().collect();
+                let output = cli_command(&pool, &embedder, &["ingest", "--task", "code", "--force", "--concurrency", "3"])
+                    .args(&files).env("HADES_EXTRACTOR_SOCKET", &socket)
+                    .env("PATH", format!("{}:/usr/bin:/bin", bin.display())).env("HADES_GIT_STATUS_LOG", &count)
+                    .current_dir(services.path()).output().await.unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(report["data"]["completed"], 3, "{report}");
+                assert_eq!(report["data"]["source_git"]["dirty"], dirty, "batch must refresh observations");
+                for row in report["data"]["results"].as_array().unwrap() {
+                    assert_eq!(row["source_git"], report["data"]["source_git"]);
+                }
+                assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1, "one git status per directory per batch");
+            }
+        }).await;
+    }
+
     struct Peer(JoinHandle<()>);
     impl Drop for Peer { fn drop(&mut self) { self.0.abort(); } }
 

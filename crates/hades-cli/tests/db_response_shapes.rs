@@ -350,7 +350,7 @@ async fn graph_list_rejects_malformed_success_responses() {
 async fn orientation_does_not_hide_metadata_read_failures() {
     let good = vec![
         json!({"count":2}),
-        json!({"hasMore":false,"result":[{"_key":"one","title":"Fixture"}]}),
+        json!({"hasMore":false,"result":[["_key","title"]]}),
         json!({"hasMore":false,"result":[{"_key":"one","title":"Fixture"}]}),
         json!({"indexes":[]}),
     ];
@@ -959,7 +959,14 @@ async fn get_cli_excludes_bulk_unless_fields_are_named() {
         if fields {
             args.extend(["--fields", "_key,label,full_text,embedding,text,body"]);
         }
-        let (output, _) = run(&args, vec![document.clone()]).await;
+        // The backend now projects before returning its cursor row (#170).
+        let projected = if fields {
+            document.clone()
+        } else {
+            json!({"_key":"doc","label":"fixture"})
+        };
+        let (output, calls) = run(&args, vec![json!({"result":[projected],"hasMore":false})]).await;
+        assert_eq!(calls, vec!["POST /_db/fixture/_api/cursor"]);
         assert!(output.status.success(), "{output:?}");
         let response: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(response["data"]["label"], "fixture");

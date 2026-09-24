@@ -45,6 +45,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Project db.get and orientation samples in AQL before transfer (#170), reuse
+  source Git observations within each document batch (#171), and exclude YAML
+  front matter from adapter heading provenance (#174).
+- Remove duplicate db/task format options while preserving global formatting
+  (#164), and remove the unused incoming-call hierarchy implementation (#179).
+
+
 - Give enrichment ownership of semantic edges by request identity, preserving structural fallback and pruning invalid endpoints after skipped stores; distinguish source macros, explicit cfg module paths, and malformed document-symbol responses (#179).
 
 - Keep analyzer preflight probes executable from a checked-in launcher, avoiding transient text-file-busy failures while preserving process-lifecycle assertions (#179).

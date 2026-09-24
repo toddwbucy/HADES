@@ -94,7 +94,16 @@ def _headings(text: str):
     fence = None
     previous = None
     offset = 0
-    for line in text.splitlines(keepends=True):
+    lines = text.splitlines(keepends=True)
+    # YAML's closing --- is not a Setext underline for its last field (#174).
+    # Keep original offsets so declarations retain their source locations.
+    if lines and lines[0].rstrip("\r\n") == "---":
+        for end in range(1, len(lines)):
+            if lines[end].rstrip("\r\n") == "---":
+                offset = sum(map(len, lines[:end + 1]))
+                lines = lines[end + 1:]
+                break
+    for line in lines:
         stripped = line.rstrip("\r\n")
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)
         if fence:
