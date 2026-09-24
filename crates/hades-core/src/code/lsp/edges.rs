@@ -283,18 +283,12 @@ impl LspEdgeResolver {
             // implementing type locations; convert those into explicit graph
             // edges without pretending Tree-sitter inferred them.
             for implementation in &extraction.implementations {
-                let Some(interface_key) = self
-                    .symbol_index
-                    .get(&implementation.interface_qualified_name)
-                    .and_then(|entries| pick_best_match(entries, rel_path))
-                    .or_else(|| {
-                        self.symbol_index
-                            .get(&implementation.interface_name)
-                            .and_then(|entries| pick_best_match(entries, rel_path))
-                    })
-                else {
-                    continue;
-                };
+                let interface = &extraction.symbols[implementation.interface_symbol];
+                let interface_key = keys::symbol_key(
+                    &fk,
+                    &interface.qualified_name,
+                    interface.start_line as usize + 1,
+                );
                 let Some(implementor_key) = self.resolve_location(
                     &implementation.implementor_file,
                     implementation.implementor_line,
@@ -427,6 +421,15 @@ impl LspEdgeResolver {
         line: u32,
         expected_name: Option<&str>,
     ) -> Option<String> {
+        self.resolve_extracted_location(file, line, expected_name)
+    }
+
+    fn resolve_extracted_location(
+        &self,
+        file: &str,
+        line: u32,
+        expected_name: Option<&str>,
+    ) -> Option<String> {
         let (actual_path, extraction) = self.find_file(file)?;
         let name_matches = |symbol: &&super::symbols::ExtractedSymbol| {
             expected_name.is_none_or(|name| symbol.name == name)
@@ -513,6 +516,12 @@ mod tests {
 
     fn make_extraction(symbols: Vec<ExtractedSymbol>) -> FileExtraction {
         FileExtraction {
+            failed_edge_symbols: Default::default(),
+            failed_implementation_interfaces: Default::default(),
+            no_calls: Vec::new(),
+            no_call_count: 0,
+            failed_requests: Vec::new(),
+            failed_request_count: 0,
             symbols,
             impl_blocks: Vec::new(),
             implementations: Vec::new(),

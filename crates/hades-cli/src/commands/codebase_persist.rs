@@ -54,9 +54,9 @@ impl Replacement {
             if self.purge_symbols {
                 let aql = "LET ids = APPEND((FOR s IN @@symbols FILTER s.file_key == @key RETURN s._id), [CONCAT(@files_name, '/', @key)]) \
                     LET syms = (FOR d IN @@symbols FILTER d.file_key == @key REMOVE d IN @@symbols RETURN 1) \
-                    LET defs = (FOR e IN @@defines FILTER e._from IN ids REMOVE e IN @@defines RETURN 1) \
-                    LET calls = (FOR e IN @@calls FILTER e._from IN ids REMOVE e IN @@calls RETURN 1) \
-                    LET impls = (FOR e IN @@implements FILTER e._from IN ids REMOVE e IN @@implements RETURN 1) \
+                    LET defs = (FOR e IN @@defines FILTER e._from IN ids FILTER e.resolution != 'semantic' AND e.analysis_tier != 'semantic' REMOVE e IN @@defines RETURN 1) \
+                    LET calls = (FOR e IN @@calls FILTER e._from IN ids FILTER e.resolution != 'semantic' AND e.analysis_tier != 'semantic' REMOVE e IN @@calls RETURN 1) \
+                    LET impls = (FOR e IN @@implements FILTER e._from IN ids FILTER e.resolution != 'semantic' AND e.analysis_tier != 'semantic' REMOVE e IN @@implements RETURN 1) \
                     LET imps = (FOR e IN @@imports FILTER e._from IN ids REMOVE e IN @@imports RETURN 1) RETURN 1";
                 query(&client, aql, json!({"@symbols":CODEBASE.symbols,"@defines":CODEBASE.defines_edges,
                     "@calls":CODEBASE.calls_edges,"@implements":CODEBASE.implements_edges,
@@ -79,7 +79,8 @@ impl Replacement {
                     }
                 }
             }
-            let moved = remap_inbound(&client, &self.symbol_remap).await?;
+            let moved = remap_inbound(&client, &self.symbol_remap).await?
+                + remap_edges(&client, &self.symbol_remap, true).await?;
             self.file["_key"] = json!(self.key);
             let mode = if self.merge_file { "update" } else { "replace" };
             // POST update defaults to removing nulls; preserve explicit non-Git
@@ -159,6 +160,13 @@ pub(super) async fn store_relationships(
                         missing_ids.len(), missing_ids.len().min(10), &missing_ids[..missing_ids.len().min(10)]
                     )));
                 }
+                if collection == CODEBASE.calls_edges {
+                    // Structural calls cannot overwrite retained semantic answers.
+                    query(&client,
+                        "FOR doc IN @docs LET old = DOCUMENT(@collection, doc._key) FILTER old == null OR (old.resolution != 'semantic' AND old.analysis_tier != 'semantic') OR doc.resolution == 'semantic' OR doc.analysis_tier == 'semantic' INSERT doc IN @@edges OPTIONS {overwriteMode: 'replace'}",
+                        json!({"docs":batch,"collection":collection,"@edges":collection}), false).await
+                        .map_err(|error| ArangoError::Request(format!("failed to store {collection} relationships: {error}")))?;
+                } else {
                 let response = client
                     .post(
                         &format!("document/{collection}?overwriteMode=replace"),
@@ -172,6 +180,7 @@ pub(super) async fn store_relationships(
                     return Err(ArangoError::Request(format!(
                         "failed to store {collection} relationships"
                     )));
+                }
                 }
             }
         }
@@ -195,6 +204,14 @@ pub(super) async fn store_relationships(
 pub(super) async fn remap_inbound(
     client: &ArangoClient,
     remap: &[(String, String)],
+) -> Result<u64, ArangoError> {
+    remap_edges(client, remap, false).await
+}
+
+async fn remap_edges(
+    client: &ArangoClient,
+    remap: &[(String, String)],
+    outgoing: bool,
 ) -> Result<u64, ArangoError> {
     use std::collections::{HashMap, HashSet};
     if remap.is_empty() {
@@ -221,7 +238,7 @@ pub(super) async fn remap_inbound(
             .post(
                 "cursor",
                 &json!({
-                    "query":"RETURN (FOR e IN @@edges FILTER e._to IN @olds RETURN e)",
+                    "query":if outgoing {"RETURN (FOR e IN @@edges FILTER e._from IN @olds RETURN e)"} else {"RETURN (FOR e IN @@edges FILTER e._to IN @olds RETURN e)"},
                     "bindVars":{"@edges":edges,"olds":olds}, "batchSize":1, "ttl":30,
                     "memoryLimit":33554432,
                     "options":{"maxRuntime":30,"failOnWarning":true}
@@ -237,8 +254,8 @@ pub(super) async fn remap_inbound(
         let mut superseded = Vec::new();
         for doc in found {
             let (Some(old_id), Some(from_id), Some(old_key)) = (
-                doc["_to"].as_str(),
-                doc["_from"].as_str(),
+                doc[if outgoing { "_from" } else { "_to" }].as_str(),
+                doc[if outgoing { "_to" } else { "_from" }].as_str(),
                 doc["_key"].as_str(),
             ) else {
                 return Err(ArangoError::Request("invalid inbound edge identity".into()));
@@ -248,7 +265,11 @@ pub(super) async fn remap_inbound(
                 .get(old_suffix)
                 .ok_or_else(|| ArangoError::Request("unexpected inbound edge target".into()))?;
             let from_suffix = from_id.rsplit('/').next().unwrap_or(from_id);
-            let new_key = keys::edge_key(from_suffix, kind, new_suffix);
+            let new_key = if outgoing {
+                keys::edge_key(new_suffix, kind, from_suffix)
+            } else {
+                keys::edge_key(from_suffix, kind, new_suffix)
+            };
             let mut next = doc.clone();
             let object = next
                 .as_object_mut()
@@ -257,7 +278,7 @@ pub(super) async fn remap_inbound(
             object.remove("_rev");
             object.insert("_key".into(), json!(new_key));
             object.insert(
-                "_to".into(),
+                (if outgoing { "_from" } else { "_to" }).into(),
                 json!(format!("{}/{}", CODEBASE.symbols, new_suffix)),
             );
             if new_key != old_key {
@@ -298,6 +319,28 @@ pub(super) async fn remap_inbound(
         }
     }
     Ok(moved)
+}
+
+/// Recheck only endpoints affected by this run. Edge lookups use the endpoint
+/// indexes and DOCUMENT uses the primary index; no per-file collection scans.
+/// Also called when the separate enrichment store was skipped or failed.
+pub(super) async fn prune_semantic_orphans(
+    pool: &ArangoPool,
+    ids: Vec<String>,
+) -> Result<(), ArangoError> {
+    let collections = CODEBASE
+        .all_collections()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    transaction::run(pool, collections, move |client| async move {
+        for collection in [CODEBASE.calls_edges, CODEBASE.implements_edges, CODEBASE.defines_edges] {
+            query(&client,
+                "LET candidates = (FOR id IN @ids LET outgoing = (FOR e IN @@edges FILTER e._from == id RETURN e) LET incoming = (FOR e IN @@edges FILTER e._to == id RETURN e) FOR e IN UNION_DISTINCT(outgoing, incoming) RETURN e) FOR e IN UNIQUE(candidates) FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' FILTER DOCUMENT(e._from) == null OR DOCUMENT(e._to) == null REMOVE e IN @@edges",
+                json!({"ids":ids,"@edges":collection}), false).await?;
+        }
+        Ok(())
+    }).await
 }
 
 pub(super) async fn query(

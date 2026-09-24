@@ -149,6 +149,10 @@ async fn enrichment_store_splits_over_cap_payload_without_partial_files() {
                     } else { assert_eq!(method,"GET"); }
                     json!({"_rev":file.revision.to_string()})
                 } else if path == "cursor" {
+                    if body["query"].as_str().unwrap().contains("REMOVE e IN @@edges") {
+                        assert!(body["bindVars"]["ids"].is_array());
+                        return (axum::http::StatusCode::OK, Json(json!({"result":[],"hasMore":false}))).into_response();
+                    }
                     assert!(body["query"].as_str().unwrap().contains("symbol_count: c"));
                     for key in body["bindVars"]["fkeys"].as_array().unwrap() {
                         let file = state.pending.as_mut().unwrap().get_mut(key.as_str().unwrap()).unwrap();

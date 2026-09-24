@@ -68,6 +68,8 @@ pub struct CallTarget {
 /// Go's implicit interface satisfaction discovered by gopls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImplementationTarget {
+    /// Index of the interface declaration in this file extraction.
+    pub interface_symbol: usize,
     pub interface_name: String,
     pub interface_qualified_name: String,
     pub implementor_file: String,
@@ -77,6 +79,20 @@ pub struct ImplementationTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileExtraction {
+    /// Uncapped symbol indices; the store maps these to scoped graph keys, never names.
+    #[serde(default)]
+    pub failed_edge_symbols: std::collections::HashSet<usize>,
+    /// Interface symbol indices with an incomplete implementation query.
+    #[serde(default)]
+    pub failed_implementation_interfaces: std::collections::HashSet<usize>,
+    #[serde(default)]
+    pub no_calls: Vec<FailedRequest>,
+    #[serde(default)]
+    pub no_call_count: usize,
+    #[serde(default)]
+    pub failed_requests: Vec<FailedRequest>,
+    #[serde(default)]
+    pub failed_request_count: usize,
     pub symbols: Vec<ExtractedSymbol>,
     pub impl_blocks: Vec<ImplBlock>,
     pub implementations: Vec<ImplementationTarget>,
@@ -95,6 +111,12 @@ pub struct ImplBlock {
 impl FileExtraction {
     pub fn empty() -> Self {
         Self {
+            failed_edge_symbols: Default::default(),
+            failed_implementation_interfaces: Default::default(),
+            no_calls: Vec::new(),
+            no_call_count: 0,
+            failed_requests: Vec::new(),
+            failed_request_count: 0,
             symbols: Vec::new(),
             impl_blocks: Vec::new(),
             implementations: Vec::new(),
@@ -103,4 +125,16 @@ impl FileExtraction {
             analyzed_at: chrono::Utc::now().to_rfc3339(),
         }
     }
+}
+
+/// Details are capped independently from the total, so large files cannot
+/// inflate the ingest envelope without bound (#179).
+pub const FAILED_REQUEST_LIMIT: usize = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedRequest {
+    pub file: String,
+    pub symbol: String,
+    pub request: String,
+    pub reason: String,
 }

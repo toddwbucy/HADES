@@ -45,6 +45,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Give enrichment ownership of semantic edges by request identity, preserving structural fallback and pruning invalid endpoints after skipped stores; distinguish source macros, explicit cfg module paths, and malformed document-symbol responses (#179).
+
+- Keep analyzer preflight probes executable from a checked-in launcher, avoiding transient text-file-busy failures while preserving process-lifecycle assertions (#179).
+
+- Report and retry failed Rust/Go semantic requests once after the file's other requests; refresh content while retaining affected prior semantic edges, recognize positively proven cfg-inactive NoCalls, and require explicit degraded-enrichment acceptance for remaining failures (#179).
+
 - Parse CLI indexed-lookup values as JSON, preserving strings, numbers and booleans and rejecting malformed JSON (#173).
 
 - Align WeaverTools system identifiers/tags, Rust/CUDA/Python header census,

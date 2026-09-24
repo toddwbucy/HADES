@@ -243,6 +243,48 @@ Symbols may be written twice during a single ingest run:
 
 Both passes use the same file, qualified name, and source line identity. The semantic pass uses `overwrite: true` (ArangoDB replace semantics); if the language server is absent or fails, the structural artifact remains available.
 
+Semantic requests are prepared before file replacement. A failed request or an
+empty `prepareCallHierarchy` response for an analyzer-reported callable is retried
+once after the file's other requests. A prepared item followed by an empty call
+list remains a successful no-calls result. Hover errors and Go implementation
+lookup errors use the same deferred retry; valid absent results remain valid.
+
+After retry, `rust_analyzer` / `gopls` report `failed_request_count` and up to
+100 `failed_requests` details (file, symbol, actual request, and both attempts).
+Failures are logged at WARN. Hover failure only degrades the signature and does
+not fail the run. A null or malformed `documentSymbol` response fails the file's
+enrichment; an empty array is a valid empty document.
+
+File replacement refreshes content and defines every stored symbol, but does not
+purge semantic calls or implements. Enrichment replaces calls for successful
+source symbol identities, including successful NoCalls. For Go, incoming implements
+edges are replaced by interface identity only after all its method implementation
+queries succeed. Failed owners retain prior valid answers. Structural fallback
+is stored without overwriting a retained semantic edge with the same key.
+
+An indexed pass prunes semantic edges with missing endpoints even when enrichment
+storage was skipped. Removed source symbols are not retained as stale vertices.
+Endpoint remapping, source validation and transaction revision checks still apply;
+earlier file commits remain durable if a later stage fails. Current syntactic
+source identities remain resolver targets when their own semantic analysis fails.
+
+The run fails on incomplete enrichment unless `codebase ingest
+--allow-analysis-downgrade` explicitly accepts it. Acceptance does not erase
+failure diagnostics. Unified `ingest` and MCP have no such override in this change.
+
+Source macro definitions are identified before requesting call hierarchy. Only
+positive rust-analyzer evidence permits NoCalls with reason `cfg_inactive`: an
+`inactive-code` diagnostic covering the symbol, or an `unlinked-file` diagnostic
+plus a positively inactive parent declaration. External `#[path]` declarations
+are resolved explicitly, including main.rs and lib.rs roots; a cfg attribute
+alone is not evidence. Published evidence is cached before notification eviction;
+failed diagnostic pulls remain retryable. Positions use UTF-16 columns.
+
+The envelope reports `no_call_count` and up to 100 `no_calls` details. Unexplained
+null/empty preparation remains Failed. Inline-module layouts without established
+parent evidence and Go build exclusion remain limitations; missing evidence is
+never classified as inactivity.
+
 ---
 
 ### 4.3 `codebase_chunks` — Text Chunks

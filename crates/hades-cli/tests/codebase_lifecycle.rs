@@ -22,6 +22,7 @@ include!("fixtures/db_insert_outcomes.rs");
 include!("fixtures/materialize_outcomes.rs");
 include!("fixtures/document_metadata_outcomes.rs");
 include!("fixtures/schema_apply_outcomes.rs");
+include!("fixtures/lsp_request_outcomes.rs");
 
 struct Embedder {
     fail: Arc<AtomicBool>,
@@ -1680,3 +1681,5 @@ async fn file_row_shape_is_independent_of_analysis_tier() {
     })
     .await;
 }
+
+include!("fixtures/lsp_ownership.rs");

@@ -6,6 +6,7 @@ pub mod go_symbols;
 pub mod gopls;
 mod preflight;
 mod process;
+mod requests;
 pub mod rust_analyzer;
 pub mod rust_symbols;
 pub mod session;
@@ -21,8 +22,16 @@ use thiserror::Error;
 /// Errors shared by all language-server integrations.
 #[derive(Debug, Error)]
 pub enum LspError {
+    #[error("{method}: {source}")]
+    Request {
+        method: &'static str,
+        #[source]
+        source: Box<LspError>,
+    },
     #[error("language server not found: {0}")]
     NotFound(String),
+    #[error("invalid LSP response: {0}")]
+    InvalidResponse(String),
     #[error("LSP process error: {0}")]
     Process(String),
     #[error("JSON-RPC error {code}: {message}")]

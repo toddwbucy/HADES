@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 use tracing::{debug, warn};
 
 use super::RustAnalyzerError;
+use super::requests::{self, RequestKind, SymbolRequest};
 use super::rust_analyzer::RustAnalyzerSession;
 use super::session::uri_to_path;
 use super::symbols::symbol_kind_name;
@@ -85,16 +86,27 @@ impl<'a> RustSymbolExtractor<'a> {
         let lines: Vec<&str> = content.lines().collect();
 
         // Get document symbols.
-        let raw_symbols = self.session.document_symbols(file_path).await?;
+        let mut raw_symbols = self.session.document_symbols(file_path).await?;
+        mark_source_macros(&content, &mut raw_symbols);
 
         // Get the file URI for hover/call requests.
         let uri = self.session.open_file(file_path).await?;
 
         // Walk and enrich symbols.
         let mut symbols = Vec::new();
+        let mut requests = Vec::new();
         for sym in &raw_symbols {
-            self.walk_symbol(sym, &uri, &lines, None, None, false, false, &mut symbols)
-                .await;
+            self.walk_symbol(
+                sym,
+                &lines,
+                None,
+                None,
+                false,
+                false,
+                &mut symbols,
+                &mut requests,
+            )
+            .await;
         }
 
         // Group impl blocks.
@@ -112,14 +124,41 @@ impl<'a> RustSymbolExtractor<'a> {
             .map(|s| s.name.clone())
             .collect();
 
-        Ok(FileExtraction {
+        let mut extraction = FileExtraction {
+            failed_edge_symbols: Default::default(),
+            failed_implementation_interfaces: Default::default(),
+            no_calls: Vec::new(),
+            no_call_count: 0,
+            failed_requests: Vec::new(),
+            failed_request_count: 0,
             symbols,
             impl_blocks,
             implementations: Vec::new(),
             pyo3_exports,
             ffi_boundaries,
             analyzed_at: chrono::Utc::now().to_rfc3339(),
-        })
+        };
+        let file = uri_to_rel_path(&uri, self.path_root);
+        for (request, value) in
+            requests::resolve(self.session, &uri, &file, requests, &mut extraction).await
+        {
+            let symbol = &mut extraction.symbols[request.index];
+            match request.kind {
+                RequestKind::Calls => {
+                    symbol.calls =
+                        self.call_targets(value.as_array().expect("resolved calls are a list"))
+                }
+                RequestKind::Hover => {
+                    if let Some(signature) = extract_signature_from_hover(&value) {
+                        symbol.signature = signature;
+                    }
+                }
+                RequestKind::Implementations { .. } => {
+                    unreachable!("Rust implementations derive from impl blocks")
+                }
+            }
+        }
+        Ok(extraction)
     }
 
     /// Extract all .rs files in a crate.
@@ -152,13 +191,13 @@ impl<'a> RustSymbolExtractor<'a> {
     async fn walk_symbol(
         &self,
         sym: &Value,
-        uri: &str,
         lines: &[&str],
         parent_name: Option<&str>,
         impl_trait: Option<&str>,
         parent_is_pyo3: bool,
         parent_is_ffi: bool,
         out: &mut Vec<ExtractedSymbol>,
+        requests: &mut Vec<SymbolRequest>,
     ) {
         let name = sym["name"].as_str().unwrap_or("");
         let kind_id = sym["kind"].as_u64().unwrap_or(0);
@@ -211,13 +250,13 @@ impl<'a> RustSymbolExtractor<'a> {
                 for child in children {
                     Box::pin(self.walk_symbol(
                         child,
-                        uri,
                         lines,
                         Some(name),
                         current_impl_trait.as_deref(),
                         is_pyo3,
                         is_ffi,
                         out,
+                        requests,
                     ))
                     .await;
                 }
@@ -251,13 +290,17 @@ impl<'a> RustSymbolExtractor<'a> {
         let visibility = parse_visibility(lines, sel_line as usize);
 
         // Get hover for signature (pub items only to limit LSP calls).
-        let mut signature = detail.to_string();
+        let signature = detail.to_string();
         if matches!(visibility.as_str(), "pub" | "pub(crate)")
             && matches!(kind, "function" | "method" | "struct" | "enum" | "constant")
-            && let Ok(Some(hover)) = self.session.hover(uri, sel_line, sel_char).await
-            && let Some(sig) = extract_signature_from_hover(&hover)
         {
-            signature = sig;
+            requests.push(SymbolRequest {
+                range: sym["range"].clone(),
+                index: out.len(),
+                line: sel_line,
+                character: sel_char,
+                kind: RequestKind::Hover,
+            });
         }
 
         let derives = extract_derives(&attrs);
@@ -274,11 +317,18 @@ impl<'a> RustSymbolExtractor<'a> {
         };
 
         // Call hierarchy.
-        let calls = if self.include_calls && matches!(kind, "function" | "method") {
-            self.get_outgoing_calls(uri, sel_line, sel_char).await
-        } else {
-            Vec::new()
-        };
+        if self.include_calls
+            && matches!(kind, "function" | "method")
+            && sym["hades_source_macro"] != true
+        {
+            requests.push(SymbolRequest {
+                range: sym["range"].clone(),
+                index: out.len(),
+                line: sel_line,
+                character: sel_char,
+                kind: RequestKind::Calls,
+            });
+        }
 
         out.push(ExtractedSymbol {
             name: name.to_string(),
@@ -297,7 +347,7 @@ impl<'a> RustSymbolExtractor<'a> {
             is_unsafe,
             derives,
             python_name,
-            calls,
+            calls: Vec::new(),
         });
 
         // Recurse into children (non-impl containers like struct, enum, module).
@@ -315,33 +365,20 @@ impl<'a> RustSymbolExtractor<'a> {
             for child in children {
                 Box::pin(self.walk_symbol(
                     child,
-                    uri,
                     lines,
                     child_parent.as_deref(),
                     current_impl_trait.as_deref(),
                     is_pyo3,
                     is_ffi,
                     out,
+                    requests,
                 ))
                 .await;
             }
         }
     }
 
-    /// Get outgoing calls for a symbol.
-    async fn get_outgoing_calls(&self, uri: &str, line: u32, character: u32) -> Vec<CallTarget> {
-        let raw = match self
-            .session
-            .call_hierarchy_outgoing(uri, line, character)
-            .await
-        {
-            Ok(calls) => calls,
-            Err(e) => {
-                debug!("call hierarchy failed for {uri}:{line}:{character}: {e}");
-                return Vec::new();
-            }
-        };
-
+    fn call_targets(&self, raw: &[Value]) -> Vec<CallTarget> {
         raw.iter()
             .filter_map(|item| {
                 let to = item.get("to")?;
@@ -473,6 +510,62 @@ fn extract_signature_from_hover(hover: &Value) -> Option<String> {
     }
 
     None
+}
+
+// rust-analyzer may label macro definitions FUNCTION; source identity, not
+// a null preparation response, establishes that call hierarchy is inapplicable.
+fn mark_source_macros(source: &str, symbols: &mut [Value]) {
+    use syn::visit::Visit;
+    #[derive(Default)]
+    struct Macros(std::collections::HashSet<(String, usize, usize)>);
+    impl<'ast> Visit<'ast> for Macros {
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            if let Some(name) = &item.ident {
+                let position = name.span().start();
+                self.0.insert((
+                    name.to_string(),
+                    position.line.saturating_sub(1),
+                    position.column,
+                ));
+            }
+            syn::visit::visit_item_macro(self, item);
+        }
+    }
+    fn mark(symbols: &mut [Value], macros: &Macros, source: &str) {
+        for symbol in symbols {
+            let line = symbol
+                .pointer("/selectionRange/start/line")
+                .and_then(Value::as_u64);
+            let column = symbol
+                .pointer("/selectionRange/start/character")
+                .and_then(Value::as_u64);
+            if let (Some(name), Some(line), Some(column)) = (symbol["name"].as_str(), line, column)
+            {
+                let matched = macros.0.iter().any(|(candidate, row, character)| {
+                    candidate == name
+                        && *row == line as usize
+                        && source.lines().nth(*row).is_some_and(|text| {
+                            text.chars()
+                                .take(*character)
+                                .map(char::len_utf16)
+                                .sum::<usize>()
+                                == column as usize
+                        })
+                });
+                if matched {
+                    symbol["hades_source_macro"] = Value::Bool(true);
+                }
+            }
+            if let Some(children) = symbol.get_mut("children").and_then(Value::as_array_mut) {
+                mark(children, macros, source);
+            }
+        }
+    }
+    if let Ok(parsed) = syn::parse_file(source) {
+        let mut macros = Macros::default();
+        macros.visit_file(&parsed);
+        mark(symbols, &macros, source);
+    }
 }
 
 /// Extract derive macro names from attributes.
