@@ -67,6 +67,14 @@ async fn start_with(
             reason: "canonical ingestion path must be valid UTF-8".into(),
         });
     }
+    // Reject before reserving, creating records or spawning: a file child cannot
+    // apply the semantic override, so persisting true would be misleading (#185).
+    if allow_degraded_enrichment && !resolved.is_dir() {
+        return Err(HandlerError::InvalidParameter {
+            name: "allow_degraded_enrichment".into(),
+            reason: "applies to a directory ingest; pass the directory instead".into(),
+        });
+    }
     let source_git = crate::source_git::resolve(&resolved).map_err(service)?;
     let reservation = super::reserve(&resolved).map_err(service)?;
     if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await

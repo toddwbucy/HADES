@@ -328,7 +328,7 @@ struct IngestStartArgs {
     #[schemars(description = "Re-ingest files whose content digest is unchanged. Default false.")]
     force: Option<bool>,
     #[schemars(
-        description = "Accept failed semantic requests; enrichment_degraded, an exact failed_request_count, a bounded failed_requests sample and failed_requests_truncated remain in the result. Default false."
+        description = "Accept failed semantic requests for a directory ingest (rejected for a single file); enrichment_degraded, an exact failed_request_count, a bounded failed_requests sample and failed_requests_truncated remain in the result. Default false."
     )]
     allow_degraded_enrichment: Option<bool>,
 }

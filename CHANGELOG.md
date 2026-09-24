@@ -49,6 +49,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Reject the degraded-enrichment override for named-file ingestion before job
+  creation, include explicit clean-enrichment fields in document results, and
+  name the applicable override in semantic-request failures (#185).
+
 - Bound degraded enrichment diagnostic samples by entry count and serialized
   bytes, remove duplicated unified failure lists, and preserve exact totals so
   accepted runs do not overflow job capture solely from failure diagnostics (#185).

@@ -41,6 +41,9 @@ impl Drop for Embedder {
 }
 impl Embedder {
     async fn new() -> Self {
+        Self::for_task("code").await
+    }
+    async fn for_task(expected_task: &'static str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("embedder.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
@@ -67,7 +70,7 @@ impl Embedder {
                     release.notified().await;
                 }
                 if fault.load(Ordering::SeqCst) { return Json(json!({"error":"injected embedding failure"})); }
-                assert_eq!(body["task"], "code", "code ingest/query must agree on the adapter");
+                assert_eq!(body["task"], expected_task, "ingest/query must agree on the adapter");
                 let inputs = body["input"].as_array().unwrap();
                 let mut data = Vec::new();
                 if let Some(bounds) = body["late_chunk"]["boundaries"].as_array() {

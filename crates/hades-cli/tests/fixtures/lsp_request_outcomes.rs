@@ -41,6 +41,7 @@ async fn semantic_request_failures_are_visible_and_preserve_stored_edges() {
                 assert_eq!(stats["failed_request_count"], usize::from(failed), "{report}");
                 assert_eq!(stats["failed_requests_truncated"], false, "{report}");
                 if failed {
+                    if !accept { assert!(String::from_utf8_lossy(&output.stderr).contains("--allow-analysis-downgrade"), "{output:?}"); }
                     assert_eq!(stats["failed_requests"][0]["symbol"], "caller");
                     assert_eq!(stats["failed_requests"][0]["file"], source.file_name().unwrap().to_str().unwrap());
                     let diagnostic = String::from_utf8_lossy(&output.stderr);
@@ -139,6 +140,7 @@ async fn unified_and_remote_degraded_enrichment_is_explicit() {
             let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
             assert_eq!(output.status.success(), accept, "{report}");
             assert_degraded_result(&report, accept);
+            if !accept { assert!(String::from_utf8_lossy(&output.stderr).contains("--allow-degraded-enrichment"), "{output:?}"); }
         }
         let socket = tree.path().join("daemon.sock");
         let token = tree.path().join("token");
@@ -192,6 +194,7 @@ async fn unified_and_remote_degraded_enrichment_is_explicit() {
                 assert_eq!(row["status"], if accept {"completed"} else {"failed"}, "{row}");
                 assert_eq!(row["allow_degraded_enrichment"], accept);
                 assert_degraded_result(&row["result"], accept);
+                if !accept { assert!(row["detail"].as_str().unwrap().contains("allow_degraded_enrichment"), "{row}"); }
                 let stored = hades_core::db::crud::get_document(&pool, "hades_ingest_jobs", job).await.unwrap();
                 assert_eq!(stored["result"], row["result"]);
             }

@@ -99,6 +99,7 @@ pub async fn run_unified(
     collection: Option<&str>,
     task: Option<&str>,
     allow_degraded_enrichment: bool,
+    request_failure_option: &'static str,
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
@@ -131,6 +132,7 @@ pub async fn run_unified(
                 force,
                 false,
                 allow_degraded_enrichment,
+                request_failure_option,
             )
             .await?,
         )
@@ -258,7 +260,7 @@ pub async fn run(
     concurrency: Option<usize>,
     root: Option<PathBuf>,
 ) -> Result<()> {
-    let outcome = run_phase(
+    let mut outcome = run_phase(
         config,
         inputs,
         batch,
@@ -274,6 +276,11 @@ pub async fn run(
         root,
     )
     .await?;
+    // Named files have no semantic analyzer but retain the unified result shape (#185).
+    outcome.data["enrichment_degraded"] = json!(false);
+    outcome.data["failed_request_count"] = json!(0);
+    outcome.data["failed_requests_truncated"] = json!(false);
+    outcome.data["failed_requests"] = json!([]);
     let success = outcome.failure.is_none();
     output::print_output_with_success("ingest", outcome.data, &OutputFormat::Json, success);
     match outcome.failure {

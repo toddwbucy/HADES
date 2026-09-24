@@ -123,7 +123,7 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
-        /// Accept failed semantic requests while reporting exact counts and bounded diagnostics (#179, #185).
+        /// Accept failed semantic requests in a directory ingest, with exact counts and bounded diagnostics (#179, #185).
         #[arg(long)]
         allow_degraded_enrichment: bool,
 
@@ -391,6 +391,11 @@ fn main() -> anyhow::Result<()> {
                     collection.as_deref(),
                     task.as_deref(),
                     allow_degraded_enrichment,
+                    if cli.resolved_config_fd.is_some() {
+                        "allow_degraded_enrichment"
+                    } else {
+                        "--allow-degraded-enrichment"
+                    },
                 ));
                 return match result {
                     Ok(()) => Ok(()),
@@ -406,6 +411,15 @@ fn main() -> anyhow::Result<()> {
                         Err(e)
                     }
                 };
+            }
+
+            // Named files use document ingestion, with no semantic requests to
+            // accept. Refuse the override before it can be silently dropped (#185).
+            if allow_degraded_enrichment {
+                anyhow::bail!(
+                    "--allow-degraded-enrichment applies to a directory ingest; \
+                     named files are ingested as documents. Pass the directory instead."
+                );
             }
 
             // A single code file named directly would take the document path and be

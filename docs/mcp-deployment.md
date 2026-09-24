@@ -275,6 +275,19 @@ that still fail after retry. Daemon `ingest.start` and MCP `ingest_start` expose
 the optional boolean `allow_degraded_enrichment` (default `false`).
 `ingest.start` remains **Provisioning**; `ingest.status` remains **Agent**.
 
+The override applies only to a directory ingest. CLI named-file ingestion
+rejects `--allow-degraded-enrichment`; daemon/MCP `ingest.start` rejects
+`allow_degraded_enrichment: true` for a file before creating a job. Pass the
+directory to use semantic enrichment. Named-file ingestion with the option
+omitted or false keeps its document behavior and reports
+`enrichment_degraded: false`, `failed_request_count: 0`,
+`failed_requests_truncated: false`, and `failed_requests: []`, including in
+persisted job results and status. Semantic-request failure messages name the
+applicable option: `--allow-analysis-downgrade` for `codebase ingest`,
+`--allow-degraded-enrichment` for CLI directory `ingest`, and
+`allow_degraded_enrichment` for daemon/MCP jobs.
+
+
 Without the override these requests make the terminal ingest envelope
 `success: false`. With it, an otherwise successful run reports `success: true`
 and `data.enrichment_degraded: true`. `data.failed_request_count` is exact;
