@@ -28,8 +28,14 @@ use commands::{
 #[derive(Parser)]
 #[command(name = "hades", version, about)]
 struct Cli {
-    /// Output format for every command (#164).
-    #[arg(short = 'f', long, global = true, value_parser = ["json", "jsonl", "table"])]
+    /// Output format for every command (#164). `raw` is accepted only by
+    /// `embed text`, where it prints the bare vector for piping.
+    #[arg(
+        short = 'f',
+        long,
+        global = true,
+        value_parser = ["json", "jsonl", "table", "raw"]
+    )]
     format: Option<String>,
 
     /// Target ArangoDB database name (overrides config/env).
@@ -292,8 +298,32 @@ fn run_codebase_ingest(
     }
 }
 
+impl Cli {
+    /// `raw` has to live in the one global value set, because a command-local
+    /// `--format` would shadow the global flag again (#164). So its scope is
+    /// enforced here, before dispatch, as a usage error rather than a runtime
+    /// one: `embed text` has printed a bare vector under `-f raw` since before
+    /// the flag was global, and scripts pipe it (#186).
+    fn validate_format_scope(&self) -> Result<(), clap::Error> {
+        if self.format.as_deref() == Some("raw")
+            && !matches!(self.command, Commands::Embed(EmbedCmd::Text { .. }))
+        {
+            use clap::CommandFactory;
+            return Err(Cli::command().error(
+                clap::error::ErrorKind::InvalidValue,
+                "format 'raw' is only supported by `hades embed text`; \
+                 use json, jsonl or table",
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Err(error) = cli.validate_format_scope() {
+        error.exit();
+    }
     if let Some(format) = &cli.format {
         commands::output::set_format(format);
     }
@@ -1333,6 +1363,30 @@ mod format_contract_tests {
                 .to_string()
                 .contains("jsonl (default and only supported format)")
         );
+    }
+
+    #[test]
+    fn raw_format_is_scoped_to_embed_text() {
+        let cli = Cli::try_parse_from(["hades", "embed", "text", "hello", "-f", "raw"]).unwrap();
+        assert_eq!(cli.format.as_deref(), Some("raw"));
+        assert!(matches!(
+            cli.command,
+            Commands::Embed(EmbedCmd::Text { .. })
+        ));
+        cli.validate_format_scope().unwrap();
+
+        for args in [
+            &["hades", "status", "-f", "raw"][..],
+            &["hades", "db", "export", "documents", "-f", "raw"][..],
+            &["hades", "-f", "raw", "embed", "service", "status"][..],
+        ] {
+            let error = Cli::try_parse_from(args)
+                .unwrap()
+                .validate_format_scope()
+                .expect_err("raw must be refused outside embed text");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            assert!(error.to_string().contains("hades embed text"), "{error}");
+        }
     }
 
     #[test]

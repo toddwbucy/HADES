@@ -50,7 +50,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Removed
 
 - Remove duplicate command-local format definitions, preserving the global
-  formatting option and export's documented jsonl default (#164, #186).
+  formatting option, export's documented jsonl default, and `embed text -f raw`,
+  which is refused as a usage error on every other command (#164, #186).
 - Remove the unused public incoming-call hierarchy method and its dead fixture
   branch; outgoing-call behavior remains covered (#179, #186).
 
@@ -58,7 +59,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Validate and project db.get on the server with real-database coverage, reject
   malformed orientation attributes as query errors, and recognize BOM/YAML
-  front matter without suppressing headings after thematic breaks (#186).
+  front matter, including quoted keys, without suppressing headings after
+  thematic breaks (#186).
 
 - Project db.get and orientation samples in AQL before transfer (#170), reuse
   one repository Git observation across admission and all ingest phases (#171, #186), and exclude YAML

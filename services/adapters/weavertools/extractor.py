@@ -106,7 +106,11 @@ def _headings(text: str):
                     offset = sum(map(len, lines[:end + 1]))
                     lines = lines[end + 1:]
                 break
-            yaml_key |= bool(re.match(r"^[ \t]*[\w.-]+[ \t]*:", lines[end]))
+            # Quoted keys are YAML keys too; missing them turned the closer
+            # into a Setext underline for `"title": ...` (#186).
+            yaml_key |= bool(re.match(
+                r"""^[ \t]*(?:[\w.-]+|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')[ \t]*:""",
+                lines[end]))
     for line in lines:
         stripped = line.rstrip("\r\n")
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)

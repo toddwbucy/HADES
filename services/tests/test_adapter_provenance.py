@@ -91,6 +91,22 @@ def test_front_matter_bom_space_and_yaml_closer(tmp_path, opening, closer):
         assert node.line == text.splitlines().index(f'node: {node.ident}') + 1
 
 
+@pytest.mark.parametrize('key', ['"title"', "'title'", '"it\\"s"', "'it''s'", '"a: b"'])
+def test_front_matter_with_quoted_key(tmp_path, key):
+    # A quoted key left the block unrecognized, so the closer became a Setext
+    # underline and the key line became every later node's section (#186).
+    path = tmp_path / 'docs' / 'fixture.md'
+    path.parent.mkdir()
+    text = (f'---\n{key}: Metadata\n---\n'
+            '```graph\nnode: before\nkind: term\n```\n'
+            'Heading\n---\n```graph\nnode: after\nkind: term\n```\n')
+    path.write_text(text, encoding='utf-8')
+    nodes = read_documents(tmp_path).nodes
+    assert [(n.ident, n.section) for n in nodes] == [('before', None), ('after', 'Heading')]
+    for node in nodes:
+        assert node.line == text.splitlines().index(f'node: {node.ident}') + 1
+
+
 def test_leading_thematic_break_preserves_setext_heading(tmp_path):
     path = tmp_path / 'docs' / 'fixture.md'
     path.parent.mkdir()
