@@ -7,10 +7,10 @@ deployment on 2026-09-12.
 
 ## What the endpoint is
 
-`hades daemon --mcp-bind` serves a **curated 12-tool agent surface** over
+`hades daemon --mcp-bind` serves a **curated agent surface** over
 streamable HTTP, so a remote agent session consumes HADES without a local
-binary. The CLI has roughly 93 subcommands. The MCP surface exposes twelve,
-and that ratio is the point: every tool definition sits in the client's
+binary. The CLI has roughly 93 subcommands. The MCP surface exposes a small
+fraction of them, and that ratio is the point: every tool definition sits in the client's
 context for the whole session, so the surface has to earn its size.
 
 | tool | what it does |
@@ -26,6 +26,16 @@ Every call is serialized to the daemon frame format and routed through the
 same parse/authorize/dispatch path the Unix socket uses, under
 `ConnectionPolicy::agent_only`. No tool here can reach an Admin-tier command
 even if one were mounted by mistake.
+
+**What an agent can change.** The graph is derived from source, and no tool
+here creates or edits a node or edge. The endpoint's only writes are
+`create_database`, `db_schema_init` and `ingest_start` (provisioning, below)
+and `task_create` / `task_update` on the Persephone kanban. An agent changes
+the graph by changing a file on disk under an ingest root and running
+`ingest_start` over it; re-ingest replaces what that file owns. Which rows each
+owner controls, and what survives a re-ingest, is the
+[Data Ownership](codebase-graph-ontology.md#8-data-ownership) section of the
+ontology. Authored writes over MCP are proposed in #188 and not built.
 
 ## Running it
 
@@ -82,7 +92,9 @@ hades daemon \
   --mcp-ingest-root /opt/weavertools
 ```
 
-Three tools appear: `create_database`, `ingest_start`, `ingest_status`. They are
+Three tools are Provisioning tier: `create_database`, `db_schema_init` and
+`ingest_start` (`DaemonCommand::access_tier`, `crates/hades-core/src/dispatch.rs`).
+`ingest_status` is Agent tier, so any client may poll a job. The three are
 advertised on every endpoint and authorized on none by default, so a client
 without provisioning gets `ACCESS_DENIED` naming what would have been permitted
 rather than concluding the capability does not exist.
@@ -94,6 +106,15 @@ even with the other flag set. It also widens the read allowlist for matching
 names, because a database the endpoint just created is not on `--mcp-dbs` and
 would otherwise be refused the moment the client tried to use it.
 
+**What the prefix does not bound.** It is checked only when a database is
+created (`crates/hades-core/src/service.rs`, the provisioning-limits match).
+`ingest_start` and `db_schema_init` run against any database the endpoint
+serves, including every `--mcp-dbs` entry that does not match the prefix, and
+`db_schema_init` truncates that database's `hades_schema` before seeding it. Do
+not rely on the prefix to protect a database exposed for reading; with
+provisioning on, list in `--mcp-dbs` only databases a client may also ingest
+into and re-seed.
+
 `--mcp-ingest-root` bounds what may be read. Ingest hands the daemon a path on
 its *own* filesystem, so without this a bearer token could have it read
 `~/.ssh`, `/etc`, or the token file itself, embed the contents, and query them
@@ -103,7 +124,7 @@ listed root, and a path that does not exist is refused rather than guessed at.
 
 **What this does not change.** The tier ceiling stays at Agent, so raw AQL,
 `db.purge`, `db.insert` and `db.graph.drop` remain unavailable to the endpoint.
-Provisioning grants two commands, not a promotion.
+Provisioning grants three commands, not a promotion.
 
 **What it assumes.** That ArangoDB is enforcing its own access control. If the
 instance runs with `authentication = false`, the daemon can reach every database

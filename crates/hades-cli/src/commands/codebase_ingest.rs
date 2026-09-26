@@ -241,11 +241,13 @@ pub async fn run_phase(
     // ── Analyzer preflight (#164/#167) ─────────────────────────────────
     // Resolve each needed analyzer (config/env override wins over PATH) and
     // probe it FROM the ingest base, because the rustup shim resolves
-    // per-directory. This runs BEFORE any file is touched: `--force` purges a
-    // file's semantic edges on the assumption enrichment will rebuild them,
-    // so an analyzer that cannot run must stop the ingest up front — after
-    // the purge is too late (#164). `--allow-analysis-downgrade` is the
-    // explicit override, matching its existing fidelity semantics.
+    // per-directory. This runs BEFORE any file is touched, so an analyzer that
+    // cannot run stops the ingest up front rather than after files have been
+    // rewritten without its enrichment (#164). Re-ingest no longer purges a
+    // file's semantic edges (codebase_persist.rs keeps them until a successful
+    // request replaces them), but a replaced file node still loses the
+    // analyzer's markers. `--allow-analysis-downgrade` is the explicit
+    // override, matching its existing fidelity semantics.
     let needs_rust = files
         .iter()
         .any(|f| is_semantic_target(f, lang_override, &unparsed_set, Language::Rust, "rs"));

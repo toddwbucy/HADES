@@ -1,6 +1,6 @@
 //! Post-ingest validation of codebase graph invariants.
 //!
-//! Implements the 17 invariants from the codebase graph ontology spec §10.
+//! Implements the 17 invariants from the codebase graph ontology spec §11.
 //! Each invariant runs an AQL query that returns violations; an empty result
 //! means the invariant holds.
 //!
@@ -25,7 +25,7 @@ use super::output::{self, OutputFormat};
 
 // ── Invariant definitions ──────────────────────────────────────────
 
-/// All 17 invariants from ontology spec §10.
+/// All 17 invariants from ontology spec §11.
 const INVARIANTS: &[Invariant] = &[
     // Document invariants (1–7)
     Invariant {
