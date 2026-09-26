@@ -23,6 +23,7 @@ include!("fixtures/materialize_outcomes.rs");
 include!("fixtures/document_metadata_outcomes.rs");
 include!("fixtures/schema_apply_outcomes.rs");
 include!("fixtures/lsp_request_outcomes.rs");
+include!("fixtures/libclang_edge_ownership_outcomes.rs");
 include!("fixtures/provisioning_scope_outcomes.rs");
 
 struct Embedder {

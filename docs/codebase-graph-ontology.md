@@ -609,13 +609,16 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
   request succeeded, so a failed or degraded enrichment leaves the previous
   semantic edges in place rather than deleting them (#179, #184, #185). A
   structural `calls` edge never overwrites a semantic one.
-- **Exception: stale libclang call edges survive (#194).** C, C++ and CUDA call
-  edges resolved by libclang (`cpp_call_edges`, `codebase_ingest.rs:530`) are
-  semantic, so the file transaction keeps them, and the relationship stage only
-  upserts the edges the new parse produced. A call removed from the source while
-  both symbols remain therefore stays in the graph after a successful re-ingest.
-  `prune_semantic_orphans` removes such an edge only once an endpoint symbol is
-  gone. Until #194 is fixed, treat libclang `calls` edges as possibly stale.
+- **libclang call edges follow the same rule (#194).** C, C++ and CUDA call
+  edges resolved by libclang are written by the relationship stage rather than
+  by enrichment, so that stage replaces them itself: for every file whose
+  libclang analysis succeeded, it removes the file's symbols' earlier libclang
+  `calls` edges in the same transaction that writes the new ones
+  (`SemanticReplacement`, `codebase_persist.rs`). A call removed from the source
+  disappears on the next successful re-ingest. A file libclang could not analyze
+  is not in that set, so its earlier edges stand. libclang
+  writes no `implements` edges, and no other producer writes semantic edges
+  through the relationship stage.
 - **Edges pointing into a re-ingested file from elsewhere are kept.** When a
   symbol's key changes (it moved lines), the old and new keys are paired by
   qualified name and position, and inbound `imports`, `calls` and `implements`
