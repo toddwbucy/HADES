@@ -956,8 +956,8 @@ impl ServerHandler for HadesMcpServer {
              run for minutes, so poll `ingest_status` rather than waiting. Files \
              nothing claims are listed under `unrouted` rather than skipped.\n\n\
              Limits: this endpoint runs at the agent access tier, so raw AQL, \
-             purge, insert and graph drop are unavailable. `create_database` and \
-             `ingest_start` need provisioning, which is off unless the operator \
+             purge, insert and graph drop are unavailable. `create_database`, \
+             `db_schema_init` and `ingest_start` need provisioning, which is off unless the operator \
              enabled it, and then bounded to specific name prefixes and specific \
              directories. A refusal names what would have been permitted, so read \
              the error rather than retrying.\n\n\

@@ -84,7 +84,7 @@ pub enum CodebaseCmd {
     /// Show code ingestion statistics.
     Stats,
 
-    /// Validate codebase graph invariants (ontology spec §10).
+    /// Validate codebase graph invariants (ontology spec §11).
     Validate,
 
     /// Remove orphaned symbols, chunks, embeddings, and dangling edges.

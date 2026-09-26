@@ -22,7 +22,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Document the graph's data-ownership contract: ingest owns code and document
   rows, adapters own their domain rows, admin `db` writes are an unvalidated
   escape hatch, and MCP agents change the graph only by changing source and
-  ingesting. The MCP server instructions now say so (#188).
+  ingesting. The MCP server instructions now say so and list `db_schema_init`
+  as provisioning-gated; stale section references, the MCP tool count and the
+  `--force` semantic-edge comment are corrected (#188).
 
 - Add explicit degraded semantic enrichment acceptance to unified ingest, daemon
   and MCP ingestion, retaining exact failure counts, bounded diagnostic samples,

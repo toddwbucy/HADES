@@ -539,7 +539,7 @@ Documents use `overwrite: true` (ArangoDB `REPLACE` semantics). This means:
 
 ### 7.3 Deletion Cascade
 
-When a file is removed from the codebase and re-ingested, orphaned documents remain. A future `codebase purge` command should:
+When a file is removed from the codebase and re-ingested, orphaned documents remain, because ingest only visits files that exist. `hades codebase retire` now removes the rows of a file whose source is gone, and `hades codebase prune-orphans` sweeps children whose file node is already gone; see §8.1. The cascade they perform is:
 
 1. Identify `codebase_files` documents whose `path` no longer exists on disk
 2. Delete all `codebase_chunks` with matching `file_key`
@@ -614,7 +614,7 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
 - **Deleting a source file does not delete its rows.** Ingest only visits files
   that exist. `hades codebase retire` removes the rows of a file that is gone
   from disk, and `hades codebase prune-orphans` sweeps children whose file node
-  is already gone. Section 7.3 predates both commands.
+  is already gone (§7.3).
 
 Besides ingest, `graph-embed train` and `update` write a `structural_embedding`
 field onto node documents they embed, including `codebase_files` and

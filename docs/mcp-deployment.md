@@ -7,10 +7,10 @@ deployment on 2026-09-12.
 
 ## What the endpoint is
 
-`hades daemon --mcp-bind` serves a **curated 12-tool agent surface** over
+`hades daemon --mcp-bind` serves a **curated agent surface** over
 streamable HTTP, so a remote agent session consumes HADES without a local
-binary. The CLI has roughly 93 subcommands. The MCP surface exposes twelve,
-and that ratio is the point: every tool definition sits in the client's
+binary. The CLI has roughly 93 subcommands. The MCP surface exposes a small
+fraction of them, and that ratio is the point: every tool definition sits in the client's
 context for the whole session, so the surface has to earn its size.
 
 | tool | what it does |
