@@ -52,7 +52,9 @@ hades daemon \
 - `--mcp-bind` accepts loopback or RFC1918 only, and startup fails closed
   when the token file is missing or empty.
 - `--mcp-dbs` scopes what the endpoint serves. Anything not listed is
-  refused. Writes stay ACL-gated on the ArangoDB user regardless.
+  refused, except that with provisioning on, every existing database whose
+  name matches `--mcp-db-prefix` is served as well (below). Writes stay
+  ACL-gated on the ArangoDB user regardless.
 - The endpoint is **plain HTTP, not TLS**, whatever port it runs on. The
   bearer token crosses the network in the clear, which is acceptable on a
   trusted LAN and is the reason to prefer an SSH tunnel otherwise:
@@ -105,9 +107,12 @@ rather than concluding the capability does not exist.
 `--mcp-db-prefix` bounds every database a provisioning command may write:
 the one `create_database` creates, and the one `db_schema_init` seeds or
 `ingest_start` writes into. Without it, no database may be written, even with
-the other flag set. It also widens the read allowlist for matching
-names, because a database the endpoint just created is not on `--mcp-dbs` and
-would otherwise be refused the moment the client tried to use it.
+the other flag set. It also widens the allowlist: every existing database whose
+name matches is served, whether or not this endpoint created it, to every tool
+including the reads and the Agent-tier task writes. That is so a database the
+endpoint just created, which is not on `--mcp-dbs`, is not refused the moment
+the client tries to use it; the cost is that any other matching database on the
+server is reachable too, so choose a prefix nothing else uses.
 
 **Databases exposed for reading cannot be provisioned.** The prefix is enforced in the
 service layer (`crates/hades-core/src/service.rs`, the provisioning-limits

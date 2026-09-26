@@ -177,8 +177,9 @@ type DbEntry = (Arc<HadesConfig>, Arc<ArangoPool>);
 /// take an optional `db` so one endpoint can serve both the knowledge
 /// graph and the task board. The allowlist defaults to the configured
 /// database alone — parity with the Unix socket — and widens only via
-/// `--mcp-dbs`. Without it, an authenticated LAN agent could read every
-/// database the `hades` ArangoDB user can reach, including production
+/// `--mcp-dbs` and, when provisioning is on, to every database whose name
+/// matches a provisioning prefix. Without the allowlist, an authenticated LAN
+/// agent could read every database the `hades` ArangoDB user can reach, including production
 /// research databases that are ro-readable by design. ArangoDB ACLs
 /// remain the write gate; the allowlist scopes remote *reads*.
 struct PoolCache {
