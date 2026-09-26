@@ -392,6 +392,12 @@ pub enum DbSchemaCmd {
         /// `hades_schema` collection with metadata only and no edge definitions.
         #[arg(short = 's', long)]
         seed: String,
+
+        /// Replace a `hades_schema` that already holds documents, discarding
+        /// its edge definitions and graph registrations. Without this a
+        /// populated schema is refused (#193).
+        #[arg(long)]
+        force: bool,
     },
 
     /// List all edge definitions and named graphs in the schema.

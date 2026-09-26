@@ -132,6 +132,10 @@ pub enum HandlerError {
     /// An external service call failed.
     #[error("service error: {0}")]
     ServiceError(String),
+
+    /// The operation would destroy existing state it was not told to replace.
+    #[error("{0}")]
+    Conflict(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +424,15 @@ pub struct DbSchemaInitParams {
     /// Seed name. Only "empty" is currently accepted — initializes the
     /// `hades_schema` collection with metadata only and no edge definitions.
     pub seed: String,
+    /// Replace a `hades_schema` that already holds documents. Without it a
+    /// populated schema is refused, because seeding truncates the collection
+    /// and with it every edge definition and graph registration (#193).
+    ///
+    /// Only the admin CLI sets this: `service::handle_request` refuses it on
+    /// every daemon transport, so neither the Unix socket nor MCP can wipe a
+    /// schema.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Params for `db.create_database`.
@@ -1288,9 +1301,11 @@ pub async fn dispatch(
         .map_err(DispatchError::Handler),
 
         // ── Schema management ───────────────────────────────────────
-        DaemonCommand::DbSchemaInit(params) => handlers::schema_init(pool, &params.seed)
-            .await
-            .map_err(DispatchError::Handler),
+        DaemonCommand::DbSchemaInit(params) => {
+            handlers::schema_init(pool, &params.seed, params.force)
+                .await
+                .map_err(DispatchError::Handler)
+        }
         DaemonCommand::DbSchemaList {} => handlers::schema_list(pool)
             .await
             .map_err(DispatchError::Handler),
@@ -6456,7 +6471,16 @@ mod handlers {
     // ── Schema management handlers ──────────────────────────────────────
 
     /// Initialize the `hades_schema` collection with a seed.
-    pub async fn schema_init(pool: &ArangoPool, seed: &str) -> Result<Value, HandlerError> {
+    ///
+    /// Seeding a populated schema would replace its edge definitions and graph
+    /// registrations with the seed's, and production data has no backup, so a
+    /// schema that already holds documents is refused unless `force` is set
+    /// (#193). A missing or empty collection is seeded as before.
+    pub async fn schema_init(
+        pool: &ArangoPool,
+        seed: &str,
+        force: bool,
+    ) -> Result<Value, HandlerError> {
         use crate::db::crud;
         use crate::graph::runtime_schema;
 
@@ -6489,15 +6513,35 @@ mod handlers {
                 })?;
         }
 
-        // Truncate existing schema so init is a clean reset.
-        let truncate_path = "collection/hades_schema/truncate";
-        pool.writer()
-            .put(truncate_path, &json!({}))
+        let existing = crud::count_collection(pool, "hades_schema")
             .await
             .map_err(|e| HandlerError::Query {
-                context: "truncate hades_schema before seed".into(),
+                context: "count hades_schema before seed".into(),
                 source: e,
             })?;
+        if existing > 0 && !force {
+            return Err(HandlerError::Conflict(format!(
+                "hades_schema in database '{}' already holds {existing} documents; \
+                 seeding would replace its edge definitions and graph registrations. \
+                 Refused on every daemon transport. An operator can replace it with \
+                 `hades db schema init --seed {seed} --force`",
+                pool.database()
+            )));
+        }
+
+        // Truncate only on an explicit replace. The unforced path never
+        // truncates, so a writer racing the count above cannot turn it into a
+        // wipe of the collection.
+        if force && existing > 0 {
+            let truncate_path = "collection/hades_schema/truncate";
+            pool.writer()
+                .put(truncate_path, &json!({}))
+                .await
+                .map_err(|e| HandlerError::Query {
+                    context: "truncate hades_schema before seed".into(),
+                    source: e,
+                })?;
+        }
 
         // Insert seed documents.
         let result = crud::upsert_documents(pool, "hades_schema", &docs)
@@ -6524,6 +6568,7 @@ mod handlers {
             "command": "db.schema.init",
             "seed": seed,
             "documents_written": result.created + result.updated,
+            "documents_replaced": if force { existing } else { 0 },
             "errors": result.errors,
         }))
     }

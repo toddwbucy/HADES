@@ -189,6 +189,7 @@ ingestion-only; it places no credentials in command arguments or temporary files
 | `QUERY_FAILED`      | ArangoDB query execution error or missing embedding  |
 | `SERVICE_ERROR`     | External service error (embedder, etc.)              |
 | `READ_ONLY`         | Write attempted on read-only database                |
+| `CONFLICT`          | The request would destroy state it was not told to replace, e.g. `db.schema.init` on a populated `hades_schema` (#193) |
 | `INTERNAL`          | Unexpected server-side error or request timeout      |
 
 ---

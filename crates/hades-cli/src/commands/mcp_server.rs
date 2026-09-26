@@ -630,7 +630,7 @@ impl HadesMcpServer {
     }
 
     #[tool(
-        description = "Seed a database's hades_schema collection, which runtime operations read. The step create_database points at: a fresh database has no schema, and graph loading fails without one. Requires provisioning."
+        description = "Seed a database's hades_schema collection, which runtime operations read. The step create_database points at: a fresh database has no schema, and graph loading fails without one. Requires provisioning, and only for a database whose name matches a provisioning prefix. A database whose hades_schema already holds documents is refused rather than overwritten."
     )]
     async fn db_schema_init(
         &self,
@@ -638,7 +638,10 @@ impl HadesMcpServer {
     ) -> Result<CallToolResult, McpError> {
         self.run(
             a.db,
-            DaemonCommand::DbSchemaInit(DbSchemaInitParams { seed: a.seed }),
+            DaemonCommand::DbSchemaInit(DbSchemaInitParams {
+                seed: a.seed,
+                force: false,
+            }),
         )
         .await
     }
@@ -661,7 +664,7 @@ impl HadesMcpServer {
     }
 
     #[tool(
-        description = "Start ingesting a tree into a database and return a job id after recording child startup. One command handles both halves: file extension decides whether each file goes to the code analyzers (symbols, edges, AST chunks) or to document extraction, and both land in the same graph. Ingests run for minutes, so poll ingest_status with the returned job_id rather than waiting on this call."
+        description = "Start ingesting a tree into a database and return a job id after recording child startup. One command handles both halves: file extension decides whether each file goes to the code analyzers (symbols, edges, AST chunks) or to document extraction, and both land in the same graph. Ingests run for minutes, so poll ingest_status with the returned job_id rather than waiting on this call. Requires provisioning, and writes only into a database whose name matches a provisioning prefix."
     )]
     async fn ingest_start(
         &self,

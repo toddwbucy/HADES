@@ -1066,10 +1066,13 @@ fn main() -> anyhow::Result<()> {
             ))
         }
         // ── Native DB schema commands ────────────────────────────────
-        Commands::Db(commands::db::DbCmd::Schema(commands::db::DbSchemaCmd::Init { seed })) => {
+        Commands::Db(commands::db::DbCmd::Schema(commands::db::DbSchemaCmd::Init {
+            seed,
+            force,
+        })) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(commands::db_schema::run_init(&config, &seed))
+            rt.block_on(commands::db_schema::run_init(&config, &seed, force))
         }
         Commands::Db(commands::db::DbCmd::Schema(commands::db::DbSchemaCmd::List {})) => {
             init_tracing();

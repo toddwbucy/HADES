@@ -157,6 +157,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Security
 
+- Restrict provisioning writes to provisionable databases: `ingest.start` and
+  `db.schema.init` now refuse any database whose name matches no provisioning
+  prefix, named or defaulted, on every transport. Previously the prefix gated
+  only `db.create_database`, so one MCP `db_schema_init` with no `db` could wipe
+  the endpoint's default production schema. `db.schema.init` also refuses a
+  populated `hades_schema` (new error code `CONFLICT`) instead of truncating it;
+  only `hades db schema init --force` replaces one (#193).
+
 - Reject WeaverTools adapter HTTP redirects before forwarding credentials or
   graph writes beyond the configured database endpoint (#66).
 

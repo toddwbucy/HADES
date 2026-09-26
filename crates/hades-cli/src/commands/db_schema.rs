@@ -23,12 +23,13 @@ async fn dispatch_and_print(
     Ok(())
 }
 
-/// `hades db schema init --seed SEED`
-pub async fn run_init(config: &HadesConfig, seed: &str) -> Result<()> {
+/// `hades db schema init --seed SEED [--force]`
+pub async fn run_init(config: &HadesConfig, seed: &str, force: bool) -> Result<()> {
     dispatch_and_print(
         config,
         DaemonCommand::DbSchemaInit(dispatch::DbSchemaInitParams {
             seed: seed.to_string(),
+            force,
         }),
         "db.schema.init",
     )
