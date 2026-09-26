@@ -963,9 +963,10 @@ impl ServerHandler for HadesMcpServer {
              and `db_schema_init` act on any database this endpoint serves, and \
              `db_schema_init` replaces that database's existing schema. A refusal names what would have been permitted, so read \
              the error rather than retrying.\n\n\
-             Changing the graph: the graph is derived from source. Tools read and \
-             ingest, and none edit nodes or edges; change a file on disk and \
-             ingest it.",
+             Changing the graph: the graph is derived from source. No tool edits a \
+             node or edge directly. `ingest_start` rewrites the rows and edges the \
+             ingested files own, replacing what an earlier ingest derived from \
+             them, so change a file on disk and ingest it.",
             )
     }
 }

@@ -687,8 +687,8 @@ up authored rows.
 
 ### 8.4 Agents over MCP change source, not the graph
 
-The MCP endpoint runs at the agent tier and has no tool that creates or edits a
-knowledge-graph node or edge. Its only writes are:
+The MCP endpoint runs at the agent tier and has no tool for a direct or authored
+edit of a knowledge-graph node or edge. Its writes are:
 
 - `create_database`, `db_schema_init` and `ingest_start`, which need
   provisioning to be enabled. The operator's database-name prefixes bound only
@@ -700,7 +700,9 @@ knowledge-graph node or edge. Its only writes are:
   `persephone_tasks`, not graph data.
 
 An agent changes the graph by changing a file on disk under an ingest root and
-running `ingest_start` over it. Authored writes over MCP are proposed in #188.
+running `ingest_start` over it. That is itself a destructive write for the
+source it names: re-ingest deletes and rewrites the rows and edges those files
+own (§8.1). Authored writes over MCP are proposed in #188.
 
 ---
 

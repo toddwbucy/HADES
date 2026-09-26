@@ -28,11 +28,12 @@ same parse/authorize/dispatch path the Unix socket uses, under
 even if one were mounted by mistake.
 
 **What an agent can change.** The graph is derived from source, and no tool
-here creates or edits a node or edge. The endpoint's only writes are
+here edits a node or edge directly. The endpoint's only writes are
 `create_database`, `db_schema_init` and `ingest_start` (provisioning, below)
 and `task_create` / `task_update` on the Persephone kanban. An agent changes
 the graph by changing a file on disk under an ingest root and running
-`ingest_start` over it; re-ingest replaces what that file owns. Which rows each
+`ingest_start` over it. That is a destructive write for the source it names:
+re-ingest deletes and rewrites the rows and edges those files own. Which rows each
 owner controls, and what survives a re-ingest, is the
 [Data Ownership](codebase-graph-ontology.md#8-data-ownership) section of the
 ontology. Authored writes over MCP are proposed in #188 and not built.
