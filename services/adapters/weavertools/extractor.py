@@ -102,8 +102,11 @@ def _headings(text: str):
     # one valid YAML style per review round (quoted keys, flow mappings), and
     # each miss turned the closer into a Setext underline for every later node.
     # A leading `---` opens front matter when a `---` or `...` closer arrives
-    # before any blank line or heading; a thematic break followed by a
-    # paragraph meets a blank line or a heading first, so it stays prose.
+    # before any blank line; a thematic break followed by a paragraph meets a
+    # blank line first, so it stays prose. A `#` line does not end the block:
+    # it is a YAML comment, which front matter commonly carries. The case given
+    # up is a thematic break, an ATX heading and a second `---` with no blank
+    # line between them, which reads as front matter; that is rare.
     if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
         for end in range(1, len(lines)):
             body = lines[end].rstrip()
@@ -111,7 +114,7 @@ def _headings(text: str):
                 offset = sum(map(len, lines[:end + 1]))
                 lines = lines[end + 1:]
                 break
-            if not body or re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", body):
+            if not body:
                 break
     for line in lines:
         stripped = line.rstrip("\r\n")

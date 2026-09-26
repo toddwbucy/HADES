@@ -119,6 +119,7 @@ def test_leading_thematic_break_preserves_setext_heading(tmp_path):
     'title: Metadata\ntags:\n  - a\n  - b',   # block mapping with a sequence
     '"title": Metadata',                     # quoted key
     '{title: Metadata, tags: [a, b]}',       # flow mapping (#189)
+    '# a yaml comment\ntitle: Metadata',      # comments are YAML, not headings
     '- just\n- a list',                      # top-level sequence
     'plain scalar',                          # any YAML node shape
 ])
@@ -140,7 +141,7 @@ def test_front_matter_is_recognized_by_shape_not_key_syntax(tmp_path, block, clo
 
 @pytest.mark.parametrize('opening', [
     '---\nSome prose after a rule.\n\nHeading\n---\n',   # blank line before any closer
-    '---\n# Heading\n---\n',                            # a heading before any closer
+    '---\n\n# Heading\n',                                # a rule, a blank line, a heading
 ])
 def test_leading_thematic_break_then_prose_keeps_its_headings(tmp_path, opening):
     path = tmp_path / 'docs' / 'fixture.md'

@@ -77,10 +77,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   analyzed. A file libclang could not analyze keeps its earlier edges (#194).
 
 - Recognize WeaverTools front matter by its shape rather than its key syntax: a
-  leading `---` block closed by `---` or `...` before any blank line or heading
-  is front matter whatever YAML style it uses (flow mappings, sequences and
-  scalars included), and a leading thematic break followed by prose keeps its
-  headings (#189).
+  leading `---` block closed by `---` or `...` before any blank line is front
+  matter whatever YAML style it uses (flow mappings, sequences, scalars and
+  `#` comments included), and a leading thematic break followed by prose keeps
+  its headings (#189).
 
 - Describe the enforced provisioning boundary: the MCP instructions, CLI help,
   `mcp-deployment.md`, ontology section 8.4 and `daemon-protocol.md` said
