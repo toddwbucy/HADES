@@ -66,6 +66,25 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- `hades codebase drift` no longer reports raw-text rows as stale when the
+  ingest's `--unparsed-ext` is omitted: it reads the extensions of rows stored as
+  raw text from the graph and discovers them itself, and an explicit
+  `--unparsed-ext` adds to that set (#164).
+
+- Retire stale libclang call edges: a C, C++ or CUDA call removed from the
+  source now disappears on the next successful re-ingest, because the
+  relationship stage replaces the libclang `calls` edges of every file libclang
+  analyzed, for targets within the run. A file libclang could not analyze keeps
+  its earlier edges, and so does a call into a file outside a partial run
+  (#194).
+
+- Recognize WeaverTools front matter by its shape rather than its key syntax: a
+  leading `---` block is front matter when a `---` or `...` closer follows within
+  200 lines and every non-blank line between could be YAML (a comment, a key, a
+  list item, a flow collection or an indented continuation), so blank lines,
+  comments and flow styles are recognized, and a leading thematic break followed
+  by prose keeps its headings (#189).
+
 - Describe the enforced provisioning boundary: the MCP instructions, CLI help,
   `mcp-deployment.md`, ontology section 8.4 and `daemon-protocol.md` said
   `ingest_start` and `db_schema_init` could write any served database and that

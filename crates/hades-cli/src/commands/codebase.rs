@@ -144,7 +144,7 @@ pub enum CodebaseCmd {
     /// than a second graph: `codebase ingest` on a single file bases its keys at
     /// that file's parent.
     ///
-    /// Pass the same discovery flags used at ingest time, and the same root —
+    /// Pass the same `--language` used at ingest time, and the same root —
     /// keys are relative to the ingest root, so a wrong root reports near-total
     /// drift in both directions rather than a small honest number.
     Drift {
@@ -155,8 +155,9 @@ pub enum CodebaseCmd {
         #[arg(short = 'l', long)]
         language: Option<String>,
 
-        /// Extensions ingested without a parser (must match the ingest
-        /// invocation), e.g. `wgsl,vert`.
+        /// Extra extensions to discover as raw text, e.g. `wgsl,vert`. Not
+        /// needed to match the ingest: drift already adds the extensions of
+        /// rows the graph stored as raw text (#164).
         #[arg(long = "unparsed-ext", value_delimiter = ',')]
         unparsed_ext: Vec<String>,
 

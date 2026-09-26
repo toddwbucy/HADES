@@ -36,8 +36,15 @@
 //!
 //! Discovery uses the same `discover_files` walk and the same key derivation as
 //! ingest, so a file counts as "present" exactly when ingest would have picked
-//! it up. Pass the same `--language` / `--unparsed-ext` flags used at ingest
-//! time, or the comparison measures flag differences rather than drift.
+//! it up. Pass the same `--language` flag used at ingest time, or the comparison
+//! measures flag differences rather than drift.
+//!
+//! `--unparsed-ext` need not be repeated. The graph already records which rows
+//! ingest stored as raw text (`analyzer: raw-text`, `analysis_tier: text`), so
+//! drift adds those rows' extensions to the discovery set itself; an explicit
+//! `--unparsed-ext` adds to that set. Requiring the flag made every raw-text
+//! file under an omitted extension read as stale, which is a retirement
+//! candidate for a file that is still on disk (#164).
 //!
 //! **The root matters.** File keys are relative to the ingest root, so pointing
 //! this at the wrong directory reports ~100% drift in both directions rather
@@ -89,13 +96,17 @@ pub async fn run_drift(
     // normalize exactly what ingest does — a divergence here reports live files
     // as stale, and those feed `codebase retire`.
     let lang_override = parse_language_arg(language)?;
-    let unparsed_set = normalize_unparsed_ext(unparsed_ext);
+    let mut unparsed_set = normalize_unparsed_ext(unparsed_ext);
+
+    let base = ingest_base_path(&path);
+    base.to_str().context("ingest root must be valid UTF-8")?;
+    // Extensions this root was ingested with as raw text, read from the graph,
+    // so drift discovers them without the ingest's --unparsed-ext (#164).
+    unparsed_set.extend(recorded_unparsed_extensions(&pool, &base).await?);
 
     // Disk side: exactly what ingest would discover, keyed exactly as ingest keys it.
     // The same walk also reports what ingest would NOT pick up, so files with no
     // handler are counted rather than falling outside the comparison entirely.
-    let base = ingest_base_path(&path);
-    base.to_str().context("ingest root must be valid UTF-8")?;
     let discovery = discover_files_detailed(&path, lang_override, &unparsed_set)
         .context("failed to discover source files")?;
     let files = discovery.files;
@@ -292,6 +303,49 @@ pub async fn run_drift(
     Ok(())
 }
 
+/// Lowercased extensions of this root's file nodes that ingest stored as raw
+/// text, i.e. files it took only because `--unparsed-ext` named them.
+///
+/// Scoped like [`graph_file_side`], so another root's allowlist cannot widen
+/// this one's discovery. Extensionless raw-text rows contribute nothing: they
+/// were admitted by a shebang or a language override, not by extension.
+async fn recorded_unparsed_extensions(
+    pool: &ArangoPool,
+    base: &std::path::Path,
+) -> Result<std::collections::HashSet<String>> {
+    let aql = format!(
+        "FOR f IN @@files \
+           FILTER f.{field} == null OR f.{field} == @root \
+           FILTER f.analyzer == 'raw-text' OR f.analysis_tier == 'text' \
+           RETURN DISTINCT f.path",
+        field = INGEST_ROOT_FIELD
+    );
+    let bind = json!({ "@files": CODEBASE.files, "root": base.display().to_string() });
+    match query::query(
+        pool,
+        &aql,
+        Some(&bind),
+        None,
+        false,
+        ExecutionTarget::Reader,
+    )
+    .await
+    {
+        Ok(rows) => Ok(extensions_of(
+            rows.results.iter().filter_map(|row| row.as_str()),
+        )),
+        Err(e) if is_missing_collection(&e) => Ok(Default::default()),
+        Err(e) => Err(e).context("failed to read recorded raw-text extensions"),
+    }
+}
+
+fn extensions_of<'a>(paths: impl Iterator<Item = &'a str>) -> std::collections::HashSet<String> {
+    paths
+        .filter_map(|path| std::path::Path::new(path).extension()?.to_str())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 /// The `codebase_files` nodes that belong to this ingest root.
 ///
 /// The recorded root keeps other trees out of the retirement candidates.
@@ -457,6 +511,17 @@ fn is_missing_collection(e: &ArangoError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_extensions_are_lowercased_and_skip_extensionless_paths() {
+        let found =
+            extensions_of(["Cargo.TOML", "conf/app.ini", "bin/run", "shaders/a.wgsl"].into_iter());
+        let expected: std::collections::HashSet<String> = ["toml", "ini", "wgsl"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(found, expected);
+    }
 
     fn row(key: &str, attributed: bool) -> (String, Option<String>, bool) {
         (key.to_string(), Some("digest".to_string()), attributed)

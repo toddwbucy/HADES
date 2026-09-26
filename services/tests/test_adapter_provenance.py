@@ -77,7 +77,7 @@ def test_yaml_front_matter_does_not_assign_a_section(tmp_path):
         assert node.line == text.splitlines().index(f'node: {node.ident}') + 1
 
 
-@pytest.mark.parametrize(('opening', 'closer'), [('--- ', '--- '), ('\ufeff---', '---'), ('---', '... ')])
+@pytest.mark.parametrize(('opening', 'closer'), [('--- ', '--- '), ('\ufeff---', '---'), ('---', '... '), ('\ufeff---', '...')])
 def test_front_matter_bom_space_and_yaml_closer(tmp_path, opening, closer):
     path = tmp_path / 'docs' / 'fixture.md'
     path.parent.mkdir()
@@ -113,3 +113,59 @@ def test_leading_thematic_break_preserves_setext_heading(tmp_path):
     path.write_text('---\n\nReal heading\n---\n\n```graph\nnode: here\nkind: term\n```\n')
     node, = read_documents(tmp_path).nodes
     assert node.section == 'Real heading'
+
+
+@pytest.mark.parametrize('block', [
+    'title: Metadata\ntags:\n  - a\n  - b',   # block mapping with a sequence
+    '"title": Metadata',                     # quoted key
+    '{title: Metadata, tags: [a, b]}',       # flow mapping (#189)
+    '[a, b]',                                # flow sequence
+    '# a yaml comment\ntitle: Metadata',      # comments are YAML, not headings
+    '- just\n- a list',                      # top-level sequence
+    'title: Metadata\n\ntags: [a]',           # blank line inside (#197)
+    'summary: |\n  first line\n\n  second line\nauthor: x',  # indented multi-line value
+    '? complex key\n: value',                 # explicit key
+])
+@pytest.mark.parametrize('closer', ['---', '...'])
+def test_front_matter_is_recognized_by_shape_not_key_syntax(tmp_path, block, closer):
+    # Any YAML style closes the block, so its closer is never a Setext
+    # underline and no later node inherits a bogus section (#189).
+    path = tmp_path / 'docs' / 'fixture.md'
+    path.parent.mkdir()
+    text = (f'---\n{block}\n{closer}\n'
+            '```graph\nnode: before\nkind: term\n```\n'
+            '# First\n```graph\nnode: after\nkind: term\n```\n')
+    path.write_text(text, encoding='utf-8')
+    nodes = read_documents(tmp_path).nodes
+    assert [(n.ident, n.section) for n in nodes] == [('before', None), ('after', 'First')]
+    for node in nodes:
+        assert node.line == text.splitlines().index(f'node: {node.ident}') + 1
+
+
+@pytest.mark.parametrize('opening', [
+    '---\nSome prose after a rule.\n\nHeading\n---\n',   # a prose line before the closer
+    '---\n\nProse, then.\n\nHeading\n---\n',             # blank line, then prose
+    '---\n\n# Heading\n',                                # no closer at all
+])
+def test_leading_thematic_break_then_prose_keeps_its_headings(tmp_path, opening):
+    path = tmp_path / 'docs' / 'fixture.md'
+    path.parent.mkdir()
+    text = opening + '```graph\nnode: here\nkind: term\n```\n'
+    path.write_text(text, encoding='utf-8')
+    node, = read_documents(tmp_path).nodes
+    assert node.section == 'Heading'
+    assert node.line == text.splitlines().index('node: here') + 1
+
+
+def test_thematic_break_then_colon_prose_is_the_accepted_loss(tmp_path):
+    # A prose line with a colon is YAML-shaped, so a rule followed only by such
+    # lines and a later `---` reads as front matter. Named in the extractor as
+    # the case the classifier gives up (#189, #197).
+    path = tmp_path / 'docs' / 'fixture.md'
+    path.parent.mkdir()
+    text = ('---\nNote: this rule opens the document.\n---\n'
+            '```graph\nnode: here\nkind: term\n```\n')
+    path.write_text(text, encoding='utf-8')
+    node, = read_documents(tmp_path).nodes
+    assert node.section is None
+    assert node.line == text.splitlines().index('node: here') + 1

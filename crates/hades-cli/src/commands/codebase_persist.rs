@@ -93,15 +93,40 @@ impl Replacement {
     }
 }
 
+/// A semantic producer whose relationship-stage answer for these files is
+/// complete, so it replaces that producer's earlier answer (#194).
+///
+/// `Replacement::store` keeps semantic edges through the file purge, because a
+/// failed analysis must not erase them (#179, #184). A producer that writes
+/// through this stage, rather than the enrichment store, therefore has to
+/// retire its own stale edges here: without it an upsert only ever adds, and a
+/// call removed from the source survived every later successful re-ingest.
+pub(super) struct SemanticReplacement {
+    pub collection: &'static str,
+    /// The `analyzer` recorded on the producer's edges.
+    pub analyzer: &'static str,
+    /// Files whose analysis by this producer succeeded this run.
+    pub file_keys: Vec<String>,
+    /// Files whose symbols the producer could resolve targets against this
+    /// run. Only edges into these are replaced: an edge to a target outside the
+    /// run (a single-file ingest calling into an earlier-ingested file) cannot
+    /// be re-derived, so it is kept rather than silently dropped.
+    pub target_file_keys: Vec<String>,
+}
+
 /// Commit the complete relationship stage only if every contributing file still
 /// has the exact revision returned by its acknowledged replacement transaction.
 /// Earlier file commits remain durable if this separate stage fails.
 pub(super) async fn store_relationships(
     pool: &ArangoPool,
     revisions: std::collections::HashMap<String, String>,
+    replacements: Vec<SemanticReplacement>,
     batches: Vec<(&'static str, Vec<Value>)>,
 ) -> Result<(), ArangoError> {
-    if revisions.is_empty() && batches.iter().all(|(_, docs)| docs.is_empty()) {
+    if revisions.is_empty()
+        && replacements.iter().all(|r| r.file_keys.is_empty())
+        && batches.iter().all(|(_, docs)| docs.is_empty())
+    {
         return Ok(());
     }
     let collections = CODEBASE
@@ -116,6 +141,20 @@ pub(super) async fn store_relationships(
                     "file changed during relationship preparation; retry ingestion".into(),
                 ));
             }
+        }
+        // Inside the same transaction as the new edges, so a failed stage
+        // leaves the previous answer in place rather than none.
+        for replacement in &replacements {
+            if replacement.file_keys.is_empty() {
+                continue;
+            }
+            query(&client,
+                "FOR s IN @@symbols FILTER s.file_key IN @keys FOR e IN @@edges FILTER e._from == s._id FILTER e.analyzer == @analyzer FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' LET target = DOCUMENT(e._to) FILTER target != null AND target.file_key IN @scope REMOVE e IN @@edges",
+                json!({"@symbols":CODEBASE.symbols,"@edges":replacement.collection,
+                    "keys":replacement.file_keys,"scope":replacement.target_file_keys,
+                    "analyzer":replacement.analyzer}), false).await
+                .map_err(|error| ArangoError::Request(format!(
+                    "failed to replace {} {} relationships: {error}", replacement.analyzer, replacement.collection)))?;
         }
         for (collection, docs) in batches {
             if ![CODEBASE.calls_edges, CODEBASE.imports_edges].contains(&collection) {
@@ -462,6 +501,7 @@ mod tests {
             let result = store_relationships(
                 &pool,
                 Default::default(),
+                Vec::new(),
                 vec![(
                     CODEBASE.imports_edges,
                     vec![json!({"_key":"edge",
@@ -631,7 +671,7 @@ mod tests {
             let edge = json!({"_key":"relationship", "_from":"codebase_files/file", "_to":"codebase_files/target"});
             let (replaced, related) = tokio::join!(
                 replacement.store(&pool),
-                store_relationships(&pool, revisions, vec![(CODEBASE.calls_edges, vec![edge])])
+                store_relationships(&pool, revisions, Vec::new(), vec![(CODEBASE.calls_edges, vec![edge])])
             );
             assert_ne!(replaced.is_ok(), related.is_ok(), "a shared preparation revision admits only one stage");
             let file = pool.reader().get("document/codebase_files/file").await.unwrap();
@@ -654,6 +694,51 @@ mod tests {
         }).await;
     }
 
+    /// A producer's replacement covers only targets it could resolve this run
+    /// (#194). A target file outside that scope, because it was not in the run
+    /// or because its own analysis failed and it was not preserved, keeps the
+    /// caller's edge into it; a target inside the scope has it replaced.
+    #[tokio::test]
+    async fn semantic_replacement_spares_edges_into_files_outside_its_scope() {
+        with_temp_db("replacement_scope", Fixtures::Codebase, |pool| async move {
+            for (key, file) in [("a_sym", "file_a"), ("b_sym", "file_b")] {
+                pool.writer().post("document/codebase_files", &json!({"_key":file})).await.unwrap();
+                pool.writer().post("document/codebase_symbols", &json!({"_key":key,"file_key":file})).await.unwrap();
+            }
+            let edge = json!({"_key":"a_calls_b","_from":"codebase_symbols/a_sym","_to":"codebase_symbols/b_sym",
+                "analyzer":"libclang","resolution":"semantic","analysis_tier":"semantic"});
+            pool.writer().post("document/codebase_calls_edges", &edge).await.unwrap();
+            let replace = |scope: &[&str]| vec![SemanticReplacement {
+                collection: CODEBASE.calls_edges,
+                analyzer: "libclang",
+                file_keys: vec!["file_a".to_owned()],
+                target_file_keys: scope.iter().map(|k| (*k).to_owned()).collect(),
+            }];
+            let present = |pool: ArangoPool| async move {
+                match pool.reader().get("document/codebase_calls_edges/a_calls_b").await {
+                    Ok(_) => true,
+                    Err(e) if e.is_not_found() => false,
+                    Err(e) => panic!("{e}"),
+                }
+            };
+
+            // file_b is outside the scope: a's analysis said nothing about it.
+            store_relationships(&pool, Default::default(), replace(&["file_a"]), Vec::new()).await.unwrap();
+            assert!(present(pool.clone()).await, "an edge into an out-of-scope file was dropped");
+
+            // Another producer's edge is never touched by libclang's replacement.
+            let mut other = edge.clone();
+            other["analyzer"] = json!("rust-analyzer");
+            other["_key"] = json!("a_calls_b_ra");
+            pool.writer().post("document/codebase_calls_edges", &other).await.unwrap();
+
+            // file_b in scope and a reported no call into it: replaced.
+            store_relationships(&pool, Default::default(), replace(&["file_a", "file_b"]), Vec::new()).await.unwrap();
+            assert!(!present(pool.clone()).await, "an in-scope stale edge survived");
+            pool.reader().get("document/codebase_calls_edges/a_calls_b_ra").await.unwrap();
+        }).await;
+    }
+
     #[tokio::test]
     async fn relationship_stage_rolls_back_retries_and_rejects_stale_inputs() {
         with_temp_db("relationship_atomic", Fixtures::Codebase, |pool| async move {
@@ -665,21 +750,21 @@ mod tests {
             pool.writer().put("collection/codebase_calls_edges/properties", &json!({
                 "schema":{"level":"strict","rule":{"type":"object","required":["fault_marker"]}}
             })).await.unwrap();
-            let error = store_relationships(&pool, revisions.clone(), batches.clone()).await.unwrap_err();
+            let error = store_relationships(&pool, revisions.clone(), Vec::new(), batches.clone()).await.unwrap_err();
             assert!(error.to_string().contains("failed to store codebase_calls_edges"), "{error}");
             for collection in [CODEBASE.calls_edges, CODEBASE.imports_edges] {
                 assert!(pool.reader().get(&format!("document/{collection}/relationship")).await.unwrap_err().is_not_found());
             }
             pool.writer().put("collection/codebase_calls_edges/properties", &json!({"schema":null})).await.unwrap();
-            store_relationships(&pool, revisions.clone(), batches.clone()).await.unwrap();
+            store_relationships(&pool, revisions.clone(), Vec::new(), batches.clone()).await.unwrap();
             let before = pool.reader().get("document/codebase_imports_edges/relationship").await.unwrap();
             prepared(revision(pool.writer(), "file").await.unwrap(), "newer").store(&pool).await.unwrap();
-            let error = store_relationships(&pool, revisions, batches).await.unwrap_err();
+            let error = store_relationships(&pool, revisions, Vec::new(), batches).await.unwrap_err();
             assert!(error.to_string().contains("changed during relationship preparation"));
             assert_eq!(pool.reader().get("document/codebase_imports_edges/relationship").await.unwrap(), before);
             let current = std::collections::HashMap::from([("file".to_owned(), revision(pool.writer(), "file").await.unwrap().unwrap())]);
             pool.writer().delete("document/codebase_files/target").await.unwrap();
-            let error = store_relationships(&pool, current, vec![(CODEBASE.calls_edges, vec![edge])]).await.unwrap_err();
+            let error = store_relationships(&pool, current, Vec::new(), vec![(CODEBASE.calls_edges, vec![edge])]).await.unwrap_err();
             assert!(error.to_string().contains("endpoint no longer exists"));
             assert!(error.to_string().contains(CODEBASE.calls_edges));
             assert!(error.to_string().contains("1 missing endpoints"));

@@ -109,6 +109,11 @@ struct ImportContext {
     rust_file_symbols: HashMap<String, Vec<Symbol>>,
     /// C/C++/CUDA: rel_path → semantic symbols and resolved call metadata.
     cpp_file_symbols: HashMap<String, Vec<Symbol>>,
+    /// File keys whose libclang analysis succeeded this run. Their symbols'
+    /// prior libclang call edges are replaced by this run's answer, including
+    /// "no calls" (#194). Preserved files are absent: they carry no call
+    /// metadata, so their earlier answers stand.
+    cpp_semantic_file_keys: Vec<String>,
     /// Lower-fidelity files used for syntax-only relationship resolution.
     structural_file_symbols: HashMap<String, Vec<Symbol>>,
     /// Inbound edges remapped inside acknowledged file transactions.
@@ -315,6 +320,7 @@ pub async fn run_phase(
         rust_imports: HashMap::new(),
         rust_file_symbols: HashMap::new(),
         cpp_file_symbols: HashMap::new(),
+        cpp_semantic_file_keys: Vec::new(),
         structural_file_symbols: HashMap::new(),
         repointed_edges: 0,
         committed_revisions: HashMap::new(),
@@ -553,6 +559,18 @@ pub async fn run_phase(
         super::codebase_persist::store_relationships(
         &db,
         std::mem::take(&mut imports.committed_revisions),
+        vec![super::codebase_persist::SemanticReplacement {
+            collection: CODEBASE.calls_edges,
+            analyzer: "libclang",
+            file_keys: std::mem::take(&mut imports.cpp_semantic_file_keys),
+            // The resolver's scope: every C-family file in this run, analyzed
+            // or preserved (#194 review).
+            target_file_keys: imports
+                .cpp_file_symbols
+                .keys()
+                .map(|rel_path| keys::scoped_file_key(namespace, rel_path))
+                .collect(),
+        }],
         vec![
             (CODEBASE.imports_edges, py_import_edges.clone()),
             (CODEBASE.calls_edges, py_call_edges.clone()),
@@ -1685,7 +1703,7 @@ async fn ingest_file(
             .context("file appeared during analysis; retry ingestion")?;
         let num_symbols = analysis.symbols.len();
         imports.committed_revisions.insert(fkey.clone(), observed);
-        collect_relationship_symbols(imports, rel_path, lang, &mut analysis);
+        collect_relationship_symbols(imports, &fkey, rel_path, lang, &mut analysis);
         debug!(
             path = rel_path,
             "unchanged (same content_hash, embeddings present), skipping"
@@ -1906,7 +1924,7 @@ async fn ingest_file(
         .insert(fkey.clone(), stored.revision);
     imports.remapped_symbols += remapped_symbols;
 
-    collect_relationship_symbols(imports, rel_path, lang, &mut analysis);
+    collect_relationship_symbols(imports, &fkey, rel_path, lang, &mut analysis);
 
     info!(
         path = rel_path,
@@ -2113,6 +2131,7 @@ async fn collect_preserved_targets(
 
 fn collect_relationship_symbols(
     imports: &mut ImportContext,
+    fkey: &str,
     rel_path: &str,
     lang: Language,
     analysis: &mut hades_core::code::FileAnalysis,
@@ -2159,6 +2178,7 @@ fn collect_relationship_symbols(
                 .insert(rel_path.to_string(), std::mem::take(&mut analysis.symbols));
         }
         Language::Cpp if uses_semantic_relationship_resolver(lang, analysis.analysis_tier) => {
+            imports.cpp_semantic_file_keys.push(fkey.to_string());
             imports
                 .cpp_file_symbols
                 .insert(rel_path.to_string(), std::mem::take(&mut analysis.symbols));
@@ -4918,6 +4938,7 @@ mod tests {
                 &pool,
                 std::mem::take(&mut imports.committed_revisions),
                 Vec::new(),
+                Vec::new(),
             )
             .await
             .expect("complete fixture relationship stage");
@@ -4963,6 +4984,7 @@ mod tests {
             super::super::codebase_persist::store_relationships(
                 &pool,
                 std::mem::take(&mut imports.committed_revisions),
+                Vec::new(),
                 Vec::new(),
             )
             .await

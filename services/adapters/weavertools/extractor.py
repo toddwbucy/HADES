@@ -88,6 +88,20 @@ RECORD_LINE = re.compile(r"^[a-z][a-z-]*: ")
 
 
 
+FRONT_MATTER_MAX_LINES = 200
+# A line that can occur inside a YAML front-matter block: a comment, a mapping
+# key (plain, double- or single-quoted) followed by `:`, an explicit `? ` key
+# and its `: ` value, a list item, a flow collection, or an indented continuation of any of those.
+YAML_LINE = re.compile(r"""^(?:
+    \#                                       # comment
+  | [ \t]                                    # indented continuation
+  | -(?:[ \t]|$)                             # list item
+  | [?:](?:[ \t]|$)                          # explicit key and its value
+  | [\[{]                                    # flow collection
+  | (?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s\#:\[\]{},][^:]*?)[ \t]*:(?:[ \t]|$)   # key:
+)""", re.VERBOSE)
+
+
 def _headings(text: str):
     """Markdown headings outside fenced code, with source offsets (#174)."""
     headings = []
@@ -97,20 +111,25 @@ def _headings(text: str):
     lines = text.splitlines(keepends=True)
     # YAML's closing --- is not a Setext underline for its last field (#174).
     # Keep original offsets so declarations retain their source locations.
+    #
+    # A leading `---` opens front matter when a `---` or `...` closer follows
+    # within FRONT_MATTER_MAX_LINES and every non-blank line between could be
+    # YAML (#189). The test rejects on the first line that cannot be YAML
+    # rather than requiring one of a list of key shapes, which is what missed
+    # quoted keys and flow mappings before. Blank lines and `#` comments are
+    # YAML, so spaced and commented metadata is recognized. A thematic break
+    # followed by prose meets a prose line and stays prose. Accepted loss: a
+    # thematic break followed only by headings, list items, indented lines or
+    # lines containing a colon, then a later `---`, reads as front matter.
     if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
-        yaml_key = False
-        for end in range(1, len(lines)):
-            if lines[end].rstrip() in ("---", "..."):
-                # A leading thematic break is prose, not metadata (#174).
-                if yaml_key:
-                    offset = sum(map(len, lines[:end + 1]))
-                    lines = lines[end + 1:]
+        for end in range(1, min(len(lines), FRONT_MATTER_MAX_LINES + 1)):
+            body = lines[end].rstrip()
+            if body in ("---", "..."):
+                offset = sum(map(len, lines[:end + 1]))
+                lines = lines[end + 1:]
                 break
-            # Quoted keys are YAML keys too; missing them turned the closer
-            # into a Setext underline for `"title": ...` (#186).
-            yaml_key |= bool(re.match(
-                r"""^[ \t]*(?:[\w.-]+|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')[ \t]*:""",
-                lines[end]))
+            if body and not YAML_LINE.match(body):
+                break
     for line in lines:
         stripped = line.rstrip("\r\n")
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)
