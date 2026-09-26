@@ -66,6 +66,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Recognize WeaverTools front matter by its shape rather than its key syntax: a
+  leading `---` block closed by `---` or `...` before any blank line or heading
+  is front matter whatever YAML style it uses (flow mappings, sequences and
+  scalars included), and a leading thematic break followed by prose keeps its
+  headings (#189).
+
 - Describe the enforced provisioning boundary: the MCP instructions, CLI help,
   `mcp-deployment.md`, ontology section 8.4 and `daemon-protocol.md` said
   `ingest_start` and `db_schema_init` could write any served database and that

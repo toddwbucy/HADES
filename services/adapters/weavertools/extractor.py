@@ -97,20 +97,22 @@ def _headings(text: str):
     lines = text.splitlines(keepends=True)
     # YAML's closing --- is not a Setext underline for its last field (#174).
     # Keep original offsets so declarations retain their source locations.
+    #
+    # Recognized by shape, not by key syntax (#189). Matching key lines missed
+    # one valid YAML style per review round (quoted keys, flow mappings), and
+    # each miss turned the closer into a Setext underline for every later node.
+    # A leading `---` opens front matter when a `---` or `...` closer arrives
+    # before any blank line or heading; a thematic break followed by a
+    # paragraph meets a blank line or a heading first, so it stays prose.
     if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
-        yaml_key = False
         for end in range(1, len(lines)):
-            if lines[end].rstrip() in ("---", "..."):
-                # A leading thematic break is prose, not metadata (#174).
-                if yaml_key:
-                    offset = sum(map(len, lines[:end + 1]))
-                    lines = lines[end + 1:]
+            body = lines[end].rstrip()
+            if body in ("---", "..."):
+                offset = sum(map(len, lines[:end + 1]))
+                lines = lines[end + 1:]
                 break
-            # Quoted keys are YAML keys too; missing them turned the closer
-            # into a Setext underline for `"title": ...` (#186).
-            yaml_key |= bool(re.match(
-                r"""^[ \t]*(?:[\w.-]+|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')[ \t]*:""",
-                lines[end]))
+            if not body or re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", body):
+                break
     for line in lines:
         stripped = line.rstrip("\r\n")
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)
