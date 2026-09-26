@@ -26,6 +26,7 @@
 //! - the `codebase_files` document, its chunks, embeddings, and symbols
 //! - every codebase edge incident on the file **or on one of its symbols**
 //! - every *other* edge, in any edge collection, incident on the file node
+//!   **or on one of its symbols** (`scan_other_edges`)
 //!
 //! That last category is reported separately and requires `--yes`, because it is
 //! where hand-authored records live (conformance verdicts, spec bridges). Those

@@ -116,20 +116,22 @@ request content can elevate a connection above what its transport grants.
 | **Agent**  | Safe, bounded reads and task management. No DDL, no raw AQL. |
 | **Internal** | System diagnostics and schema introspection.            |
 | **Admin**  | Unbounded writes, DDL, raw AQL, schema mutation.         |
-| **Provisioning** | `db.create_database`, `ingest.start`. Creating a graph and filling it. |
+| **Provisioning** | `db.create_database`, `db.schema_init`, `ingest.start`. Creating a graph, seeding its schema and filling it. |
 
 An `"agent"` session attempting an Internal or Admin command receives
 error code `ACCESS_DENIED`.
 
 **Provisioning is its own tier so a transport can grant exactly it.** An agent
-that builds its own graph needs to create a database and ingest a tree; it does
-not need `db.aql`, `db.purge` or `db.graph.drop`, and folding these into Admin
-would have handed all of them over together. A local Unix peer has it by virtue
+that builds its own graph needs to create a database, seed its schema and ingest
+a tree; it does not need `db.aql`, `db.purge` or `db.graph.drop`, and folding
+these into Admin would have handed all of them over together. A local Unix peer has it by virtue
 of being admin. A network transport has it only when the daemon was started with
 both `--mcp-db-prefix` and `--mcp-ingest-root`, and then only within those
 bounds:
 
-- a database name must begin with one of the permitted prefixes
+- a database it *creates* must begin with one of the permitted prefixes; the
+  prefix is not checked for `ingest.start` or `db.schema_init`, which act on
+  any database the transport serves
 - an ingest path must exist and canonicalize to somewhere inside one of the
   permitted roots, so `..` and symlinks cannot walk out
 
