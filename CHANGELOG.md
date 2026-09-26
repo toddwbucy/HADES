@@ -66,6 +66,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Describe the enforced provisioning boundary: the MCP instructions, CLI help,
+  `mcp-deployment.md`, ontology section 8.4 and `daemon-protocol.md` said
+  `ingest_start` and `db_schema_init` could write any served database and that
+  seeding replaced a schema, which #193 made false. `db.schema.init` is also
+  listed under its wire name and Provisioning tier (#193).
+
 - Validate and project db.get on the server with real-database coverage, reject
   malformed orientation attributes as query errors, and recognize BOM/YAML
   front matter, including quoted keys, without suppressing headings after

@@ -219,11 +219,13 @@ enum Commands {
 
         /// Databases the MCP endpoint serves in addition to the
         /// configured default (comma-separated). Anything not listed is
-        /// refused — remote reads are scoped, writes stay ACL-gated.
+        /// refused. A listed database that matches no `--mcp-db-prefix` is
+        /// read-only to the endpoint (#193); writes are also ACL-gated.
         #[arg(long, env = "HADES_MCP_DBS", value_delimiter = ',')]
         mcp_dbs: Vec<String>,
 
-        /// Database-name prefixes the MCP endpoint may CREATE, e.g. `bident_`.
+        /// Database-name prefixes the MCP endpoint may provision, e.g. `bident_`:
+        /// the only databases it may create, seed or ingest into (#193).
         ///
         /// Provisioning is off unless this and `--mcp-ingest-root` are both
         /// given. Granting it lets a bearer token create databases, which is

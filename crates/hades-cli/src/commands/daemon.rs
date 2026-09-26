@@ -39,10 +39,11 @@ pub struct McpOptions {
     /// never serves unauthenticated.
     pub token_file: std::path::PathBuf,
     /// Databases served in addition to the configured default. The
-    /// endpoint refuses any database not on this list.
+    /// endpoint refuses any database not on this list or under a provisioning
+    /// prefix, and never provisions one that matches no prefix (#193).
     pub extra_dbs: Vec<String>,
-    /// Database name prefixes this endpoint may create. Empty means the
-    /// endpoint may create nothing, which is the default.
+    /// Database name prefixes this endpoint may create, seed or ingest into.
+    /// Empty means it may provision nothing, which is the default.
     pub provision_db_prefixes: Vec<String>,
     /// Directories this endpoint may ingest from. Empty means nothing, which is
     /// the default. A path must canonicalize to somewhere inside one of these,

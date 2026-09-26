@@ -102,19 +102,26 @@ rather than concluding the capability does not exist.
 
 **Both flags are load-bearing, and both fail closed.**
 
-`--mcp-db-prefix` bounds what may be created. Without it, no database may be,
-even with the other flag set. It also widens the read allowlist for matching
+`--mcp-db-prefix` bounds every database a provisioning command may write:
+the one `create_database` creates, and the one `db_schema_init` seeds or
+`ingest_start` writes into. Without it, no database may be written, even with
+the other flag set. It also widens the read allowlist for matching
 names, because a database the endpoint just created is not on `--mcp-dbs` and
 would otherwise be refused the moment the client tried to use it.
 
-**What the prefix does not bound.** It is checked only when a database is
-created (`crates/hades-core/src/service.rs`, the provisioning-limits match).
-`ingest_start` and `db_schema_init` run against any database the endpoint
-serves, including every `--mcp-dbs` entry that does not match the prefix, and
-`db_schema_init` truncates that database's `hades_schema` before seeding it. Do
-not rely on the prefix to protect a database exposed for reading; with
-provisioning on, list in `--mcp-dbs` only databases a client may also ingest
-into and re-seed.
+**Databases exposed for reading stay read-only.** The prefix is enforced in the
+service layer (`crates/hades-core/src/service.rs`, the provisioning-limits
+check) for all three commands, against the database each one would actually
+write, including the endpoint default when a client omits `db`. An `--mcp-dbs`
+entry or default that matches no prefix can be read but never seeded or
+ingested into (#193). So agents cannot resync such a database over MCP; they
+ingest into databases they create under the prefix, and a production database
+is resynced from the host with the CLI.
+
+**Seeding never replaces a schema.** `db_schema_init` refuses a database whose
+`hades_schema` already holds documents, with `CONFLICT`, on every transport.
+Replacing one is an operator decision, made on the host with
+`hades db schema init --seed empty --force`.
 
 `--mcp-ingest-root` bounds what may be read. Ingest hands the daemon a path on
 its *own* filesystem, so without this a bearer token could have it read
