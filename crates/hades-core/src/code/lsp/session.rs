@@ -353,6 +353,7 @@ impl<S: LanguageServer> LspSession<S> {
         false
     }
 
+    // Only outgoing traversal is consumed; keep one prepare implementation (#179).
     pub async fn call_hierarchy_outgoing(
         &self,
         uri: &str,
@@ -390,45 +391,6 @@ impl<S: LanguageServer> LspSession<S> {
             )
             .await?;
         response_list(outgoing, "callHierarchy/outgoingCalls", false)
-    }
-
-    pub async fn call_hierarchy_incoming(
-        &self,
-        uri: &str,
-        line: u32,
-        character: u32,
-    ) -> Result<Vec<Value>, LspError> {
-        let items = self
-            .position_request("textDocument/prepareCallHierarchy", uri, line, character)
-            .await
-            .map_err(|source| LspError::Request {
-                method: "textDocument/prepareCallHierarchy",
-                source: Box::new(source),
-            })?;
-        let items =
-            response_list(items, "textDocument/prepareCallHierarchy", false).map_err(|source| {
-                LspError::Request {
-                    method: "textDocument/prepareCallHierarchy",
-                    source: Box::new(source),
-                }
-            })?;
-        let Some(item) = items.first() else {
-            return Err(LspError::Request {
-                method: "textDocument/prepareCallHierarchy",
-                source: Box::new(LspError::InvalidResponse(
-                    "empty prepareCallHierarchy for callable symbol".into(),
-                )),
-            });
-        };
-        let incoming = self
-            .client
-            .request(
-                "callHierarchy/incomingCalls",
-                serde_json::json!({ "item": item }),
-                self.request_timeout,
-            )
-            .await?;
-        response_list(incoming, "callHierarchy/incomingCalls", false)
     }
 
     /// Resolve implementations for an interface/type at a source position.

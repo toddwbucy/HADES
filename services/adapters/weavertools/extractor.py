@@ -94,7 +94,24 @@ def _headings(text: str):
     fence = None
     previous = None
     offset = 0
-    for line in text.splitlines(keepends=True):
+    lines = text.splitlines(keepends=True)
+    # YAML's closing --- is not a Setext underline for its last field (#174).
+    # Keep original offsets so declarations retain their source locations.
+    if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
+        yaml_key = False
+        for end in range(1, len(lines)):
+            if lines[end].rstrip() in ("---", "..."):
+                # A leading thematic break is prose, not metadata (#174).
+                if yaml_key:
+                    offset = sum(map(len, lines[:end + 1]))
+                    lines = lines[end + 1:]
+                break
+            # Quoted keys are YAML keys too; missing them turned the closer
+            # into a Setext underline for `"title": ...` (#186).
+            yaml_key |= bool(re.match(
+                r"""^[ \t]*(?:[\w.-]+|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')[ \t]*:""",
+                lines[end]))
+    for line in lines:
         stripped = line.rstrip("\r\n")
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", stripped)
         if fence:
@@ -171,7 +188,7 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
             continue
         for path in _walk(root, ".md"):
             rel = str(path.relative_to(repo))
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
             if scope is not None and rel not in scope:
                 # Only the ones whose absence changes the graph. Every other
                 # skipped file is noise in a report someone has to read.
@@ -325,7 +342,7 @@ def read_conformance(
     paths = [p for suffix in CONFORMANCE_SUFFIXES for p in _walk(crates, suffix)]
     for path in sorted(paths):
         rel = str(path.relative_to(repo))
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
         citations, unreadable = _citations(text, path.suffix)
         if scope is not None and rel not in scope:
             if citations:

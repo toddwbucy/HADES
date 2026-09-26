@@ -28,8 +28,14 @@ use commands::{
 #[derive(Parser)]
 #[command(name = "hades", version, about)]
 struct Cli {
-    /// Output format for every command (#164).
-    #[arg(short = 'f', long, global = true, value_parser = ["json", "jsonl", "table"])]
+    /// Output format for every command (#164). `raw` is accepted only by
+    /// `embed text`, where it prints the bare vector for piping.
+    #[arg(
+        short = 'f',
+        long,
+        global = true,
+        value_parser = ["json", "jsonl", "table", "raw"]
+    )]
     format: Option<String>,
 
     /// Target ArangoDB database name (overrides config/env).
@@ -52,10 +58,6 @@ struct Cli {
 enum Commands {
     /// System status for workspace discovery.
     Status {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-
         /// Verbose output.
         #[arg(short = 'V', long)]
         verbose: bool,
@@ -66,20 +68,12 @@ enum Commands {
         /// Collection to orient on.
         #[arg(short = 'c', long)]
         collection: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Extract text from documents (PDF, LaTeX, etc).
     Extract {
         /// File path to extract from.
         file: PathBuf,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
 
         /// Output file path.
         #[arg(short = 'o', long)]
@@ -304,20 +298,54 @@ fn run_codebase_ingest(
     }
 }
 
+impl Cli {
+    /// `raw` has to live in the one global value set, because a command-local
+    /// `--format` would shadow the global flag again (#164). So its scope is
+    /// enforced here, before dispatch, as a usage error rather than a runtime
+    /// one: `embed text` has printed a bare vector under `-f raw` since before
+    /// the flag was global, and scripts pipe it (#186).
+    fn validate_format_scope(&self) -> Result<(), clap::Error> {
+        if self.format.as_deref() == Some("raw")
+            && !matches!(self.command, Commands::Embed(EmbedCmd::Text { .. }))
+        {
+            use clap::CommandFactory;
+            return Err(Cli::command().error(
+                clap::error::ErrorKind::InvalidValue,
+                "format 'raw' is only supported by `hades embed text`; \
+                 use json, jsonl or table",
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Err(error) = cli.validate_format_scope() {
+        error.exit();
+    }
     if let Some(format) = &cli.format {
         commands::output::set_format(format);
     }
 
-    let mut config = if let Some(fd) = cli.resolved_config_fd {
+    // One global format definition avoids shadowing at subcommands (#164).
+    let format = cli.format.clone().unwrap_or_else(|| "json".into());
+
+    let (mut config, provenance) = if let Some(fd) = cli.resolved_config_fd {
         anyhow::ensure!(
             matches!(&cli.command, Commands::Ingest { .. }),
             "resolved configuration is only accepted for ingestion"
         );
-        config::snapshot::load_inherited(fd)?
+        let (config, snapshot) = config::snapshot::load_ingest(fd)?;
+        (
+            config,
+            std::sync::Arc::new(hades_core::source_git::Batch::from_snapshot(snapshot)),
+        )
     } else {
-        config::load_config()?
+        (
+            config::load_config()?,
+            std::sync::Arc::new(hades_core::source_git::Batch::default()),
+        )
     };
     config.apply_cli_overrides(cli.database.as_deref(), cli.gpu);
 
@@ -391,6 +419,7 @@ fn main() -> anyhow::Result<()> {
                     collection.as_deref(),
                     task.as_deref(),
                     allow_degraded_enrichment,
+                    provenance,
                     if cli.resolved_config_fd.is_some() {
                         "allow_degraded_enrichment"
                     } else {
@@ -472,6 +501,7 @@ fn main() -> anyhow::Result<()> {
                 reset,
                 concurrency.map(NonZeroUsize::get),
                 root,
+                provenance,
             ));
             match result {
                 Ok(()) => Ok(()),
@@ -696,7 +726,6 @@ fn main() -> anyhow::Result<()> {
             hybrid,
             structural,
             rerank,
-            ref format,
             ..
         }) => {
             if rerank {
@@ -715,7 +744,7 @@ fn main() -> anyhow::Result<()> {
                 collection.as_deref(),
                 hybrid,
                 structural,
-                format,
+                &format,
             ))
         }
         Commands::Db(commands::db::DbCmd::Query {
@@ -743,7 +772,6 @@ fn main() -> anyhow::Result<()> {
             fields,
             collection,
             key,
-            format,
         }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -760,7 +788,7 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_count(&config, &collection))
         }
-        Commands::Db(commands::db::DbCmd::Collections { format }) => {
+        Commands::Db(commands::db::DbCmd::Collections {}) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_collections(&config, &format))
@@ -770,11 +798,7 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_check(&config, &document_id))
         }
-        Commands::Db(commands::db::DbCmd::Recent {
-            limit,
-            format,
-            fields,
-        }) => {
+        Commands::Db(commands::db::DbCmd::Recent { limit, fields }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_recent(
@@ -788,7 +812,6 @@ fn main() -> anyhow::Result<()> {
             collection,
             limit,
             paper,
-            format,
         }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -800,12 +823,7 @@ fn main() -> anyhow::Result<()> {
                 &format,
             ))
         }
-        Commands::Db(commands::db::DbCmd::Aql {
-            aql,
-            bind,
-            limit,
-            format,
-        }) => {
+        Commands::Db(commands::db::DbCmd::Aql { aql, bind, limit }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_aql(
@@ -821,7 +839,7 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_health(&config, verbose))
         }
-        Commands::Db(commands::db::DbCmd::Stats { format }) => {
+        Commands::Db(commands::db::DbCmd::Stats {}) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_stats(&config, &format))
@@ -829,7 +847,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Db(commands::db::DbCmd::Export {
             collection,
             output,
-            format,
             limit,
         }) => {
             init_tracing();
@@ -838,11 +855,11 @@ fn main() -> anyhow::Result<()> {
                 &config,
                 &collection,
                 output.as_deref(),
-                &format,
+                cli.format.as_deref().unwrap_or("jsonl"),
                 limit,
             ))
         }
-        Commands::Db(commands::db::DbCmd::IndexStatus { collection, format }) => {
+        Commands::Db(commands::db::DbCmd::IndexStatus { collection }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_index_status(
@@ -851,7 +868,7 @@ fn main() -> anyhow::Result<()> {
                 &format,
             ))
         }
-        Commands::Db(commands::db::DbCmd::Databases { format }) => {
+        Commands::Db(commands::db::DbCmd::Databases {}) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_read::run_databases(&config, &format))
@@ -956,7 +973,6 @@ fn main() -> anyhow::Result<()> {
             max_depth,
             graph,
             fields,
-            format: _,
         })) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -975,7 +991,6 @@ fn main() -> anyhow::Result<()> {
             target,
             graph,
             fields,
-            format: _,
         })) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -993,7 +1008,6 @@ fn main() -> anyhow::Result<()> {
             limit,
             graph,
             fields,
-            format: _,
         })) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -1006,7 +1020,7 @@ fn main() -> anyhow::Result<()> {
                 fields.as_deref(),
             ))
         }
-        Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::List { format: _ })) => {
+        Commands::Db(commands::db::DbCmd::Graph(commands::db::DbGraphCmd::List {})) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_graph::run_list(&config))
@@ -1073,12 +1087,12 @@ fn main() -> anyhow::Result<()> {
             rt.block_on(commands::db_schema::run_version(&config))
         }
         // ── Native system commands ────────────────────────────────────
-        Commands::Status { format, verbose } => {
+        Commands::Status { verbose } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::system::run_status(&config, verbose, &format))
         }
-        Commands::Orient { collection, format } => {
+        Commands::Orient { collection } => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::system::run_orient(
@@ -1093,7 +1107,6 @@ fn main() -> anyhow::Result<()> {
             r#type,
             parent,
             limit,
-            format,
         }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -1106,7 +1119,7 @@ fn main() -> anyhow::Result<()> {
                 &format,
             ))
         }
-        Commands::Task(commands::task::TaskCmd::Show { key, format }) => {
+        Commands::Task(commands::task::TaskCmd::Show { key }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::task_mgmt::run_show(&config, &key, &format))
@@ -1210,7 +1223,7 @@ fn main() -> anyhow::Result<()> {
                 message.as_deref(),
             ))
         }
-        Commands::Task(commands::task::TaskCmd::HandoffShow { key, format }) => {
+        Commands::Task(commands::task::TaskCmd::HandoffShow { key }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::task_mgmt::run_handoff_show(
@@ -1253,7 +1266,7 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::task_mgmt::run_usage(&config))
         }
-        Commands::Task(commands::task::TaskCmd::GraphIntegration { format }) => {
+        Commands::Task(commands::task::TaskCmd::GraphIntegration {}) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::task_mgmt::run_graph_integration(&config, &format))
@@ -1261,7 +1274,7 @@ fn main() -> anyhow::Result<()> {
         // All TaskCmd variants are handled natively above.
 
         // ── Embed commands ────────────────────────────────────────────
-        Commands::Embed(EmbedCmd::Text { text, format }) => {
+        Commands::Embed(EmbedCmd::Text { text }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::embed_mgmt::run_embed_text(
@@ -1291,18 +1304,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Embed(EmbedCmd::Gpu(EmbedGpuCmd::List)) => commands::embed_mgmt::run_gpu_list(),
 
         // ── Extract command ───────────────────────────────────────────
-        Commands::Extract {
-            file,
-            format,
-            output,
-        } => commands::embed_mgmt::run_extract(&file, &format, output.as_deref()),
+        Commands::Extract { file, output } => {
+            commands::embed_mgmt::run_extract(&file, &format, output.as_deref())
+        }
 
         // ── Smell & compliance commands ──────────────────────────────
-        Commands::Smell(SmellCmd::Check {
-            path,
-            format,
-            verbose,
-        }) => {
+        Commands::Smell(SmellCmd::Check { path, verbose }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::smell_mgmt::run_smell_check(
@@ -1316,11 +1323,7 @@ fn main() -> anyhow::Result<()> {
                 &config, &path, &claims,
             ))
         }
-        Commands::Smell(SmellCmd::Report {
-            path,
-            output,
-            format,
-        }) => {
+        Commands::Smell(SmellCmd::Report { path, output }) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::smell_mgmt::run_smell_report(
@@ -1348,6 +1351,43 @@ fn main() -> anyhow::Result<()> {
 mod format_contract_tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn export_help_states_its_jsonl_default() {
+        let error = Cli::try_parse_from(["hades", "db", "export", "--help"])
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(
+            error
+                .to_string()
+                .contains("jsonl (default and only supported format)")
+        );
+    }
+
+    #[test]
+    fn raw_format_is_scoped_to_embed_text() {
+        let cli = Cli::try_parse_from(["hades", "embed", "text", "hello", "-f", "raw"]).unwrap();
+        assert_eq!(cli.format.as_deref(), Some("raw"));
+        assert!(matches!(
+            cli.command,
+            Commands::Embed(EmbedCmd::Text { .. })
+        ));
+        cli.validate_format_scope().unwrap();
+
+        for args in [
+            &["hades", "status", "-f", "raw"][..],
+            &["hades", "db", "export", "documents", "-f", "raw"][..],
+            &["hades", "-f", "raw", "embed", "service", "status"][..],
+        ] {
+            let error = Cli::try_parse_from(args)
+                .unwrap()
+                .validate_format_scope()
+                .expect_err("raw must be refused outside embed text");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            assert!(error.to_string().contains("hades embed text"), "{error}");
+        }
+    }
 
     #[test]
     fn every_rendered_command_accepts_format_and_ingest_force_is_long_only() {

@@ -39,10 +39,6 @@ pub enum DbCmd {
         #[arg(short = 'S', long)]
         structural: bool,
 
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-
         /// Verbose output.
         #[arg(short = 'V', long)]
         verbose: bool,
@@ -56,10 +52,6 @@ pub enum DbCmd {
         /// Bind variables as JSON object.
         #[arg(short = 'b', long)]
         bind: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
 
         /// Maximum results.
         #[arg(short = 'n', long)]
@@ -76,21 +68,13 @@ pub enum DbCmd {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: u32,
 
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-
         /// Filter by paper ID.
         #[arg(short = 'p', long)]
         paper: Option<String>,
     },
 
     /// Show database statistics.
-    Stats {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-    },
+    Stats {},
 
     /// Show recently ingested papers.
     Recent {
@@ -100,10 +84,6 @@ pub enum DbCmd {
         /// Maximum results.
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: u32,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Check data integrity and health.
@@ -153,18 +133,10 @@ pub enum DbCmd {
     },
 
     /// List all collections in the database.
-    Collections {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-    },
+    Collections {},
 
     /// List all databases.
-    Databases {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-    },
+    Databases {},
 
     /// Create a new database.
     CreateDatabase {
@@ -227,10 +199,6 @@ pub enum DbCmd {
 
         /// Document key.
         key: String,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Insert documents into a collection.
@@ -260,7 +228,7 @@ pub enum DbCmd {
         data: Option<String>,
     },
 
-    /// Export a collection to file.
+    /// Export a collection as jsonl (default and only supported format).
     Export {
         /// Collection name.
         collection: String,
@@ -268,10 +236,6 @@ pub enum DbCmd {
         /// Output file path.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "jsonl")]
-        format: String,
 
         /// Maximum documents to export.
         #[arg(short = 'n', long)]
@@ -298,10 +262,6 @@ pub enum DbCmd {
         /// Collection name.
         #[arg(short = 'c', long)]
         collection: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Graph operations.
@@ -328,11 +288,7 @@ pub enum DbGraphCmd {
     },
 
     /// List all named graphs.
-    List {
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
-    },
+    List {},
 
     /// Drop a named graph.
     Drop {
@@ -371,10 +327,6 @@ pub enum DbGraphCmd {
         /// Graph name.
         #[arg(long)]
         graph: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Find the shortest path between two vertices.
@@ -391,10 +343,6 @@ pub enum DbGraphCmd {
         /// Graph name.
         #[arg(long)]
         graph: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Find neighbors of a vertex.
@@ -416,10 +364,6 @@ pub enum DbGraphCmd {
         /// Graph name.
         #[arg(long)]
         graph: Option<String>,
-
-        /// Output format (json, jsonl, table).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Materialize edges from implicit cross-reference fields.

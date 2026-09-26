@@ -99,13 +99,22 @@ pub async fn run_unified(
     collection: Option<&str>,
     task: Option<&str>,
     allow_degraded_enrichment: bool,
+    provenance: Arc<hades_core::source_git::Batch>,
     request_failure_option: &'static str,
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
-    let source_git = hades_core::source_git::resolve(&root)?;
+    let source_git = provenance.resolve(&root).await?;
     let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
     let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
+    // Freeze all repository observations before either phase can write (#186).
+    let inputs: Vec<_> = found.code.iter().chain(&found.documents).cloned().collect();
+    provenance.prepare(&inputs).await;
+    let source_git = if inputs.is_empty() {
+        source_git
+    } else {
+        provenance.common(&inputs).await?
+    };
 
     info!(
         root = %root.display(),
@@ -133,6 +142,7 @@ pub async fn run_unified(
                 false,
                 allow_degraded_enrichment,
                 request_failure_option,
+                provenance.clone(),
             )
             .await?,
         )
@@ -161,6 +171,7 @@ pub async fn run_unified(
             false,
             concurrency,
             Some(root.clone()),
+            provenance.clone(),
         )
         .await
         {
@@ -259,6 +270,7 @@ pub async fn run(
     reset: bool,
     concurrency: Option<usize>,
     root: Option<PathBuf>,
+    provenance: Arc<hades_core::source_git::Batch>,
 ) -> Result<()> {
     let mut outcome = run_phase(
         config,
@@ -274,6 +286,7 @@ pub async fn run(
         reset,
         concurrency,
         root,
+        provenance,
     )
     .await?;
     // Named files have no semantic analyzer but retain the unified result shape (#185).
@@ -308,6 +321,7 @@ pub async fn run_phase(
     reset: bool,
     concurrency: Option<usize>,
     root: Option<PathBuf>,
+    provenance: Arc<hades_core::source_git::Batch>,
 ) -> Result<PhaseOutcome> {
     let cmd_start = Instant::now();
 
@@ -418,11 +432,12 @@ pub async fn run_phase(
     };
 
     let processor = BatchProcessor::new(batch_config);
-    let source_git = root
-        .as_deref()
-        .map(hades_core::source_git::resolve)
-        .transpose()?
-        .flatten();
+    provenance.prepare(&file_paths).await;
+    let source_git = if let Some(root) = root.as_deref() {
+        provenance.resolve(root).await?
+    } else {
+        None
+    };
 
     // -- Build items for batch processor ---------------------------------------
     let custom_id: Option<Arc<str>> = id.map(Arc::from);
@@ -446,7 +461,7 @@ pub async fn run_phase(
             let custom_id = custom_id.clone();
             let extra_metadata = extra_metadata.clone();
             let root = root.clone();
-            let source_git = source_git.clone();
+            let provenance = provenance.clone();
 
             async move {
                 ingest_file(
@@ -459,7 +474,7 @@ pub async fn run_phase(
                     extra_metadata.as_deref(),
                     custom_id.as_deref(),
                     root.as_deref(),
-                    source_git.as_ref(),
+                    &provenance,
                 )
                 .await
             }
@@ -518,16 +533,15 @@ pub async fn run_phase(
         .iter()
         .filter_map(|row| row.get("source_git"))
         .collect::<Vec<_>>();
-    let source_git = serde_json::to_value(envelope_git)?
-        .as_object()
-        .map(|o| Value::Object(o.clone()))
-        .or_else(|| {
-            observed
-                .first()
-                .filter(|first| observed.iter().all(|v| v == *first))
-                .map(|v| (*v).clone())
-        })
-        .unwrap_or(Value::Null);
+    let source_git = if observed.is_empty() {
+        serde_json::to_value(envelope_git)?
+    } else {
+        observed
+            .first()
+            .filter(|first| observed.iter().all(|v| v == *first))
+            .map(|v| (*v).clone())
+            .unwrap_or(Value::Null)
+    };
     let result_data = json!({
         "source_git": source_git,
         "total": summary.total,
@@ -566,7 +580,7 @@ async fn ingest_file(
     extra_metadata: Option<&Value>,
     custom_id: Option<&str>,
     root: Option<&Path>,
-    root_git: Option<&hades_core::source_git::SourceGit>,
+    provenance: &hades_core::source_git::Batch,
 ) -> Result<Value> {
     // Identity FIRST, from the path as the caller wrote it: the key comes from
     // the caller's own path, so a symlinked input keeps the name the caller used
@@ -579,13 +593,9 @@ async fn ingest_file(
     // service-side "File not found" (#166). A missing input fails HERE, per
     // item — the batch continues and the failure reaches the summary and the
     // envelope like any other item error.
-    let path: PathBuf = std::fs::canonicalize(path)
-        .with_context(|| format!("input path not found or unreadable: {}", path.display()))?;
+    let source_git = provenance.resolve(path).await?;
+    let path = provenance.canonical(path).await?;
     let path = path.as_path();
-    let source_git = match root_git {
-        Some(git) => Some(git.clone()),
-        None => hades_core::source_git::resolve(root.unwrap_or(path))?,
-    };
 
     // Who already holds this key, and is it this same file?
     //

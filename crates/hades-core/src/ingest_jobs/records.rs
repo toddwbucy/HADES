@@ -75,7 +75,8 @@ async fn start_with(
             reason: "applies to a directory ingest; pass the directory instead".into(),
         });
     }
-    let source_git = crate::source_git::resolve(&resolved).map_err(service)?;
+    let provenance = crate::source_git::Batch::default();
+    let source_git = provenance.resolve(&resolved).await.map_err(service)?;
     let reservation = super::reserve(&resolved).map_err(service)?;
     if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict
@@ -103,7 +104,11 @@ async fn start_with(
     }
 
     let job = format!("{:032x}", rand::random::<u128>());
-    let snapshot = crate::config::snapshot::Snapshot::new(config).map_err(service)?;
+    let snapshot = crate::config::snapshot::Snapshot::with_provenance(
+        config,
+        provenance.snapshot().await.map_err(service)?,
+    )
+    .map_err(service)?;
     let fd = snapshot.inherit(&mut command);
     command.arg("--resolved-config-fd").arg(fd.to_string());
     match &config.gpu.cuda_visible_devices {

@@ -8,10 +8,6 @@ pub enum EmbedCmd {
     Text {
         /// Text to embed.
         text: String,
-
-        /// Output format (json, raw).
-        #[arg(short = 'f', long, default_value = "json")]
-        format: String,
     },
 
     /// Embedding service management.

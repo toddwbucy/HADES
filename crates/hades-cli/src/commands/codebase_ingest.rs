@@ -153,6 +153,7 @@ pub async fn run(
         allow_analysis_downgrade,
         false,
         "--allow-analysis-downgrade",
+        std::sync::Arc::new(hades_core::source_git::Batch::default()),
     )
     .await?;
     output::print_output_with_success(
@@ -181,12 +182,13 @@ pub async fn run_phase(
     allow_analysis_downgrade: bool,
     allow_degraded_enrichment: bool,
     request_failure_option: &'static str,
+    provenance: std::sync::Arc<hades_core::source_git::Batch>,
 ) -> Result<PhaseOutcome> {
     let cmd_start = Instant::now();
 
     // Resolve the ingest root before anything derives from it.
     let path = resolve_ingest_root(&path)?;
-    let source_git = hades_core::source_git::resolve(&path)?;
+    let source_git = provenance.resolve(&path).await?;
 
     let unparsed_set = normalize_unparsed_ext(unparsed_ext);
     let lang_override = parse_language_arg(language)?;
@@ -216,6 +218,12 @@ pub async fn run_phase(
 
     // Discover source files.
     let files = discover_files(&path, lang_override, &unparsed_set)?;
+    provenance.prepare(&files).await;
+    let source_git = if files.is_empty() {
+        source_git
+    } else {
+        provenance.common(&files).await?
+    };
     if files.is_empty() {
         return Ok(PhaseOutcome {
             data: json!({ "source_git": source_git, "total": 0, "message": "no supported source files found" }),
@@ -405,57 +413,61 @@ pub async fn run_phase(
                 .is_some_and(|e| unparsed_set.contains(e))
                 || (has_shebang && shebang_lang.is_none() && lang_override.is_none()));
 
-        let result = if is_unparsed {
-            async {
-                let key = keys::scoped_file_key(namespace, &rel_path);
-                let observed = super::codebase_persist::revision(db.writer(), &key).await?;
-                let result = ingest_unparsed_file(
+        let result = async {
+            let source_git = provenance.resolve(file_path).await?;
+            if is_unparsed {
+                async {
+                    let key = keys::scoped_file_key(namespace, &rel_path);
+                    let observed = super::codebase_persist::revision(db.writer(), &key).await?;
+                    let result = ingest_unparsed_file(
+                        &db,
+                        embedder.as_ref(),
+                        config,
+                        file_path,
+                        &rel_path,
+                        None,
+                        "no registered language or grammar",
+                        force,
+                        allow_analysis_downgrade,
+                        namespace,
+                        &source_git,
+                    )
+                    .await?;
+                    if result.skipped == Some(true) && result.num_symbols.is_none() {
+                        collect_preserved_targets(
+                            &db,
+                            &key,
+                            observed.as_deref(),
+                            &rel_path,
+                            None,
+                            &mut imports,
+                        )
+                        .await?;
+                    }
+                    Ok::<_, anyhow::Error>(result)
+                }
+                .await
+            } else {
+                ingest_file(
                     &db,
                     embedder.as_ref(),
                     config,
                     file_path,
                     &rel_path,
-                    None,
-                    "no registered language or grammar",
+                    effective_override,
+                    &mut imports,
+                    compile_commands,
                     force,
                     allow_analysis_downgrade,
+                    gopls_cmd.is_some(),
+                    window_bytes,
                     namespace,
                     &source_git,
                 )
-                .await?;
-                if result.skipped == Some(true) && result.num_symbols.is_none() {
-                    collect_preserved_targets(
-                        &db,
-                        &key,
-                        observed.as_deref(),
-                        &rel_path,
-                        None,
-                        &mut imports,
-                    )
-                    .await?;
-                }
-                Ok::<_, anyhow::Error>(result)
+                .await
             }
-            .await
-        } else {
-            ingest_file(
-                &db,
-                embedder.as_ref(),
-                config,
-                file_path,
-                &rel_path,
-                effective_override,
-                &mut imports,
-                compile_commands,
-                force,
-                allow_analysis_downgrade,
-                gopls_cmd.is_some(),
-                window_bytes,
-                namespace,
-                &source_git,
-            )
-            .await
-        };
+        }
+        .await;
 
         let duration = item_start.elapsed().as_millis() as u64;
         match result {

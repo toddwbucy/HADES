@@ -12,6 +12,159 @@ mod document_metadata_outcomes {
             Ok(tonic::Response::new(ExtractorInfo::default()))
         }
     }
+
+    fn fixture_git(root: &Path, args: &[&str]) -> std::process::Output {
+        let output = std::process::Command::new("git").arg("-C").arg(root)
+            .args(["-c", "commit.gpgsign=false"]).args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+            .output().unwrap();
+        assert!(output.status.success(), "{output:?}"); output
+    }
+    fn commit_fixture(root: &Path) -> String {
+        fixture_git(root, &["init", "-q"]); fixture_git(root, &["add", "."]);
+        fixture_git(root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+        String::from_utf8(fixture_git(root, &["rev-parse", "HEAD"]).stdout).unwrap().trim().to_owned()
+    }
+    fn wrap_git(services: &Path) -> (std::ffi::OsString, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::var_os("PATH").unwrap();
+        let real_git = std::env::split_paths(&path).map(|p|p.join("git")).find(|p|p.is_file()).unwrap().canonicalize().unwrap();
+        let bin = services.join("bin"); std::fs::create_dir(&bin).unwrap();
+        let wrapper = bin.join("git");
+        // Optional mutation happens AFTER the observation, before either phase.
+        std::fs::write(&wrapper, "#!/bin/sh\nif [ \"$3\" = status ]; then\n  printf '%s\\n' \"$2\" >> \"$HADES_GIT_STATUS_LOG\"\n  \"$HADES_TEST_REAL_GIT\" \"$@\"\n  result=$?\n  if [ -n \"$HADES_GIT_MUTATION\" ]; then printf changed > \"$HADES_GIT_MUTATION\"; fi\n  exit \"$result\"\nfi\nexec \"$HADES_TEST_REAL_GIT\" \"$@\"\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let paths = std::iter::once(bin).chain(std::env::split_paths(&path)).collect::<Vec<_>>();
+        (std::env::join_paths(paths).unwrap(), real_git, services.join("status.log"))
+    }
+
+    // Fifty distinct directories still share one whole-repository observation (#186).
+    #[tokio::test]
+    async fn named_file_batch_observes_git_once_per_repository() {
+        with_temp_db("git_batch", Fixtures::Empty, |pool| async move {
+            let services = tempfile::tempdir().unwrap();
+            let tree = tempfile::tempdir().unwrap();
+            let mut files = Vec::new();
+            for n in 0..50 {
+                let directory = tree.path().join(format!("part{n}")); std::fs::create_dir(&directory).unwrap();
+                let file = directory.join(format!("doc{n}.md")); std::fs::write(&file, "Fixture document.").unwrap(); files.push(file);
+            }
+            let expected = json!({"commit":commit_fixture(tree.path()),"dirty":false});
+            let (path, real_git, count) = wrap_git(services.path());
+            let socket = services.path().join("extract.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async { Some((listener.accept().await.map(|(s,_)|s),listener)) });
+            let _peer = Peer(tokio::spawn(async move {
+                tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor)).serve_with_incoming(incoming).await.unwrap();
+            }));
+            let embedder = Embedder::new().await;
+            let output = cli_command(&pool, &embedder, &["ingest", "--task", "code", "--force", "--concurrency", "1"])
+                .args(&files).env("HADES_EXTRACTOR_SOCKET", &socket).env("PATH", path)
+                .env("HADES_TEST_REAL_GIT", real_git).env("HADES_GIT_STATUS_LOG", &count)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .current_dir(tree.path()).output().await.unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["data"]["completed"], 50);
+            assert_eq!(report["data"]["source_git"], expected);
+            for row in report["data"]["results"].as_array().unwrap() { assert_eq!(row["source_git"], expected); }
+            let rows = hades_core::db::query::query(&pool, "FOR d IN documents RETURN d.source_git", None, None, false, hades_core::db::query::ExecutionTarget::Reader).await.unwrap().results;
+            assert_eq!(rows.len(),50); for row in rows { assert_eq!(row,expected); }
+            assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(),1);
+            assert!(!tree.path().join(".hades-batch-state.json").exists());
+        }).await;
+    }
+
+    // Mutation after the first status makes re-observation during either phase
+    // detectable. MCP additionally proves the admission-to-child handoff (#186).
+    #[tokio::test]
+    async fn unified_and_mcp_share_one_repository_observation() {
+        with_temp_db("git_shared", Fixtures::Codebase, |pool| async move {
+            let services = tempfile::tempdir().unwrap();
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::write(tree.path().join("source.py"), "def symbol():\n    return 1\n").unwrap();
+            for name in ["a.md", "b.md"] { std::fs::write(tree.path().join(name), "Private document.").unwrap(); }
+            let commit = commit_fixture(tree.path());
+            let (path, real_git, count) = wrap_git(services.path());
+            let mutation = tree.path().join("observation-marker");
+            let extractor_socket = services.path().join("extract.sock");
+            let listener = tokio::net::UnixListener::bind(&extractor_socket).unwrap();
+            let incoming = futures::stream::unfold(listener, |listener| async { Some((listener.accept().await.map(|(s,_)|s),listener)) });
+            let _peer = Peer(tokio::spawn(async move {
+                tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor)).serve_with_incoming(incoming).await.unwrap();
+            }));
+            let embedder = Embedder::for_task("mixed").await;
+            let socket = services.path().join("daemon.sock");
+            let token = services.path().join("token"); std::fs::write(&token, "private-fixture-token").unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap(); drop(listener);
+            let child = cli_command(&pool, &embedder, &["daemon", "--socket", socket.to_str().unwrap(),
+                "--mcp-bind", &address.to_string(), "--mcp-token-file", token.to_str().unwrap(),
+                "--mcp-db-prefix", pool.database(), "--mcp-ingest-root", tree.path().to_str().unwrap()])
+                .env("HADES_EXTRACTOR_SOCKET", &extractor_socket).env("HADES_USE_GPU", "false").env("CUDA_VISIBLE_DEVICES", "")
+                .env("PATH", &path).env("HADES_TEST_REAL_GIT", &real_git).env("HADES_GIT_STATUS_LOG", &count)
+                .env("HADES_GIT_MUTATION", &mutation).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("TOKIO_WORKER_THREADS", "2").current_dir(tree.path())
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(services.path().join("daemon.log")).unwrap()).spawn().unwrap();
+            let mut daemon = PrivateDaemon { child, ingests:Vec::new() };
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                    assert!(daemon.child.try_wait().unwrap().is_none());
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            let mcp = PrivateMcp::connect(address).await;
+            // Two jobs in the same daemon must each take a fresh observation.
+            for (remote, dirty) in [(false,false), (true,false), (true,true)] {
+                if mutation.exists() { std::fs::remove_file(&mutation).unwrap(); }
+                if dirty { std::fs::write(tree.path().join("external-change"), "dirty before admission").unwrap(); }
+                std::fs::write(&count, "").unwrap();
+                let expected = json!({"commit":commit,"dirty":dirty});
+                let result = if remote {
+                    let started = mcp.call_tool("ingest_start", json!({"db":pool.database(),"path":tree.path(),"force":true})).await;
+                    assert_eq!(started["success"],true,"{started}");
+                    assert_eq!(started["data"]["source_git"],expected);
+                    let job = started["data"]["job_id"].as_str().unwrap();
+                    daemon.ingests.push((started["data"]["pid"].as_u64().unwrap() as u32, tree.path().to_owned()));
+                    let row = tokio::time::timeout(std::time::Duration::from_secs(30),async {
+                        loop {
+                            let status = mcp.call_tool("ingest_status",json!({"db":pool.database(),"job_id":job})).await;
+                            assert_eq!(status["success"],true,"{status}");
+                            let row = status["data"].clone();
+                            if matches!(row["status"].as_str(),Some("completed"|"failed")) { break row; }
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                    }).await.unwrap();
+                    assert_eq!(row["status"],"completed","{row}");
+                    assert_eq!(row["source_git"],expected);
+                    let stored = hades_core::db::crud::get_document(&pool,"hades_ingest_jobs",job).await.unwrap();
+                    assert_eq!(stored["result"],row["result"]);
+                    row["result"].clone()
+                } else {
+                    let output = cli_command(&pool,&embedder,&["ingest",tree.path().to_str().unwrap(),"--task","code","--force"])
+                        .env("HADES_EXTRACTOR_SOCKET",&extractor_socket).env("PATH",&path)
+                        .env("HADES_TEST_REAL_GIT",&real_git).env("HADES_GIT_STATUS_LOG",&count).env("HADES_GIT_MUTATION",&mutation)
+                        .env("GIT_CONFIG_GLOBAL","/dev/null").env("GIT_CONFIG_NOSYSTEM","1")
+                        .current_dir(tree.path()).output().await.unwrap();
+                    assert!(output.status.success(),"{output:?}");
+                    serde_json::from_slice(&output.stdout).unwrap()
+                };
+                assert_eq!(result["success"],true,"{result}");
+                for data in [&result["data"],&result["data"]["code"],&result["data"]["documents"]] { assert_eq!(data["source_git"],expected,"{result}"); }
+                for collection in ["codebase_files","documents"] {
+                    let rows = hades_core::db::query::query(&pool,"FOR d IN @@col RETURN d.source_git",Some(&json!({"@col":collection})),None,false,hades_core::db::query::ExecutionTarget::Reader).await.unwrap().results;
+                    assert_eq!(rows.len(),if collection=="documents" {2} else {1});
+                    for row in rows { assert_eq!(row,expected); }
+                }
+                assert!(mutation.exists(),"fixture must change Git state during this run");
+                assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(),1,"one status across admission and both phases");
+            }
+            unsafe { libc::kill(daemon.child.id().unwrap() as i32,libc::SIGTERM); }
+            assert!(daemon.child.wait().await.unwrap().success());
+        }).await;
+    }
+
     struct Peer(JoinHandle<()>);
     impl Drop for Peer { fn drop(&mut self) { self.0.abort(); } }
 

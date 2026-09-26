@@ -17,6 +17,8 @@ const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK 
 struct Envelope {
     version: u32,
     config: HadesConfig,
+    #[serde(default)]
+    provenance: crate::source_git::Snapshot,
     // These remain skipped in ordinary configuration YAML.
     password: Option<String>,
     cuda_visible_devices: Option<String>,
@@ -45,6 +47,12 @@ impl Write for LimitedWriter {
 pub struct Snapshot(Arc<File>);
 impl Snapshot {
     pub fn new(config: &HadesConfig) -> Result<Self> {
+        Self::with_provenance(config, crate::source_git::Snapshot::default())
+    }
+    pub fn with_provenance(
+        config: &HadesConfig,
+        provenance: crate::source_git::Snapshot,
+    ) -> Result<Self> {
         // SAFETY: constant NUL-terminated name and documented Linux flags.
         let fd = unsafe {
             libc::memfd_create(
@@ -76,7 +84,8 @@ impl Snapshot {
             "cannot restrict ingestion configuration"
         );
         let envelope = Envelope {
-            version: 1,
+            version: 2,
+            provenance,
             config: config.clone(),
             password: config.database.password.clone(),
             cuda_visible_devices: config.gpu.cuda_visible_devices.clone(),
@@ -117,6 +126,11 @@ impl Snapshot {
 /// Borrow the inherited FD, mark it CLOEXEC, and read through an owned duplicate.
 /// Never assume ownership of an arbitrary descriptor supplied by the caller.
 pub fn load_inherited(fd: i32) -> Result<HadesConfig> {
+    load_ingest(fd).map(|(config, _)| config)
+}
+
+/// Recover the same per-run observations captured by admission (#186).
+pub fn load_ingest(fd: i32) -> Result<(HadesConfig, crate::source_git::Snapshot)> {
     ensure!(fd >= 3, "invalid ingestion configuration descriptor");
     // SAFETY: fcntl validates the numeric descriptor without dereferencing it.
     let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
@@ -150,13 +164,13 @@ pub fn load_inherited(fd: i32) -> Result<HadesConfig> {
     let envelope: Envelope = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow!("invalid inherited ingestion configuration"))?;
     ensure!(
-        envelope.version == 1,
+        matches!(envelope.version, 1 | 2),
         "unsupported ingestion configuration version"
     );
     let mut config = envelope.config;
     config.database.password = envelope.password;
     config.gpu.cuda_visible_devices = envelope.cuda_visible_devices;
-    Ok(config)
+    Ok((config, envelope.provenance))
 }
 
 #[cfg(test)]

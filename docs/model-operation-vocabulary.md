@@ -294,3 +294,19 @@ Every failure still emits a WARN, which a direct CLI caller can capture from
 stderr. Daemon jobs capture only a bounded stderr tail, and successful job
 records do not store that tail. The bounded-summary contract does not promise
 a complete diagnostic archive for daemon/MCP jobs.
+
+### Consistent Git provenance for ingestion (#186)
+
+Each ingest run records one observation per repository top-level. Named-file
+batches prepare observations before checkpoint writes; unified ingestion shares
+those observations across its code and document phases. Daemon admission passes
+its observation to the child in the bounded, sealed configuration handoff, so
+job records and results use the same observation. Git subprocesses run outside
+async worker threads, and separate runs take fresh observations.
+
+Dirty state covers the worktree except the reserved `.hades-batch-state.json`
+at the run's working directory. Other files with that name remain visible.
+Checkpoint placement and resume behavior are unchanged. Nested repositories
+have separate observations; non-Git inputs carry null. Mixed-repository
+summaries carry null when their inputs' observations differ. This records an
+observation before ingestion, not an atomic snapshot of source contents.
