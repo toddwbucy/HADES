@@ -3,8 +3,11 @@
 //! Each function constructs a [`DaemonCommand`], calls [`dispatch`], and
 //! prints the result to stdout using the standard HADES JSON envelope.
 //! HADES has no compiled-in guard on which databases graph create/drop may
-//! write: ArangoDB ACL grants on the `hades` user are the gate, and
-//! production research databases are granted `ro` there.
+//! write. ArangoDB ACL grants on the `hades` user are the only gate, and they
+//! protect nothing unless the operator has set them: the bootstrap grants `rw`
+//! broadly (`config/hades.yaml`), and grants are not enforced at all when
+//! ArangoDB runs with authentication disabled. Restricting production
+//! databases to `ro` is a required deployment step, not a default.
 
 use anyhow::{Context, Result};
 
