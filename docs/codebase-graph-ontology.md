@@ -552,7 +552,125 @@ This cascade requires the `file_key` indices defined in Section 6.
 
 ---
 
-## 8. Relationship to Other Graphs
+## 8. Data Ownership
+
+The graph is **derived from source**. Every row belongs to exactly one of the
+owners below, and the owner decides what survives the next run. To change what
+the graph says, change what its owner reads, then re-run that owner. Editing a
+row by hand is the escape hatch in 8.3, not a workflow. Writes authored in the
+graph itself are proposed in #188 and are not built.
+
+### 8.1 Ingest-owned: the source file is the truth
+
+Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
+`codebase_chunks`, `codebase_embeddings`), the code edge collections
+(`codebase_defines_edges`, `codebase_calls_edges`, `codebase_implements_edges`,
+`codebase_imports_edges`), and the document profile's collections
+(`documents`, `chunks`, `embeddings`).
+
+- **Re-ingest replaces these rows.** It is incremental by `content_hash`: an
+  unchanged file is skipped, and a changed file is rewritten in one transaction
+  (`Replacement::store`, `crates/hades-cli/src/commands/codebase_persist.rs:44`).
+  Its symbols, chunks and embeddings are deleted by `file_key` and re-inserted,
+  so a symbol or chunk that left the source leaves the graph. Documents do the
+  same through `Pipeline::store`
+  (`crates/hades-core/src/pipeline/orchestrator.rs:428`). `--force` re-ingests
+  unchanged files too, on `hades ingest` and `hades codebase ingest` alike.
+- **Code files are re-processed in two further cases even when the hash matches**:
+  when an earlier run left `relationships_pending`, and when an embedder is
+  available and the file has fewer embeddings than chunks
+  (`check_unchanged`, `crates/hades-cli/src/commands/codebase_ingest.rs:2821`).
+  Document files that are not UTF-8, PDFs among them, carry no comparable hash
+  and are re-processed on every run (`crates/hades-cli/src/commands/ingest.rs:625`).
+- **Hand edits to these rows are overwritten** the next time their file is
+  re-ingested: file nodes of analyzed files, symbols, chunks, embeddings and
+  structural edges are written as full replaces, and a replaced node also loses
+  any `structural_embedding` that `graph-embed` added. An edit survives only
+  while its file is skipped. The one merge is the node of a file no analyzer
+  parses (raw text), which is updated rather than replaced, so extra fields on it
+  persist.
+- **A file's outgoing code edges are rebuilt.** Its structural `defines`,
+  `calls` and `implements` edges and all of its `imports` edges are deleted in
+  the file transaction (`codebase_persist.rs:55`) and rebuilt from the new
+  analysis. Semantic edges (from rust-analyzer, gopls, libclang) are kept
+  through that delete and replaced only for symbols whose semantic request
+  succeeded, so a failed or degraded enrichment leaves the previous semantic
+  edges in place rather than deleting them (#179, #184, #185). A structural
+  `calls` edge never overwrites a semantic one.
+- **Edges pointing into a re-ingested file from elsewhere are kept.** When a
+  symbol's key changes (it moved lines), the old and new keys are paired by
+  qualified name and position, and inbound `imports`, `calls` and `implements`
+  edges are re-pointed at the new key in the same transaction
+  (`pair_moved_symbol_keys`, `codebase_ingest.rs:2577`). A symbol that cannot
+  be paired (it was removed, or the count of same-named symbols changed) leaves
+  its inbound structural edges **dangling on purpose**: they record a real
+  dependency the unchanged caller will not re-derive. The run reports them as
+  `dangling_inbound_edges`, and re-ingesting the dependent or
+  `hades codebase prune-orphans` repairs them. Semantic edges whose endpoint
+  vanished are pruned (`prune_semantic_orphans`, `codebase_persist.rs:327`).
+- **A higher analysis tier is not replaced by a lower one.** A file whose new
+  analysis would be less precise is left untouched, even under `--force`, unless
+  `--allow-analysis-downgrade` is given.
+- **Deleting a source file does not delete its rows.** Ingest only visits files
+  that exist. `hades codebase retire` removes the rows of a file that is gone
+  from disk, and `hades codebase prune-orphans` sweeps children whose file node
+  is already gone. Section 7.3 predates both commands.
+
+Besides ingest, `graph-embed train` and `update` write a `structural_embedding`
+field onto node documents they embed, including `codebase_files` and
+`codebase_symbols`. That field is derived too, and re-ingest discards it as
+described above.
+
+### 8.2 Adapter-owned: the declaration is the truth
+
+Domain adapters own the domain collections they write. The worked example is
+`services/adapters/weavertools`, which writes the `wt_*` node collections
+(`wt_assertions`, `wt_terms`, `wt_axioms`, …), the `wt_*_edges` collections
+and `wt_ingest_report`, from `graph` blocks declared in the repository's
+markdown and from `//! conforms:` headers. Its `cites` edges attach to
+ingest's own `codebase_files` nodes, so run ingest first and the adapter after.
+
+To change an assertion, edit its declaration and re-run ingest and then the
+adapter. The adapter imports with `onDuplicate=replace`, so a changed
+declaration replaces its row and a hand edit to that row is lost. It does
+**not** retire rows: a declaration removed from the markdown leaves its old row
+in the database, and the report records that with
+`stale_retirement_performed: false`
+(`services/adapters/weavertools/write_graph.py:456`). Removing retired
+declarations needs a rebuild into a fresh database, as
+`services/adapters/weavertools/README.md` describes.
+
+### 8.3 Authored: the escape hatch
+
+Admin-tier commands (`hades db insert`, `db update`, `db delete`, `db aql`,
+and the rest of the `db` write set) can write any node or edge. They are
+reachable from the CLI and from the local Unix-socket daemon, whose peers get
+the Admin ceiling. They are not reachable from MCP.
+
+Nothing checks such a write against `hades_schema`: `db insert` requires only
+that each document is a JSON object (`db_insert`,
+`crates/hades-core/src/dispatch.rs:2132`), and ArangoDB itself checks only that
+an edge carries `_from` and `_to`. No provenance is recorded. A hand-authored
+row survives re-ingest only in a collection no ingest or adapter owns. In an
+ingest-owned collection it lasts until its file is next re-ingested.
+
+### 8.4 Agents over MCP change source, not the graph
+
+The MCP endpoint runs at the agent tier and has no tool that creates or edits a
+knowledge-graph node or edge. Its only writes are:
+
+- `create_database`, `db_schema_init` and `ingest_start`, which need
+  provisioning to be enabled and are bounded by the operator's database-name
+  prefixes and ingest roots (see `docs/mcp-deployment.md`);
+- `task_create` and `task_update`, which write Persephone kanban tasks in
+  `persephone_tasks` (and their activity log), not graph data.
+
+An agent changes the graph by changing a file on disk under an ingest root and
+running `ingest_start` over it. Authored writes over MCP are proposed in #188.
+
+---
+
+## 9. Relationship to Other Graphs
 
 The codebase graph is one named graph in the database. Other domain ontologies (e.g., a knowledge graph of academic papers, equations, or experiments) live as **separate named graphs** alongside it. They share no collections and no edges.
 
@@ -569,7 +687,7 @@ This bridge is explicitly **out of scope** for the codebase ontology. It belongs
 
 ---
 
-## 9. Structural Training Considerations
+## 10. Structural Training Considerations
 
 Structural training (both the transductive `rgcn` and the inductive
 `hetero_sage` architectures — selected by `SchemaMeta::model_type`) assigns a
@@ -595,7 +713,7 @@ relation_order: [
 
 ---
 
-## 10. Validation Rules
+## 11. Validation Rules
 
 These invariants must hold after any ingest run completes successfully:
 
@@ -632,7 +750,7 @@ Note: invariants 8–11 are enforced by ArangoDB's named graph vertex constraint
 
 ---
 
-## 11. Open Questions
+## 12. Open Questions
 
 ### Q1: Full-text index on chunk text?
 
@@ -642,7 +760,7 @@ ArangoDB supports `arangosearch` views for text search. Adding a view over `code
 
 ---
 
-## 12. Collection Summary
+## 13. Collection Summary
 
 ```text
 codebase_graph (Named Graph)

@@ -933,7 +933,9 @@ impl ServerHandler for HadesMcpServer {
             // What a client reads before it looks at a single tool, so it
             // carries the three things that otherwise cost a round trip each:
             // which profile to search, how the traversal graph is resolved,
-            // and that ingest is a job rather than a call.
+            // and that ingest is a job rather than a call. It also says the
+            // graph is source-derived, so an agent looking for an edit tool
+            // learns there is none before it searches (data ownership, #188).
             .with_instructions(
                 "HADES knowledge-graph tools. Every result is the HADES JSON \
              envelope: {success, data, error, error_code}. Start with `orient` to \
@@ -958,7 +960,10 @@ impl ServerHandler for HadesMcpServer {
              `ingest_start` need provisioning, which is off unless the operator \
              enabled it, and then bounded to specific name prefixes and specific \
              directories. A refusal names what would have been permitted, so read \
-             the error rather than retrying.",
+             the error rather than retrying.\n\n\
+             Changing the graph: the graph is derived from source. Tools read and \
+             ingest, and none edit nodes or edges; change a file on disk and \
+             ingest it.",
             )
     }
 }
