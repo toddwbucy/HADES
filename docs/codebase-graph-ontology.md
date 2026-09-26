@@ -576,10 +576,12 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
   `crates/hades-cli/src/commands/codebase_persist.rs:44`): its symbols, chunks
   and embeddings are deleted by `file_key` and re-inserted, so a symbol or chunk
   that left the source leaves the graph. That transaction is not the whole
-  refresh. Structural `calls`, `implements` and `imports` edges are written
-  afterwards by a separate relationship stage (`store_relationships`,
-  `codebase_persist.rs:96`), and semantic enrichment runs after that. If a later
-  stage fails, the file's core rows are already committed and the file is only
+  refresh. `calls` and `imports` edges are written afterwards by a separate
+  relationship stage (`store_relationships`, `codebase_persist.rs:96`, which
+  accepts only those two collections). Semantic enrichment runs after that and
+  is the only writer of `implements` edges (`store_lsp_extractions`,
+  `codebase_ingest.rs:3308`), so a successful relationship stage does not mean
+  `implements` was rebuilt. If a later stage fails, the file's core rows are already committed and the file is only
   partly refreshed; a failed relationship stage leaves `relationships_pending`
   set on the file so the next run redoes it. Documents do the
   same through `Pipeline::store`
@@ -598,14 +600,22 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
   while its file is skipped. The one merge is the node of a file no analyzer
   parses (raw text), which is updated rather than replaced, so extra fields on it
   persist.
-- **A file's outgoing code edges are rebuilt.** Its structural `defines`,
+- **A file's outgoing code edges are rebuilt.** Its non-semantic `defines`,
   `calls` and `implements` edges and all of its `imports` edges are deleted in
-  the file transaction (`codebase_persist.rs:55`) and rebuilt from the new
-  analysis by the relationship stage above. Semantic edges (from rust-analyzer, gopls, libclang) are kept
-  through that delete and replaced only for symbols whose semantic request
-  succeeded, so a failed or degraded enrichment leaves the previous semantic
-  edges in place rather than deleting them (#179, #184, #185). A structural
-  `calls` edge never overwrites a semantic one.
+  the file transaction (`codebase_persist.rs:55`). `defines` is rewritten in
+  that same transaction, `calls` and `imports` by the relationship stage, and
+  `implements` by enrichment. Semantic edges are kept through that delete. For
+  rust-analyzer and gopls they are replaced only for symbols whose semantic
+  request succeeded, so a failed or degraded enrichment leaves the previous
+  semantic edges in place rather than deleting them (#179, #184, #185). A
+  structural `calls` edge never overwrites a semantic one.
+- **Exception: stale libclang call edges survive (#194).** C, C++ and CUDA call
+  edges resolved by libclang (`cpp_call_edges`, `codebase_ingest.rs:530`) are
+  semantic, so the file transaction keeps them, and the relationship stage only
+  upserts the edges the new parse produced. A call removed from the source while
+  both symbols remain therefore stays in the graph after a successful re-ingest.
+  `prune_semantic_orphans` removes such an edge only once an endpoint symbol is
+  gone. Until #194 is fixed, treat libclang `calls` edges as possibly stale.
 - **Edges pointing into a re-ingested file from elsewhere are kept.** When a
   symbol's key changes (it moved lines), the old and new keys are paired by
   qualified name and position, and inbound `imports`, `calls` and `implements`
@@ -693,18 +703,17 @@ running `ingest_start` over it. Authored writes over MCP are proposed in #188.
 
 ## 9. Relationship to Other Graphs
 
-The codebase graph is one named graph in the database. Other domain ontologies (e.g., a knowledge graph of academic papers, equations, or experiments) live as **separate named graphs** alongside it. They share no collections and no edges.
+The code collections and edges above are the universal layer. A domain ontology is added to the same database as its own collections and edge collections, declared in its schema file and applied with `hades schema apply`; the codebase ontology itself never names them.
 
-Bridging between graphs (e.g., linking a code symbol to a mathematical equation it implements) would use a **new edge collection** — not by mixing vertices across graph boundaries:
+A domain layer joins the code layer through a **bridge edge collection** owned by the domain, not by adding domain fields to code vertices. The deployed example is WeaverTools (`services/adapters/weavertools/schema.yaml`):
 
 ```text
-Potential future bridge:
-  Edge collection: nl_code_equation_edges
-  _from: codebase_symbols (code callable)
-  _to:   {paper}_equations (mathematical equation)
+Bridge edge collection: wt_cites_edges
+  _from: codebase_files   (a source file with a `//! conforms:` header)
+  _to:   wt_assertions    (the assertion it claims to satisfy)
 ```
 
-This bridge is explicitly **out of scope** for the codebase ontology. It belongs to the schema of whatever domain graph is hosting the equations, and would be added there as a new edge definition in `hades_schema`.
+That schema registers the `wt_*` edge collections in **`codebase_graph` itself**, alongside the four code edge collections, so one named graph traverses code, declarations and the bridge between them, and structural training sees every relation. The adapter, not ingest, owns the bridge and the `wt_*` rows (§8.2). A domain that does not need to be traversed together with code may still define a separate named graph; that is a choice in its schema file, not a rule of this ontology.
 
 ---
 
