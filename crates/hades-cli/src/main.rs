@@ -220,7 +220,8 @@ enum Commands {
         /// Databases the MCP endpoint serves in addition to the
         /// configured default (comma-separated). Anything not listed is
         /// refused. A listed database that matches no `--mcp-db-prefix` is
-        /// read-only to the endpoint (#193); writes are also ACL-gated.
+        /// never seeded or ingested into (#193), though Agent-tier task
+        /// writes still reach it; writes are also ACL-gated.
         #[arg(long, env = "HADES_MCP_DBS", value_delimiter = ',')]
         mcp_dbs: Vec<String>,
 

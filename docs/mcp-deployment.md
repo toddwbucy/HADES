@@ -109,12 +109,13 @@ the other flag set. It also widens the read allowlist for matching
 names, because a database the endpoint just created is not on `--mcp-dbs` and
 would otherwise be refused the moment the client tried to use it.
 
-**Databases exposed for reading stay read-only.** The prefix is enforced in the
+**Databases exposed for reading cannot be provisioned.** The prefix is enforced in the
 service layer (`crates/hades-core/src/service.rs`, the provisioning-limits
 check) for all three commands, against the database each one would actually
 write, including the endpoint default when a client omits `db`. An `--mcp-dbs`
-entry or default that matches no prefix can be read but never seeded or
-ingested into (#193). So agents cannot resync such a database over MCP; they
+entry or default that matches no prefix is never seeded or ingested into
+(#193). It is not read-only, though: `task_create` and `task_update` are Agent
+tier and still write Persephone tasks into any served database. So agents cannot resync such a database over MCP; they
 ingest into databases they create under the prefix, and a production database
 is resynced from the host with the CLI.
 

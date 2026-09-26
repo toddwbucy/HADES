@@ -132,7 +132,8 @@ bounds:
 - a database it creates, seeds or ingests into must begin with one of the
   permitted prefixes. `db.schema.init` and `ingest.start` are checked against
   the database they would write, including the transport's default, so a
-  database served only for reading stays read-only (#193)
+  database served only for reading is never seeded or ingested into (#193).
+  Agent-tier task writes are not provisioning and are not held to the prefix
 - an ingest path must exist and canonicalize to somewhere inside one of the
   permitted roots, so `..` and symlinks cannot walk out
 
