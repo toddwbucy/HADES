@@ -116,7 +116,7 @@ request content can elevate a connection above what its transport grants.
 | **Agent**  | Safe, bounded reads and task management. No DDL, no raw AQL. |
 | **Internal** | System diagnostics and schema introspection.            |
 | **Admin**  | Unbounded writes, DDL, raw AQL, schema mutation.         |
-| **Provisioning** | `db.create_database`, `db.schema_init`, `ingest.start`. Creating a graph, seeding its schema and filling it. |
+| **Provisioning** | `db.create_database`, `db.schema.init`, `ingest.start`. Creating a graph, seeding its schema and filling it. |
 
 An `"agent"` session attempting an Internal or Admin command receives
 error code `ACCESS_DENIED`.
@@ -129,9 +129,11 @@ of being admin. A network transport has it only when the daemon was started with
 both `--mcp-db-prefix` and `--mcp-ingest-root`, and then only within those
 bounds:
 
-- a database it *creates* must begin with one of the permitted prefixes; the
-  prefix is not checked for `ingest.start` or `db.schema_init`, which act on
-  any database the transport serves
+- a database it creates, seeds or ingests into must begin with one of the
+  permitted prefixes. `db.schema.init` and `ingest.start` are checked against
+  the database they would write, including the transport's default, so a
+  database served only for reading is never seeded or ingested into (#193).
+  Agent-tier task writes are not provisioning and are not held to the prefix
 - an ingest path must exist and canonicalize to somewhere inside one of the
   permitted roots, so `..` and symlinks cannot walk out
 
@@ -476,14 +478,18 @@ definitions from `hades_schema`.
 Runtime ontology management. Schema definitions are stored per-database
 in the `hades_schema` collection.
 
-### `db.schema.init` (Admin)
+### `db.schema.init` (Provisioning)
 
-Initialize or reset the `hades_schema` collection with a seed ontology.
-Truncates existing schema before writing.
+Seed the `hades_schema` collection of a database that has none. A missing or
+empty collection is created and seeded; a collection that already holds
+documents is refused with `CONFLICT` rather than truncated (#193). On a
+provisioned network transport, the target database must match a provisioning
+prefix.
 
-| Param  | Type     | Default  | Description                                     |
-|--------|----------|----------|-------------------------------------------------|
-| `seed` | `string` | required | `"nl"` (Nested Learning) or `"empty"` (blank)   |
+| Param   | Type     | Default  | Description                                     |
+|---------|----------|----------|-------------------------------------------------|
+| `seed`  | `string` | required | `"empty"` (metadata only, no edge definitions); the only seed accepted today |
+| `force` | `bool`   | `false`  | Refused on every daemon transport. Replacing a populated schema is done on the host with `hades db schema init --force` |
 
 ### `db.schema.list` (Internal)
 

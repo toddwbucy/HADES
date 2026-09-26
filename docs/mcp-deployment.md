@@ -52,7 +52,9 @@ hades daemon \
 - `--mcp-bind` accepts loopback or RFC1918 only, and startup fails closed
   when the token file is missing or empty.
 - `--mcp-dbs` scopes what the endpoint serves. Anything not listed is
-  refused. Writes stay ACL-gated on the ArangoDB user regardless.
+  refused, except that with provisioning on, every existing database whose
+  name matches `--mcp-db-prefix` is served as well (below). Writes stay
+  ACL-gated on the ArangoDB user regardless.
 - The endpoint is **plain HTTP, not TLS**, whatever port it runs on. The
   bearer token crosses the network in the clear, which is acceptable on a
   trusted LAN and is the reason to prefer an SSH tunnel otherwise:
@@ -102,19 +104,30 @@ rather than concluding the capability does not exist.
 
 **Both flags are load-bearing, and both fail closed.**
 
-`--mcp-db-prefix` bounds what may be created. Without it, no database may be,
-even with the other flag set. It also widens the read allowlist for matching
-names, because a database the endpoint just created is not on `--mcp-dbs` and
-would otherwise be refused the moment the client tried to use it.
+`--mcp-db-prefix` bounds every database a provisioning command may write:
+the one `create_database` creates, and the one `db_schema_init` seeds or
+`ingest_start` writes into. Without it, no database may be written, even with
+the other flag set. It also widens the allowlist: every existing database whose
+name matches is served, whether or not this endpoint created it, to every tool
+including the reads and the Agent-tier task writes. That is so a database the
+endpoint just created, which is not on `--mcp-dbs`, is not refused the moment
+the client tries to use it; the cost is that any other matching database on the
+server is reachable too, so choose a prefix nothing else uses.
 
-**What the prefix does not bound.** It is checked only when a database is
-created (`crates/hades-core/src/service.rs`, the provisioning-limits match).
-`ingest_start` and `db_schema_init` run against any database the endpoint
-serves, including every `--mcp-dbs` entry that does not match the prefix, and
-`db_schema_init` truncates that database's `hades_schema` before seeding it. Do
-not rely on the prefix to protect a database exposed for reading; with
-provisioning on, list in `--mcp-dbs` only databases a client may also ingest
-into and re-seed.
+**Databases exposed for reading cannot be provisioned.** The prefix is enforced in the
+service layer (`crates/hades-core/src/service.rs`, the provisioning-limits
+check) for all three commands, against the database each one would actually
+write, including the endpoint default when a client omits `db`. An `--mcp-dbs`
+entry or default that matches no prefix is never seeded or ingested into
+(#193). It is not read-only, though: `task_create` and `task_update` are Agent
+tier and still write Persephone tasks into any served database. So agents cannot resync such a database over MCP; they
+ingest into databases they create under the prefix, and a production database
+is resynced from the host with the CLI.
+
+**Seeding never replaces a schema.** `db_schema_init` refuses a database whose
+`hades_schema` already holds documents, with `CONFLICT`, on every transport.
+Replacing one is an operator decision, made on the host with
+`hades db schema init --seed empty --force`.
 
 `--mcp-ingest-root` bounds what may be read. Ingest hands the daemon a path on
 its *own* filesystem, so without this a bearer token could have it read

@@ -218,12 +218,17 @@ enum Commands {
         mcp_token_file: Option<std::path::PathBuf>,
 
         /// Databases the MCP endpoint serves in addition to the
-        /// configured default (comma-separated). Anything not listed is
-        /// refused — remote reads are scoped, writes stay ACL-gated.
+        /// configured default (comma-separated). Anything else is refused,
+        /// except that with provisioning on, every existing database whose
+        /// name matches `--mcp-db-prefix` is served too, for reads and task
+        /// writes as well as provisioning. A listed database that matches no `--mcp-db-prefix` is
+        /// never seeded or ingested into (#193), though Agent-tier task
+        /// writes still reach it; writes are also ACL-gated.
         #[arg(long, env = "HADES_MCP_DBS", value_delimiter = ',')]
         mcp_dbs: Vec<String>,
 
-        /// Database-name prefixes the MCP endpoint may CREATE, e.g. `bident_`.
+        /// Database-name prefixes the MCP endpoint may provision, e.g. `bident_`:
+        /// the only databases it may create, seed or ingest into (#193).
         ///
         /// Provisioning is off unless this and `--mcp-ingest-root` are both
         /// given. Granting it lets a bearer token create databases, which is

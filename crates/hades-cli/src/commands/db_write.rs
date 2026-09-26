@@ -1,8 +1,12 @@
 //! Native Rust handlers for `hades db` write commands.
 //!
 //! Each function validates inputs, constructs a [`DaemonCommand`], calls
-//! [`dispatch`], and prints the result to stdout.  Write commands enforce
-//! the database safety guard (production databases are read-only).
+//! [`dispatch`], and prints the result to stdout. HADES has no compiled-in
+//! writable-database allowlist. ArangoDB ACL grants on the `hades` user are
+//! the only gate, and they protect nothing unless the operator has set them:
+//! the bootstrap grants `rw` broadly (`config/hades.yaml`), and grants are not
+//! enforced at all when ArangoDB runs with authentication disabled. Restricting
+//! production databases to `ro` is a required deployment step, not a default.
 //!
 //! `create-database` is CLI-only and bypasses dispatch.
 

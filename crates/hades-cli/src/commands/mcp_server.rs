@@ -177,10 +177,12 @@ type DbEntry = (Arc<HadesConfig>, Arc<ArangoPool>);
 /// take an optional `db` so one endpoint can serve both the knowledge
 /// graph and the task board. The allowlist defaults to the configured
 /// database alone — parity with the Unix socket — and widens only via
-/// `--mcp-dbs`. Without it, an authenticated LAN agent could read every
-/// database the `hades` ArangoDB user can reach, including production
-/// research databases that are ro-readable by design. ArangoDB ACLs
-/// remain the write gate; the allowlist scopes remote *reads*.
+/// `--mcp-dbs` and, when provisioning is on, to every database whose name
+/// matches a provisioning prefix. Without the allowlist, an authenticated LAN
+/// agent could read every database the `hades` ArangoDB user can reach,
+/// including production research databases. ArangoDB ACLs remain the only
+/// write gate, and only where the operator has restricted them; the allowlist
+/// scopes remote *reads*.
 struct PoolCache {
     base_config: HadesConfig,
     default_db: String,
@@ -961,10 +963,11 @@ impl ServerHandler for HadesMcpServer {
              Limits: this endpoint runs at the agent access tier, so raw AQL, \
              purge, insert and graph drop are unavailable. `create_database`, \
              `db_schema_init` and `ingest_start` need provisioning, which is off unless the operator \
-             enabled it. `create_database` is then bounded to specific name \
-             prefixes and `ingest_start` to specific directories; `ingest_start` \
-             and `db_schema_init` act on any database this endpoint serves, and \
-             `db_schema_init` replaces that database's existing schema. A refusal names what would have been permitted, so read \
+             enabled it. All three then act only on databases whose names match \
+             the operator's provisioning prefixes, including when `db` is omitted, \
+             and `ingest_start` reads only from specific directories. \
+             `db_schema_init` seeds only a database with no schema yet; it never \
+             replaces one. A refusal names what would have been permitted, so read \
              the error rather than retrying.\n\n\
              Changing the graph: the graph is derived from source. No tool edits a \
              node or edge directly. `ingest_start` rewrites the rows and edges the \
@@ -1283,7 +1286,7 @@ mod tests {
         // Default database resolves.
         assert!(cache.entry_for(None).await.is_ok());
         assert!(cache.entry_for(Some("bident_burn")).await.is_ok());
-        // Anything else — including a ro-readable production name — is
+        // Anything else — including a production database name — is
         // refused before any pool is built.
         let err = cache.entry_for(Some("NestedLearning")).await.unwrap_err();
         assert!(err.contains("not served"), "unexpected error: {err}");

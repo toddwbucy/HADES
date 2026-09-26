@@ -332,7 +332,7 @@ pub async fn handle_request(
     //
     // A provisioning write may only land in a database this connection could
     // have created. Checking only the name `db.create_database` is given left
-    // `ingest.start` and `db.schema_init` free to write into any database the
+    // `ingest.start` and `db.schema.init` free to write into any database the
     // transport served, including the MCP default that is exposed only for
     // reading: one `db_schema_init` with no `db` wiped a production schema
     // (#193). `ingest.start` writes into the config's database and

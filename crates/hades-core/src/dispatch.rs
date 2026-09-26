@@ -425,7 +425,7 @@ pub struct DbSchemaInitParams {
     /// `hades_schema` collection with metadata only and no edge definitions.
     pub seed: String,
     /// Replace a `hades_schema` that already holds documents. Without it a
-    /// populated schema is refused, because seeding truncates the collection
+    /// populated schema is refused, because replacing it truncates the collection
     /// and with it every edge definition and graph registration (#193).
     ///
     /// Only the admin CLI sets this: `service::handle_request` refuses it on
@@ -2865,7 +2865,7 @@ mod handlers {
             [] => Err(HandlerError::InvalidParameter {
                 name: "graph".into(),
                 reason: "this database has no named graph, so there is nothing to \
-                         traverse. Seed one with db.schema_init, or check the \
+                         traverse. Seed one with db.schema.init, or check the \
                          database name."
                     .into(),
             }),
@@ -6521,7 +6521,7 @@ mod handlers {
             })?;
         if existing > 0 && !force {
             return Err(HandlerError::Conflict(format!(
-                "hades_schema in database '{}' already holds {existing} documents; \
+                "hades_schema in database '{}' already holds {existing} document(s); \
                  seeding would replace its edge definitions and graph registrations. \
                  Refused on every daemon transport. An operator can replace it with \
                  `hades db schema init --seed {seed} --force`",
