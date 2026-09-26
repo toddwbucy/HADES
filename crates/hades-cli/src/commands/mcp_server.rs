@@ -179,8 +179,8 @@ type DbEntry = (Arc<HadesConfig>, Arc<ArangoPool>);
 /// database alone — parity with the Unix socket — and widens only via
 /// `--mcp-dbs` and, when provisioning is on, to every database whose name
 /// matches a provisioning prefix. Without the allowlist, an authenticated LAN
-/// agent could read every database the `hades` ArangoDB user can reach, including production
-/// research databases that are ro-readable by design. ArangoDB ACLs
+/// agent could read every database the `hades` ArangoDB user can reach,
+/// including production research databases that are ro-readable by design. ArangoDB ACLs
 /// remain the write gate; the allowlist scopes remote *reads*.
 struct PoolCache {
     base_config: HadesConfig,
