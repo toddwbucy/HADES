@@ -66,6 +66,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- `hades codebase drift` no longer reports raw-text rows as stale when the
+  ingest's `--unparsed-ext` is omitted: it reads the extensions of rows stored as
+  raw text from the graph and discovers them itself, and an explicit
+  `--unparsed-ext` adds to that set (#164).
+
 - Retire stale libclang call edges: a C, C++ or CUDA call removed from the
   source now disappears on the next successful re-ingest, because the
   relationship stage replaces the libclang `calls` edges of every file libclang
