@@ -92,7 +92,9 @@ hades daemon \
   --mcp-ingest-root /opt/weavertools
 ```
 
-Three tools appear: `create_database`, `ingest_start`, `ingest_status`. They are
+Three tools are Provisioning tier: `create_database`, `db_schema_init` and
+`ingest_start` (`DaemonCommand::access_tier`, `crates/hades-core/src/dispatch.rs`).
+`ingest_status` is Agent tier, so any client may poll a job. The three are
 advertised on every endpoint and authorized on none by default, so a client
 without provisioning gets `ACCESS_DENIED` naming what would have been permitted
 rather than concluding the capability does not exist.
@@ -122,7 +124,7 @@ listed root, and a path that does not exist is refused rather than guessed at.
 
 **What this does not change.** The tier ceiling stays at Agent, so raw AQL,
 `db.purge`, `db.insert` and `db.graph.drop` remain unavailable to the endpoint.
-Provisioning grants two commands, not a promotion.
+Provisioning grants three commands, not a promotion.
 
 **What it assumes.** That ArangoDB is enforcing its own access control. If the
 instance runs with `authentication = false`, the daemon can reach every database
