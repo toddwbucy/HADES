@@ -180,8 +180,9 @@ type DbEntry = (Arc<HadesConfig>, Arc<ArangoPool>);
 /// `--mcp-dbs` and, when provisioning is on, to every database whose name
 /// matches a provisioning prefix. Without the allowlist, an authenticated LAN
 /// agent could read every database the `hades` ArangoDB user can reach,
-/// including production research databases that are ro-readable by design. ArangoDB ACLs
-/// remain the write gate; the allowlist scopes remote *reads*.
+/// including production research databases. ArangoDB ACLs remain the only
+/// write gate, and only where the operator has restricted them; the allowlist
+/// scopes remote *reads*.
 struct PoolCache {
     base_config: HadesConfig,
     default_db: String,
@@ -1285,7 +1286,7 @@ mod tests {
         // Default database resolves.
         assert!(cache.entry_for(None).await.is_ok());
         assert!(cache.entry_for(Some("bident_burn")).await.is_ok());
-        // Anything else — including a ro-readable production name — is
+        // Anything else — including a production database name — is
         // refused before any pool is built.
         let err = cache.entry_for(Some("NestedLearning")).await.unwrap_err();
         assert!(err.contains("not served"), "unexpected error: {err}");
