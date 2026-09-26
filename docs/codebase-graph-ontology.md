@@ -624,7 +624,10 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
   be paired (it was removed, or the count of same-named symbols changed) leaves
   its inbound structural edges **dangling on purpose**: they record a real
   dependency the unchanged caller will not re-derive. The run reports them as
-  `dangling_inbound_edges`, and re-ingesting the dependent or
+  `dangling_inbound_edges`, and re-ingesting the dependent with
+  `codebase ingest --force` over the same root (a plain re-ingest skips it,
+  because its own content hash did not change;
+  `crates/hades-cli/src/commands/codebase.rs:49-54`) or
   `hades codebase prune-orphans` repairs them. Semantic edges whose endpoint
   vanished are pruned (`prune_semantic_orphans`, `codebase_persist.rs:327`).
 - **A higher analysis tier is not replaced by a lower one.** A file whose new
