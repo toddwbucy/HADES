@@ -2,8 +2,9 @@
 //!
 //! Each function constructs a [`DaemonCommand`], calls [`dispatch`], and
 //! prints the result to stdout using the standard HADES JSON envelope.
-//! Graph create/drop enforce the database safety guard (production
-//! databases are read-only).
+//! HADES has no compiled-in guard on which databases graph create/drop may
+//! write: ArangoDB ACL grants on the `hades` user are the gate, and
+//! production research databases are granted `ro` there.
 
 use anyhow::{Context, Result};
 
