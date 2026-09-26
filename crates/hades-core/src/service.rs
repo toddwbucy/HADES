@@ -329,7 +329,48 @@ pub async fn handle_request(
     // provision; these say what it may name. Enforced here rather than in the
     // handler because it is authorization, and authorization belongs beside the
     // policy that granted it, not beside the operation that obeys it.
+    //
+    // A provisioning write may only land in a database this connection could
+    // have created. Checking only the name `db.create_database` is given left
+    // `ingest.start` and `db.schema_init` free to write into any database the
+    // transport served, including the MCP default that is exposed only for
+    // reading: one `db_schema_init` with no `db` wiped a production schema
+    // (#193). `ingest.start` writes into the config's database and
+    // `db.schema.init` through the pool, so both names are checked.
+    if matches!(
+        cmd,
+        DaemonCommand::DbSchemaInit(_) | DaemonCommand::IngestStart(_)
+    ) {
+        let targets = [Some(pool.database()), config.database.name.as_deref()];
+        if let Some(name) = targets
+            .into_iter()
+            .flatten()
+            .find(|name| !policy.permits_database(name))
+        {
+            return DaemonResponse::err(
+                "ACCESS_DENIED",
+                format!(
+                    "provisioning writes may target only a database this endpoint may \
+                     create; '{name}' matches no provisioning prefix. Permitted prefixes: {}",
+                    describe_prefixes(&policy.provisioning.database_prefixes),
+                ),
+            )
+            .with_request_id(request_id);
+        }
+    }
     match &cmd {
+        // Replacing a populated schema is an operator decision, taken at the
+        // CLI (`hades db schema init --force`), which dispatches directly. No
+        // daemon transport carries it, the local socket included (#193).
+        DaemonCommand::DbSchemaInit(p) if p.force => {
+            return DaemonResponse::err(
+                "ACCESS_DENIED",
+                "db.schema.init does not accept force over the daemon protocol; \
+                 replace a populated schema with `hades db schema init --force` \
+                 on the database host",
+            )
+            .with_request_id(request_id);
+        }
         DaemonCommand::DbCreateDatabase(p) if !policy.permits_database(&p.name) => {
             return DaemonResponse::err(
                 "ACCESS_DENIED",
@@ -395,6 +436,7 @@ pub fn handler_error_code(e: &HandlerError) -> &'static str {
         HandlerError::MaterializationFailed { .. } => "MATERIALIZATION_FAILED",
         HandlerError::SearchOverloaded => "SEARCH_OVERLOADED",
         HandlerError::ServiceError(_) => "SERVICE_ERROR",
+        HandlerError::Conflict(_) => "CONFLICT",
     }
 }
 
@@ -775,6 +817,104 @@ mod tests {
         let policy = ConnectionPolicy::local_admin();
         assert!(policy.permits_database("anything"));
         assert!(policy.permits_ingest_path(Path::new("/")));
+    }
+}
+
+#[cfg(test)]
+mod provisioning_target_tests {
+    //! A provisioning write may only land in a database the connection could
+    //! have created, and no daemon transport may replace a populated schema
+    //! (#193). Every refusal here happens before the database is touched.
+    use super::*;
+    use crate::cursor_mock;
+    use serde_json::json;
+
+    fn bident_only() -> ConnectionPolicy {
+        ConnectionPolicy::agent_with_provisioning(ProvisioningLimits {
+            database_prefixes: vec!["bident_".to_string()],
+            ingest_roots: vec![std::env::temp_dir()],
+        })
+    }
+
+    async fn refused(policy: ConnectionPolicy, database: Option<&str>, request: Value) -> String {
+        let mut config = HadesConfig::default();
+        config.database.name = database.map(str::to_string);
+        // The mock's database is "fixture", which matches no "bident_" prefix.
+        let mut mock = cursor_mock::Mock::new(Vec::new()).await;
+        let payload = serde_json::to_vec(&request).unwrap();
+        let resp = handle_request(
+            &mock.pool,
+            &config,
+            policy,
+            &payload,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(!resp.success, "{resp:?}");
+        assert_eq!(
+            resp.error_code.as_deref(),
+            Some("ACCESS_DENIED"),
+            "{resp:?}"
+        );
+        assert!(
+            mock.events.try_recv().is_err(),
+            "refused provisioning write reached the database"
+        );
+        resp.error.unwrap_or_default()
+    }
+
+    fn schema_init(force: bool) -> Value {
+        json!({"command":"db.schema.init","params":{"seed":"empty","force":force}})
+    }
+
+    fn ingest_start() -> Value {
+        json!({"command":"ingest.start",
+            "params":{"path": std::env::temp_dir().display().to_string()}})
+    }
+
+    #[tokio::test]
+    async fn provisioning_writes_refuse_a_database_outside_the_prefixes() {
+        // Named (config carries it) and defaulted (only the pool knows it) alike.
+        for database in [Some("fixture"), None] {
+            for request in [schema_init(false), ingest_start()] {
+                let error = refused(bident_only(), database, request).await;
+                assert!(error.contains("'fixture'"), "{error}");
+                assert!(error.contains("matches no provisioning prefix"), "{error}");
+                assert!(error.contains("bident_"), "{error}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_is_refused_when_its_config_database_is_outside_the_prefixes() {
+        // `ingest.start` writes into the config's database, so a permitted pool
+        // name does not cover a production database named in the config.
+        let policy = ConnectionPolicy::agent_with_provisioning(ProvisioningLimits {
+            database_prefixes: vec!["fix".to_string()],
+            ingest_roots: vec![std::env::temp_dir()],
+        });
+        let error = refused(policy, Some("WeaverTools_v6"), ingest_start()).await;
+        assert!(error.contains("'WeaverTools_v6'"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn no_daemon_transport_may_force_a_schema_reseed() {
+        for policy in [ConnectionPolicy::local_admin(), bident_only()] {
+            let error = refused(policy, Some("fixture"), schema_init(true)).await;
+            assert!(
+                error.contains("hades db schema init --force") || error.contains("prefix"),
+                "{error}"
+            );
+        }
+        // On the local socket, where every database is provisionable, the
+        // refusal is the force rule itself rather than the prefix.
+        let error = refused(
+            ConnectionPolicy::local_admin(),
+            Some("fixture"),
+            schema_init(true),
+        )
+        .await;
+        assert!(error.contains("does not accept force"), "{error}");
     }
 }
 
