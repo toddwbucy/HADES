@@ -88,6 +88,20 @@ RECORD_LINE = re.compile(r"^[a-z][a-z-]*: ")
 
 
 
+FRONT_MATTER_MAX_LINES = 200
+# A line that can occur inside a YAML front-matter block: a comment, a mapping
+# key (plain, double- or single-quoted) followed by `:`, an explicit `? ` key
+# and its `: ` value, a list item, a flow collection, or an indented continuation of any of those.
+YAML_LINE = re.compile(r"""^(?:
+    \#                                       # comment
+  | [ \t]                                    # indented continuation
+  | -(?:[ \t]|$)                             # list item
+  | [?:](?:[ \t]|$)                          # explicit key and its value
+  | [\[{]                                    # flow collection
+  | (?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s\#:\[\]{},][^:]*?)[ \t]*:(?:[ \t]|$)   # key:
+)""", re.VERBOSE)
+
+
 def _headings(text: str):
     """Markdown headings outside fenced code, with source offsets (#174)."""
     headings = []
@@ -98,23 +112,23 @@ def _headings(text: str):
     # YAML's closing --- is not a Setext underline for its last field (#174).
     # Keep original offsets so declarations retain their source locations.
     #
-    # Recognized by shape, not by key syntax (#189). Matching key lines missed
-    # one valid YAML style per review round (quoted keys, flow mappings), and
-    # each miss turned the closer into a Setext underline for every later node.
-    # A leading `---` opens front matter when a `---` or `...` closer arrives
-    # before any blank line; a thematic break followed by a paragraph meets a
-    # blank line first, so it stays prose. A `#` line does not end the block:
-    # it is a YAML comment, which front matter commonly carries. The case given
-    # up is a thematic break, an ATX heading and a second `---` with no blank
-    # line between them, which reads as front matter; that is rare.
+    # A leading `---` opens front matter when a `---` or `...` closer follows
+    # within FRONT_MATTER_MAX_LINES and every non-blank line between could be
+    # YAML (#189). The test rejects on the first line that cannot be YAML
+    # rather than requiring one of a list of key shapes, which is what missed
+    # quoted keys and flow mappings before. Blank lines and `#` comments are
+    # YAML, so spaced and commented metadata is recognized. A thematic break
+    # followed by prose meets a prose line and stays prose. Accepted loss: a
+    # thematic break whose first paragraph is a line with a colon (`Note: ...`),
+    # followed later by another `---`, reads as front matter.
     if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
-        for end in range(1, len(lines)):
+        for end in range(1, min(len(lines), FRONT_MATTER_MAX_LINES + 1)):
             body = lines[end].rstrip()
             if body in ("---", "..."):
                 offset = sum(map(len, lines[:end + 1]))
                 lines = lines[end + 1:]
                 break
-            if not body:
+            if body and not YAML_LINE.match(body):
                 break
     for line in lines:
         stripped = line.rstrip("\r\n")

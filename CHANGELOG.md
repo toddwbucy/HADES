@@ -79,10 +79,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   (#194).
 
 - Recognize WeaverTools front matter by its shape rather than its key syntax: a
-  leading `---` block closed by `---` or `...` before any blank line is front
-  matter whatever YAML style it uses (flow mappings, sequences, scalars and
-  `#` comments included), and a leading thematic break followed by prose keeps
-  its headings (#189).
+  leading `---` block is front matter when a `---` or `...` closer follows within
+  200 lines and every non-blank line between could be YAML (a comment, a key, a
+  list item, a flow collection or an indented continuation), so blank lines,
+  comments and flow styles are recognized, and a leading thematic break followed
+  by prose keeps its headings (#189).
 
 - Describe the enforced provisioning boundary: the MCP instructions, CLI help,
   `mcp-deployment.md`, ontology section 8.4 and `daemon-protocol.md` said
