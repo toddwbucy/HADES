@@ -107,6 +107,11 @@ pub(super) struct SemanticReplacement {
     pub analyzer: &'static str,
     /// Files whose analysis by this producer succeeded this run.
     pub file_keys: Vec<String>,
+    /// Files whose symbols the producer could resolve targets against this
+    /// run. Only edges into these are replaced: an edge to a target outside the
+    /// run (a single-file ingest calling into an earlier-ingested file) cannot
+    /// be re-derived, so it is kept rather than silently dropped.
+    pub target_file_keys: Vec<String>,
 }
 
 /// Commit the complete relationship stage only if every contributing file still
@@ -144,9 +149,10 @@ pub(super) async fn store_relationships(
                 continue;
             }
             query(&client,
-                "FOR s IN @@symbols FILTER s.file_key IN @keys FOR e IN @@edges FILTER e._from == s._id FILTER e.analyzer == @analyzer FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' REMOVE e IN @@edges",
+                "FOR s IN @@symbols FILTER s.file_key IN @keys FOR e IN @@edges FILTER e._from == s._id FILTER e.analyzer == @analyzer FILTER e.resolution == 'semantic' OR e.analysis_tier == 'semantic' LET target = DOCUMENT(e._to) FILTER target != null AND target.file_key IN @scope REMOVE e IN @@edges",
                 json!({"@symbols":CODEBASE.symbols,"@edges":replacement.collection,
-                    "keys":replacement.file_keys,"analyzer":replacement.analyzer}), false).await
+                    "keys":replacement.file_keys,"scope":replacement.target_file_keys,
+                    "analyzer":replacement.analyzer}), false).await
                 .map_err(|error| ArangoError::Request(format!(
                     "failed to replace {} {} relationships: {error}", replacement.analyzer, replacement.collection)))?;
         }
@@ -685,6 +691,51 @@ mod tests {
                 assert!(error.to_string().contains("changed during preparation"));
             }
             }
+        }).await;
+    }
+
+    /// A producer's replacement covers only targets it could resolve this run
+    /// (#194). A target file outside that scope, because it was not in the run
+    /// or because its own analysis failed and it was not preserved, keeps the
+    /// caller's edge into it; a target inside the scope has it replaced.
+    #[tokio::test]
+    async fn semantic_replacement_spares_edges_into_files_outside_its_scope() {
+        with_temp_db("replacement_scope", Fixtures::Codebase, |pool| async move {
+            for (key, file) in [("a_sym", "file_a"), ("b_sym", "file_b")] {
+                pool.writer().post("document/codebase_files", &json!({"_key":file})).await.unwrap();
+                pool.writer().post("document/codebase_symbols", &json!({"_key":key,"file_key":file})).await.unwrap();
+            }
+            let edge = json!({"_key":"a_calls_b","_from":"codebase_symbols/a_sym","_to":"codebase_symbols/b_sym",
+                "analyzer":"libclang","resolution":"semantic","analysis_tier":"semantic"});
+            pool.writer().post("document/codebase_calls_edges", &edge).await.unwrap();
+            let replace = |scope: &[&str]| vec![SemanticReplacement {
+                collection: CODEBASE.calls_edges,
+                analyzer: "libclang",
+                file_keys: vec!["file_a".to_owned()],
+                target_file_keys: scope.iter().map(|k| (*k).to_owned()).collect(),
+            }];
+            let present = |pool: ArangoPool| async move {
+                match pool.reader().get("document/codebase_calls_edges/a_calls_b").await {
+                    Ok(_) => true,
+                    Err(e) if e.is_not_found() => false,
+                    Err(e) => panic!("{e}"),
+                }
+            };
+
+            // file_b is outside the scope: a's analysis said nothing about it.
+            store_relationships(&pool, Default::default(), replace(&["file_a"]), Vec::new()).await.unwrap();
+            assert!(present(pool.clone()).await, "an edge into an out-of-scope file was dropped");
+
+            // Another producer's edge is never touched by libclang's replacement.
+            let mut other = edge.clone();
+            other["analyzer"] = json!("rust-analyzer");
+            other["_key"] = json!("a_calls_b_ra");
+            pool.writer().post("document/codebase_calls_edges", &other).await.unwrap();
+
+            // file_b in scope and a reported no call into it: replaced.
+            store_relationships(&pool, Default::default(), replace(&["file_a", "file_b"]), Vec::new()).await.unwrap();
+            assert!(!present(pool.clone()).await, "an in-scope stale edge survived");
+            pool.reader().get("document/codebase_calls_edges/a_calls_b_ra").await.unwrap();
         }).await;
     }
 

@@ -74,7 +74,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Retire stale libclang call edges: a C, C++ or CUDA call removed from the
   source now disappears on the next successful re-ingest, because the
   relationship stage replaces the libclang `calls` edges of every file libclang
-  analyzed. A file libclang could not analyze keeps its earlier edges (#194).
+  analyzed, for targets within the run. A file libclang could not analyze keeps
+  its earlier edges, and so does a call into a file outside a partial run
+  (#194).
 
 - Recognize WeaverTools front matter by its shape rather than its key syntax: a
   leading `---` block closed by `---` or `...` before any blank line is front

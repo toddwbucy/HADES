@@ -614,9 +614,14 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
   by enrichment, so that stage replaces them itself: for every file whose
   libclang analysis succeeded, it removes the file's symbols' earlier libclang
   `calls` edges in the same transaction that writes the new ones
-  (`SemanticReplacement`, `codebase_persist.rs`). A call removed from the source
-  disappears on the next successful re-ingest. A file libclang could not analyze
-  is not in that set, so its earlier edges stand. libclang
+  (`SemanticReplacement`, `codebase_persist.rs`). Only edges whose target lies
+  in the run's resolution scope, the C-family files the run analyzed or
+  preserved, are replaced, since only those targets could be re-derived. A call
+  removed from the source disappears on the next successful re-ingest when its
+  target is in scope. A file libclang could not analyze is not in the replaced
+  set, so its earlier edges stand. **Accepted limit:** a call removed to a
+  target outside the run (a single-file or subdirectory ingest calling into an
+  earlier-ingested file) survives until an ingest of the whole tree. libclang
   writes no `implements` edges, and no other producer writes semantic edges
   through the relationship stage.
 - **Edges pointing into a re-ingested file from elsewhere are kept.** When a

@@ -100,3 +100,57 @@ async fn removed_libclang_call_disappears_only_after_a_successful_reanalysis() {
         .await;
     }
 }
+
+async fn libclang_call_targets(pool: &ArangoPool) -> Vec<Value> {
+    hades_core::db::query::query(
+        pool,
+        "FOR e IN codebase_calls_edges FILTER e.analyzer == 'libclang' LET t = DOCUMENT(e._to) SORT e._key RETURN {caller: e.caller, callee: e.callee, target: DOCUMENT(CONCAT('codebase_files/', t.file_key)).path}",
+        None,
+        None,
+        false,
+        hades_core::db::query::ExecutionTarget::Writer,
+    )
+    .await
+    .unwrap()
+    .results
+}
+
+#[tokio::test]
+async fn single_file_libclang_reingest_keeps_calls_into_files_outside_the_run() {
+    // A single-file ingest resolves calls only against the files in that run,
+    // so an edge into an earlier-ingested file cannot be re-derived there and
+    // must not be dropped (#194 review). The target is a declaration in a
+    // header, so the call genuinely crosses files.
+    const HEADER: &str = "int b();\n";
+    const CALLER: &str = "#include \"b.h\"\nint a() { return b(); }\n";
+    const CALLEE: &str = "#include \"b.h\"\nint b() { return 1; }\n";
+    let probe = hades_core::code::analyze_with_fallback(
+        "int b() { return 1; }\nint a() { return b(); }\n",
+        hades_core::code::Language::Cpp,
+        "probe.cpp",
+        &hades_core::code::AnalysisOptions::default(),
+    );
+    if !matches!(probe, hades_core::code::AnalyzerOutcome::Success(ref a) if a.analyzer == "libclang") {
+        eprintln!("skipping: libclang cannot analyze the fixture here");
+        return;
+    }
+    with_temp_db("libclang_scope", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        let tree = tempfile::tempdir().unwrap();
+        let caller = tree.path().join("a.cpp");
+        std::fs::write(tree.path().join("b.h"), HEADER).unwrap();
+        std::fs::write(&caller, CALLER).unwrap();
+        std::fs::write(tree.path().join("b.cpp"), CALLEE).unwrap();
+        let root = tree.path().to_str().unwrap().to_owned();
+        cli(&pool, &embedder, &["codebase", "ingest", &root], true).await;
+        let expected = vec![json!({"caller":"a","callee":"b","target":"b.h"})];
+        assert_eq!(libclang_call_targets(&pool).await, expected);
+
+        // The caller changes but still calls b(); only a.cpp is in this run,
+        // so b.h is outside the resolver's scope.
+        std::fs::write(&caller, format!("{CALLER}// edited\n")).unwrap();
+        cli(&pool, &embedder, &["codebase", "ingest", caller.to_str().unwrap()], true).await;
+        assert_eq!(libclang_call_targets(&pool).await, expected, "a call into b.h was dropped");
+    })
+    .await;
+}

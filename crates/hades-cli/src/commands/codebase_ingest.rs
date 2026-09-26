@@ -563,6 +563,13 @@ pub async fn run_phase(
             collection: CODEBASE.calls_edges,
             analyzer: "libclang",
             file_keys: std::mem::take(&mut imports.cpp_semantic_file_keys),
+            // The resolver's scope: every C-family file in this run, analyzed
+            // or preserved (#194 review).
+            target_file_keys: imports
+                .cpp_file_symbols
+                .keys()
+                .map(|rel_path| keys::scoped_file_key(namespace, rel_path))
+                .collect(),
         }],
         vec![
             (CODEBASE.imports_edges, py_import_edges.clone()),
