@@ -119,8 +119,8 @@ def _headings(text: str):
     # quoted keys and flow mappings before. Blank lines and `#` comments are
     # YAML, so spaced and commented metadata is recognized. A thematic break
     # followed by prose meets a prose line and stays prose. Accepted loss: a
-    # thematic break whose first paragraph is a line with a colon (`Note: ...`),
-    # followed later by another `---`, reads as front matter.
+    # thematic break followed only by headings, list items, indented lines or
+    # lines containing a colon, then a later `---`, reads as front matter.
     if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
         for end in range(1, min(len(lines), FRONT_MATTER_MAX_LINES + 1)):
             body = lines[end].rstrip()
