@@ -539,14 +539,16 @@ Documents use `overwrite: true` (ArangoDB `REPLACE` semantics). This means:
 
 ### 7.3 Deletion Cascade
 
-When a file is removed from the codebase and re-ingested, orphaned documents remain, because ingest only visits files that exist. `hades codebase retire` now removes the rows of a file whose source is gone, and `hades codebase prune-orphans` sweeps children whose file node is already gone; see §8.1. The cascade they perform is:
+When a file is removed from the codebase and re-ingested, orphaned documents remain, because ingest only visits files that exist. The cascade is split across commands; see §8.1:
 
-1. Identify `codebase_files` documents whose `path` no longer exists on disk
+1. Identify `codebase_files` documents whose `path` no longer exists on disk. This is `hades codebase drift`, which reads the filesystem and lists stale keys. `hades codebase retire` never does this step: it acts on exactly the keys it is given, live or not.
 2. Delete all `codebase_chunks` with matching `file_key`
 3. Delete all `codebase_embeddings` with matching `file_key`
 4. Delete all `codebase_symbols` with matching `file_key`
 5. Delete from all 4 edge collections where `_from` or `_to` references the deleted file or its symbols
 6. Delete the `codebase_files` document
+
+`retire` performs steps 2–6 for each key it is passed, and with `--yes` also removes edges in other collections incident on the file node (`crates/hades-cli/src/commands/codebase_retire.rs:22`). `hades codebase prune-orphans` performs steps 2–5 for children whose file node is already gone.
 
 This cascade requires the `file_key` indices defined in Section 6.
 
@@ -569,10 +571,17 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
 (`documents`, `chunks`, `embeddings`).
 
 - **Re-ingest replaces these rows.** It is incremental by `content_hash`: an
-  unchanged file is skipped, and a changed file is rewritten in one transaction
-  (`Replacement::store`, `crates/hades-cli/src/commands/codebase_persist.rs:44`).
-  Its symbols, chunks and embeddings are deleted by `file_key` and re-inserted,
-  so a symbol or chunk that left the source leaves the graph. Documents do the
+  unchanged file is skipped. A changed file's node, symbols, chunks, embeddings
+  and `defines` edges are rewritten in one transaction (`Replacement::store`,
+  `crates/hades-cli/src/commands/codebase_persist.rs:44`): its symbols, chunks
+  and embeddings are deleted by `file_key` and re-inserted, so a symbol or chunk
+  that left the source leaves the graph. That transaction is not the whole
+  refresh. Structural `calls`, `implements` and `imports` edges are written
+  afterwards by a separate relationship stage (`store_relationships`,
+  `codebase_persist.rs:96`), and semantic enrichment runs after that. If a later
+  stage fails, the file's core rows are already committed and the file is only
+  partly refreshed; a failed relationship stage leaves `relationships_pending`
+  set on the file so the next run redoes it. Documents do the
   same through `Pipeline::store`
   (`crates/hades-core/src/pipeline/orchestrator.rs:428`). `--force` re-ingests
   unchanged files too, on `hades ingest` and `hades codebase ingest` alike.
@@ -592,7 +601,7 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
 - **A file's outgoing code edges are rebuilt.** Its structural `defines`,
   `calls` and `implements` edges and all of its `imports` edges are deleted in
   the file transaction (`codebase_persist.rs:55`) and rebuilt from the new
-  analysis. Semantic edges (from rust-analyzer, gopls, libclang) are kept
+  analysis by the relationship stage above. Semantic edges (from rust-analyzer, gopls, libclang) are kept
   through that delete and replaced only for symbols whose semantic request
   succeeded, so a failed or degraded enrichment leaves the previous semantic
   edges in place rather than deleting them (#179, #184, #185). A structural
@@ -612,9 +621,11 @@ Ingest owns the code collections (`codebase_files`, `codebase_symbols`,
   analysis would be less precise is left untouched, even under `--force`, unless
   `--allow-analysis-downgrade` is given.
 - **Deleting a source file does not delete its rows.** Ingest only visits files
-  that exist. `hades codebase retire` removes the rows of a file that is gone
-  from disk, and `hades codebase prune-orphans` sweeps children whose file node
-  is already gone (§7.3).
+  that exist. `hades codebase drift` lists file nodes with no source under the
+  ingest root; `hades codebase retire` deletes exactly the keys it is given and
+  never looks at the filesystem, so review drift's list before piping it in.
+  `hades codebase prune-orphans` sweeps children whose file node is already
+  gone (§7.3).
 
 Besides ingest, `graph-embed train` and `update` write a `structural_embedding`
 field onto node documents they embed, including `codebase_files` and
@@ -650,9 +661,16 @@ the Admin ceiling. They are not reachable from MCP.
 Nothing checks such a write against `hades_schema`: `db insert` requires only
 that each document is a JSON object (`db_insert`,
 `crates/hades-core/src/dispatch.rs:2132`), and ArangoDB itself checks only that
-an edge carries `_from` and `_to`. No provenance is recorded. A hand-authored
-row survives re-ingest only in a collection no ingest or adapter owns. In an
-ingest-owned collection it lasts until its file is next re-ingested.
+an edge carries `_from` and `_to`. No provenance is recorded.
+
+A hand-authored row is durable only in a collection no ingest or adapter owns.
+In an ingest-owned collection, re-ingest removes only what it can tie to the
+file it rebuilds: rows with that file's `file_key`, rows at the `_key`s it
+writes, and structural edges from that file or its symbols. A hand-inserted row
+with a missing or unrelated `file_key`, or an edge whose `_from` lies elsewhere,
+is never touched and can persist indefinitely; `prune-orphans` sweeps it only
+once it points at a file node that is gone. Do not rely on re-ingest to clean
+up authored rows.
 
 ### 8.4 Agents over MCP change source, not the graph
 
@@ -663,7 +681,7 @@ knowledge-graph node or edge. Its only writes are:
   provisioning to be enabled and are bounded by the operator's database-name
   prefixes and ingest roots (see `docs/mcp-deployment.md`);
 - `task_create` and `task_update`, which write Persephone kanban tasks in
-  `persephone_tasks` (and their activity log), not graph data.
+  `persephone_tasks`, not graph data.
 
 An agent changes the graph by changing a file on disk under an ingest root and
 running `ingest_start` over it. Authored writes over MCP are proposed in #188.
