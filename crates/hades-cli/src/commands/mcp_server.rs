@@ -958,8 +958,10 @@ impl ServerHandler for HadesMcpServer {
              Limits: this endpoint runs at the agent access tier, so raw AQL, \
              purge, insert and graph drop are unavailable. `create_database`, \
              `db_schema_init` and `ingest_start` need provisioning, which is off unless the operator \
-             enabled it, and then bounded to specific name prefixes and specific \
-             directories. A refusal names what would have been permitted, so read \
+             enabled it. `create_database` is then bounded to specific name \
+             prefixes and `ingest_start` to specific directories; `ingest_start` \
+             and `db_schema_init` act on any database this endpoint serves, and \
+             `db_schema_init` replaces that database's existing schema. A refusal names what would have been permitted, so read \
              the error rather than retrying.\n\n\
              Changing the graph: the graph is derived from source. Tools read and \
              ingest, and none edit nodes or edges; change a file on disk and \

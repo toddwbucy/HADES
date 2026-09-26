@@ -104,6 +104,15 @@ even with the other flag set. It also widens the read allowlist for matching
 names, because a database the endpoint just created is not on `--mcp-dbs` and
 would otherwise be refused the moment the client tried to use it.
 
+**What the prefix does not bound.** It is checked only when a database is
+created (`crates/hades-core/src/service.rs`, the provisioning-limits match).
+`ingest_start` and `db_schema_init` run against any database the endpoint
+serves, including every `--mcp-dbs` entry that does not match the prefix, and
+`db_schema_init` truncates that database's `hades_schema` before seeding it. Do
+not rely on the prefix to protect a database exposed for reading; with
+provisioning on, list in `--mcp-dbs` only databases a client may also ingest
+into and re-seed.
+
 `--mcp-ingest-root` bounds what may be read. Ingest hands the daemon a path on
 its *own* filesystem, so without this a bearer token could have it read
 `~/.ssh`, `/etc`, or the token file itself, embed the contents, and query them

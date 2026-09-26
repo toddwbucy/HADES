@@ -129,7 +129,9 @@ of being admin. A network transport has it only when the daemon was started with
 both `--mcp-db-prefix` and `--mcp-ingest-root`, and then only within those
 bounds:
 
-- a database name must begin with one of the permitted prefixes
+- a database it *creates* must begin with one of the permitted prefixes; the
+  prefix is not checked for `ingest.start` or `db.schema_init`, which act on
+  any database the transport serves
 - an ingest path must exist and canonicalize to somewhere inside one of the
   permitted roots, so `..` and symlinks cannot walk out
 

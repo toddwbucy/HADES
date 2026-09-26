@@ -548,7 +548,7 @@ When a file is removed from the codebase and re-ingested, orphaned documents rem
 5. Delete from all 4 edge collections where `_from` or `_to` references the deleted file or its symbols
 6. Delete the `codebase_files` document
 
-`retire` performs steps 2–6 for each key it is passed, and with `--yes` also removes edges in other collections incident on the file node (`crates/hades-cli/src/commands/codebase_retire.rs:22`). `hades codebase prune-orphans` performs steps 2–5 for children whose file node is already gone.
+`retire` performs steps 2–6 for each key it is passed, and with `--yes` also removes edges in other collections incident on the file node **or on any of its symbols** (`scan_other_edges`, `crates/hades-cli/src/commands/codebase_retire.rs:238`). Those are where authored records such as conformance verdicts live, so they are reported before removal. `hades codebase prune-orphans` performs steps 2–5 for children whose file node is already gone.
 
 This cascade requires the `file_key` indices defined in Section 6.
 
@@ -678,8 +678,11 @@ The MCP endpoint runs at the agent tier and has no tool that creates or edits a
 knowledge-graph node or edge. Its only writes are:
 
 - `create_database`, `db_schema_init` and `ingest_start`, which need
-  provisioning to be enabled and are bounded by the operator's database-name
-  prefixes and ingest roots (see `docs/mcp-deployment.md`);
+  provisioning to be enabled. The operator's database-name prefixes bound only
+  `create_database`, and the ingest roots bound only what `ingest_start` reads.
+  `ingest_start` and `db_schema_init` act on any database the endpoint serves,
+  prefixed or listed in `--mcp-dbs`, and `db_schema_init` truncates that
+  database's `hades_schema` before seeding (see `docs/mcp-deployment.md`);
 - `task_create` and `task_update`, which write Persephone kanban tasks in
   `persephone_tasks`, not graph data.
 
