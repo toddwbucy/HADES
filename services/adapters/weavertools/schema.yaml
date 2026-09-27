@@ -192,7 +192,9 @@ edge_definitions:
   - name: wt_parent_edges
     # A probe parents to its experiment. An experiment declares no parent, as
     # the apex declares none (Document Format, the `experiment` kind), so no
-    # experiment -> system edge is admitted.
+    # experiment -> system edge is admitted. The lists admit their product, so
+    # crate -> experiment and probe -> crate/system pass the graph definition;
+    # `write_graph.py`'s RELATION_PAIRS refuses them.
     from_collections: [wt_crates, wt_probes]
     to_collections: [wt_crates, wt_systems, wt_experiments]
     description: "A crate belongs to its parent crate or the system; a probe to its experiment."

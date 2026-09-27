@@ -83,6 +83,17 @@ RELATION_ENDPOINTS = {
     "wt_seam_edges": ({"wt_crates"}, {"wt_crates"}),
     "wt_writes_edges": ({"wt_crates"}, {"wt_artifacts"}),
 }
+
+# Pairs the lists above cannot say. An edge definition admits every source
+# collection with every target collection, so widening `parent` for probes
+# (#198) also admitted crate -> experiment and probe -> crate/system, which
+# the Document Format does not allow: a crate parents to a crate or the system,
+# a probe to its experiment. Where a relation has an entry here, the
+# (source, target) pair must be one of these as well as passing the lists.
+RELATION_PAIRS = {
+    "wt_parent_edges": {("wt_crates", "wt_crates"), ("wt_crates", "wt_systems"),
+                        ("wt_probes", "wt_experiments")},
+}
 REPORT = "wt_ingest_report"
 IDENTITY_VERSION = 2
 
@@ -503,7 +514,9 @@ def _main() -> int:
                     continue
                 dst_id = f"{dst_coll}/{key_for(e.dst)}"
             src_coll, dst_coll = src_id.split("/", 1)[0], dst_id.split("/", 1)[0]
-            if src_coll not in allowed[0] or dst_coll not in allowed[1]:
+            pairs = RELATION_PAIRS.get(edge_collections[e.relation])
+            if (src_coll not in allowed[0] or dst_coll not in allowed[1]
+                    or (pairs is not None and (src_coll, dst_coll) not in pairs)):
                 unplaced.append(f"{e.relation} edge {e.src} ({src_coll}) -> {e.dst} ({dst_coll}) "
                                 f"is outside its edge definition")
                 continue

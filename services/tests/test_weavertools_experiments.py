@@ -226,6 +226,10 @@ def test_the_old_schema_would_have_refused_the_widened_walk(monkeypatch, tree, c
 @pytest.mark.parametrize('record, finding', [
     ('edge: asserts\nfrom: fx-claim\nto: probe-a-holds', 'is outside its edge definition'),
     ('edge: parent\nfrom: tuple\nto: WeaverTools', 'is outside its edge definition'),
+    # Each endpoint is in its list; the pair is not (Codex, #201).
+    ('edge: parent\nfrom: fx\nto: tuple', 'is outside its edge definition'),
+    ('edge: parent\nfrom: probe-a\nto: fx', 'is outside its edge definition'),
+    ('edge: parent\nfrom: probe-a\nto: WeaverTools', 'is outside its edge definition'),
     ('edge: parent\nfrom: probe-a\nto: nobody', 'target nobody is not declared'),
     ('edge: haunts\nfrom: fx\nto: fx-claim', "relation 'haunts'"),
 ])
@@ -260,3 +264,7 @@ def test_writer_endpoints_mirror_schema_yaml():
     declared = set(re.findall(r'^  - name: (wt_\w+)\n    type: document\n    lookup_fields: \[ident\]$',
                               SCHEMA.read_text(), re.M))
     assert set(w.NODE_COLLECTIONS.values()) == declared
+    # Every restricted pair must itself be admitted by the edge definition.
+    for name, pairs in w.RELATION_PAIRS.items():
+        sources, targets = definitions[name]
+        assert all(src in sources and dst in targets for src, dst in pairs), name
