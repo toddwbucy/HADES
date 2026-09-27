@@ -81,6 +81,16 @@ collections:
   - name: wt_systems
     type: document
     lookup_fields: [ident]
+  # Document Format section 2's experiment container (#198): the charter at
+  # `experiments/<e>/README.md` declares the experiment, and a probe's Spec
+  # under `<arm>/<probe>/` declares the probe, its `parent` edge and the
+  # assertions it `asserts`.
+  - name: wt_experiments
+    type: document
+    lookup_fields: [ident]
+  - name: wt_probes
+    type: document
+    lookup_fields: [ident]
   - name: wt_ingest_report
     type: document
   - name: wt_cites_edges
@@ -148,13 +158,13 @@ edge_definitions:
   - name: wt_declared_in_edges
     from_collections:
       [wt_artifacts, wt_assertions, wt_axioms, wt_crates, wt_documents,
-       wt_systems, wt_terms, wt_vocabulary]
+       wt_experiments, wt_probes, wt_systems, wt_terms, wt_vocabulary]
     to_collections: [documents]
     description: "A declared record, and the markdown file declaring it."
   - name: wt_asserts_edges
-    from_collections: [wt_crates]
+    from_collections: [wt_crates, wt_probes]
     to_collections: [wt_assertions]
-    description: "A crate asserts a claim stated by its Spec."
+    description: "A crate or probe asserts a claim stated by its Spec."
   - name: wt_defines_edges
     from_collections: [wt_crates, wt_documents]
     to_collections: [wt_vocabulary, wt_terms]
@@ -180,9 +190,14 @@ edge_definitions:
     to_collections: [wt_vocabulary]
     description: "An artifact holds a vocabulary field."
   - name: wt_parent_edges
-    from_collections: [wt_crates]
-    to_collections: [wt_crates, wt_systems]
-    description: "A crate belongs to its parent crate or the system."
+    # A probe parents to its experiment. An experiment declares no parent, as
+    # the apex declares none (Document Format, the `experiment` kind), so no
+    # experiment -> system edge is admitted. The lists admit their product, so
+    # crate -> experiment and probe -> crate/system pass the graph definition;
+    # `write_graph.py`'s RELATION_PAIRS refuses them.
+    from_collections: [wt_crates, wt_probes]
+    to_collections: [wt_crates, wt_systems, wt_experiments]
+    description: "A crate belongs to its parent crate or the system; a probe to its experiment."
   - name: wt_party_edges
     from_collections: [wt_documents]
     to_collections: [wt_crates]

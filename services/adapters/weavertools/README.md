@@ -179,3 +179,33 @@ outside fenced code; a node before any heading has a null section. These locatio
 are recomputed on every adapter run, so moving a block updates its source line.
 Source-code nodes are not duplicated by the adapter; their file identity remains
 in the code layer. Existing adapter rows are updated only when the adapter runs.
+
+### Experiments (#198)
+
+The extractor reads `experiments/` beside `docs/`, as WeaverTools' census does:
+graph blocks from every `.md` there, and citations and header obligations from
+each probe's `code/` exactly as from `crates/`. `results/` is pruned at any
+depth, the set `.hadesignore` excludes with `experiments/**/results/`. The
+charter (`experiments/<e>/README.md`) declares a `kind: experiment` node and a
+probe's Spec a `kind: probe` node, its `parent` edge to the experiment and its
+`asserts` edges. These land in `wt_experiments` and `wt_probes`. Nothing is
+derived from the directory: the Format has both records declared, so the
+adapter reads them as declared and reports one that stands outside its
+container. One known difference from the census: it reads a `results/` nested
+*inside* a probe's `code/`, and the adapter and the ingest do not.
+
+The writer now refuses, before any write, a node whose kind has no collection
+and an edge whose endpoints fall outside its relation's `schema.yaml` definition
+or name an undeclared node. `RELATION_ENDPOINTS` in `write_graph.py` mirrors
+`schema.yaml`'s `edge_definitions`, and a test holds them equal. Previously an
+unmapped kind printed "skipping" and the run succeeded, and an unknown endpoint
+was filed under `wt_assertions`.
+
+**Existing databases are not refreshed in place.** The widened `parent`,
+`asserts` and `declared-in` definitions change `codebase_graph`, and
+`docs/declarative-schema.md` section 7 puts a changed schema on an in-use
+database behind `--force`. The path is a rebuild into a fresh database (for the
+current graph, `WeaverTools_v8` from `WeaverTools_v7`), retiring the old one after
+cutover. Against WeaverTools `af2054c6` the rebuild should show +21 assertions,
++21 `asserts`, +1 experiment, +1 probe, +1 `parent`, +71 `cites` (612 in all)
+and +23 `declared-in` (the 21 assertions and the two new nodes) over v7.

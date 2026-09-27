@@ -57,7 +57,7 @@ async fn weavertools_schema_apply_ensures_lookup_indexes_idempotently() {
         for pass in 0..2 {
             let output=cli_command(&pool,&embedder,&["schema","apply",path.to_str().unwrap()]).output().await.unwrap();
             assert!(output.status.success(),"{output:?}");
-            for suffix in ["assertions","documents","vocabulary","crates","terms","axioms","artifacts","systems"] {
+            for suffix in ["assertions","documents","vocabulary","crates","terms","axioms","artifacts","systems","experiments","probes"] {
                 let collection=format!("wt_{suffix}");
                 let indexes=hades_core::db::index::list_indexes(&pool,&collection).await.unwrap();
                 let matches:Vec<_>=indexes.iter().filter(|i|i.index_type=="persistent" && i.fields==["ident"]).collect();

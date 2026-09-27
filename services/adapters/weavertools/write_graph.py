@@ -53,6 +53,46 @@ NODE_COLLECTIONS = {
     "axiom": "wt_axioms",
     "artifact": "wt_artifacts",
     "system": "wt_systems",
+    # Document Format section 2's experiment container (#198): a charter
+    # declares the experiment, a probe's Spec declares the probe.
+    "experiment": "wt_experiments",
+    "probe": "wt_probes",
+}
+
+# Each relation's allowed endpoint collections, mirroring `schema.yaml`'s
+# `edge_definitions` (a test holds the two equal; this script reads no YAML,
+# having only the standard library). An edge outside these lists used to be
+# written anyway, into a collection the named graph's definition does not admit,
+# and an unknown endpoint defaulted to `wt_assertions` (#198).
+RELATION_ENDPOINTS = {
+    "wt_cites_edges": ({"codebase_files"}, {"wt_assertions"}),
+    "wt_declared_in_edges": (
+        {"wt_artifacts", "wt_assertions", "wt_axioms", "wt_crates", "wt_documents",
+         "wt_experiments", "wt_probes", "wt_systems", "wt_terms", "wt_vocabulary"},
+        {"documents"}),
+    "wt_asserts_edges": ({"wt_crates", "wt_probes"}, {"wt_assertions"}),
+    "wt_defines_edges": ({"wt_crates", "wt_documents"}, {"wt_vocabulary", "wt_terms"}),
+    "wt_draws_edges": ({"wt_documents"}, {"wt_vocabulary", "wt_terms"}),
+    "wt_elects_edges": ({"wt_vocabulary"}, {"wt_vocabulary"}),
+    "wt_floor_link_edges": ({"wt_crates"}, {"wt_crates"}),
+    "wt_grounds_edges": ({"wt_assertions"}, {"wt_axioms"}),
+    "wt_holds_edges": ({"wt_artifacts"}, {"wt_vocabulary"}),
+    "wt_parent_edges": ({"wt_crates", "wt_probes"}, {"wt_crates", "wt_systems", "wt_experiments"}),
+    "wt_party_edges": ({"wt_documents"}, {"wt_crates"}),
+    "wt_reads_edges": ({"wt_crates"}, {"wt_artifacts"}),
+    "wt_seam_edges": ({"wt_crates"}, {"wt_crates"}),
+    "wt_writes_edges": ({"wt_crates"}, {"wt_artifacts"}),
+}
+
+# Pairs the lists above cannot say. An edge definition admits every source
+# collection with every target collection, so widening `parent` for probes
+# (#198) also admitted crate -> experiment and probe -> crate/system, which
+# the Document Format does not allow: a crate parents to a crate or the system,
+# a probe to its experiment. Where a relation has an entry here, the
+# (source, target) pair must be one of these as well as passing the lists.
+RELATION_PAIRS = {
+    "wt_parent_edges": {("wt_crates", "wt_crates"), ("wt_crates", "wt_systems"),
+                        ("wt_probes", "wt_experiments")},
 }
 REPORT = "wt_ingest_report"
 IDENTITY_VERSION = 2
@@ -278,6 +318,32 @@ class IdentityError(AdapterError):
     """Input or stored identity layout is unsafe to write without review."""
 
 
+class SchemaError(AdapterError):
+    """A record the schema has no place for; refused before any write (#198)."""
+
+
+def edge_collection(relation: str) -> str:
+    return f"wt_{relation.replace('-', '_')}_edges"
+
+
+def refuse_unplaced(problems: list[str]) -> None:
+    """Fail the run on records the schema cannot hold, naming every one.
+
+    **Refused, not skipped.** An unmapped node kind used to print "skipping" to
+    stderr while the run reported success, and an edge whose endpoint had no
+    collection was filed under `wt_assertions`. Widening the walk to
+    `experiments/` before the schema knew `experiment` and `probe` would have
+    dropped both records and misfiled their edges with a zero exit, which is
+    how #198 would have gone wrong silently. A new kind or relation in the
+    corpus is a schema change, and the run says so.
+    """
+    if not problems:
+        return
+    shown = "\n  ".join(problems[:20])
+    more = f"\n  and {len(problems) - 20} more" if len(problems) > 20 else ""
+    raise SchemaError(f"{len(problems)} record(s) have no place in schema.yaml:\n  {shown}{more}")
+
+
 def identity_key(domain: str, parts: list) -> str:
     # JSON arrays frame components and distinguish null/empty strings. Hash the
     # complete UTF-8 identity, never a sanitized/truncated display prefix.
@@ -376,14 +442,15 @@ def _main() -> int:
 
     # Derive the complete batch before any mutation.
     relations = {e.relation for e in docs.edges} | {e.relation for e in code.edges}
-    edge_collections = {rel: f"wt_{rel.replace('-', '_')}_edges" for rel in relations}
+    edge_collections = {rel: edge_collection(rel) for rel in relations}
+    unplaced: list[str] = []
 
     # Nodes.
     by_collection: dict[str, list[dict]] = collections.defaultdict(list)
     for node in nodes:
         target = NODE_COLLECTIONS.get(node.kind)
         if target is None:
-            print(f"  no collection for node kind {node.kind!r}, skipping", file=sys.stderr)
+            unplaced.append(f"node {node.ident} ({node.path}): kind {node.kind!r} has no collection")
             continue
         by_collection[target].append({
             "_key": key_for(node.ident), "ident": node.ident, "kind": node.kind,
@@ -402,8 +469,23 @@ def _main() -> int:
     # One pass over the node list instead of one per edge endpoint. The lookups
     # below ran `any()` over 491 nodes twice for each of 1,637 edges.
     kind_of = {n.ident: n.kind for n in nodes}
+
+    def node_collection(ident, relation, end):
+        # No default collection: an endpoint nobody declared, or of a kind with
+        # no collection, is a finding rather than a row in `wt_assertions`.
+        kind = kind_of.get(ident)
+        target = NODE_COLLECTIONS.get(kind)
+        if target is None:
+            what = "is not declared" if kind is None else f"has kind {kind!r}, which has no collection"
+            unplaced.append(f"{relation} edge {end} {ident} {what}")
+        return target
+
     for name, edges in (("documents", docs.edges), ("code", code.edges)):
         for e in edges:
+            allowed = RELATION_ENDPOINTS.get(edge_collections[e.relation])
+            if allowed is None:
+                unplaced.append(f"relation {e.relation!r} ({e.src} -> {e.dst}) has no edge definition")
+                continue
             if e.relation == "cites":
                 # Scoping should make this unreachable. Kept as an assertion
                 # rather than removed: it is the check that would catch the
@@ -414,7 +496,9 @@ def _main() -> int:
                     key = file_key(e.src)
                 src_id = f"{CODE_FILES}/{key}"
             else:
-                src_coll = NODE_COLLECTIONS.get(kind_of.get(e.src), NODE_COLLECTIONS["assertion"])
+                src_coll = node_collection(e.src, e.relation, "source")
+                if src_coll is None:
+                    continue
                 src_id = f"{src_coll}/{key_for(e.src)}"
             if e.relation == "declared-in":
                 # The target is a path, and the node it names is the ingested
@@ -425,8 +509,17 @@ def _main() -> int:
                     doc_key = key_for(e.dst)
                 dst_id = f"{DOC_FILES}/{doc_key}"
             else:
-                dst_coll = NODE_COLLECTIONS.get(kind_of.get(e.dst), NODE_COLLECTIONS["assertion"])
+                dst_coll = node_collection(e.dst, e.relation, "target")
+                if dst_coll is None:
+                    continue
                 dst_id = f"{dst_coll}/{key_for(e.dst)}"
+            src_coll, dst_coll = src_id.split("/", 1)[0], dst_id.split("/", 1)[0]
+            pairs = RELATION_PAIRS.get(edge_collections[e.relation])
+            if (src_coll not in allowed[0] or dst_coll not in allowed[1]
+                    or (pairs is not None and (src_coll, dst_coll) not in pairs)):
+                unplaced.append(f"{e.relation} edge {e.src} ({src_coll}) -> {e.dst} ({dst_coll}) "
+                                f"is outside its edge definition")
+                continue
             # `via` is in the key because it is part of the edge's identity: see
             # the note on `Edge.via`. Three seams between one pair of crates
             # collapsed into one row without it.
@@ -438,6 +531,8 @@ def _main() -> int:
                 "relation": e.relation, "basis": e.basis,
                 "via": e.via, "tag": e.tag,
             })
+
+    refuse_unplaced(unplaced)
 
     # Identical duplicate declarations are idempotent. A conflicting record
     # for the same persisted key must fail before mutation, including in dry-run.
@@ -543,6 +638,9 @@ def main() -> int:
         return _main()
     except IdentityError as error:
         print(f"adapter identity preflight refused: {error}; no write stage started", file=sys.stderr)
+        return 1
+    except SchemaError as error:
+        print(f"adapter schema preflight refused: {error}\nno write stage started", file=sys.stderr)
         return 1
     except (AdapterError, OSError, ValueError) as error:
         acknowledged = getattr(error, "acknowledged", 0)
