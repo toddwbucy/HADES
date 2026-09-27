@@ -121,6 +121,11 @@ HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2
 HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db aql 'FOR e IN codebase_embeddings LET invalid = !IS_STRING(e.model) OR e.model == "" OR !IS_STRING(e.model_hash) OR e.model_hash == "" OR !IS_NUMBER(e.dimension) OR e.dimension <= 0 OR e.dimension != FLOOR(e.dimension) COLLECT AGGREGATE total = SUM(1), invalid_rows = SUM(invalid ? 1 : 0) RETURN {total, invalid_rows}'
 ```
 
+The block above is the record of what ran on 2026-09-22, before ArangoDB
+authentication was enforced, and is kept verbatim. A run after enforcement needs
+`ARANGO_USERNAME=hades` on the two adapter lines: the adapter now refuses a
+password with no username rather than pairing it with `root` (#199).
+
 ## Live comparison and named exception
 
 Live counts below are the preserved 09:59 CDT read; current scratch counts were

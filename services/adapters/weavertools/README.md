@@ -59,6 +59,23 @@ documents and 13,340 symbols across twelve crates. `rust-analyzer scip` takes
 path, since the rustup shim fails inside a workspace whose
 `rust-toolchain.toml` pins a nightly without the component installed.
 
+## Running it
+
+`hades ingest` the tree into the target database first, then:
+
+```bash
+ARANGO_USERNAME=hades ARANGO_PASSWORD=... \
+  python3 services/adapters/weavertools/write_graph.py \
+  --db <database> --repo /opt/weavertools/WeaverTools --dry-run
+```
+
+Drop `--dry-run` to write. The adapter reads only the environment, not
+`hades.yaml`, so name the user explicitly. With `ARANGO_PASSWORD` set and
+`ARANGO_USERNAME` unset it refuses before sending anything, rather than pairing
+the password with a default user (#199). An authentication failure names the
+user, the HTTP code and ArangoDB's `errorNum`. With authentication disabled on
+the instance, leave both unset.
+
 ## Deliberate constraints
 
 **Extraction and persistence are separate.** `extractor.py` reads repository

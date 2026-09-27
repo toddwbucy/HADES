@@ -66,6 +66,16 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The WeaverTools adapter no longer falls back to `root` when `ARANGO_PASSWORD`
+  is set and `ARANGO_USERNAME` is not: it refuses before sending a request and
+  names the missing variable. Backend failures now report the HTTP code and
+  `errorNum` (never `errorMessage`, which can quote a query), an authentication
+  failure names the user sent, and the CLI prints the cause instead of a bare
+  "failed". A non-JSON error body (a proxy's HTML 401) no longer escapes as a
+  bare parse error that loses the HTTP code. The adapter README sets
+  `ARANGO_USERNAME=hades`, and the rebuild runbook notes it after its verbatim
+  record of the 2026-09-22 run (#199).
+
 - `hades codebase drift` no longer reports raw-text rows as stale when the
   ingest's `--unparsed-ext` is omitted: it reads the extensions of rows stored as
   raw text from the graph and discovers them itself, and an explicit
