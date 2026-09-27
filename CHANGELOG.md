@@ -66,6 +66,18 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- The WeaverTools adapter reads graph records under `experiments/` beside
+  `docs/`, and citations from each probe's `code/` as from `crates/`, pruning
+  `results/` at any depth the way WeaverTools' census and `.hadesignore` do.
+  `schema.yaml` gains `wt_experiments` and `wt_probes`, and `parent`, `asserts`
+  and `declared-in` admit them. The writer now refuses, before any write, a node
+  kind with no collection (it used to print "skipping" and succeed) and an edge
+  outside its relation's endpoint lists or naming an undeclared node (it used to
+  land in `wt_assertions`). Existing graphs need a rebuild into a fresh database
+  rather than an in-place refresh: `WeaverTools_v8` should show +21 assertions,
+  +21 `asserts`, +1 experiment, +1 probe, +1 `parent` and +71 `cites` over v7
+  (#198).
+
 - The WeaverTools adapter no longer falls back to `root` when `ARANGO_PASSWORD`
   is set and `ARANGO_USERNAME` is not: it refuses before sending a request and
   names the missing variable. Backend failures now report the HTTP code and

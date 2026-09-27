@@ -163,15 +163,74 @@ def _record_head(stanza: str) -> str:
     return "\n".join(lines)
 
 
-def _walk(root: Path, suffix: str):
+def _walk(root: Path, suffix: str, prune: frozenset[str] = frozenset()):
+    # Pruned on the directories below `root` only. Matching the absolute path
+    # would prune a whole tree that happens to sit under a directory named
+    # `results` or `target`, the way a checkout or a test's temp dir can (#198).
     for path in sorted(root.rglob(f"*{suffix}")):
-        if PRUNE_DIRS & set(path.parts):
+        if (PRUNE_DIRS | prune) & set(path.relative_to(root).parts[:-1]):
             continue
         yield path
 
 
+# `experiments/<e>/` is a corpus container beside `docs/` (Document Format
+# section 2, 2026-09-25): the charter at its root, each probe's Spec, `code/`
+# and `results/` under `<arm>/<probe>/`. `results/` answers to its own clock and
+# no gate or ingest reads it, so it is pruned at any depth, which is the set
+# WeaverTools' `.hadesignore` excludes with `experiments/**/results/` and the
+# census prunes in both `docs()` and `probes()`. One rule, three readers (#198).
+EXPERIMENTS = "experiments"
+EXPERIMENT_PRUNE = frozenset({"results"})
+DOCUMENT_BASES = (("docs", frozenset()), (EXPERIMENTS, EXPERIMENT_PRUNE))
+
+
+def _probe_code_roots(repo: Path) -> list[Path]:
+    """Every probe's `code/`, found the way the census's `probes()` finds it.
+
+    By walking rather than a fixed-depth glob, so a `code/` one level off the
+    documented depth is read instead of silently skipped, and never descending
+    into `results/`. The first `code/` on a path is the root; nothing below it is
+    searched for another.
+    """
+    top = repo / EXPERIMENTS
+    if not top.is_dir():
+        return []
+    found = []
+
+    def visit(directory: Path):
+        for child in sorted(p for p in directory.iterdir() if p.is_dir()):
+            if child.name in PRUNE_DIRS | EXPERIMENT_PRUNE:
+                continue
+            if child.name == "code":
+                found.append(child)
+            else:
+                visit(child)
+
+    visit(top)
+    return found
+
+
+def _container_note(rel: str, name: str, kind: str) -> str | None:
+    """Where the Format puts an experiment or probe record, checked (#198).
+
+    Section 2 derives containers from the directory: an experiment is declared
+    by `experiments/<e>/README.md`, a probe by a `-Spec.md` in
+    `experiments/<e>/<arm>/<probe>/`. The Spec's stem is not matched against
+    the directory: the first probe's is `blackwell/blackwell-probe-Spec.md`,
+    named for the node. The records are read as declared; a
+    declaration standing anywhere else is reported rather than trusted or
+    dropped, since the directory and the record would then disagree.
+    """
+    parts = rel.split("/")
+    if kind == "experiment" and not (len(parts) == 3 and parts[0] == EXPERIMENTS and parts[2] == "README.md"):
+        return f"misplaced experiment record in {rel}: {name} (the Format declares it in experiments/<e>/README.md)"
+    if kind == "probe" and not (len(parts) == 5 and parts[0] == EXPERIMENTS and parts[4].endswith("-Spec.md")):
+        return f"misplaced probe record in {rel}: {name} (the Format declares it in a -Spec.md in experiments/<e>/<arm>/<probe>/)"
+    return None
+
+
 def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
-    """Every fenced `graph` block under `docs/` that the ingest took.
+    """Every fenced `graph` block under `docs/` and `experiments/` that the ingest took.
 
     **`scope` is the set of repo-relative paths the graph actually holds**, and it
     is passed in rather than computed. This module used to decide for itself which
@@ -196,16 +255,23 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
     355 to 413 here and moved `uncited_perturbations` from 33 to 65 against a
     baseline with a known answer. The census scopes to `docs/` for this
     reason, and the agreement is the test that caught it.
+
+    **`experiments/` is read beside `docs/`**, with `results/` pruned, as the
+    census's `docs()` reads it (#198). Walking `docs/` alone left the 21
+    assertions of the first probe's Spec, its probe and experiment records and
+    their `parent` edge out of the graph while the ingest held the documents
+    that declare them, so a coverage query could not tell "no record" from
+    "out of scope".
     """
     out = Extraction()
     seen: dict[str, str] = {}
     out_of_scope: list[str] = []
 
-    for base in ("docs",):
+    for base, prune in DOCUMENT_BASES:
         root = repo / base
         if not root.is_dir():
             continue
-        for path in _walk(root, ".md"):
+        for path in _walk(root, ".md", prune):
             rel = str(path.relative_to(repo))
             text = path.read_text(encoding="utf-8-sig", errors="replace")
             if scope is not None and rel not in scope:
@@ -258,6 +324,9 @@ def read_documents(repo: Path, scope: set[str] | None = None) -> Extraction:
                             f"duplicate node id {name}: {seen[name]} and {rel}"
                         )
                     seen[name] = rel
+                    misplaced = _container_note(rel, name, kind)
+                    if misplaced:
+                        out.notes.append(misplaced)
 
                     source_offset = block_match.start(1) + stanza_offset + line.start()
                     heading_index = bisect_right(heading_offsets, source_offset) - 1
@@ -346,11 +415,20 @@ def read_conformance(
     Manifests are walked for citations and excused the header obligation. They
     cite with `#` rather than `//!`, which ITEM_CITE already reads, and three
     assertions in this corpus are cited from nowhere else.
+
+    **A probe's `code/` is read like a crate's tree** (#198): the same suffixes,
+    the same citation forms and the same header obligation, which is how the
+    census's `sources()` treats `probes()` and what the Document Format says of
+    it. Reading `crates/` alone left 71 citation pairs out of the graph.
     """
     out = Extraction()
     crates = repo / "crates"
+    roots = ([crates] if crates.is_dir() else []) + _probe_code_roots(repo)
     if not crates.is_dir():
-        out.notes.append("no crates/ directory, conformance pass saw nothing")
+        # Still a finding, but no longer a reason to stop: probe code is read
+        # whether or not the tree has a workspace.
+        out.notes.append("no crates/ directory, conformance pass read probe code only")
+    if not roots:
         return out
 
     headers_seen = 0
@@ -358,7 +436,8 @@ def read_conformance(
     headerless: list[str] = []
     out_of_scope: list[str] = []
 
-    paths = [p for suffix in CONFORMANCE_SUFFIXES for p in _walk(crates, suffix)]
+    paths = [p for root in roots for suffix in CONFORMANCE_SUFFIXES
+             for p in _walk(root, suffix, EXPERIMENT_PRUNE if root != crates else frozenset())]
     for path in sorted(paths):
         rel = str(path.relative_to(repo))
         text = path.read_text(encoding="utf-8-sig", errors="replace")
