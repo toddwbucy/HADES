@@ -155,7 +155,13 @@ def arango(db: str, path: str, body=None, method="POST"):
             if 300 <= e.code < 400:
                 return {"error": True, "code": e.code,
                         "errorMessage": "HTTP redirect refused by adapter endpoint policy"}
-            payload = json.loads(e.read().decode() or "{}")
+            # A non-JSON error body (a proxy's HTML 401, a truncated reply) must
+            # not escape as a bare ValueError: that loses the HTTP code, and the
+            # code is the cause checked() reports (#199).
+            try:
+                payload = json.loads(e.read().decode() or "{}")
+            except ValueError:
+                payload = {}
             if not isinstance(payload, dict):
                 payload = {}
             return dict(payload, error=True, code=e.code)
@@ -540,8 +546,11 @@ def main() -> int:
         return 1
     except (AdapterError, OSError, ValueError) as error:
         acknowledged = getattr(error, "acknowledged", 0)
-        # The cause is printed: every AdapterError message is built here from
-        # codes and counts, not backend text, so it is safe to show (#199).
+        # The cause is printed (#199), and none of these texts carries backend
+        # text: every AdapterError message is built here from codes and counts,
+        # an OSError (URLError) carries only its errno reason, a JSONDecodeError
+        # only a position, and a UnicodeDecodeError one byte. The same holds for
+        # the write-stage wrapper, which interpolates these into its message.
         print(f"adapter run failed: {error}; server acknowledged at least {acknowledged:,} imported rows; "
               "earlier writes may persist; no successful run is certified", file=sys.stderr)
         return 1

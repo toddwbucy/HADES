@@ -100,6 +100,21 @@ def test_401_names_user_code_and_errornum_but_not_password(env, monkeypatch, cap
         assert PASSWORD not in text
 
 
+def test_non_json_401_keeps_code_and_user(env):
+    handler = recorder(401, b'<html>no</html>')
+    env.setenv('ARANGO_PASSWORD', PASSWORD)
+    env.setenv('ARANGO_USERNAME', 'hades')
+    with server(handler) as peer:
+        env.setenv('ARANGO_PORT', str(peer.server_port))
+        response = w.arango('fixture', 'cursor', {'query': 'RETURN 1'})
+    assert response == {'error': True, 'code': 401}
+    with pytest.raises(w.AdapterError) as failed:
+        w.checked(response, 'scope read')
+    message = str(failed.value)
+    assert 'HTTP 401' in message and "user 'hades'" in message
+    assert PASSWORD not in message
+
+
 def test_other_failures_carry_codes_but_not_backend_text():
     quoted = 'FOR secret IN collection'
     with pytest.raises(w.AdapterError) as failed:
