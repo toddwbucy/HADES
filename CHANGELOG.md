@@ -73,7 +73,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   and `declared-in` admit them. The writer now refuses, before any write, a node
   kind with no collection (it used to print "skipping" and succeed) and an edge
   outside its relation's endpoint lists or naming an undeclared node (it used to
-  land in `wt_assertions`). Existing graphs need a rebuild into a fresh database
+  land in `wt_assertions`). Citations resolve against assertions only, as the
+  census resolves them, so a header naming a crate or term is reported dangling
+  rather than written as an edge. Existing graphs need a rebuild into a fresh database
   rather than an in-place refresh: `WeaverTools_v8` should show +21 assertions,
   +21 `asserts`, +1 experiment, +1 probe, +1 `parent` and +71 `cites` over v7
   (#198).

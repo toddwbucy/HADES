@@ -49,7 +49,10 @@ FIXTURE = {
         'edge: asserts\nfrom: probe-a\nto: probe-a-halts'),
     'experiments/tuple/arm/probe-a/code/README.md': '# How to run\n',
     'experiments/tuple/arm/probe-a/code/run.py': (
-        '# conforms: probe-a-holds\n# conforms: probe-a-halts\nprint("run")\n'),
+        '# conforms: probe-a-holds\n# conforms: probe-a-halts\nprint("run")\n'
+        # A citation of a crate: declared, but not an assertion, so both
+        # readers call it dangling rather than an edge.
+        'def g():\n    # conforms: fx\n    return 2\n'),
     # Owes a header and has none; its item-level citation still counts.
     'experiments/tuple/arm/probe-a/code/helper.py': (
         'def f():\n    # conforms: probe-a-halts\n    return 1\n'),
@@ -62,6 +65,7 @@ FIXTURE = {
 
 EXPECTED_KINDS = {'system': 1, 'crate': 1, 'assertion': 3, 'experiment': 1, 'probe': 1}
 EXPECTED_RELATIONS = {'declared-in': 7, 'parent': 2, 'asserts': 3}
+EXPECTED_DANGLING = {('experiments/tuple/arm/probe-a/code/run.py', 'fx')}
 EXPECTED_CITES = {
     ('crates/fx/src/lib.rs', 'fx-claim'),
     ('experiments/tuple/arm/probe-a/code/run.py', 'probe-a-holds'),
@@ -88,7 +92,7 @@ def test_adapter_reads_experiments_and_prunes_results(tree):
     assert Counter(n.kind for n in docs.nodes) == EXPECTED_KINDS
     assert Counter(e.relation for e in docs.edges) == EXPECTED_RELATIONS
     assert {(e.src, e.dst) for e in code.edges} == EXPECTED_CITES
-    assert code.dangling == []
+    assert {(e.src, e.dst) for e in code.dangling} == EXPECTED_DANGLING
     assert 'sources_without_a_header=1' in code.notes
     # Negative direction: nothing under results/ contributes.
     assert all('/results/' not in (n.path or '') for n in docs.nodes)
@@ -155,13 +159,14 @@ def test_counts_equal_the_census_on_the_same_tree(tree):
     assert Counter(n.kind for n in docs.nodes) == kinds
     assert {n.path for n in docs.nodes} == declaring_files
     assert {(e.src, e.dst) for e in code.edges + code.dangling} == pairs
-    assert sorted(e.dst for e in code.dangling) == reading['dangling_citations']
+    assert sorted(e.dst for e in code.dangling) == reading['dangling_citations'] == ['fx']
+    assert 'fx' not in {e.dst for e in code.edges}
     assert f"sources_without_a_header={len(reading['sources_without_a_header'])}" in code.notes
     assert reading['sources_without_a_header'] == ['experiments/tuple/arm/probe-a/code/helper.py']
     assert reading['duplicate_node_ids'] == [] and not any(n.startswith('duplicate') for n in docs.notes)
     # And both equal the fixture as written, so agreement is not two readers
     # sharing one mistake about results/.
-    assert kinds == EXPECTED_KINDS and pairs == EXPECTED_CITES
+    assert kinds == EXPECTED_KINDS and pairs == EXPECTED_CITES | EXPECTED_DANGLING
 
 
 def run_writer(monkeypatch, tree, capsys):
