@@ -96,8 +96,8 @@ and `PYTHONDONTWRITEBYTECODE=1`; no source-tree build output was requested.
 
 ```bash
 HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades ingest /opt/weavertools/WeaverTools --db scratch_rebuild_wt5_r2 --unparsed-ext toml
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5_r2 --repo /opt/weavertools/WeaverTools --dry-run
-HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5_r2 --repo /opt/weavertools/WeaverTools
+ARANGO_USERNAME=hades HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5_r2 --repo /opt/weavertools/WeaverTools --dry-run
+ARANGO_USERNAME=hades HADES_CONFIG=/home/todd/.config/hades/hades.yaml python3 services/adapters/weavertools/write_graph.py --db scratch_rebuild_wt5_r2 --repo /opt/weavertools/WeaverTools
 HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db collections
 HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db aql 'FOR e IN @@collection FILTER DOCUMENT(e._from) == null OR DOCUMENT(e._to) == null COLLECT WITH COUNT INTO dangling RETURN {dangling}' --bind '{"@collection": "codebase_calls_edges"}'
 HADES_CONFIG=/home/todd/.config/hades/hades.yaml /tmp/hades-rebuild-rehearsal/r2-2026-09-22/hades --db scratch_rebuild_wt5_r2 db aql 'FOR e IN @@collection FILTER DOCUMENT(e._from) == null OR DOCUMENT(e._to) == null COLLECT WITH COUNT INTO dangling RETURN {dangling}' --bind '{"@collection": "codebase_defines_edges"}'

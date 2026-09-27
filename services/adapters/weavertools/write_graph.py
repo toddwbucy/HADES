@@ -76,7 +76,8 @@ def _endpoint() -> str:
     and port come from `ARANGO_HOST` and `ARANGO_PORT` so the endpoint is not
     hardcoded, and credentials from `ARANGO_USERNAME` and `ARANGO_PASSWORD`, so
     an instance with authentication enabled is reachable and one with it disabled
-    keeps working unchanged.
+    keeps working unchanged. A password without a username is refused rather
+    than paired with a default user (#199).
     """
     host = os.environ.get("ARANGO_HOST", "127.0.0.1")
     port = os.environ.get("ARANGO_PORT", "8529")
@@ -104,9 +105,25 @@ def _auth_header() -> dict[str, str]:
             f"Use a loopback endpoint (an SSH tunnel, for instance) or unset the "
             f"password if the instance has authentication disabled."
         )
-    user = os.environ.get("ARANGO_USERNAME", "root")
+    user = _username()
+    if user is None:
+        # No default user (#199). This used to fall back to `root`, so a run that
+        # set only the password sent the `hades` user's password as the superuser
+        # and failed with no cause. A writer should never authenticate as someone
+        # nobody named. Not read from `hades.yaml` either: that would be a second
+        # config reader in a standard-library-only script.
+        raise SystemExit(
+            "ARANGO_PASSWORD is set but ARANGO_USERNAME is not. Set ARANGO_USERNAME "
+            "to the account the password belongs to (normally `hades`); the "
+            "adapter does not guess one."
+        )
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
     return {"Authorization": f"Basic {token}"}
+
+
+def _username() -> str | None:
+    """The user a request authenticates as, or None when none was named."""
+    return os.environ.get("ARANGO_USERNAME") or None
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -153,9 +170,28 @@ class AdapterError(RuntimeError):
 
 
 def checked(response, stage):
-    """Reject API errors and malformed envelopes without echoing backend secrets."""
+    """Reject API errors and malformed envelopes without echoing backend text.
+
+    What surfaces is the HTTP code and ArangoDB's numeric `errorNum`, never its
+    `errorMessage`: an AQL error can quote the query it rejected, and a message is
+    not ours to vouch for. An authentication failure also names the user the
+    request went out as (never the password), because a bare "failed" there cost
+    a diagnosis round when the wrong user was sent (#199).
+    """
     if not isinstance(response, dict) or response.get("error", False) is not False:
-        raise AdapterError(f"{stage} failed")
+        detail = []
+        code = response.get("code") if isinstance(response, dict) else None
+        num = response.get("errorNum") if isinstance(response, dict) else None
+        if type(code) is int:
+            detail.append(f"HTTP {code}")
+        if type(num) is int:
+            detail.append(f"errorNum {num}")
+        if code in (401, 403):
+            user = _username() if os.environ.get("ARANGO_PASSWORD") else None
+            who = f"user {user!r}" if user else "no credentials sent"
+            verb = "authentication" if code == 401 else "authorization"
+            raise AdapterError(f"{stage} failed: {verb} failed for {who} ({', '.join(detail)})")
+        raise AdapterError(f"{stage} failed" + (f" ({', '.join(detail)})" if detail else ""))
     return response
 
 
@@ -492,7 +528,7 @@ def _main() -> int:
         print(f"\nserver acknowledged {accepted:,} imported rows plus one report")
         return 0
     except (AdapterError, OSError, ValueError) as error:
-        raise AdapterError("write stage failed", accepted + getattr(error, "acknowledged", 0)) from error
+        raise AdapterError(f"write stage failed: {error}", accepted + getattr(error, "acknowledged", 0)) from error
 
 
 def main() -> int:
@@ -504,7 +540,9 @@ def main() -> int:
         return 1
     except (AdapterError, OSError, ValueError) as error:
         acknowledged = getattr(error, "acknowledged", 0)
-        print(f"adapter run failed; server acknowledged at least {acknowledged:,} imported rows; "
+        # The cause is printed: every AdapterError message is built here from
+        # codes and counts, not backend text, so it is safe to show (#199).
+        print(f"adapter run failed: {error}; server acknowledged at least {acknowledged:,} imported rows; "
               "earlier writes may persist; no successful run is certified", file=sys.stderr)
         return 1
 
