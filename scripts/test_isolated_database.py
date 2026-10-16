@@ -14,7 +14,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                      "graph_loader", "graph_contract", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
+                      "graph_loader", "graph_contract", "kg_authored", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
@@ -77,6 +77,8 @@ def main():
                            help="run the cross-language training/export contract with this CPU interpreter")
     benchmark.add_argument("--cli-lifecycle", action="store_true",
                            help="run the CLI lifecycle contracts on the private server")
+    benchmark.add_argument("--mcp-authored", action="store_true",
+                           help="run the authored-graph MCP roundtrip on the private server")
     benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
                            help="run one database contract on the same strict private server")
     parser.add_argument("--benchmark-rows", type=int, default=1024)
@@ -201,6 +203,10 @@ def main():
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
             if args.cli_lifecycle:
                 command("cli-lifecycle", ["-p", "hades-cli", "--test", "codebase_lifecycle"])
+                return
+            if args.mcp_authored:
+                command("mcp-authored", ["-p", "hades-cli", "--test", "codebase_lifecycle",
+                                         "mcp_authored_graph_tool_roundtrip"])
                 return
             if args.training_alignment_python:
                 # Preserve a virtualenv interpreter symlink: resolving it can

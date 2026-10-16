@@ -19,14 +19,18 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add MCP `kg_create`, `kg_add_node`, and `kg_add_edge` provisioning tools for
+  direct authored knowledge graphs. Each graph owns separate node and edge
+  collections and can link to ingested documents and codebase files without
+  putting authored rows under ingest replacement ownership.
+
 - Document the graph's data-ownership contract: ingest owns code and document
   rows, adapters own their domain rows, admin `db` writes are an unvalidated
-  escape hatch, and MCP agents change the graph only by changing source and
-  ingesting. The MCP server instructions now say so and list `db_schema_init`
-  as provisioning-gated; stale section references, the MCP tool count and the
-  `--force` semantic-edge comment are corrected. The MCP instructions and
-  deployment docs no longer imply the provisioning prefix bounds `ingest_start`
-  or `db_schema_init`: it bounds only `create_database` (#188).
+  escape hatch, and MCP agents can add authored graph rows or ingest source
+  files. The MCP server instructions list `db_schema_init` and authored graph
+  writes as provisioning-gated; stale section references, the MCP tool count,
+  and the `--force` semantic-edge comment are corrected. The provisioning
+  prefix bounds all six provisioning commands' database writes (#188).
 
 - Add explicit degraded semantic enrichment acceptance to unified ingest, daemon
   and MCP ingestion, retaining exact failure counts, bounded diagnostic samples,

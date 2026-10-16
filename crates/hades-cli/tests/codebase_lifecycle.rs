@@ -319,6 +319,109 @@ impl PrivateMcp {
     }
 }
 
+/// Round-trip authored graph writes through a private HTTP MCP endpoint.
+#[tokio::test]
+async fn mcp_authored_graph_tool_roundtrip() {
+    with_temp_db("mcp_authored", Fixtures::Empty, |pool| async move {
+        let tree = tempfile::tempdir().unwrap();
+        let token = tree.path().join("token");
+        std::fs::write(&token, "private-fixture-token\n").unwrap();
+        let socket = tree.path().join("daemon.sock");
+        let log = tree.path().join("daemon.log");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let child = Command::new(env!("CARGO_BIN_EXE_hades"))
+            .args(["--db", pool.database(), "daemon", "--socket"])
+            .arg(&socket)
+            .args([
+                "--mcp-bind",
+                &address.to_string(),
+                "--mcp-token-file",
+                token.to_str().unwrap(),
+                "--mcp-db-prefix",
+                pool.database(),
+                "--mcp-ingest-root",
+                tree.path().to_str().unwrap(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap();
+        let mut daemon = PrivateDaemon {
+            child,
+            ingests: Vec::new(),
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                assert!(
+                    daemon.child.try_wait().unwrap().is_none(),
+                    "{}",
+                    std::fs::read_to_string(&log).unwrap()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mcp = PrivateMcp::connect(address).await;
+        let db = pool.database();
+        let created = mcp
+            .call_tool("kg_create", json!({"db":db,"name":"research"}))
+            .await;
+        assert_eq!(created["success"], true, "{created}");
+        hades_core::db::crud::insert_document(
+            &pool,
+            "documents",
+            &json!({"_key":"paper-1","title":"Processed paper"}),
+        )
+        .await
+        .unwrap();
+        let node = mcp
+            .call_tool(
+                "kg_add_node",
+                json!({"db":db,"graph":"research","key":"claim-1",
+                "data":{"title":"Claim"}}),
+            )
+            .await;
+        assert_eq!(node["data"]["_id"], "research_nodes/claim-1", "{node}");
+        let edge = mcp
+            .call_tool(
+                "kg_add_edge",
+                json!({"db":db,"graph":"research","key":"supports-1",
+                "from":"research_nodes/claim-1","to":"documents/paper-1",
+                "data":{"relation":"supported_by"}}),
+            )
+            .await;
+        assert_eq!(edge["data"]["_id"], "research_edges/supports-1", "{edge}");
+        let result = mcp
+            .call_tool(
+                "graph_traverse",
+                json!({"db":db,"graph":"research",
+                "start":"research_nodes/claim-1"}),
+            )
+            .await;
+        assert_eq!(result["success"], true, "{result}");
+        assert!(result.to_string().contains("documents/paper-1"), "{result}");
+        let duplicate = mcp
+            .call_tool(
+                "kg_add_node",
+                json!({"db":db,"graph":"research","key":"claim-1",
+                "data":{"title":"Different"}}),
+            )
+            .await;
+        assert_eq!(duplicate["success"], false, "{duplicate}");
+        assert_eq!(
+            hades_core::db::crud::get_document(&pool, "research_nodes", "claim-1")
+                .await
+                .unwrap()["title"],
+            "Claim"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn mcp_ingestion_limit_and_tree_ownership_span_databases() {
     with_temp_db("mcp_ingest_a", Fixtures::Codebase, |a| async move {
