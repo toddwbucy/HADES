@@ -319,6 +319,7 @@ impl PrivateMcp {
     }
 }
 
+/// Round-trip authored graph writes through a private HTTP MCP endpoint.
 #[tokio::test]
 async fn mcp_authored_graph_tool_roundtrip() {
     with_temp_db("mcp_authored", Fixtures::Empty, |pool| async move {

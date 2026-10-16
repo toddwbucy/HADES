@@ -42,6 +42,14 @@ async fn authored_graph_can_link_processed_documents_without_owning_them() {
         let created = request(allowed.clone(), create).await;
         assert!(created.success, "{created:?}");
         assert_eq!(created.data.unwrap()["nodes"], "research_nodes");
+        let racing = json!({"command":"kg.create","params":{"name":"racing"}});
+        let (first, second) = tokio::join!(
+            request(allowed.clone(), racing.clone()),
+            request(allowed.clone(), racing)
+        );
+        assert_ne!(first.success, second.success, "{first:?} {second:?}");
+        let loser = if first.success { second } else { first };
+        assert_eq!(loser.error_code.as_deref(), Some("CONFLICT"), "{loser:?}");
         crud::insert_document(
             &pool,
             "documents",

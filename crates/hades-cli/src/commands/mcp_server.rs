@@ -709,6 +709,7 @@ impl HadesMcpServer {
         .await
     }
 
+    /// Expose graph creation to provisioning-enabled MCP clients.
     #[tool(
         description = "Create a named authored knowledge graph with its own node and edge collections. It can link to existing processed documents and codebase files. Requires provisioning and a database matching the configured prefix. Use create_database first for a new database."
     )]
@@ -723,6 +724,7 @@ impl HadesMcpServer {
         .await
     }
 
+    /// Expose keyed authored vertex insertion over MCP.
     #[tool(
         description = "Add a keyed authored node to a knowledge graph. Authored nodes live outside ingest-owned collections, so document re-ingest does not replace them. Duplicate keys are refused."
     )]
@@ -741,6 +743,7 @@ impl HadesMcpServer {
         .await
     }
 
+    /// Expose keyed authored edge insertion over MCP.
     #[tool(
         description = "Add a keyed authored edge between existing nodes, processed documents, or codebase files in the named graph. Both endpoints must exist; duplicate edge keys are refused."
     )]

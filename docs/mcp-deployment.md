@@ -38,17 +38,18 @@ section describes the remaining source and adapter ownership boundaries.
 
 ### Create and extend a graph over MCP
 
-With provisioning enabled for a database prefix, call the tools in this order:
+With provisioning enabled for a database prefix such as `example_`, call the
+tools in this order:
 
-1. `create_database {"name":"bident_research"}` for a new database. Run
-   `db_schema_init {"db":"bident_research","seed":"empty"}` if document
+1. `create_database {"name":"example_research"}` for a new database. Run
+   `db_schema_init {"db":"example_research","seed":"empty"}` if document
    ingestion will use that database.
-2. `kg_create {"db":"bident_research","name":"research"}` creates
+2. `kg_create {"db":"example_research","name":"research"}` creates
    `research_nodes`, `research_edges`, and a named graph. It also makes
    `documents` and `codebase_files` available as link endpoints.
-3. `kg_add_node {"db":"bident_research","graph":"research","key":"claim_1","data":{"title":"A claim"}}`
+3. `kg_add_node {"db":"example_research","graph":"research","key":"claim_1","data":{"title":"A claim"}}`
    creates `research_nodes/claim_1`.
-4. `kg_add_edge {"db":"bident_research","graph":"research","key":"support_1","from":"research_nodes/claim_1","to":"documents/paper_1","data":{"relation":"supported_by"}}`
+4. `kg_add_edge {"db":"example_research","graph":"research","key":"support_1","from":"research_nodes/claim_1","to":"documents/paper_1","data":{"relation":"supported_by"}}`
    links it to an existing processed document. Both endpoints must already
    exist; use the document `_id` returned by `db_get` or `db_list`.
 
@@ -108,16 +109,16 @@ shell access to the host.
 
 ```
 hades daemon \
-  --mcp-bind 192.168.0.10:10443 \
+  --mcp-bind <private-lan-ip>:10443 \
   --mcp-token-file ~/.config/hades/mcp-token \
-  --mcp-db-prefix bident_ \
-  --mcp-ingest-root /opt/HADES \
-  --mcp-ingest-root /opt/weavertools
+  --mcp-db-prefix example_ \
+  --mcp-ingest-root <allowed-source-root>
 ```
 
-Three tools are Provisioning tier: `create_database`, `db_schema_init` and
-`ingest_start` (`DaemonCommand::access_tier`, `crates/hades-core/src/dispatch.rs`).
-`ingest_status` is Agent tier, so any client may poll a job. The three are
+Six tools are Provisioning tier: `create_database`, `db_schema_init`,
+`ingest_start`, `kg_create`, `kg_add_node`, and `kg_add_edge`
+(`DaemonCommand::access_tier`, `crates/hades-core/src/dispatch.rs`).
+`ingest_status` is Agent tier, so any client may poll a job. All six are
 advertised on every endpoint and authorized on none by default, so a client
 without provisioning gets `ACCESS_DENIED` naming what would have been permitted
 rather than concluding the capability does not exist.
@@ -125,9 +126,10 @@ rather than concluding the capability does not exist.
 **Both flags are load-bearing, and both fail closed.**
 
 `--mcp-db-prefix` bounds every database a provisioning command may write:
-the one `create_database` creates, and the one `db_schema_init` seeds or
-`ingest_start` writes into. Without it, no database may be written, even with
-the other flag set. It also widens the allowlist: every existing database whose
+the one `create_database` creates, the one `db_schema_init` seeds or
+`ingest_start` writes into, and the one the three `kg_*` tools modify. Without
+a prefix, no database may be written, even when an ingest root is set. The
+prefix also widens the allowlist: every existing database whose
 name matches is served, whether or not this endpoint created it, to every tool
 including the reads and the Agent-tier task writes. That is so a database the
 endpoint just created, which is not on `--mcp-dbs`, is not refused the moment
@@ -136,7 +138,7 @@ server is reachable too, so choose a prefix nothing else uses.
 
 **Databases exposed for reading cannot be provisioned.** The prefix is enforced in the
 service layer (`crates/hades-core/src/service.rs`, the provisioning-limits
-check) for all three commands, against the database each one would actually
+check) for all six commands, against the database each one would actually
 write, including the endpoint default when a client omits `db`. An `--mcp-dbs`
 entry or default that matches no prefix is never seeded or ingested into
 (#193). It is not read-only, though: `task_create` and `task_update` are Agent
@@ -158,7 +160,7 @@ listed root, and a path that does not exist is refused rather than guessed at.
 
 **What this does not change.** The tier ceiling stays at Agent, so raw AQL,
 `db.purge`, `db.insert` and `db.graph.drop` remain unavailable to the endpoint.
-Provisioning grants three commands, not a promotion.
+Provisioning grants six commands, not a promotion.
 
 **What it assumes.** That ArangoDB is enforcing its own access control. If the
 instance runs with `authentication = false`, the daemon can reach every database

@@ -3221,6 +3221,7 @@ mod handlers {
         Ok((format!("{graph}_nodes"), format!("{graph}_edges")))
     }
 
+    /// Validate stable authored vertex and edge keys before writing them.
     fn kg_key(key: &str) -> Result<(), HandlerError> {
         if key.is_empty()
             || key.len() > 128
@@ -3236,6 +3237,7 @@ mod handlers {
         Ok(())
     }
 
+    /// Accept user properties while reserving database and ownership fields.
     fn kg_data(data: &Value) -> Result<serde_json::Map<String, Value>, HandlerError> {
         let obj = data
             .as_object()
@@ -3290,6 +3292,7 @@ mod handlers {
         Ok((nodes, edges))
     }
 
+    /// Create the authored graph and its collections without claiming ingest rows.
     pub async fn kg_create(pool: &ArangoPool, graph: &str) -> Result<Value, HandlerError> {
         let (nodes, edges) = kg_names(graph)?;
         let graphs = db_graph_list(pool).await?;
@@ -3346,9 +3349,16 @@ mod handlers {
             }
             crud::create_collection(pool, name, Some(kind))
                 .await
-                .map_err(|source| HandlerError::Query {
-                    context: format!("create KG collection '{name}'"),
-                    source,
+                .map_err(|source| match source {
+                    crate::db::ArangoError::Api {
+                        error_num: 1207, ..
+                    } => HandlerError::Conflict(format!(
+                        "collection '{name}' was created concurrently; retry kg.create"
+                    )),
+                    source => HandlerError::Query {
+                        context: format!("create KG collection '{name}'"),
+                        source,
+                    },
                 })?;
         }
         let endpoints = json!([nodes, "documents", "codebase_files"]);
@@ -3357,11 +3367,24 @@ mod handlers {
             graph,
             Some(&json!([{"collection": edges, "from": endpoints, "to": endpoints}])),
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            HandlerError::Query {
+                source:
+                    crate::db::ArangoError::Api {
+                        error_num: 1925, ..
+                    },
+                ..
+            } => HandlerError::Conflict(format!(
+                "graph '{graph}' was created concurrently; use graph_list to inspect it"
+            )),
+            other => other,
+        })?;
         Ok(json!({"graph": graph, "nodes": nodes, "edges": edges,
                   "linkable_collections": ["documents", "codebase_files"]}))
     }
 
+    /// Insert a keyed node into an authored graph's vertex collection.
     pub async fn kg_add_node(
         pool: &ArangoPool,
         params: &KgAddNodeParams,
@@ -3374,6 +3397,7 @@ mod handlers {
         db_insert(pool, &nodes, &Value::Object(data)).await
     }
 
+    /// Insert a keyed edge after confirming both graph endpoints exist.
     pub async fn kg_add_edge(
         pool: &ArangoPool,
         params: &KgAddEdgeParams,
