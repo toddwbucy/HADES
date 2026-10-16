@@ -19,6 +19,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add an opt-in MCP deployment workflow check covering database creation,
+  authored writes, document ingestion, semantic retrieval, and traversal, with
+  explicit isolated test inputs and regression checks for false success.
+
+- Document an exercised graphable-document ingestion mapping, including source
+  provenance, version-scoped identities, and links from semantic search chunks
+  to authored graph sections.
+
 - Add MCP `kg_create`, `kg_add_node`, and `kg_add_edge` provisioning tools for
   direct authored knowledge graphs. Each graph owns separate node and edge
   collections and can link to ingested documents and codebase files without
