@@ -66,6 +66,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Detect enabled embedder profile instances with `systemctl is-enabled` for each
+  configured profile. On this host, `list-unit-files` reported only the indirect
+  template, so the profile selector exited before switching GPU 2 to GPU 1.
+
 - The WeaverTools adapter reads graph records under `experiments/` beside
   `docs/`, and citations from each probe's `code/` as from `crates/`, pruning
   `results/` at any depth the way WeaverTools' census and `.hadesignore` do.
