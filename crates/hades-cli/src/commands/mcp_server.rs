@@ -40,8 +40,8 @@ use hades_core::db::ArangoPool;
 use hades_core::dispatch::{
     DaemonCommand, DbCountParams, DbCreateDatabaseParams, DbGetParams, DbGraphNeighborsParams,
     DbGraphTraverseParams, DbListParams, DbSchemaInitParams, IngestStartParams, IngestStatusParams,
-    OrientParams, SmellReportParams, TaskCreateParams, TaskListParams, TaskShowParams,
-    TaskUpdateParams,
+    KgAddEdgeParams, KgAddNodeParams, KgCreateParams, OrientParams, SmellReportParams,
+    TaskCreateParams, TaskListParams, TaskShowParams, TaskUpdateParams,
 };
 use hades_core::service::{self, ConnectionPolicy};
 
@@ -317,6 +317,50 @@ struct CreateDatabaseArgs {
         description = "Name of the database to create. Must begin with a prefix this endpoint is allowed to provision."
     )]
     name: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct KgCreateArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    #[schemars(
+        description = "Graph name: 1–48 ASCII letters, digits, or underscores; start with a letter. Creates NAME_nodes and NAME_edges. The graph can also link to ingested documents and codebase_files."
+    )]
+    name: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct KgAddNodeArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    graph: String,
+    #[schemars(
+        description = "Stable node key, 1–128 ASCII letters, digits, underscores, or hyphens"
+    )]
+    key: String,
+    #[schemars(description = "Node properties as a JSON object; system fields are reserved")]
+    data: serde_json::Value,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct KgAddEdgeArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    graph: String,
+    #[schemars(
+        description = "Stable edge key, 1–128 ASCII letters, digits, underscores, or hyphens"
+    )]
+    key: String,
+    #[schemars(
+        description = "Existing source vertex as collection/key; authored nodes, documents, and codebase_files are supported"
+    )]
+    from: String,
+    #[schemars(
+        description = "Existing target vertex as collection/key; authored nodes, documents, and codebase_files are supported"
+    )]
+    to: String,
+    #[schemars(description = "Edge properties as a JSON object; system fields are reserved")]
+    data: serde_json::Value,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -666,6 +710,58 @@ impl HadesMcpServer {
     }
 
     #[tool(
+        description = "Create a named authored knowledge graph with its own node and edge collections. It can link to existing processed documents and codebase files. Requires provisioning and a database matching the configured prefix. Use create_database first for a new database."
+    )]
+    async fn kg_create(
+        &self,
+        Parameters(a): Parameters<KgCreateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::KgCreate(KgCreateParams { name: a.name }),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Add a keyed authored node to a knowledge graph. Authored nodes live outside ingest-owned collections, so document re-ingest does not replace them. Duplicate keys are refused."
+    )]
+    async fn kg_add_node(
+        &self,
+        Parameters(a): Parameters<KgAddNodeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::KgAddNode(KgAddNodeParams {
+                graph: a.graph,
+                key: a.key,
+                data: a.data,
+            }),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Add a keyed authored edge between existing nodes, processed documents, or codebase files in the named graph. Both endpoints must exist; duplicate edge keys are refused."
+    )]
+    async fn kg_add_edge(
+        &self,
+        Parameters(a): Parameters<KgAddEdgeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::KgAddEdge(KgAddEdgeParams {
+                graph: a.graph,
+                key: a.key,
+                from: a.from,
+                to: a.to,
+                data: a.data,
+            }),
+        )
+        .await
+    }
+
+    #[tool(
         description = "Start ingesting a tree into a database and return a job id after recording child startup. One command handles both halves: file extension decides whether each file goes to the code analyzers (symbols, edges, AST chunks) or to document extraction, and both land in the same graph. Ingests run for minutes, so poll ingest_status with the returned job_id rather than waiting on this call. Requires provisioning, and writes only into a database whose name matches a provisioning prefix."
     )]
     async fn ingest_start(
@@ -938,9 +1034,8 @@ impl ServerHandler for HadesMcpServer {
             // What a client reads before it looks at a single tool, so it
             // carries the three things that otherwise cost a round trip each:
             // which profile to search, how the traversal graph is resolved,
-            // and that ingest is a job rather than a call. It also says the
-            // graph is source-derived, so an agent looking for an edit tool
-            // learns there is none before it searches (data ownership, #188).
+            // and that ingest is a job rather than a call. Authored KG writes
+            // have their own collections so source ingest retains its owner.
             .with_instructions(
                 "HADES knowledge-graph tools. Every result is the HADES JSON \
              envelope: {success, data, error, error_code}. Start with `orient` to \
@@ -955,24 +1050,28 @@ impl ServerHandler for HadesMcpServer {
              `codebase_graph`. `graph_list` reports each graph with its edge \
              definitions, which is also how to learn the real edge-collection \
              names before guessing at them.\n\n\
-             Building a graph: `ingest_start` takes one directory and routes every \
+             Building a graph: `create_database`, then `kg_create`, creates an \
+             authored graph. `kg_add_node` adds keyed nodes and `kg_add_edge` \
+             links them to other authored nodes or existing `documents` and \
+             `codebase_files`. Use `graph_list` to inspect the graph. \
+             `ingest_start` takes one directory and routes every \
              file by extension, code to the analyzers and documents to extraction, \
              into the same graph. It returns a job id immediately because ingests \
              run for minutes, so poll `ingest_status` rather than waiting. Files \
              nothing claims are listed under `unrouted` rather than skipped.\n\n\
              Limits: this endpoint runs at the agent access tier, so raw AQL, \
              purge, insert and graph drop are unavailable. `create_database`, \
-             `db_schema_init` and `ingest_start` need provisioning, which is off unless the operator \
-             enabled it. All three then act only on databases whose names match \
+             `db_schema_init`, `ingest_start`, and `kg_*` writes need provisioning, \
+             which is off unless the operator enabled it. They act only on databases whose names match \
              the operator's provisioning prefixes, including when `db` is omitted, \
              and `ingest_start` reads only from specific directories. \
              `db_schema_init` seeds only a database with no schema yet; it never \
              replaces one. A refusal names what would have been permitted, so read \
              the error rather than retrying.\n\n\
-             Changing the graph: the graph is derived from source. No tool edits a \
-             node or edge directly. `ingest_start` rewrites the rows and edges the \
-             ingested files own, replacing what an earlier ingest derived from \
-             them, so change a file on disk and ingest it.",
+             Ownership: `ingest_start` rewrites rows and edges its files own. \
+             `kg_add_node` and `kg_add_edge` write into separate authored \
+             collections, so re-ingest does not replace those rows. An authored \
+             edge can become dangling if its ingested endpoint is later removed.",
             )
     }
 }
@@ -1315,7 +1414,7 @@ mod tests {
     // --- tool surface ------------------------------------------------------
 
     #[test]
-    fn tool_surface_is_the_curated_eighteen() {
+    fn tool_surface_includes_authored_kg_writes() {
         let router = HadesMcpServer::tool_router();
         let mut names: Vec<String> = router
             .list_all()
@@ -1326,7 +1425,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                // The three provisioning tools are advertised on every endpoint
+                // Provisioning tools are advertised on every endpoint
                 // and authorized on none by default: calling one without
                 // provisioning returns ACCESS_DENIED naming the permitted
                 // prefixes and roots. Advertised rather than hidden so a client
@@ -1345,6 +1444,9 @@ mod tests {
                 "graph_traverse",
                 "ingest_start",
                 "ingest_status",
+                "kg_add_edge",
+                "kg_add_node",
+                "kg_create",
                 "orient",
                 "smell_report",
                 "task_create",

@@ -87,7 +87,7 @@ JSON payload that follows.
 
 ## Sessions and Access Tiers
 
-The daemon implements a three-tier access model. Each command is classified
+The daemon implements four access tiers. Each command is classified
 into exactly one tier.
 
 | Session    | Can Execute         | Use Case                    |
@@ -116,7 +116,7 @@ request content can elevate a connection above what its transport grants.
 | **Agent**  | Safe, bounded reads and task management. No DDL, no raw AQL. |
 | **Internal** | System diagnostics and schema introspection.            |
 | **Admin**  | Unbounded writes, DDL, raw AQL, schema mutation.         |
-| **Provisioning** | `db.create_database`, `db.schema.init`, `ingest.start`. Creating a graph, seeding its schema and filling it. |
+| **Provisioning** | `db.create_database`, `db.schema.init`, `ingest.start`, `kg.create`, `kg.add_node`, `kg.add_edge`. Creating and filling a graph. |
 
 An `"agent"` session attempting an Internal or Admin command receives
 error code `ACCESS_DENIED`.
@@ -129,8 +129,9 @@ of being admin. A network transport has it only when the daemon was started with
 both `--mcp-db-prefix` and `--mcp-ingest-root`, and then only within those
 bounds:
 
-- a database it creates, seeds or ingests into must begin with one of the
-  permitted prefixes. `db.schema.init` and `ingest.start` are checked against
+- a database it creates, seeds, ingests into or writes authored graph rows into
+  must begin with one of the permitted prefixes. `db.schema.init`, `ingest.start`
+  and all `kg.*` commands are checked against
   the database they would write, including the transport's default, so a
   database served only for reading is never seeded or ingested into (#193).
   Agent-tier task writes are not provisioning and are not held to the prefix
@@ -472,6 +473,36 @@ definitions from `hades_schema`.
 | `register` | `bool`   | false   | Also create named graphs via Gharial API      |
 
 ---
+
+## Commands — Authored knowledge graphs
+
+These commands are Provisioning tier. The target database must match a
+configured provisioning prefix on MCP. They are exposed as `kg_create`,
+`kg_add_node`, and `kg_add_edge` MCP tools. Each graph uses dedicated
+`<name>_nodes` and `<name>_edges` collections; source ingestion never writes
+to them. `documents` and `codebase_files` are valid edge endpoints, so a
+document processing workflow can attach extracted claims to its stored source.
+
+### `kg.create`
+
+`{"name":"research"}` creates a `research` named graph with
+`research_nodes` and `research_edges`. The name starts with a letter and uses
+at most 48 ASCII letters, digits, or underscores. An existing graph or
+nonempty authored collection is refused. This command does not configure
+vector search for authored nodes.
+
+### `kg.add_node`
+
+`{"graph":"research","key":"claim_1","data":{"title":"Claim"}}`
+inserts `research_nodes/claim_1`. The key must be stable and unique; `data`
+must be an object and cannot set ArangoDB system fields or `_hades`.
+
+### `kg.add_edge`
+
+`{"graph":"research","key":"supports_1","from":"research_nodes/claim_1","to":"documents/paper_1","data":{"relation":"supported_by"}}`
+inserts an edge after checking both endpoints exist and belong to the graph.
+Duplicate keys are refused. A later ingest may remove an endpoint, leaving
+its authored edge dangling; query the graph to inspect those links.
 
 ## Commands — Schema
 

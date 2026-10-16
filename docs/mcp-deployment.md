@@ -21,22 +21,42 @@ context for the whole session, so the surface has to earn its size.
 | `graph_neighbors` / `graph_traverse` | graph walks, bounded depth |
 | `smell_report` | recorded code smells for a file |
 | `task_list` / `task_show` / `task_create` / `task_update` | kanban board |
+| `kg_create` / `kg_add_node` / `kg_add_edge` | create an authored graph and add nodes or links to processed documents |
 
 Every call is serialized to the daemon frame format and routed through the
-same parse/authorize/dispatch path the Unix socket uses, under
-`ConnectionPolicy::agent_only`. No tool here can reach an Admin-tier command
+same parse/authorize/dispatch path the Unix socket uses, under an Agent ceiling
+with optional provisioning. No tool here can reach an Admin-tier command
 even if one were mounted by mistake.
 
-**What an agent can change.** The graph is derived from source, and no tool
-here edits a node or edge directly. The endpoint's only writes are
-`create_database`, `db_schema_init` and `ingest_start` (provisioning, below)
-and `task_create` / `task_update` on the Persephone kanban. An agent changes
-the graph by changing a file on disk under an ingest root and running
-`ingest_start` over it. That is a destructive write for the source it names:
-re-ingest deletes and rewrites the rows and edges those files own. Which rows each
-owner controls, and what survives a re-ingest, is the
-[Data Ownership](codebase-graph-ontology.md#8-data-ownership) section of the
-ontology. Authored writes over MCP are proposed in #188 and not built.
+**What an agent can change.** `kg_create`, `kg_add_node`, and `kg_add_edge`
+write authored graph rows in collections dedicated to the named graph. An edge
+may connect authored nodes to existing `documents` or `codebase_files` rows.
+`ingest_start` still rewrites the rows and edges its source files own; it does
+not replace authored rows. An authored edge can become dangling if an ingested
+endpoint is later deleted. The [Data Ownership](codebase-graph-ontology.md#8-data-ownership)
+section describes the remaining source and adapter ownership boundaries.
+
+### Create and extend a graph over MCP
+
+With provisioning enabled for a database prefix, call the tools in this order:
+
+1. `create_database {"name":"bident_research"}` for a new database. Run
+   `db_schema_init {"db":"bident_research","seed":"empty"}` if document
+   ingestion will use that database.
+2. `kg_create {"db":"bident_research","name":"research"}` creates
+   `research_nodes`, `research_edges`, and a named graph. It also makes
+   `documents` and `codebase_files` available as link endpoints.
+3. `kg_add_node {"db":"bident_research","graph":"research","key":"claim_1","data":{"title":"A claim"}}`
+   creates `research_nodes/claim_1`.
+4. `kg_add_edge {"db":"bident_research","graph":"research","key":"support_1","from":"research_nodes/claim_1","to":"documents/paper_1","data":{"relation":"supported_by"}}`
+   links it to an existing processed document. Both endpoints must already
+   exist; use the document `_id` returned by `db_get` or `db_list`.
+
+`ingest_start` can populate the document side before or after `kg_create`, but
+its path is still on the HADES host, under an allowed ingest root. Graph nodes
+and edges are readable through `db_get`, `graph_neighbors`, and
+`graph_traverse`. Semantic `db_query` searches ingested document/code chunks;
+authored nodes are not embedded by these tools.
 
 ## Running it
 

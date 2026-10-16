@@ -19,6 +19,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add MCP `kg_create`, `kg_add_node`, and `kg_add_edge` provisioning tools for
+  direct authored knowledge graphs. Each graph owns separate node and edge
+  collections and can link to ingested documents and codebase files without
+  putting authored rows under ingest replacement ownership.
+
 - Document the graph's data-ownership contract: ingest owns code and document
   rows, adapters own their domain rows, admin `db` writes are an unvalidated
   escape hatch, and MCP agents change the graph only by changing source and

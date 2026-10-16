@@ -556,11 +556,9 @@ This cascade requires the `file_key` indices defined in Section 6.
 
 ## 8. Data Ownership
 
-The graph is **derived from source**. Every row belongs to exactly one of the
-owners below, and the owner decides what survives the next run. To change what
-the graph says, change what its owner reads, then re-run that owner. Editing a
-row by hand is the escape hatch in 8.3, not a workflow. Writes authored in the
-graph itself are proposed in #188 and are not built.
+Source and adapter rows are derived from their inputs. Authored graph rows are
+created directly through the MCP `kg_*` tools in separate collections. Each
+owner decides what survives its next run.
 
 ### 8.1 Ingest-owned: the source file is the truth
 
@@ -672,7 +670,15 @@ in the database, and the report records that with
 declarations needs a rebuild into a fresh database, as
 `services/adapters/weavertools/README.md` describes.
 
-### 8.3 Authored: the escape hatch
+### 8.3 Authored graph rows and the admin escape hatch
+
+MCP `kg_create` creates `<graph>_nodes` and `<graph>_edges` collections and
+a named graph whose edges can also reference `documents` and `codebase_files`.
+`kg_add_node` and `kg_add_edge` require provisioning on the target database,
+reject duplicate keys, and mark rows with `_hades.basis: authored`. The edge
+tool checks that both endpoints exist when it writes the edge. Re-ingest does
+not replace authored rows; an edge can become dangling if its ingested endpoint
+is later removed. These tools do not embed authored nodes for semantic search.
 
 Admin-tier commands (`hades db insert`, `db update`, `db delete`, `db aql`,
 and the rest of the `db` write set) can write any node or edge. They are
@@ -693,10 +699,9 @@ is never touched and can persist indefinitely; `prune-orphans` sweeps it only
 once it points at a file node that is gone. Do not rely on re-ingest to clean
 up authored rows.
 
-### 8.4 Agents over MCP change source, not the graph
+### 8.4 Agent writes over MCP
 
-The MCP endpoint runs at the agent tier and has no tool for a direct or authored
-edit of a knowledge-graph node or edge. Its writes are:
+The MCP endpoint runs at the agent tier with these bounded writes:
 
 - `create_database`, `db_schema_init` and `ingest_start`, which need
   provisioning to be enabled. All three act only on databases whose names match
@@ -707,11 +712,12 @@ edit of a knowledge-graph node or edge. Its writes are:
   (#193; see `docs/mcp-deployment.md`);
 - `task_create` and `task_update`, which write Persephone kanban tasks in
   `persephone_tasks`, not graph data.
+- `kg_create`, `kg_add_node`, and `kg_add_edge`, which need provisioning and
+  write only into an authored graph in a database matching a permitted prefix.
 
-An agent changes the graph by changing a file on disk under an ingest root and
-running `ingest_start` over it. That is itself a destructive write for the
-source it names: re-ingest deletes and rewrites the rows and edges those files
-own (§8.1). Authored writes over MCP are proposed in #188.
+An agent changes source-derived rows by changing a file under an ingest root
+and running `ingest_start`; it adds authored nodes and edges with the `kg_*`
+tools. Re-ingest deletes and rewrites only the rows its source files own (§8.1).
 
 ---
 

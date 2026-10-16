@@ -339,7 +339,11 @@ pub async fn handle_request(
     // `db.schema.init` through the pool, so both names are checked.
     if matches!(
         cmd,
-        DaemonCommand::DbSchemaInit(_) | DaemonCommand::IngestStart(_)
+        DaemonCommand::DbSchemaInit(_)
+            | DaemonCommand::IngestStart(_)
+            | DaemonCommand::KgCreate(_)
+            | DaemonCommand::KgAddNode(_)
+            | DaemonCommand::KgAddEdge(_)
     ) {
         let targets = [Some(pool.database()), config.database.name.as_deref()];
         if let Some(name) = targets
