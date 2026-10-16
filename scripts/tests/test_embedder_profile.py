@@ -32,6 +32,12 @@ else:
             print(value, status, "enabled")
     elif verb == "is-active":
         code = 0 if unit in state["active"] else 3
+    elif verb == "is-enabled":
+        if unit in state["enabled"]:
+            print(state["enabled"][unit])
+        else:
+            print("disabled")
+            code = 1
     elif verb == "start":
         if unit in state.get("fail_starts", []):
             code = 1
@@ -148,7 +154,8 @@ class ProfileSelection(unittest.TestCase):
                 self.set_state(["gpu1", "gpu2"], {"gpu1": "enabled", "gpu2": "enabled"})
                 result = self.run_selector(target)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertTrue(all(entry[2].startswith("list-") for entry in self.state()["log"]))
+                self.assertTrue(all(entry[2].startswith("list-") or entry[2] == "is-enabled"
+                                    for entry in self.state()["log"]))
 
     def test_initial_selection_without_previous_active_profile(self):
         self.set_state([], {})

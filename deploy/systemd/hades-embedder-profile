@@ -29,8 +29,18 @@ active_units() {
 }
 
 enabled_units() {
-  systemctl --user list-unit-files --state=enabled,enabled-runtime \
-    --no-legend "${UNIT_PREFIX}*.service" | awk '{print $1, $2}'
+  # list-unit-files may report only the indirect template, omitting its
+  # enabled instances. Query each configured profile by its concrete unit.
+  local conf name unit state
+  for conf in "$PROFILE_DIR"/*.conf; do
+    [[ -e "$conf" ]] || continue
+    name="$(basename "$conf" .conf)"
+    unit="${UNIT_PREFIX}${name}.service"
+    state="$(systemctl --user is-enabled "$unit" 2>/dev/null)" || continue
+    case "$state" in
+      enabled|enabled-runtime) printf '%s %s\n' "$unit" "$state" ;;
+    esac
+  done
 }
 
 show_active() {
