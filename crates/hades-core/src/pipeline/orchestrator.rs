@@ -30,6 +30,8 @@ pub struct PipelineConfig {
     pub extract_options: ExtractOptions,
     /// Whether to overwrite existing documents.
     pub overwrite: bool,
+    /// Explicit operator election to replace historical fallback extraction.
+    pub reextract_fallback: bool,
 }
 
 impl Default for PipelineConfig {
@@ -41,6 +43,7 @@ impl Default for PipelineConfig {
             embed_batch_size: None,
             extract_options: ExtractOptions::all(),
             overwrite: true,
+            reextract_fallback: false,
         }
     }
 }
@@ -425,7 +428,20 @@ impl Pipeline {
         let collections = batches.iter().map(|(name, _)| name.to_string()).collect();
         let overwrite = self.config.overwrite;
         let doc_key = doc_key.to_owned();
+        let reextract_fallback = self.config.reextract_fallback;
         transaction::run(&self.db, collections, move |client| async move {
+            if overwrite && !reextract_fallback {
+                match client.get(&format!("document/{}/{doc_key}", profile.metadata)).await {
+                    Ok(stored) if is_fallback_document(&stored) => {
+                        return Err(ArangoError::Request(
+                            "stored pymupdf_fallback extraction preserved; review the source and explicitly re-ingest with --force".into()
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.is_not_found() => {}
+                    Err(e) => return Err(e),
+                }
+            }
             if overwrite {
                 for collection in [profile.chunks, profile.embeddings] {
                     let response = client.post("cursor", &json!({
@@ -460,6 +476,12 @@ impl Pipeline {
         }).await?;
         Ok(())
     }
+}
+
+/// Recognize both the current pipeline envelope and legacy extractor metadata.
+fn is_fallback_document(document: &Value) -> bool {
+    document["extractor_metadata"]["extractor"] == "pymupdf_fallback"
+        || document["metadata"]["extractor"] == "pymupdf_fallback"
 }
 
 impl std::fmt::Debug for Pipeline {

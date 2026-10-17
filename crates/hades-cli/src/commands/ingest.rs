@@ -391,6 +391,7 @@ pub async fn run_phase(
         // skipped `delete_doc_chunks`, which is what removes the chunks a shorter
         // new version no longer has.
         overwrite: true,
+        reextract_fallback: force,
     };
 
     let pipeline = Arc::new(Pipeline::new(
