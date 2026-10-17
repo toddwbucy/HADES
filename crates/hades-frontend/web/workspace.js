@@ -123,6 +123,19 @@
     for (const button of $("view-tabs").children) button.classList.toggle("active",button === event.target);
     requestAnimationFrame(() => renderer?.resize());
   };
+  const layoutPicker = $("workspace-layout");
+  function applyLayout(value) {
+    const layout = ["auto", "wide", "compact"].includes(value) ? value : "auto";
+    document.body.dataset.layout = layout;
+    layoutPicker.value = layout;
+    requestAnimationFrame(() => renderer?.resize());
+  }
+  try { applyLayout(localStorage.getItem("hades-workspace-layout")); }
+  catch (_) { applyLayout("auto"); }
+  layoutPicker.onchange = () => {
+    applyLayout(layoutPicker.value);
+    try { localStorage.setItem("hades-workspace-layout", layoutPicker.value); } catch (_) {}
+  };
   $("search-form").onsubmit = async event => {
     event.preventDefault(); const ticket=epoch, request=++searchSequence;
     const query = $("search-query").value.trim(); if (!query) return;

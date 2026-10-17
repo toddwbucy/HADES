@@ -129,6 +129,15 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/viewer.js", get(|| async { asset(VIEWER_JS, JS) }))
         .route(
+            "/hades-logo.png",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    &include_bytes!("../web/hades-logo.png")[..],
+                )
+            }),
+        )
+        .route(
             "/workspace.js",
             get(|| async { asset(include_str!("../web/workspace.js"), JS) }),
         )

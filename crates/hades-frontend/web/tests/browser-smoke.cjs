@@ -5,7 +5,8 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 (async()=>{
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH || undefined,headless:true,args:['--no-sandbox','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
  try {
- const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
+ const httpCredentials=process.env.WORKSPACE_PASSWORD_FILE ? {username:process.env.WORKSPACE_USERNAME || 'viewer',password:require('node:fs').readFileSync(process.env.WORKSPACE_PASSWORD_FILE,'utf8').trim()} : undefined;
+ const page=await browser.newPage({viewport:{width:1440,height:1000},httpCredentials}),errors=[];
  page.on('pageerror',e=>errors.push(e.message));
  const node=(id,type,label,content)=>({id,collection:'notes',label,degree:1,attrs:{type,content,source_version:'1',source_node_id:id,source_location:{body_start:1,start_byte:0,end_byte:40}}});
  const nodes=[node('notes/doc','document','Test document','An exact source passage. <img src=x onerror=alert(1)>'),node('notes/section','section','Source section','Section evidence.'),node('notes/concept','concept','State','A scoped definition.')];
@@ -36,7 +37,8 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
  assert.ok(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight+1),'desktop stays within viewport');
  await page.evaluate(()=>{const t=document.querySelector('#reader-body').firstChild;const r=document.createRange();r.setStart(t,0);r.setEnd(t,23);getSelection().removeAllRanges();getSelection().addRange(r);});
  await page.locator('#add-context').click();
- await page.evaluate(()=>{navigator.clipboard.writeText=async text=>{window.copied=text;};});
+ await page.evaluate(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copied=text;}}});});
+ await page.evaluate(()=>{document.execCommand=command=>{if(command!=='copy')return false;window.copied=[...document.querySelectorAll('textarea')].find(t=>t.style.opacity==='0').value;return true;};});
  await page.locator('#copy-context').click();
  let packet=JSON.parse(await page.evaluate(()=>window.copied));
  assert.equal(packet.references[0].excerpt,'An exact source passage');
@@ -59,6 +61,18 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
  await page.locator('#db-picker').selectOption('fixture');await page.waitForFunction(()=>document.querySelector('#reader-title').textContent==='Test document');await page.waitForTimeout(500);assert.equal(await page.evaluate(()=>graph.hasNode('chunks/real')),false,'stale expansion cannot enter another database');
  await page.locator('#db-picker').selectOption('empty');await page.waitForFunction(()=>document.querySelector('#reader-title').textContent==='Workspace unavailable');assert.equal(await page.locator('#add-context').isDisabled(),true);
  await page.goto(edgeUrl);await page.waitForFunction(()=>document.querySelector('#reader-kind').textContent==='Relationship');
+ await page.setViewportSize({width:3840,height:2400});
+ await page.locator('#workspace-layout').selectOption('wide');
+ await page.waitForTimeout(100);
+ const panes=await page.evaluate(()=>['controls','reader','canvas','inspector'].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};}));
+ for(let i=1;i<panes.length;i++) assert.ok(panes[i].left>=panes[i-1].right-1,'wide panes sit side by side');
+ assert.ok(panes[3].width>=500,'wide context pane uses available monitor space');
+ assert.ok(await page.locator('.brand-logo').evaluate(img=>img.complete && img.naturalWidth>0),'supplied logo loads');
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#reader-kind').textContent==='Relationship');
+ assert.equal(await page.locator('#workspace-layout').inputValue(),'wide','layout preference survives reload');
+ await page.locator('#workspace-layout').selectOption('compact');
+ await page.waitForTimeout(100);
+ assert.ok(await page.evaluate(()=>document.querySelector('#canvas').getBoundingClientRect().top>=document.querySelector('#reader').getBoundingClientRect().bottom-1),'compact stacks the graph below the reader');
  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(100);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'mobile has no horizontal overflow');
  assert.deepEqual(errors,[]);console.log('Browser checks passed: outline, source, XSS, quotes, node/edge references, deep links, semantic navigation, failure, stale requests, empty database, responsive layout.');
  } finally {await browser.close();}
