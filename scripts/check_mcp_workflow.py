@@ -13,7 +13,7 @@ import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 MAX_RESPONSE = 4 * 1024 * 1024
 REQUIRED = {'create_database', 'db_schema_init', 'kg_create', 'kg_add_node',
@@ -25,22 +25,31 @@ FIXTURE = ('The amber archive stores research notes. Every note has a stable sou
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Prevent a redirect from forwarding the bearer credential elsewhere."""
         raise HTTPError(req.full_url, code, 'MCP redirects are refused', headers, fp)
 
 
 class McpClient:
     def __init__(self, url, token, timeout=30):
+        """Accept HTTPS or local HTTP, with a bounded socket wait per request."""
         parsed = urlsplit(url)
         if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError('MCP URL must be HTTP(S), with no embedded credentials')
+        if parsed.scheme == 'http' and parsed.hostname not in ('localhost', '127.0.0.1', '::1'):
+            raise ValueError('plain HTTP is allowed only for loopback endpoints; use HTTPS or an SSH tunnel')
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError('request timeout must be positive and finite')
         self.url, self.token, self.timeout = url, token, timeout
         self.session, self.sequence = None, 0
         self.protocol = '2025-03-26'
-        self.opener = build_opener(NoRedirect())
+        # Local HTTP must not send its credential through an environment proxy.
+        handlers = [NoRedirect()]
+        if parsed.scheme == 'http':
+            handlers.append(ProxyHandler({}))
+        self.opener = build_opener(*handlers)
 
     def request(self, method, params, notification=False):
+        """Exchange one JSON-RPC message and decode a bounded JSON or SSE reply."""
         self.sequence += 1
         payload = {'jsonrpc': '2.0', 'method': method, 'params': params}
         if not notification:
@@ -78,6 +87,8 @@ class McpClient:
                         if not event_data.strip():
                             continue  # rmcp opens streams with an empty retry event.
                         event = json.loads(event_data)
+                        if not isinstance(event, dict):
+                            raise RuntimeError('MCP SSE event must be a JSON object')
                         if event.get('id') == payload['id']:
                             result = event
                             break
@@ -88,11 +99,16 @@ class McpClient:
                 if len(raw) > MAX_RESPONSE:
                     raise RuntimeError('MCP response exceeds size limit')
                 result = json.loads(raw)
+        if not isinstance(result, dict):
+            raise RuntimeError('MCP response must be a JSON object')
         if result.get('id') != payload['id'] or 'error' in result or 'result' not in result:
             raise RuntimeError('MCP JSON-RPC request failed: ' + str(result))
+        if not isinstance(result['result'], dict):
+            raise RuntimeError('MCP result must be a JSON object')
         return result['result']
 
     def connect(self):
+        """Initialize the MCP session and collect all advertised tool names."""
         result = self.request('initialize', {'protocolVersion': self.protocol,
                               'capabilities': {}, 'clientInfo': {'name': 'hades-mcp-check', 'version': '1'}})
         self.protocol = result['protocolVersion']
@@ -106,6 +122,7 @@ class McpClient:
                 return tools
 
     def call(self, name, arguments, expect_error=False):
+        """Unwrap a HADES tool response, requiring success or an expected rejection."""
         result = self.request('tools/call', {'name': name, 'arguments': arguments})
         texts = [c['text'] for c in result.get('content', []) if c.get('type') == 'text']
         if len(texts) != 1:
@@ -114,6 +131,8 @@ class McpClient:
             envelope = json.loads(texts[0])
         except ValueError:
             raise RuntimeError(name + ': ' + texts[0]) from None
+        if not isinstance(envelope, dict):
+            raise RuntimeError(name + ': HADES response envelope must be a JSON object')
         failed = result.get('isError') is True or envelope.get('success') is not True
         if expect_error:
             if not failed:
@@ -157,7 +176,11 @@ def exercise(client, database, fixture_root, timeout, report):
     report['authored_writes_and_duplicate_protection'] = True
     folder = Path(tempfile.mkdtemp(prefix='hades-mcp-check-', dir=fixture_root))
     fixture = folder / 'mcp_fixture.txt'
-    fixture.write_text(FIXTURE)
+    fixture.write_text(FIXTURE, encoding='utf-8')
+    # Only this newly created, non-sensitive fixture is made daemon-readable.
+    # Explicit modes also work when the invoking operator has umask 0077.
+    fixture.chmod(0o644)
+    folder.chmod(0o755)
     report['fixture_path'] = str(fixture)
     job = client.call('ingest_start', scoped(path=str(fixture)))
     report['job_id'] = job['job_id']
@@ -199,6 +222,7 @@ def exercise(client, database, fixture_root, timeout, report):
 
 
 def main():
+    """Run the explicit deployment check and emit a JSON success or failure report."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', required=True)
     parser.add_argument('--token-file', required=True, type=Path)

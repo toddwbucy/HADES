@@ -72,12 +72,25 @@ name under a configured provisioning prefix and an allowed local source director
 
 ```bash
 python3 scripts/check_mcp_workflow.py \
-  --url 'http://<private-lan-ip>:10443/mcp' \
+  --url 'https://<mcp-tls-host>/mcp' \
   --token-file '<token-file>' \
   --database example_mcp_check_001 \
   --fixture-root '<allowed-source-root>' \
   --output /tmp/hades-mcp-check.json
 ```
+
+Use an HTTPS reverse proxy with a trusted certificate. The daemon itself serves
+plain HTTP. The checker also accepts loopback HTTP for a local connection or an
+authenticated SSH tunnel, such as `http://127.0.0.1:11443/mcp` after forwarding
+that port to the daemon's actual bind address. It rejects non-loopback HTTP and
+does not use environment proxies for loopback HTTP.
+
+The fixture root and every parent directory must already be traversable by the
+daemon account (`hades` in the shipped system service). Use a directory visible
+inside the service's filesystem namespace, not `/tmp` when `PrivateTmp=true`.
+The checker creates only synthetic public test text, with directory mode `0755`
+and file mode `0644`, even under a restrictive umask. It changes no permissions
+on the supplied root or existing files.
 
 This sends every database operation through MCP. It verifies database creation,
 empty-schema initialization, graph/node/edge creation, duplicate protection,
