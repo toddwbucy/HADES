@@ -42,49 +42,76 @@ pub fn decode(bytes: &[u8], format: &str) -> Result<Source> {
     }
 }
 
+/// Count leading Markdown indentation, with tabs advancing to four-column stops.
+/// Return its byte length and display width without changing source coordinates.
+fn indentation(text: &str, start_column: usize) -> (usize, usize) {
+    let mut column = start_column;
+    let mut bytes = 0;
+    for byte in text.bytes() {
+        match byte {
+            b' ' => column += 1,
+            b'\t' => column += 4 - column % 4,
+            _ => break,
+        }
+        bytes += 1;
+    }
+    (bytes, column - start_column)
+}
+
 fn markdown(bytes: &[u8]) -> Result<Source> {
     let text = String::from_utf8(bytes.to_vec()).map_err(|e| Error::Invalid(e.to_string()))?;
     let mut blocks = Vec::new();
     let mut start = 0;
-    let mut fence: Option<(char, usize)> = None;
+    // The final field records whether the fence belongs to a blockquote.
+    let mut fence: Option<(char, usize, bool)> = None;
     for (index, line) in text.split_inclusive('\n').enumerate() {
         if index >= 100_000 {
             return Err(Error::Invalid("source exceeds 100,000 lines".into()));
         }
         let raw = line.trim_end_matches(['\r', '\n']);
-        let trimmed = raw.trim_start();
-        let quoted = raw.bytes().take_while(|b| *b == b' ').count() <= 3
-            && !raw.starts_with('\t')
-            && trimmed.starts_with('>');
-        let body = if quoted {
-            // Only one optional space belongs to the quote marker. The rest
-            // belongs to its content, including four-space indented code.
-            let content = trimmed.strip_prefix('>').unwrap();
-            content.strip_prefix(' ').unwrap_or(content)
+        let (prefix_bytes, prefix_columns) = indentation(raw, 0);
+        // An outer fence contains literal quote markers. They cannot close
+        // that fence or start a different Markdown container inside it.
+        let quoted = !fence.is_some_and(|(_, _, quoted)| !quoted)
+            && prefix_columns < 4
+            && raw[prefix_bytes..].starts_with('>');
+        if fence.is_some_and(|(_, _, quoted)| quoted) && !quoted {
+            // A quoted fence ends with its containing blockquote, even when
+            // its closing delimiter was omitted.
+            fence = None;
+        }
+        let (body, syntax, indent) = if quoted {
+            let content = &raw[prefix_bytes + 1..];
+            let (bytes, columns) = indentation(content, prefix_columns + 1);
+            // One optional whitespace column belongs to the quote marker.
+            // A tab can span that column and leave indentation in the body.
+            (
+                content.strip_prefix(' ').unwrap_or(content),
+                &content[bytes..],
+                columns.saturating_sub(1),
+            )
         } else {
-            raw
+            (raw, &raw[prefix_bytes..], prefix_columns)
         };
-        // Markdown fences allow up to three leading spaces. Four spaces or
-        // a tab indicate indented code and must not open or close a fence.
-        let indent = body.bytes().take_while(|b| *b == b' ').count();
-        let fence_body = if indent <= 3 { &body[indent..] } else { "" };
+        // Four indentation columns indicate code, including mixed spaces/tabs.
+        let fence_body = if indent < 4 { syntax } else { "" };
         let marker = fence_body.chars().next().filter(|c| matches!(c, '`' | '~'));
         let run = marker.map_or(0, |c| fence_body.chars().take_while(|x| *x == c).count());
-        let literal =
-            fence.is_some() || run >= 3 || body.starts_with("    ") || body.starts_with('\t');
-        if let Some((c, n)) = fence {
+        let opens_fence = run >= 3 && (marker != Some('`') || !fence_body[run..].contains('`'));
+        let literal = fence.is_some() || opens_fence || indent >= 4;
+        if let Some((c, n, _)) = fence {
             if marker == Some(c) && run >= n && fence_body[run..].trim().is_empty() {
                 fence = None;
             }
-        } else if run >= 3 {
-            fence = Some((marker.unwrap(), run));
+        } else if opens_fence {
+            fence = Some((marker.unwrap(), run, quoted));
         }
         // ATX headings permit the same zero-to-three-space indentation.
         let hashes = fence_body.chars().take_while(|c| *c == '#').count();
         let heading_level = (!literal
             && !quoted
             && (1..=6).contains(&hashes)
-            && fence_body.as_bytes().get(hashes) == Some(&b' '))
+            && matches!(fence_body.as_bytes().get(hashes), Some(b' ' | b'\t')))
         .then_some(hashes as u8);
         blocks.push(Block {
             index,

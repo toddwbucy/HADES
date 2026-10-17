@@ -79,6 +79,16 @@ The real-document CLI round trip passed in disposable database
 `hades_test_graphable_cli_723239_0`, again with 195 nodes, 593 edges, zero repeat
 insertions, exact row and evidence readback, and byte-identical source archives.
 
+A further review identified mixed tab/space indentation, tabs after heading
+markers, and quote markers closing an outer fence. The reader now counts
+four-column tab stops and tracks fence container ownership. Regressions cover
+literal examples, real headings, and closed or unterminated quoted fences.
+All 18 library and five database contracts passed, along with formatting and
+strict clippy.
+The real-document CLI check passed in disposable database
+`hades_test_graphable_cli_741562_0`: 195 nodes and 593 edges, no repeat insertions,
+and exact rows, evidence spans, and source archives.
+
 ## Retrieval and recovery
 
 After an import into an operator-selected database, use the returned `root_id`

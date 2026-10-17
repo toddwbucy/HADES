@@ -231,7 +231,9 @@ fn indented_headings_keep_titles_hierarchy_and_source_spans() {
 
 #[test]
 fn quoted_indented_code_does_not_create_illustrations_or_citations() {
-    for indent in ["    ", "\t"] {
+    // After '> ', one tab reaches column four but leaves only two content
+    // indentation columns. Two tabs reach the indented-code threshold.
+    for indent in ["    ", "\t\t", " \t\t"] {
         let example = format!(
             ">\n> {indent}**Illustration 2.** A code example\n> {indent}<!-- illustration: fake | type: text | subject: missing | keywords: fake -->\n> {indent}See Illustration 99.\n>\n> This prose is part of the illustration."
         );
@@ -254,6 +256,102 @@ fn quoted_indented_code_does_not_create_illustrations_or_citations() {
                 .contains("See Illustration 99.")
         );
     }
+}
+
+#[test]
+fn tabs_after_heading_markers_preserve_titles() {
+    for indent in 0..=3 {
+        let input = SAMPLE
+            .lines()
+            .map(|line| {
+                if line.starts_with('#') {
+                    format!("{}{}\n", " ".repeat(indent), line.replacen(' ', "\t", 1))
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect::<String>();
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        assert_eq!(plan.nodes.len(), 9);
+        for (id, title) in [
+            ("state-notes", "State Notes"),
+            ("state-notes/buffer", "The buffer"),
+            ("state-notes/buffer/boundary", "A boundary"),
+        ] {
+            assert_eq!(
+                plan.nodes.iter().find(|n| n["logical_id"] == id).unwrap()["title"],
+                title
+            );
+        }
+        assert_eq!(plan.nodes[0]["source_text"], input);
+    }
+}
+
+#[test]
+fn mixed_indentation_keeps_code_examples_out_of_the_graph() {
+    for prefix in ["\t", " \t", "  \t", "   \t", "    ", "\t "] {
+        let example = format!(
+            "\n{prefix}> **Illustration 2.** Code\n{prefix}> <!-- illustration: fake | type: text | subject: missing | keywords: fake -->\n{prefix}## Fake heading\n{prefix}<!-- node: fake | keywords: fake -->\n{prefix}See Illustration 99.\n"
+        );
+        let input = SAMPLE.replace(
+            "This document defines a buffer.",
+            &format!("This document defines a buffer.\n{example}"),
+        );
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        assert_eq!(plan.nodes.len(), 9);
+        assert!(!plan.warnings.iter().any(|w| w.contains("Illustration 99")));
+        assert_eq!(plan.nodes[0]["source_text"], input);
+    }
+}
+
+#[test]
+fn quote_markers_inside_outer_fences_are_literal_content() {
+    for marker in ["```", "~~~"] {
+        for prefix in ["> ", " > ", "  > ", "   > ", ">\t"] {
+            let example = format!(
+                "{marker}markdown\n{prefix}{marker}\n## Not a node\n<!-- node: fake | keywords: fake -->\n{prefix}**Illustration 99.** Code\n{prefix}<!-- illustration: fake | type: text | subject: missing | keywords: fake -->\n{marker}"
+            );
+            let input = SAMPLE.replace(
+                "```markdown\n## Not a node\n<!-- node: fake | keywords: fake -->\n```",
+                &example,
+            );
+            let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+            assert_eq!(plan.nodes.len(), 9);
+            assert!(!plan.warnings.iter().any(|w| w.contains("Illustration 99")));
+            assert_eq!(plan.nodes[0]["source_text"], input);
+        }
+    }
+}
+
+#[test]
+fn quoted_fences_end_at_their_container_boundary() {
+    for closing in ["> ```\n", ""] {
+        let example = format!(
+            "> ```markdown\n> ## Not a node\n> <!-- node: fake | keywords: fake -->\n> See Illustration 99.\n{closing}"
+        );
+        let input = SAMPLE.replace(
+            "```markdown\n## Not a node\n<!-- node: fake | keywords: fake -->\n```",
+            &example,
+        );
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        assert_eq!(plan.nodes.len(), 9);
+        assert!(!plan.warnings.iter().any(|w| w.contains("Illustration 99")));
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|n| n["logical_id"] == "state-notes/glossary")
+        );
+    }
+    // A tab immediately after '>' can leave fewer than four indentation
+    // columns. Such a declaration is still a real illustration.
+    let input = SAMPLE.replace("> ", ">\t");
+    assert_eq!(
+        Plan::from_bytes(input.as_bytes(), "md", "theory")
+            .unwrap()
+            .nodes
+            .len(),
+        9
+    );
 }
 
 #[test]

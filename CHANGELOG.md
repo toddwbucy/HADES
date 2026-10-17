@@ -90,6 +90,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Count Markdown tabs by indentation column, accept tabs after heading markers,
+  and keep quote markers inside outer code fences literal during graphable import.
+
 - Accept indented graphable headings without interpreting blockquoted code as
   graph structure. Keep repeat imports stable when database JSON readback
   represents an exact integral float as an integer, while rejecting value edits.
