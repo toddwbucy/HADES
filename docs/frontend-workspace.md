@@ -1,5 +1,7 @@
 # Knowledge workspace
 
+H.A.D.E.S. stands for **Human Augmented Data Exploration System**.
+
 The `hades-frontend` crate provides a local reading workspace over existing HADES
 graphs. It combines a document outline, glossary, source reader, graph exploration,
 and semantic search. It calls the `hades` CLI and depends on no other HADES crate.
@@ -103,6 +105,33 @@ reviewable proposals, and current focus. Pins do not move the user's view.
 No interpretive note or substantive relationship becomes accepted knowledge
 without user acceptance. Mechanical source archiving, extraction, and indexing
 are allowed.
+
+### Human-led reading and node boundaries
+
+The [PDF layout probe](pdf-layout-probe.md) records the initial extraction and
+browser-selection evidence, remaining anchor work, and reproduction commands.
+
+The human identifies important passages by highlighting and classifying them.
+The agent may then propose connections to existing graph objects, showing the
+source passages, proposed relationship, and any inference or uncertainty. A
+proposal becomes accepted knowledge only after the human reviews it.
+
+IS and IS-NOT boundaries are general node semantics, not a Bastion-only rule.
+Each node states what it represents and excludes in the context of its source.
+Store the source revision and evidence with each boundary statement, preserving
+whether it is source-stated or proposed and whether the human accepted it.
+An unstated boundary remains explicitly unresolved; do not invent an exclusion
+to complete a field. A source's candidate or qualification remains visible.
+Cross-document equivalence requires comparing these contextual boundaries,
+not just matching labels. Existing imported nodes require review, not an
+automatic rewrite to satisfy this new convention.
+
+Highlight colors express semantic labels defined by a versioned palette. Show
+text labels as well as color. Creating, recoloring, or removing a highlight
+records a new event. The proposed node or relationship is a separate revisioned
+object, and the human reviews its endpoints and evidence before acceptance.
+The event history retains the human selection, model draft, human edits, and
+acceptance as distinct contributions. Acceptance does not erase model origin.
 
 ### Architecture and ownership
 

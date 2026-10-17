@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add reproducible CPU Docling/PDF.js layout probes and document observed anchor
+  limits for the guided-reading workflow. Validate cases before loading models or
+  creating output, without database or live-service writes.
+
 - Add `hades graphable import` with mechanical mapping in `hades-core`, immutable
   source archives, exact source evidence, version-scoped identities, and atomic,
   retry-safe writes. Preserve unreviewed claims as source text, report unresolved
@@ -333,6 +337,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
+
+- Expand H.A.D.E.S. as Human Augmented Data Exploration System in the README and
+  workspace branding. Record human-led highlighting, source-contextual IS/IS-NOT
+  boundaries, and reviewed connection proposals as the guided-reading direction.
 
 - Build codebase file rows through one schema for semantic, structural and text
   analysis: always include matching `path`/`rel_path`, preserving the existing
