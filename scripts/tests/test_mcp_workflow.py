@@ -136,6 +136,28 @@ class Workflow(unittest.TestCase):
         with patch.object(peer, 'call', side_effect=multiple_chunks):
             self.assertTrue(self.exercise(peer)['success'])
 
+    def test_ingestion_failure_count_requires_a_nonnegative_integer(self):
+        """Malformed failure counts stop before retrieval while preserving the job ID."""
+        for value in [False, True, 0.0, 1.0, None, '0', [], {}, -1]:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as root:
+                peer = Peer()
+                original_call = peer.call
+                report = {'success': False}
+
+                def invalid_failure_count(name, args, **kwargs):
+                    """Replace the terminal failure count without changing the other fields."""
+                    result = original_call(name, args, **kwargs)
+                    if name == 'ingest_status':
+                        result['result']['data']['failed'] = value
+                    return result
+
+                with patch.object(peer, 'call', side_effect=invalid_failure_count), \
+                        self.assertRaisesRegex(RuntimeError, 'failure count must be a non-negative integer'):
+                    check.exercise(peer, 'example_smoke', Path(root), 1, report)
+                self.assertFalse(report['success'])
+                self.assertEqual(report['job_id'], '1234567890abcdef')
+                self.assertNotIn('db_query', [name for name, _ in peer.calls])
+
     def test_fixture_is_daemon_readable_under_restrictive_umask(self):
         """A separate daemon account can read the new fixture, even with umask 0077."""
         peer = Peer()

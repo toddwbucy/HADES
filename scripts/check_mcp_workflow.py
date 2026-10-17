@@ -220,6 +220,8 @@ def exercise(client, database, fixture_root, timeout, report):
             if not isinstance(result, dict) or not isinstance(result.get('data'), dict):
                 raise RuntimeError('Ingestion result and data must be JSON objects')
             data = result.get('data', {})
+            if type(data.get('failed')) is not int or data['failed'] < 0:
+                raise RuntimeError('Ingestion failure count must be a non-negative integer, not a boolean')
             if result.get('success') is not True or data.get('failed') != 0 or data.get('enrichment_degraded') is not False:
                 raise RuntimeError('Ingestion completed with failures or degraded enrichment')
             break
