@@ -237,12 +237,23 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
                 .find(|e| e.level.is_some())
                 .map_or(blocks.len() - 1, |e| e.start - 1)
         } else {
-            (entries[i].header + 1..blocks.len())
+            // Cap the scan before walking it. Adjacent illustrations must
+            // not each rescan the remainder of the same quoted block.
+            (entries[i].header + 1..entries.get(i + 1).map_or(blocks.len(), |e| e.start))
                 .take_while(|j| blocks[*j].quoted)
                 .last()
                 .unwrap_or(entries[i].header)
-                .min(entries.get(i + 1).map_or(blocks.len() - 1, |e| e.start - 1))
         };
+    }
+    // Illustration spans are disjoint after the boundary pass. Record the
+    // owning entry once per line so content and citation scans use O(1) lookups.
+    let mut illustration_owner = vec![None; blocks.len()];
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.level.is_none())
+    {
+        illustration_owner[entry.start..=entry.end].fill(Some(index));
     }
     let mut builder = Builder {
         plan: Plan {
@@ -263,12 +274,7 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
     let number_regex = Regex::new(r"Illustration (\d+)\.").unwrap();
     for entry in &entries {
         let own: Vec<_> = (entry.header + 1..=entry.end)
-            .filter(|j| {
-                entry.level.is_none()
-                    || !entries
-                        .iter()
-                        .any(|e| e.level.is_none() && e.start <= *j && *j <= e.end)
-            })
+            .filter(|j| entry.level.is_none() || illustration_owner[*j].is_none())
             .collect();
         let content = own
             .iter()
@@ -373,6 +379,7 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
             while i + 1 < blocks.len()
                 && !blocks[i + 1].text.trim().is_empty()
                 && !blocks[i + 1].text.trim_start().starts_with("- ")
+                && !blocks[i + 1].text.trim_start().starts_with("<!-- ingestion:")
                 // Indented lines continue the current definition, including
                 // "Rejected synonyms: ...". An unindented definition starts
                 // a new entry even when it has no list marker.
@@ -490,18 +497,14 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
         }
     }
     let cite_regex = Regex::new(r"\bIllustration (\d+)\b").unwrap();
-    for entry in &entries {
+    for (entry_index, entry) in entries.iter().enumerate() {
         for (i, block) in blocks
             .iter()
             .enumerate()
             .take(entry.end + 1)
             .skip(entry.header + 1)
         {
-            if block.literal
-                || entries
-                    .iter()
-                    .any(|e| e.id != entry.id && e.start <= i && i <= e.end && e.level.is_none())
-            {
+            if block.literal || illustration_owner[i].is_some_and(|owner| owner != entry_index) {
                 continue;
             }
             for cap in cite_regex.captures_iter(&block.text) {

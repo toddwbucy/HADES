@@ -2,6 +2,100 @@ use super::*;
 const SAMPLE: &str = include_str!("../../tests/fixtures/graphable/sample.md");
 
 #[test]
+fn ingestion_annotations_do_not_extend_definitions_or_their_evidence() {
+    for prefix in ["", "  "] {
+        let annotation = format!(
+            "{prefix}<!-- ingestion: date=2026-10-17 | model=example | window=10000 | late_chunking=on | host=test -->\n"
+        );
+        let input = SAMPLE.replace("- **glossary**:", &format!("{annotation}- **glossary**:"))
+            + &annotation;
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        let baseline = Plan::from_bytes(SAMPLE.as_bytes(), "md", "theory").unwrap();
+        for concept in plan.nodes.iter().filter(|n| n["type"] == "concept") {
+            let original = baseline
+                .nodes
+                .iter()
+                .find(|n| n["logical_id"] == concept["logical_id"])
+                .unwrap();
+            assert_eq!(concept["definition"], original["definition"]);
+            let location = &concept["source_location"];
+            let quote = &input[location["start_byte"].as_u64().unwrap() as usize
+                ..location["end_byte"].as_u64().unwrap() as usize];
+            assert!(!quote.contains("<!-- ingestion:"));
+        }
+        for edge in plan.edges.iter().filter(|e| e["relation"] == "defines") {
+            let evidence = &edge["evidence"][0];
+            let location = &evidence["location"];
+            let quote = &input[location["start_byte"].as_u64().unwrap() as usize
+                ..location["end_byte"].as_u64().unwrap() as usize];
+            assert_eq!(evidence["quote"], quote);
+            assert!(!quote.contains("<!-- ingestion:"));
+        }
+        assert_eq!(plan.nodes[0]["source_text"], input);
+    }
+}
+
+#[test]
+fn many_sections_keep_illustration_content_and_citations_with_their_owner() {
+    let extra = (0..1200)
+        .map(|i| {
+            format!(
+                "## Section {i}\n<!-- node: state-notes/section-{i} | keywords: buffer -->\n{}\n",
+                "Section content.\n".repeat(16)
+            )
+        })
+        .collect::<String>();
+    let base = SAMPLE.replace("## Glossary", &(extra + "## Glossary"));
+    // Exercise the no-illustration case that used to scan all entries for
+    // every content line, plus many adjacent illustrations in one blockquote.
+    for count in [0, 30] {
+        let illustrations = (1..=count).map(|i| format!(
+            "> **Illustration {i}.** Example {i}\n> <!-- illustration: state-notes/ill-{i} | type: text | subject: buffer/boundary | keywords: buffer -->\n> Illustration-only sentence {i}. See Illustration 1.\n>\n"
+        )).collect::<String>();
+        let input = base.replace(
+            "> **Illustration 1.** A shelf\n> <!-- illustration: state-notes/ill-1 | type: text | subject: buffer/boundary | keywords: buffer -->\n> A shelf holds books.", &illustrations
+        ).replace("The buffer holds entries. See Illustration 1.", "The buffer holds entries.");
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        assert_eq!(plan.nodes.len(), 1208 + count);
+        for node in plan.nodes.iter().filter(|n| n["type"] == "section") {
+            assert!(
+                !node["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Illustration-only")
+            );
+        }
+        let citations: Vec<_> = plan
+            .edges
+            .iter()
+            .filter(|e| e["relation"] == "cites_illustration")
+            .collect();
+        assert_eq!(citations.len(), count);
+        for i in 1..=count {
+            let id = format!("state-notes/ill-{i}");
+            let node = plan.nodes.iter().find(|n| n["logical_id"] == id).unwrap();
+            assert_eq!(
+                node["content"]
+                    .as_str()
+                    .unwrap()
+                    .matches("Illustration-only")
+                    .count(),
+                1
+            );
+            let handle = format!("theory_nodes/{}", node["_key"].as_str().unwrap());
+            let citation = citations.iter().find(|e| e["_from"] == handle).unwrap();
+            let evidence = &citation["evidence"][0];
+            let loc = &evidence["location"];
+            assert_eq!(
+                evidence["quote"],
+                &input[loc["start_byte"].as_u64().unwrap() as usize
+                    ..loc["end_byte"].as_u64().unwrap() as usize]
+            );
+        }
+    }
+}
+
+#[test]
 fn mechanical_structure_preserves_claims_as_text_and_evidence_as_spans() {
     let plan = Plan::from_bytes(SAMPLE.as_bytes(), "md", "theory").unwrap();
     assert_eq!(plan.nodes.len(), 9);

@@ -90,6 +90,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep appended ingestion annotations out of glossary definitions and their
+  evidence. Precompute illustration coverage for content and citation mapping,
+  avoiding repeated full-entry scans on large graphable documents.
+
 - Count Markdown tabs by indentation column, accept tabs after heading markers,
   and keep quote markers inside outer code fences literal during graphable import.
 

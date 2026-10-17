@@ -89,6 +89,19 @@ The real-document CLI check passed in disposable database
 `hades_test_graphable_cli_741562_0`: 195 nodes and 593 edges, no repeat insertions,
 and exact rows, evidence spans, and source archives.
 
+The latest Codex review found ingestion annotations extending glossary definitions
+and repeated illustration scans during mapping. An annotation now terminates a
+definition, including without a separating blank line. Illustration ownership is
+indexed once by source line and reused for content and citations. Adjacent
+illustration boundary scans also stop before the next entry. A regression adds
+1,200 sections with either zero or 30 adjacent illustrations and checks content
+ownership and citation evidence. All 20 library and five database contracts,
+formatting, and strict clippy passed.
+The real-document CLI test passed in disposable database
+`hades_test_graphable_cli_774187_0`: 195 nodes, 593 edges, and no repeat insertions.
+All rows, evidence spans, and source archives matched. The complete generated
+plan also matched the previous revision's real-document plan exactly.
+
 ## Retrieval and recovery
 
 After an import into an operator-selected database, use the returned `root_id`
