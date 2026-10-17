@@ -85,8 +85,10 @@ authenticated SSH tunnel, such as `http://127.0.0.1:11443/mcp` after forwarding
 that port to the daemon's actual bind address. It rejects non-loopback HTTP and
 does not use environment proxies for loopback HTTP.
 
-The fixture root and every parent directory must already be traversable by the
-daemon account (`hades` in the shipped system service). Use a directory visible
+The checker account needs write and search (execute) permission on the fixture
+root to create fixtures. The daemon account (`hades` in the shipped system
+service) needs traversal through that root and every parent, plus read access
+to the fixture file. Use a directory visible
 inside the service's filesystem namespace, not `/tmp` when `PrivateTmp=true`.
 The checker creates only synthetic public test text, with directory mode `0755`
 and file mode `0644`, even under a restrictive umask. It changes no permissions

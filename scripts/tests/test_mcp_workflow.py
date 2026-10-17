@@ -107,6 +107,7 @@ class Workflow(unittest.TestCase):
         original_call = peer.call
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
+            root_path.chmod(0o755)
             root_mode = stat.S_IMODE(root_path.stat().st_mode)
 
             def inspect_fixture(name, args, **kwargs):
@@ -208,6 +209,45 @@ class Framing(unittest.TestCase):
                     self.assertIn('must be a JSON object', report['error'])
                     self.assertEqual(json.loads(stdout.getvalue()), report)
                     self.assertNotIn('test-token', output.read_text())
+
+
+class Discovery(unittest.TestCase):
+    def test_malformed_tools_pages_produce_failure_reports_before_writes(self):
+        """Invalid tool arrays, names, and cursors fail with a saved JSON report."""
+        pages = [{}, {'tools': None}, {'tools': {}}, {'tools': 'tools'},
+                 {'tools': [None]}, {'tools': ['name']}, {'tools': [{}]},
+                 {'tools': [{'name': []}]}, {'tools': [{'name': 1}]},
+                 {'tools': [{'name': ''}]}, {'tools': [], 'nextCursor': []}]
+        for page in pages:
+            with self.subTest(page=page), tempfile.TemporaryDirectory() as root:
+                token = Path(root) / 'token'
+                token.write_text('test-token')
+                output = Path(root) / 'report.json'
+                argv = ['check_mcp_workflow.py', '--url', 'http://localhost/mcp',
+                        '--token-file', str(token), '--database', 'example_smoke',
+                        '--fixture-root', root, '--output', str(output)]
+                responses = [{'protocolVersion': '2025-03-26'}, None, page]
+                stdout = io.StringIO()
+                with patch('sys.argv', argv), patch('sys.stdout', stdout), \
+                        patch.object(check.McpClient, 'request', side_effect=responses) as request:
+                    self.assertEqual(check.main(), 1)
+                self.assertEqual([call.args[0] for call in request.call_args_list],
+                                 ['initialize', 'notifications/initialized', 'tools/list'])
+                report = json.loads(output.read_text())
+                self.assertFalse(report['success'])
+                self.assertIn('MCP tools page', report['error'])
+                self.assertEqual(json.loads(stdout.getvalue()), report)
+                self.assertNotIn('test-token', output.read_text())
+
+    def test_valid_paginated_tools_are_collected(self):
+        """Valid pages preserve tool discovery and send the server's cursor back."""
+        client = check.McpClient('http://localhost/mcp', 'test-token')
+        responses = [{'protocolVersion': '2025-03-26'}, None,
+                     {'tools': [{'name': 'kg_create'}], 'nextCursor': 'page-2'},
+                     {'tools': [{'name': 'db_query'}]}]
+        with patch.object(client, 'request', side_effect=responses) as request:
+            self.assertEqual(client.connect(), {'kg_create', 'db_query'})
+        self.assertEqual(request.call_args.args, ('tools/list', {'cursor': 'page-2'}))
 
 
 class Transport(unittest.TestCase):

@@ -116,8 +116,18 @@ class McpClient:
         tools, cursor = set(), None
         while True:
             page = self.request('tools/list', {'cursor': cursor} if cursor else {})
-            tools.update(t['name'] for t in page['tools'])
+            entries = page.get('tools')
+            if not isinstance(entries, list) or any(
+                not isinstance(tool, dict)
+                or not isinstance(tool.get('name'), str)
+                or not tool['name']
+                for tool in entries
+            ):
+                raise RuntimeError('MCP tools page must contain an array of objects with nonempty string names')
+            tools.update(tool['name'] for tool in entries)
             cursor = page.get('nextCursor')
+            if cursor is not None and not isinstance(cursor, str):
+                raise RuntimeError('MCP tools page nextCursor must be a string')
             if not cursor:
                 return tools
 
