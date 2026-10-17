@@ -59,6 +59,61 @@ and edges are readable through `db_get`, `graph_neighbors`, and
 `graph_traverse`. Semantic `db_query` searches ingested document/code chunks;
 authored nodes are not embedded by these tools.
 
+## Verify the deployed workflow
+
+A merged PR or a successful build does not update a running daemon. After
+installing a release and restarting the service, check its actual `tools/list`.
+It must advertise `kg_create`, `kg_add_node`, and `kg_add_edge`. A database in
+`--mcp-dbs` still cannot receive provisioning writes unless its name also matches
+`--mcp-db-prefix`. Keep instance-specific service flags outside the repository.
+
+Run the opt-in workflow check on the HADES host, with an explicit **new** database
+name under a configured provisioning prefix and an allowed local source directory:
+
+```bash
+python3 scripts/check_mcp_workflow.py \
+  --url 'https://<mcp-tls-host>/mcp' \
+  --token-file '<token-file>' \
+  --database example_mcp_check_001 \
+  --fixture-root '<allowed-source-root>' \
+  --output /tmp/hades-mcp-check.json
+```
+
+Use an HTTPS reverse proxy with a trusted certificate. The daemon itself serves
+plain HTTP. The checker also accepts loopback HTTP for a local connection or an
+authenticated SSH tunnel, such as `http://127.0.0.1:11443/mcp` after forwarding
+that port to the daemon's actual bind address. It rejects non-loopback HTTP and
+does not use environment proxies for loopback HTTP.
+
+The checker account needs write and search (execute) permission on the fixture
+root to create fixtures. The daemon account (`hades` in the shipped system
+service) needs traversal through that root and every parent, plus read access
+to the fixture file. Use a directory visible
+inside the service's filesystem namespace, not `/tmp` when `PrivateTmp=true`.
+The checker creates only synthetic public test text, with directory mode `0755`
+and file mode `0644`, even under a restrictive umask. It changes no permissions
+on the supplied root or existing files.
+
+This sends every database operation through MCP. It verifies database creation,
+empty-schema initialization, graph/node/edge creation, duplicate protection,
+actual text extraction and embedding, semantic retrieval, and traversal from
+an authored node to the ingested document. It fails before graph writes if the
+server lacks the tools or the database already exists. It creates a synthetic
+fixture under the supplied root and retains that fixture and database for
+inspection; reruns require a new database name. A timed-out ingestion may still
+run, so inspect the recorded `job_id` before retrying. The script does not alter
+service configuration or delete databases. Run its local tests with:
+
+```bash
+python3 -m unittest discover -s scripts/tests -p test_mcp_workflow.py
+```
+
+Custom graph definitions must retain the exact authored layout if MCP will extend
+them. For chunk-level retrieval links, use a separate edge collection and a
+combined traversal graph, as described in the
+[graphable-document mapping](graphable-document-ingestion.md#graph-mapping).
+Authored-node insertion and successful document embedding remain separate checks.
+
 ## Running it
 
 ```bash
