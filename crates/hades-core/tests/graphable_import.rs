@@ -163,3 +163,53 @@ async fn batched_retries_check_rows_beyond_the_first_batch() {
         assert_eq!(count(&pool, "theory_edges").await, source.edges().len() as u64);
     }).await;
 }
+
+#[tokio::test]
+async fn numeric_metadata_readback_does_not_conflict_but_edits_do() {
+    with_temp_db("graphable_numbers", Fixtures::Empty, |pool| async move {
+        let input = SAMPLE.replace(
+            "budget_tokens: 10000",
+            "budget_tokens: 10000.0\ncustom: {values: [1.0, -2.0, 0.0, 1.5]}",
+        );
+        let source = plan(&input);
+        let first = graphable::import(&pool, &source, true).await.unwrap();
+        assert_eq!(
+            graphable::import(&pool, &source, false).await.unwrap()["unchanged"],
+            true
+        );
+        let root_path = format!("document/{}", first["root_id"].as_str().unwrap());
+        let root = pool.reader().get(&root_path).await.unwrap();
+        assert_eq!(
+            root["document_metadata"]["budget_tokens"].as_f64(),
+            Some(10000.0)
+        );
+        let changed_source = plan(&input.replace("budget_tokens: 10000.0", "budget_tokens: 10000"));
+        assert!(
+            graphable::import(&pool, &changed_source, false)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("different hash")
+        );
+        pool.writer()
+            .patch(
+                &root_path,
+                &json!({"document_metadata":{"custom":{"values":[1, -2, 0, 1.6]}}}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            graphable::import(&pool, &source, false)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("payload conflict")
+        );
+        assert_eq!(
+            pool.reader().get(&root_path).await.unwrap()["document_metadata"]["custom"]["values"]
+                [3],
+            1.6
+        );
+    })
+    .await;
+}

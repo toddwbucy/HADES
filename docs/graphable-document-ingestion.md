@@ -71,6 +71,9 @@ mapping, or row payload under that identity requires review. Earlier source
 versions and authored edits are never silently overwritten. A retry can restore
 missing rows whose remaining payloads match. Recovery does not reconcile or
 remove extra administrator-created rows.
+Payload comparison treats an exactly representable integral float and its integer
+readback as equal, including inside nested metadata. It does not round integers,
+coerce strings, or change source hashes or archived bytes.
 
 The October 16 fixture used delimiter-joined keys and mapping version `0.1`.
 The importer refuses to append a different mapping into that existing source

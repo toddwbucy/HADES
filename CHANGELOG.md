@@ -90,6 +90,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Accept indented graphable headings without interpreting blockquoted code as
+  graph structure. Keep repeat imports stable when database JSON readback
+  represents an exact integral float as an integer, while rejecting value edits.
+
 - Preserve separate unbulleted glossary definitions, accept YAML comments, and
   keep indented fenced examples out of graphable structure. Batch import retry
   comparisons while retaining atomic writes and conflicts on authored edits.

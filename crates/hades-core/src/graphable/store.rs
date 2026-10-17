@@ -183,7 +183,36 @@ async fn missing(
     }
 }
 
-/// Compare canonical payloads, ignoring only database-generated identity fields.
+/// Normalize exact integral floats for comparison after database JSON readback.
+/// Integer values never pass through f64, which would lose precision above 2^53.
+fn normalize_integral_numbers(value: &mut Value) {
+    match value {
+        Value::Array(values) => values.iter_mut().for_each(normalize_integral_numbers),
+        Value::Object(fields) => fields.values_mut().for_each(normalize_integral_numbers),
+        Value::Number(number) if number.is_f64() => {
+            let float = number.as_f64().unwrap();
+            if !float.is_finite() || float.fract() != 0.0 {
+                return;
+            }
+            // The upper bounds are exclusive: MAX rounds up when cast to f64.
+            if float >= 0.0 && float < u64::MAX as f64 {
+                let integer = float as u64;
+                if integer as f64 == float {
+                    *number = integer.into();
+                }
+            } else if float < 0.0 && float >= i64::MIN as f64 {
+                let integer = float as i64;
+                if integer as f64 == float {
+                    *number = integer.into();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Compare payloads allowing exact integral numeric readback normalization.
+/// Source bytes, hashes, and mapping versions remain unchanged and compared.
 /// Any authored edit is a conflict, never permission to replace the stored row.
 fn compare_existing(
     collection: &str,
@@ -196,11 +225,60 @@ fn compare_existing(
     for field in ["_id", "_rev"] {
         object.remove(field);
     }
-    if &existing != expected {
+    normalize_integral_numbers(&mut existing);
+    let mut normalized_expected = expected.clone();
+    normalize_integral_numbers(&mut normalized_expected);
+    if existing != normalized_expected {
         return Err(conflict(format!(
             "payload conflict at document/{collection}/{}; existing content preserved",
             expected["_key"].as_str().unwrap()
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_comparison_is_exact_at_integer_boundaries() {
+        for (float, integer) in [
+            (json!(1.0), json!(1)),
+            (json!(-1.0), json!(-1)),
+            (json!(-0.0), json!(0)),
+            (json!(i64::MIN as f64), json!(i64::MIN)),
+            (
+                json!(9223372036854775808.0_f64),
+                json!(9223372036854775808_u64),
+            ),
+            (
+                json!(18446744073709549568.0_f64),
+                json!(18446744073709549568_u64),
+            ),
+        ] {
+            let expected = json!({"_key":"sample", "metadata":{"nested":[float]}});
+            let existing = json!({"_key":"sample", "_id":"nodes/sample", "_rev":"1", "metadata":{"nested":[integer]}});
+            compare_existing("nodes", &expected, existing).unwrap();
+        }
+        for (left, right) in [
+            (json!(1.5), json!(1)),
+            (json!(1.5), json!(1.6)),
+            (json!("1.0"), json!(1)),
+            (json!(9007199254740993_u64), json!(9007199254740992.0_f64)),
+            (json!(i64::MAX), json!(i64::MAX as f64)),
+            (json!(u64::MAX), json!(u64::MAX as f64)),
+            (json!(-9223372036854775807_i64), json!(i64::MIN as f64)),
+            (json!(-18446744073709551616.0_f64), json!(i64::MIN)),
+        ] {
+            let expected = json!({"_key":"sample", "value":left});
+            let existing = json!({"_key":"sample", "value":right});
+            assert!(
+                compare_existing("nodes", &expected, existing)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("payload conflict")
+            );
+        }
+    }
 }

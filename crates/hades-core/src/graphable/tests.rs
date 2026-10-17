@@ -185,6 +185,78 @@ fn adjacent_illustrations_have_disjoint_content_and_resolvable_citations() {
 }
 
 #[test]
+fn indented_headings_keep_titles_hierarchy_and_source_spans() {
+    for indent in 1..=3 {
+        let input = SAMPLE
+            .lines()
+            .map(|line| {
+                if line.starts_with('#') {
+                    format!("{}{line}\n", " ".repeat(indent))
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect::<String>();
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        assert_eq!(plan.nodes.len(), 9);
+        for (id, title) in [
+            ("state-notes", "State Notes"),
+            ("state-notes/buffer", "The buffer"),
+            ("state-notes/buffer/boundary", "A boundary"),
+        ] {
+            let node = plan.nodes.iter().find(|n| n["logical_id"] == id).unwrap();
+            assert_eq!(node["title"], title);
+        }
+        for edge in &plan.edges {
+            for evidence in edge["evidence"].as_array().unwrap() {
+                let loc = &evidence["location"];
+                assert_eq!(
+                    evidence["quote"],
+                    &input[loc["start_byte"].as_u64().unwrap() as usize
+                        ..loc["end_byte"].as_u64().unwrap() as usize]
+                );
+            }
+        }
+    }
+    let code = SAMPLE.replace("This document defines a buffer.",
+        "This document defines a buffer.\n\n    ## Example heading\n    <!-- node: fake | keywords: fake -->");
+    assert_eq!(
+        Plan::from_bytes(code.as_bytes(), "md", "theory")
+            .unwrap()
+            .nodes
+            .len(),
+        9
+    );
+}
+
+#[test]
+fn quoted_indented_code_does_not_create_illustrations_or_citations() {
+    for indent in ["    ", "\t"] {
+        let example = format!(
+            ">\n> {indent}**Illustration 2.** A code example\n> {indent}<!-- illustration: fake | type: text | subject: missing | keywords: fake -->\n> {indent}See Illustration 99.\n>\n> This prose is part of the illustration."
+        );
+        let input = SAMPLE.replace(
+            "> A shelf holds books.",
+            &format!("> A shelf holds books.\n{example}"),
+        );
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        assert_eq!(plan.nodes.len(), 9);
+        assert!(!plan.warnings.iter().any(|w| w.contains("Illustration 99")));
+        let illustration = plan
+            .nodes
+            .iter()
+            .find(|n| n["logical_id"] == "state-notes/ill-1")
+            .unwrap();
+        assert!(
+            illustration["content"]
+                .as_str()
+                .unwrap()
+                .contains("See Illustration 99.")
+        );
+    }
+}
+
+#[test]
 fn original_archive_is_separate_from_the_parsed_markdown_and_is_lossless() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("original.docx");

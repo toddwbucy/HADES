@@ -67,6 +67,18 @@ The real-document CLI test also passed again in disposable database
 `hades_test_graphable_cli_707561_0`: 195 nodes and 593 edges, then zero insertions
 on repeat. All rows, evidence spans, and both source archives matched exactly.
 
+The next review added coverage for indented H1-H3 headings and indented code
+inside blockquotes. Titles and evidence spans survive heading indentation, while
+literal illustration declarations and citations remain source text. Numeric
+payload comparisons now tolerate exact integral-float readback without rounding
+large integers or relaxing source identity checks. All 14 library and five
+database contracts passed, along with formatting and strict clippy. The database
+test accepts an unchanged numeric-metadata retry and rejects both changed source
+bytes and a stored fractional-value edit.
+The real-document CLI round trip passed in disposable database
+`hades_test_graphable_cli_723239_0`, again with 195 nodes, 593 edges, zero repeat
+insertions, exact row and evidence readback, and byte-identical source archives.
+
 ## Retrieval and recovery
 
 After an import into an operator-selected database, use the returned `root_id`

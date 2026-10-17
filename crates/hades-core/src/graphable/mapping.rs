@@ -185,6 +185,7 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
         let title = if level.is_some() {
             blocks[previous]
                 .text
+                .trim_start()
                 .trim_start_matches('#')
                 .trim()
                 .to_owned()

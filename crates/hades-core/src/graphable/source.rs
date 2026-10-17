@@ -53,9 +53,14 @@ fn markdown(bytes: &[u8]) -> Result<Source> {
         }
         let raw = line.trim_end_matches(['\r', '\n']);
         let trimmed = raw.trim_start();
-        let quoted = trimmed.starts_with('>');
+        let quoted = raw.bytes().take_while(|b| *b == b' ').count() <= 3
+            && !raw.starts_with('\t')
+            && trimmed.starts_with('>');
         let body = if quoted {
-            trimmed.strip_prefix('>').unwrap().trim_start()
+            // Only one optional space belongs to the quote marker. The rest
+            // belongs to its content, including four-space indented code.
+            let content = trimmed.strip_prefix('>').unwrap();
+            content.strip_prefix(' ').unwrap_or(content)
         } else {
             raw
         };
@@ -66,7 +71,7 @@ fn markdown(bytes: &[u8]) -> Result<Source> {
         let marker = fence_body.chars().next().filter(|c| matches!(c, '`' | '~'));
         let run = marker.map_or(0, |c| fence_body.chars().take_while(|x| *x == c).count());
         let literal =
-            fence.is_some() || run >= 3 || raw.starts_with("    ") || raw.starts_with('\t');
+            fence.is_some() || run >= 3 || body.starts_with("    ") || body.starts_with('\t');
         if let Some((c, n)) = fence {
             if marker == Some(c) && run >= n && fence_body[run..].trim().is_empty() {
                 fence = None;
@@ -74,11 +79,12 @@ fn markdown(bytes: &[u8]) -> Result<Source> {
         } else if run >= 3 {
             fence = Some((marker.unwrap(), run));
         }
-        let hashes = body.chars().take_while(|c| *c == '#').count();
+        // ATX headings permit the same zero-to-three-space indentation.
+        let hashes = fence_body.chars().take_while(|c| *c == '#').count();
         let heading_level = (!literal
             && !quoted
             && (1..=6).contains(&hashes)
-            && body.as_bytes().get(hashes) == Some(&b' '))
+            && fence_body.as_bytes().get(hashes) == Some(&b' '))
         .then_some(hashes as u8);
         blocks.push(Block {
             index,
