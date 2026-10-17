@@ -128,6 +128,31 @@ class Workflow(unittest.TestCase):
                 os.umask(previous_umask)
             self.assertEqual(stat.S_IMODE(root_path.stat().st_mode), root_mode)
 
+    def test_malformed_workflow_results_fail_without_success(self):
+        """Nested ingestion, search, and traversal shapes fail through handled errors."""
+        bad_results = [
+            ('ingest_status', {'status': 'completed', 'result': None}),
+            ('ingest_status', {'status': 'completed', 'result': {'data': None}}),
+            ('db_query', {'results': None}),
+            ('db_query', {'results': [None]}),
+            ('db_query', {'results': [{'parent_key': 'mcp_fixture', 'text': None}]}),
+            ('graph_traverse', {'results': None}),
+            ('graph_traverse', {'results': [None]}),
+            ('graph_traverse', {'results': [{'vertex': None}]}),
+            ('graph_traverse', {'results': [{'vertex': {'_id': []}}]}),
+        ]
+        for target, result in bad_results:
+            with self.subTest(target=target, result=result):
+                peer = Peer()
+                original_call = peer.call
+
+                def malformed(name, args, **kwargs):
+                    """Replace one workflow response without changing preceding steps."""
+                    return result if name == target else original_call(name, args, **kwargs)
+
+                with patch.object(peer, 'call', side_effect=malformed), self.assertRaises(RuntimeError):
+                    self.exercise(peer)
+
 
 class Response(io.BytesIO):
     def __init__(self, data, content_type):
@@ -248,6 +273,84 @@ class Discovery(unittest.TestCase):
         with patch.object(client, 'request', side_effect=responses) as request:
             self.assertEqual(client.connect(), {'kg_create', 'db_query'})
         self.assertEqual(request.call_args.args, ('tools/list', {'cursor': 'page-2'}))
+
+
+class BoundaryFailures(unittest.TestCase):
+    def assert_failure_report(self, responses, message, created=False):
+        """Drive the real CLI through mocked responses and check its saved failure."""
+        with tempfile.TemporaryDirectory() as root:
+            token = Path(root) / 'token'
+            token.write_text('test-token')
+            output = Path(root) / 'report.json'
+            argv = ['check_mcp_workflow.py', '--url', 'http://localhost/mcp',
+                    '--token-file', str(token), '--database', 'example_smoke',
+                    '--fixture-root', root, '--output', str(output)]
+            stdout = io.StringIO()
+            with patch('sys.argv', argv), patch('sys.stdout', stdout), \
+                    patch.object(check.McpClient, 'request', side_effect=responses) as request:
+                self.assertEqual(check.main(), 1)
+            report = json.loads(output.read_text())
+            self.assertFalse(report['success'])
+            self.assertIn(message, report['error'])
+            self.assertEqual(json.loads(stdout.getvalue()), report)
+            if created:
+                self.assertEqual(report['created_database'], 'example_smoke')
+            else:
+                self.assertNotIn('created_database', report)
+                self.assertFalse(any(call.args[0] == 'tools/call' for call in request.call_args_list))
+            self.assertEqual(request.call_count, len(responses))
+
+    def test_malformed_tool_content_preserves_partial_progress_report(self):
+        """Bad tool content after database creation must not discard recovery details."""
+        invalid = [
+            ({}, 'content'), ({'content': None}, 'content'),
+            ({'content': {}}, 'content'), ({'content': 'text'}, 'content'),
+            ({'content': [None]}, 'content'), ({'content': [[]]}, 'content'),
+            ({'content': [{}]}, 'content'), ({'content': [{'type': []}]}, 'content'),
+            ({'content': [{'type': 'text'}]}, 'must be a string'),
+            ({'content': [{'type': 'text', 'text': None}]}, 'must be a string'),
+            ({'content': [{'type': 'text', 'text': []}]}, 'must be a string'),
+            ({'content': [{'type': 'text', 'text': 'null'}]}, 'envelope'),
+            ({'content': [{'type': 'text', 'text': '{"success":true,"data":null}'}]}, 'data'),
+        ]
+        created = {'content': [{'type': 'text', 'text': json.dumps({
+            'success': True, 'data': {'created': True, 'name': 'example_smoke'}})}]}
+        for payload, error in invalid:
+            with self.subTest(payload=payload):
+                responses = [{'protocolVersion': '2025-03-26'}, None,
+                             {'tools': [{'name': name} for name in check.REQUIRED]},
+                             created, payload]
+                self.assert_failure_report(responses, error, created=True)
+
+    def test_invalid_protocol_version_stops_before_notification(self):
+        """A malformed negotiated version must not become an HTTP header."""
+        for value in [None, [], 7, '']:
+            with self.subTest(value=value):
+                self.assert_failure_report([{'protocolVersion': value}], 'protocolVersion')
+
+    def test_pagination_cycles_fail_before_writes(self):
+        """Repeated cursors and longer cycles stop before requesting a page again."""
+        for cursors in [('same', 'same'), ('a', 'b', 'a')]:
+            with self.subTest(cursors=cursors):
+                responses = [{'protocolVersion': '2025-03-26'}, None]
+                responses.extend({'tools': [], 'nextCursor': cursor} for cursor in cursors)
+                self.assert_failure_report(responses, 'repeated a cursor')
+
+    def test_unique_cursors_cannot_exceed_page_limit(self):
+        """Endless unique cursors terminate at the configured discovery page bound."""
+        responses = [{'protocolVersion': '2025-03-26'}, None]
+        responses.extend({'tools': [], 'nextCursor': str(page)} for page in range(check.MAX_TOOL_PAGES))
+        self.assert_failure_report(responses, 'exceeds page limit')
+
+    def test_last_permitted_page_can_complete(self):
+        """A terminating page at the limit is valid and does not request another page."""
+        responses = [{'protocolVersion': '2025-03-26'}, None]
+        responses.extend({'tools': [], 'nextCursor': str(page)} for page in range(check.MAX_TOOL_PAGES - 1))
+        responses.append({'tools': [{'name': 'kg_create'}]})
+        client = check.McpClient('http://localhost/mcp', 'test-token')
+        with patch.object(client, 'request', side_effect=responses) as request:
+            self.assertEqual(client.connect(), {'kg_create'})
+        self.assertEqual(request.call_count, len(responses))
 
 
 class Transport(unittest.TestCase):
