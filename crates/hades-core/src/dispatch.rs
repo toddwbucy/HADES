@@ -15,6 +15,7 @@ use crate::config::HadesConfig;
 #[cfg(test)]
 use crate::cursor_mock;
 use crate::db::{ArangoError, ArangoPool};
+pub(crate) use handlers::{db_graph_list, kg_create, kg_layout, kg_names};
 
 /// Maximum value accepted for `limit` parameters in dispatch handlers.
 const MAX_LIMIT: u32 = 1000;
@@ -3204,7 +3205,7 @@ mod handlers {
     /// Keep authored data in graph-specific collections. The document and code
     /// vertices are linked by ID, so their ingest pipelines keep ownership of
     /// their own rows and never replace authored vertices or edges.
-    fn kg_names(graph: &str) -> Result<(String, String), HandlerError> {
+    pub(crate) fn kg_names(graph: &str) -> Result<(String, String), HandlerError> {
         let valid = !graph.is_empty()
             && graph.len() <= 48
             && graph.starts_with(|c: char| c.is_ascii_alphabetic())
@@ -3260,7 +3261,10 @@ mod handlers {
     /// Require the named graph to have the exact authored edge definition.
     /// This prevents writes into a similarly named collection from silently
     /// missing graph traversal or crossing a different ontology.
-    async fn kg_layout(pool: &ArangoPool, graph: &str) -> Result<(String, String), HandlerError> {
+    pub(crate) async fn kg_layout(
+        pool: &ArangoPool,
+        graph: &str,
+    ) -> Result<(String, String), HandlerError> {
         let (nodes, edges) = kg_names(graph)?;
         let graphs = db_graph_list(pool).await?;
         let expected = [nodes.as_str(), "documents", "codebase_files"];

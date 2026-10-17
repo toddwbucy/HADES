@@ -56,6 +56,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Mechanically import graphable documents, preserving source revisions.
+    #[command(subcommand)]
+    Graphable(commands::graphable::GraphableCmd),
     /// System status for workspace discovery.
     Status {
         /// Verbose output.
@@ -356,6 +359,11 @@ fn main() -> anyhow::Result<()> {
 
     // ── Command dispatch ────────────────────────────────────────────────
     match cli.command {
+        Commands::Graphable(command) => {
+            init_tracing();
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::graphable::run(&config, command, &format))
+        }
         Commands::Ingest {
             inputs,
             id,

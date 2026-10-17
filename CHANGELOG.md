@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add `hades graphable import` with mechanical mapping in `hades-core`, immutable
+  source archives, exact source evidence, version-scoped identities, and atomic,
+  retry-safe writes. Preserve unreviewed claims as source text, report unresolved
+  definitions and references, and keep embedding a separate operation. Support
+  read-only planning and reviewed Markdown extractions with original archives.
+
 - Extend the graph viewer into a reading workspace with document outlines,
   glossary navigation, semantic passage search, source connections, and bounded
   node/edge reference packets for conversation. Preserve CLI-only integration,
