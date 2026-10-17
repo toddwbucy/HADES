@@ -1,4 +1,4 @@
-"""Docling v2 adapter contracts without models; optional real document-type check."""
+"""Pinned Docling adapter contracts with real document types and no models."""
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -10,11 +10,13 @@ from extraction.docling_backend import DoclingExtractor
 
 
 def extract(tmp_path, document, status="success"):
+    """Run the adapter with a supplied conversion result and a private source."""
     path = tmp_path / "fixture.pdf"
     path.write_bytes(b"%PDF-fixture")
 
     class Converter:
         def convert(self, source):
+            """Return the document while checking the adapter uses the source path."""
             assert source == str(path)
             return SimpleNamespace(document=document, status=status)
 
@@ -26,13 +28,28 @@ def extract(tmp_path, document, status="success"):
 def test_v2_document_exports_text_pages_and_linked_captions(tmp_path):
     import docling_core.types.doc as types
     DocItemLabel, DoclingDocument = types.DocItemLabel, types.DoclingDocument
-    Size, TableData = types.Size, types.TableData
+    Size, TableData, TableCell = types.Size, types.TableData, types.TableCell
     doc = DoclingDocument(name="fixture")
     doc.add_page(page_no=1, size=Size(width=612, height=792))
     doc.add_text(label=DocItemLabel.TEXT, text="The human selects a source passage.")
     caption = doc.add_text(label=DocItemLabel.CAPTION, text="The selected passage.")
     doc.add_picture(caption=caption)
-    doc.add_table(data=TableData(num_rows=0, num_cols=0, table_cells=[]), caption=caption)
+    cells = [
+        TableCell(
+            text=text,
+            start_row_offset_idx=row,
+            end_row_offset_idx=row + 1,
+            start_col_offset_idx=column,
+            end_col_offset_idx=column + 1,
+            column_header=(row == 0),
+        )
+        for row, values in enumerate((("Subject", "Status"), ("Source passage", "Reviewed")))
+        for column, text in enumerate(values)
+    ]
+    doc.add_table(
+        data=TableData(num_rows=2, num_cols=2, table_cells=cells),
+        caption=caption,
+    )
 
     result = extract(tmp_path, doc)
     assert result.error is None
@@ -41,9 +58,19 @@ def test_v2_document_exports_text_pages_and_linked_captions(tmp_path):
     assert result.metadata["num_pages"] == "1"
     assert result.images[0]["caption"] == "The selected passage."
     assert result.tables[0]["caption"] == "The selected passage."
+    markdown = result.tables[0]["content"]
+    rows = [
+        [cell.strip() for cell in line.split("|")[1:-1]]
+        for line in markdown.splitlines() if line.startswith("|")
+    ]
+    assert len(rows) == 3
+    assert rows[0] == ["Subject", "Status"]
+    assert len(rows[1]) == 2 and all(set(cell) <= {"-", ":"} and "-" in cell for cell in rows[1])
+    assert rows[2] == ["Source passage", "Reviewed"]
+    assert markdown in result.text
 
 
-def test_v2_api_contract_without_optional_docling_package(tmp_path):
+def test_adapter_passes_document_to_table_export(tmp_path):
     class CaptionedItem:
         def caption_text(self, document):
             assert document is expected_doc
