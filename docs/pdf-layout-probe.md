@@ -76,8 +76,10 @@ user's paragraph count differs from the extractor's.
 The inspected backend used `DocumentConverter.convert_single`, which the installed
 Docling version does not expose. This branch switches to `convert`, rejects
 incomplete conversions, reads the page-count method, and resolves table/picture
-captions through their document. Four model-free adapter tests exercise real
-Docling document types. A separate CPU run through `DoclingExtractor.extract`
+captions through their document. Five model-free adapter tests cover the API
+contract and real Docling document types. The real-type test requires optional
+Docling dependencies and skips in lightweight CI; four API checks still run.
+A separate CPU run through `DoclingExtractor.extract`
 returned 24,596 text characters, four tables, two pictures, and four pages for the
 Mikolov PDF, with fallback disabled. Table recognition remained disabled for this
 run, so table counts do not establish table-content quality.
@@ -89,7 +91,7 @@ transport layout provenance. Adding that data remains Python/proto work, not a
 Rust extraction rewrite. PyMuPDF was unavailable in the tested environment, so
 fallback was not validated.
 
-Validation: all 14 tests across `test_docling_backend.py` and
+Validation: all 15 tests across `test_docling_backend.py` and
 `test_extraction_ownership.py` passed, including private Unix-socket fixtures.
 Both probe scripts passed syntax checks, and `git diff --check` passed.
 
