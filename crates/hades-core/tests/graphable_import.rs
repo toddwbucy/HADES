@@ -136,3 +136,30 @@ async fn concurrent_retries_publish_one_revision() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn batched_retries_check_rows_beyond_the_first_batch() {
+    with_temp_db("graphable_batches", Fixtures::Empty, |pool| async move {
+        let sections = (0..1001).map(|i| format!(
+            "## Section {i}\n<!-- node: state-notes/section-{i} | keywords: buffer -->\nSource content.\n\n"
+        )).collect::<String>();
+        let source = plan(&SAMPLE.replace("## Glossary", &(sections + "## Glossary")));
+        assert!(source.nodes().len() > 1000);
+        assert!(source.edges().len() > 1000);
+        graphable::import(&pool, &source, true).await.unwrap();
+        assert_eq!(graphable::import(&pool, &source, false).await.unwrap()["unchanged"], true);
+        let last_node = source.nodes().last().unwrap();
+        let node_path = format!("document/theory_nodes/{}", last_node["_key"].as_str().unwrap());
+        pool.writer().delete(&node_path).await.unwrap();
+        let recovered = graphable::import(&pool, &source, false).await.unwrap();
+        assert_eq!(recovered["inserted_nodes"], 1);
+        assert_eq!(recovered["inserted_edges"], 0);
+        let last_edge = source.edges().last().unwrap();
+        let edge_path = format!("document/theory_edges/{}", last_edge["_key"].as_str().unwrap());
+        pool.writer().patch(&edge_path, &json!({"label": "reviewed edit"})).await.unwrap();
+        assert!(graphable::import(&pool, &source, false).await.unwrap_err().to_string().contains("payload conflict"));
+        assert_eq!(pool.reader().get(&edge_path).await.unwrap()["label"], "reviewed edit");
+        assert_eq!(count(&pool, "theory_nodes").await, source.nodes().len() as u64);
+        assert_eq!(count(&pool, "theory_edges").await, source.edges().len() as u64);
+    }).await;
+}

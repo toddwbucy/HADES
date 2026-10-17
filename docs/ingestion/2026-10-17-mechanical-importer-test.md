@@ -51,6 +51,22 @@ The isolated runner now sets current ArangoSearch thread limits. Its deprecated
 flags did not bound threads on a large workstation and caused the pinned server
 to exhaust the container's process limit before startup.
 
+### PR #207 review follow-up
+
+Both reviewers identified parser edge cases: adjacent unbulleted glossary entries,
+fences indented by up to three spaces, and YAML comments mistaken for headings.
+Regression tests now cover each case, including preserved glossary continuation
+lines and exact definition evidence. Retry comparisons now read batches of 500
+rows within the transaction, preserving conflicts rather than overwriting edits.
+
+The isolated suite passed all 11 library and four database contracts. The added
+database test crosses two batch boundaries, restores a missing row, and rejects
+an edited edge in a later batch. Cancellation and atomic rollback still pass.
+Formatting and strict `hades-core` clippy checks passed.
+The real-document CLI test also passed again in disposable database
+`hades_test_graphable_cli_707561_0`: 195 nodes and 593 edges, then zero insertions
+on repeat. All rows, evidence spans, and both source archives matched exactly.
+
 ## Retrieval and recovery
 
 After an import into an operator-selected database, use the returned `root_id`

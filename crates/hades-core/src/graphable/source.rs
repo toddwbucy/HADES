@@ -59,12 +59,16 @@ fn markdown(bytes: &[u8]) -> Result<Source> {
         } else {
             raw
         };
-        let marker = body.chars().next().filter(|c| matches!(c, '`' | '~'));
-        let run = marker.map_or(0, |c| body.chars().take_while(|x| *x == c).count());
+        // Markdown fences allow up to three leading spaces. Four spaces or
+        // a tab indicate indented code and must not open or close a fence.
+        let indent = body.bytes().take_while(|b| *b == b' ').count();
+        let fence_body = if indent <= 3 { &body[indent..] } else { "" };
+        let marker = fence_body.chars().next().filter(|c| matches!(c, '`' | '~'));
+        let run = marker.map_or(0, |c| fence_body.chars().take_while(|x| *x == c).count());
         let literal =
             fence.is_some() || run >= 3 || raw.starts_with("    ") || raw.starts_with('\t');
         if let Some((c, n)) = fence {
-            if marker == Some(c) && run >= n && body[run..].trim().is_empty() {
+            if marker == Some(c) && run >= n && fence_body[run..].trim().is_empty() {
                 fence = None;
             }
         } else if run >= 3 {

@@ -84,6 +84,86 @@ fn front_matter_preserves_unquoted_version_spelling() {
 }
 
 #[test]
+fn yaml_comments_are_metadata_not_document_headings() {
+    let input = SAMPLE.replace(
+        "title: State Notes",
+        "# Reviewed source\ntitle: State Notes",
+    );
+    let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+    assert_eq!(plan.nodes.len(), 9);
+    assert_eq!(plan.nodes[0]["source_text"], input);
+    assert_eq!(plan.nodes[0]["logical_id"], "state-notes");
+}
+
+#[test]
+fn adjacent_unbulleted_definitions_keep_separate_concepts_and_evidence() {
+    for bold in [true, false] {
+        let mut input = SAMPLE.replace("- **", "**");
+        if !bold {
+            input = input.replace("**", "");
+        }
+        let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+        for (term, definition) in [
+            (
+                "buffer",
+                "The entries retained between calls.\n  Rejected synonyms: cache.",
+            ),
+            ("glossary", "The definitions used by this document."),
+        ] {
+            let node = plan
+                .nodes
+                .iter()
+                .find(|n| n["type"] == "concept" && n["term"] == term)
+                .unwrap();
+            assert_eq!(node["definition"], definition);
+            let id = format!("theory_nodes/{}", node["_key"].as_str().unwrap());
+            let edge = plan
+                .edges
+                .iter()
+                .find(|e| e["relation"] == "defines" && e["_to"] == id)
+                .unwrap();
+            let evidence = &edge["evidence"][0];
+            let location = &evidence["location"];
+            let quote = &input[location["start_byte"].as_u64().unwrap() as usize
+                ..location["end_byte"].as_u64().unwrap() as usize];
+            assert_eq!(evidence["quote"], quote);
+            assert!(quote.contains(definition));
+            assert!(!quote.contains(if term == "buffer" {
+                "definitions used"
+            } else {
+                "entries retained"
+            }));
+        }
+        assert!(!plan.nodes.iter().any(|n| n["term"] == "Rejected synonyms"));
+    }
+}
+
+#[test]
+fn indented_fences_keep_example_declarations_literal() {
+    for marker in ["```", "~~~"] {
+        for open_indent in 0..=3 {
+            for close_indent in 0..=3 {
+                let input = SAMPLE.replace("```markdown", &format!("{}{marker}markdown", " ".repeat(open_indent)))
+                    .replace("\n```\n", &format!("\n    {marker}\n<!-- node: still-literal | keywords: fake -->\n{}{marker}\n", " ".repeat(close_indent)));
+                let plan = Plan::from_bytes(input.as_bytes(), "md", "theory").unwrap();
+                assert_eq!(plan.nodes.len(), 9);
+                assert!(
+                    !plan
+                        .nodes
+                        .iter()
+                        .any(|n| n["logical_id"] == "fake" || n["logical_id"] == "still-literal")
+                );
+                assert!(
+                    plan.nodes
+                        .iter()
+                        .any(|n| n["logical_id"] == "state-notes/ill-1")
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn adjacent_illustrations_have_disjoint_content_and_resolvable_citations() {
     let input=SAMPLE.replace("> A shelf holds books.",
         "> A shelf holds books.\n>\n> **Illustration 2.** Another shelf\n> <!-- illustration: state-notes/ill-2 | type: text | subject: buffer/boundary | keywords: buffer -->\n> Refer to Illustration 1.");

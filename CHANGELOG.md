@@ -90,6 +90,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve separate unbulleted glossary definitions, accept YAML comments, and
+  keep indented fenced examples out of graphable structure. Batch import retry
+  comparisons while retaining atomic writes and conflicts on authored edits.
+
 - Preserve parent navigation for semantic hits with missing chunk indices,
   accept legacy numeric-string indices, expand search hits once, preserve newer
   selections during slow loads, and retain library elements during selection.

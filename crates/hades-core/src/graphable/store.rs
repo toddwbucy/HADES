@@ -85,9 +85,30 @@ async fn write_plan(
         (&edges, &plan.edges, &mut inserted_edges),
     ] {
         let mut pending = Vec::new();
-        for row in rows {
-            if missing(&client, collection, row).await? {
-                pending.push(row.clone());
+        for batch in rows.chunks(500) {
+            // One result per key, including null for absent rows. The lookup
+            // uses the same transaction and cannot publish or overwrite data.
+            let keys: Vec<_> = batch.iter().map(|row| &row["_key"]).collect();
+            let response = client
+                .post(
+                    "cursor",
+                    &json!({
+                        "query": "FOR key IN @keys RETURN DOCUMENT(@collection, key)",
+                        "bindVars": {"keys": keys, "collection": collection},
+                        "batchSize": 501, "ttl": 5, "options": {"maxRuntime": 5}
+                    }),
+                )
+                .await?;
+            let existing = crate::db::query::completed_rows(&response)?;
+            if existing.len() != batch.len() {
+                return Err(ArangoError::Request("invalid batch lookup response".into()));
+            }
+            for (row, existing) in batch.iter().zip(existing) {
+                if existing.is_null() {
+                    pending.push(row.clone());
+                } else {
+                    compare_existing(collection, row, existing.clone())?;
+                }
             }
         }
         *count = pending.len();
@@ -153,18 +174,33 @@ async fn missing(
         expected["_key"].as_str().unwrap()
     );
     match client.get(&path).await {
-        Ok(mut existing) => {
-            for field in ["_id", "_rev"] {
-                existing.as_object_mut().unwrap().remove(field);
-            }
-            if &existing != expected {
-                return Err(conflict(format!(
-                    "payload conflict at {path}; existing content preserved"
-                )));
-            }
+        Ok(existing) => {
+            compare_existing(collection, expected, existing)?;
             Ok(false)
         }
         Err(e) if e.is_not_found() => Ok(true),
         Err(e) => Err(e),
     }
+}
+
+/// Compare canonical payloads, ignoring only database-generated identity fields.
+/// Any authored edit is a conflict, never permission to replace the stored row.
+fn compare_existing(
+    collection: &str,
+    expected: &Value,
+    mut existing: Value,
+) -> std::result::Result<(), ArangoError> {
+    let object = existing
+        .as_object_mut()
+        .ok_or_else(|| ArangoError::Request("invalid document lookup response".into()))?;
+    for field in ["_id", "_rev"] {
+        object.remove(field);
+    }
+    if &existing != expected {
+        return Err(conflict(format!(
+            "payload conflict at document/{collection}/{}; existing content preserved",
+            expected["_key"].as_str().unwrap()
+        )));
+    }
+    Ok(())
 }

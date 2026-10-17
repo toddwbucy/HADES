@@ -68,11 +68,7 @@ fn attributes(text: &str, kind: &str) -> Result<BTreeMap<String, String>> {
 
 pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
     let blocks = &source.blocks;
-    let first_heading = blocks
-        .iter()
-        .position(|b| b.heading_level.is_some())
-        .ok_or_else(|| invalid("no heading found"))?;
-    let metadata_text = {
+    let (metadata_text, first_heading) = {
         if blocks.first().is_none_or(|b| b.text != "---") {
             return Err(invalid("missing YAML front matter"));
         }
@@ -83,14 +79,19 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
             .find(|(_, b)| b.text == "---")
             .map(|(i, _)| i)
             .ok_or_else(|| invalid("unclosed YAML front matter"))?;
-        if end >= first_heading {
-            return Err(invalid("front matter overlaps the document heading"));
-        }
-        blocks[1..end]
+        let first_heading = blocks
+            .iter()
+            .enumerate()
+            .skip(end + 1)
+            .find(|(_, b)| b.heading_level.is_some())
+            .map(|(i, _)| i)
+            .ok_or_else(|| invalid("no heading found"))?;
+        let metadata_text = blocks[1..end]
             .iter()
             .map(|b| b.text.as_str())
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        (metadata_text, first_heading)
     };
     let mut metadata: Value =
         serde_yaml::from_str(&metadata_text).map_err(|e| invalid(format!("front matter: {e}")))?;
@@ -371,6 +372,11 @@ pub fn map(bytes: &[u8], source: Source, graph: &str) -> Result<Plan> {
             while i + 1 < blocks.len()
                 && !blocks[i + 1].text.trim().is_empty()
                 && !blocks[i + 1].text.trim_start().starts_with("- ")
+                // Indented lines continue the current definition, including
+                // "Rejected synonyms: ...". An unindented definition starts
+                // a new entry even when it has no list marker.
+                && (blocks[i + 1].text.starts_with(char::is_whitespace)
+                    || !definition_regex.is_match(&blocks[i + 1].text))
             {
                 i += 1;
                 definition.push('\n');

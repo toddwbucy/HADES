@@ -38,6 +38,8 @@ commit response is lost, rerun the same command to reconcile durable state.
 Conflicts stop the import without replacing existing content. There is no force
 flag. A failed first attempt may leave empty schema collections. Correct the
 reported source or destination problem and retry. Do not delete the database.
+Retry verification reads at most 500 rows per request through the transaction,
+compares every payload, and inserts only missing rows. An edited row is a conflict.
 
 Bounds are 8 MiB per input/archive, 100,000 Markdown lines, 10,000 declared nodes,
 20,000 total nodes, 50,000 edges, and 12 MiB of serialized transaction payload.
