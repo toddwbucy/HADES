@@ -19,6 +19,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Extend the graph viewer into a reading workspace with document outlines,
+  glossary navigation, semantic passage search, source connections, and bounded
+  node/edge reference packets for conversation. Preserve CLI-only integration,
+  explicit database scope, and read-only operations.
+
 - Add an opt-in MCP deployment workflow check covering database creation,
   authored writes, document ingestion, semantic retrieval, and traversal, with
   explicit isolated test inputs and regression checks for false success.

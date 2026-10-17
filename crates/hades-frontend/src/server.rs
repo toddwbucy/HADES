@@ -129,6 +129,23 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/viewer.js", get(|| async { asset(VIEWER_JS, JS) }))
         .route(
+            "/workspace.js",
+            get(|| async { asset(include_str!("../web/workspace.js"), JS) }),
+        )
+        .route(
+            "/workspace-model.js",
+            get(|| async { asset(include_str!("../web/workspace-model.js"), JS) }),
+        )
+        .route(
+            "/workspace.css",
+            get(|| async {
+                asset(
+                    include_str!("../web/workspace.css"),
+                    "text/css; charset=utf-8",
+                )
+            }),
+        )
+        .route(
             "/vendor/graphology.min.js",
             get(|| async { asset(GRAPHOLOGY_JS, JS) }),
         )
@@ -146,6 +163,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/expand", get(expand))
         .route("/api/node", get(node))
         .route("/api/content", get(content))
+        .route("/api/search", get(search))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             request_deadline,
@@ -387,6 +405,34 @@ struct ContentQuery {
     file_key: String,
 }
 
+#[derive(Deserialize)]
+struct SearchQuery {
+    db: Option<String>,
+    text: String,
+    profile: String,
+}
+
+async fn search(State(state): State<AppState>, Query(q): Query<SearchQuery>) -> Response {
+    let backend = match state.backend_for(q.db.as_deref()) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    if q.text.trim().is_empty()
+        || q.text.len() > 4096
+        || !matches!(q.profile.as_str(), "default" | "codebase")
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Provide search text (up to 4096 bytes) and a valid profile",
+        )
+            .into_response();
+    }
+    match backend.search(&q.text, &q.profile, 10).await {
+        Ok(result) => crate::payload::BoundedJson(result).into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
 /// Fetch a node's associated source text (ordered chunks). Codebase-schema-aware;
 /// returns an empty list for graphs without a `codebase_chunks` collection.
 async fn content(State(state): State<AppState>, Query(q): Query<ContentQuery>) -> Response {
@@ -475,6 +521,24 @@ mod tests {
             ),
             (
                 "/api/graphs?db=outside",
+                "localhost:12345",
+                authorization.as_str(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/search?db=outside&text=evidence&profile=default",
+                "localhost:12345",
+                authorization.as_str(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/search?text=evidence&profile=arbitrary_collection",
+                "localhost:12345",
+                authorization.as_str(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/search?text=%20&profile=default",
                 "localhost:12345",
                 authorization.as_str(),
                 StatusCode::BAD_REQUEST,

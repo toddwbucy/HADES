@@ -83,6 +83,71 @@ pub struct Backend {
 // ===================== I/O (thin) =====================
 
 impl Backend {
+    /// Search an explicit embedding profile, then resolve returned chunk identities.
+    /// The fixed read-only lookup avoids guessing a key from a parent and index.
+    pub async fn search(&self, text: &str, profile: &str, limit: u32) -> Result<serde_json::Value> {
+        anyhow::ensure!(
+            !text.trim().is_empty() && text.len() <= 4096,
+            "search text must be 1–4096 bytes"
+        );
+        anyhow::ensure!((1..=20).contains(&limit), "search limit must be 1–20");
+        let (chunks, metadata, foreign_key) = match profile {
+            "default" => ("chunks", "documents", "parent_key"),
+            "codebase" => ("codebase_chunks", "codebase_files", "file_key"),
+            _ => anyhow::bail!("unknown search profile"),
+        };
+        let output = self
+            .run(&[
+                "db",
+                "query",
+                "-c",
+                profile,
+                "-n",
+                &limit.to_string(),
+                "--",
+                text,
+            ])
+            .await?;
+        let envelope = parse_success_envelope(&output, "db query")?;
+        let mut hits = envelope
+            .get("data")
+            .and_then(|d| d.get("results"))
+            .and_then(|r| r.as_array())
+            .cloned()
+            .ok_or_else(|| anyhow!("db query: missing results"))?;
+        anyhow::ensure!(hits.len() <= limit as usize, "db query: too many results");
+        let mut refs = Vec::new();
+        for hit in &hits {
+            let parent = hit
+                .get("parent_key")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("db query: missing parent key"))?;
+            let index = hit
+                .get("chunk_index")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow!("db query: missing chunk index"))?;
+            refs.push(serde_json::json!({"parent": parent, "index": index}));
+        }
+        if !refs.is_empty() {
+            let bind =
+                serde_json::json!({"@chunks":chunks, "fk":foreign_key, "refs":refs}).to_string();
+            let out = self.run(&["db", "aql",
+                "FOR ref IN @refs LET matches = (FOR c IN @@chunks FILTER c[@fk] == ref.parent AND c.chunk_index == ref.index LIMIT 2 RETURN c._id) RETURN {id: LENGTH(matches) == 1 ? matches[0] : null}",
+                "-b", &bind]).await?;
+            let ids = parse_aql_docs(&out)?;
+            anyhow::ensure!(
+                ids.len() == hits.len(),
+                "chunk lookup: result count mismatch"
+            );
+            for (hit, id) in hits.iter_mut().zip(ids) {
+                let parent = format!("{metadata}/{}", hit["parent_key"].as_str().unwrap());
+                hit["parent_id"] = parent.into();
+                hit["chunk_id"] = id.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            }
+        }
+        Ok(serde_json::json!({"profile":profile,"results":hits}))
+    }
+
     /// Run `hades --db <database> <args...>` and return captured stdout.
     async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
         let mut argv = vec!["--db", self.database.as_str()];
@@ -729,6 +794,55 @@ fn vector_len(v: &serde_json::Value) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn search_preserves_scope_quotes_text_and_resolves_real_chunk_ids() {
+        use std::os::unix::fs::PermissionsExt;
+        let _fixture = crate::backend_process::SCRIPT_FIXTURE.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("backend");
+        std::fs::write(&bin, r#"#!/usr/bin/python3
+import json, sys
+assert sys.argv[1:3] == ['--db', 'fixture']
+if sys.argv[3:5] == ['db', 'query']:
+    assert sys.argv[5:] == ['-c','codebase','-n','10','--','--database=outside; $(false)']
+    data = {'results':[{'parent_key':'file', 'chunk_index':7, 'text':'source', 'score':0.8}]}
+else:
+    assert sys.argv[3:5] == ['db', 'aql']
+    bind = json.loads(sys.argv[-1])
+    assert bind == {'@chunks':'codebase_chunks','fk':'file_key','refs':[{'parent':'file','index':7}]}
+    data = {'results':[{'id':'codebase_chunks/actual-stored-key'}]}
+print(json.dumps({'success':True,'data':data}))
+"#).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let backend = Backend {
+            bin: bin.to_string_lossy().into(),
+            database: "fixture".into(),
+            limit: Some(1),
+        };
+        let result = backend
+            .search("--database=outside; $(false)", "codebase", 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            result["results"][0]["chunk_id"],
+            "codebase_chunks/actual-stored-key"
+        );
+        assert_eq!(result["results"][0]["parent_id"], "codebase_files/file");
+        for (text, profile, limit) in [
+            ("", "default", 10),
+            ("a", "--bad", 10),
+            ("a", "default", 21),
+        ] {
+            assert!(backend.search(text, profile, limit).await.is_err());
+        }
+        std::fs::write(
+            &bin,
+            "#!/usr/bin/python3\nprint('{\"success\":false,\"data\":{\"results\":[]}}')\n",
+        )
+        .unwrap();
+        assert!(backend.search("query", "default", 10).await.is_err());
+    }
     use serde_json::json;
 
     fn docs(v: serde_json::Value) -> Vec<Doc> {

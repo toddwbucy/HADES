@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hades-viewer</title>
+<title>HADES · Knowledge workspace</title>
 <style>
   :root {
     --bg: #0e1116; --panel: #161b22; --edge: #30363d; --fg: #c9d1d9;
@@ -70,11 +70,13 @@
   #modal-close { margin-top: 10px; }
   #share-view { margin-bottom: 10px; }
 </style>
+<link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
+<header id="workspace-header"><div class="brand"><span class="brand-mark">H</span><strong>HADES</strong><span class="header-divider">/</span> Knowledge workspace</div><div class="header-note">Read · connect · discuss</div></header>
 <div id="app">
   <aside id="controls">
-    <h1>hades-viewer</h1>
+    <div class="eyebrow">Workspace</div>
     <div id="stats">no graph loaded</div>
 
     <h2>Database</h2>
@@ -88,6 +90,18 @@
     <div class="hint">Cap the initial load for large graphs, then double-click any
       node to pull its real neighborhood from the backend and grow outward.</div>
 
+    <h2>Find knowledge</h2>
+    <form id="search-form">
+      <label for="search-query">Search by meaning</label>
+      <input id="search-query" type="search" placeholder="Ask about an idea…" maxlength="2048" required>
+      <div class="search-row"><select id="search-profile" aria-label="Search corpus"><option value="default">Documents</option><option value="codebase">Code</option></select><button type="submit" id="search-submit">Search</button></div>
+    </form>
+    <div id="search-status" class="hint" role="status"></div><div id="search-results"></div>
+    <h2>Library <span id="library-count"></span></h2>
+    <input id="library-filter" type="search" placeholder="Filter titles and terms…" aria-label="Filter library">
+    <div class="tab-row" id="library-tabs"><button class="active" data-library="outline">Outline</button><button data-library="concepts">Glossary</button><button data-library="all">All objects</button></div>
+    <nav id="library" aria-label="Knowledge library"></nav>
+    <details id="graph-settings"><summary>Graph appearance</summary>
     <h2>Styling</h2>
     <label>Color nodes by</label>
     <select id="color-by"></select>
@@ -117,23 +131,33 @@
     <button id="layout-toggle">Pause layout</button>
     <div class="hint">ForceAtlas2 runs in a Web Worker; pausing frees the CPU
       once the graph has settled.</div>
+    </details>
   </aside>
 
-  <div id="stage">
-    <div id="graph"></div>
-    <div id="overlay">drag &middot; scroll to zoom &middot; click to inspect &middot; double-click to expand</div>
-  </div>
+  <main id="stage" class="split-mode">
+    <div id="stage-toolbar"><span id="view-title">Explore your knowledge</span><div class="tab-row" id="view-tabs"><button data-view="reading">Read</button><button data-view="split" class="active">Split</button><button data-view="graph">Graph</button></div></div>
+    <div id="stage-content">
+      <article id="reader"><div id="reader-kind" class="eyebrow">A shared point of reference</div><h1 id="reader-title">Knowledge, in context.</h1><div id="reader-meta"></div><div id="reader-body">Choose a document or a concept from the library. Follow its relationships, inspect the source, and collect references for your conversation.</div><div id="reader-links"></div></article>
+      <div id="canvas"><div id="graph"></div><div id="overlay">Select a node to read · double-click to expand</div><div class="canvas-label">RELATIONSHIP MAP</div></div>
+    </div>
+  </main>
 
   <aside id="inspector">
-    <h1>Inspector</h1>
+    <div class="eyebrow">Conversation context</div><h1 class="context-title">A common reference</h1>
+    <p class="muted">Collect exact objects and passages to discuss with your agent.</p>
+    <button id="add-context" class="primary" disabled>Add selected object</button>
+    <div class="hint">Select text in the reader to include a passage.</div>
+    <div id="context-items"></div>
+    <button id="copy-context" disabled>Copy context for agent</button><button id="clear-context" disabled>Clear context</button>
+    <p id="context-status" class="hint" role="status">References stay in this browser tab. Copy them into your conversation.</p>
     <button id="share-view">Copy link to this view</button>
-    <div id="inspect-body"><div class="empty">Click a node or edge.</div></div>
+    <details id="object-details"><summary>Object details &amp; provenance</summary><div id="inspect-body"><div class="empty">Select a node or edge.</div></div></details>
   </aside>
 </div>
 
 <!-- Right-click menu: the shared-reference actions. -->
 <div id="ctxmenu" class="ctx" hidden>
-  <button data-act="agent">Send to agent (copy briefing)</button>
+  <button data-act="agent">Copy node briefing</button>
   <button data-act="link">Copy deep link</button>
   <button data-act="source">Show source</button>
   <button data-act="expand">Expand neighborhood</button>
@@ -152,6 +176,8 @@
 <script src="/vendor/graphology.min.js"></script>
 <script src="/vendor/sigma.min.js"></script>
 <script src="/vendor/fa2.bundle.min.js"></script>
+<script src="/workspace-model.js"></script>
 <script src="/viewer.js"></script>
+<script src="/workspace.js"></script>
 </body>
 </html>
