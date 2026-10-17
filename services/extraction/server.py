@@ -1,8 +1,8 @@
 """Persephone Extraction Service — gRPC server.
 
 Implements the ExtractionService proto contract. Routes documents to
-the appropriate backend (Docling for PDF, native parser for LaTeX,
-plain read for text/markdown).
+the appropriate backend (Docling for supported formats, native parsing for
+arXiv archives, and plain reads for RST/source code).
 
 Usage:
     python -m extraction.server
@@ -81,7 +81,8 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
             if self._docling is None:
                 self._docling = DoclingExtractor(
                     use_ocr=self._config.use_ocr,
-                    use_fallback=self._config.use_fallback,
+                    formula_enrichment=self._config.formula_enrichment,
+                    device=self._config.device,
                 )
             return self._docling
 
@@ -223,7 +224,14 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
     async def _route_extraction(self, file_path, source_type, request):
         """Route to appropriate backend based on source type."""
         loop = asyncio.get_running_loop()
-        if source_type == extraction_pb2.SOURCE_TYPE_PDF:
+        # The extension chooses Docling even if an older client classified Markdown
+        # as plain text or LaTeX as native. Source code and archive handling remain
+        # separate. Unknown formats fail at the converter boundary.
+        archive = str(file_path).lower().endswith((".tar.gz", ".tgz", ".gz"))
+        use_docling = Path(file_path).suffix.lower() in DoclingExtractor.SUPPORTED_EXTENSIONS
+        if archive:
+            use_docling = await loop.run_in_executor(None, DoclingExtractor.is_mets_archive, file_path)
+        if use_docling:
             return await loop.run_in_executor(
                 None,
                 lambda: self._get_docling().extract(
@@ -266,11 +274,11 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
     async def Capabilities(self, request, context):
         """Report extractor capabilities."""
         return extraction_pb2.ExtractorInfo(
-            supported_extensions=[
+            supported_extensions=sorted(DoclingExtractor.SUPPORTED_EXTENSIONS | {
                 ".pdf", ".tex", ".gz", ".tar.gz", ".tgz",
                 ".md", ".markdown", ".txt", ".text", ".rst",
                 ".py", ".rs", ".cu", ".cpp", ".c", ".js", ".ts", ".go", ".java",
-            ],
+            }),
             supported_types=[
                 extraction_pb2.SOURCE_TYPE_PDF,
                 extraction_pb2.SOURCE_TYPE_LATEX,
@@ -278,7 +286,8 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
                 extraction_pb2.SOURCE_TYPE_MARKDOWN,
                 extraction_pb2.SOURCE_TYPE_TEXT,
             ],
-            features=["tables", "equations", "images", "ocr", "latex", "fallback"],
+            features=["tables", "equations", "images", "ocr", "latex", "docling-fail-closed",
+                      "formula-enrichment:" + str(self._config.formula_enrichment).lower()],
             gpu_available=self._check_gpu(),
         )
 

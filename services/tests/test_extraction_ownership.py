@@ -23,7 +23,7 @@ class Context:
 
 
 def request():
-    return pb.ExtractRequest(file_path="fixture.txt", content=b"synthetic", source_type=pb.SOURCE_TYPE_TEXT)
+    return pb.ExtractRequest(file_path="fixture.rst", content=b"synthetic", source_type=pb.SOURCE_TYPE_TEXT)
 
 
 async def started(event):

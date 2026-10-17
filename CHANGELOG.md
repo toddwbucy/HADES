@@ -94,6 +94,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Make Docling the primary document converter with pinned 2.126.0/core 2.96.0
+  dependencies, complete-status validation, linked captions, formula policy
+  metadata, and registry-aligned format routing. Remove automatic PyMuPDF fallback
+  and reject legacy degraded responses at the Rust client. Add real-converter
+  gRPC tests and explicit inventory/re-extraction guidance, preserving stored
+  fallback content unless `ingest --force` elects replacement (#210).
+
+
 - Keep appended ingestion annotations out of glossary definitions and their
   evidence. Precompute illustration coverage for content and citation mapping,
   avoiding repeated full-entry scans on large graphable documents.

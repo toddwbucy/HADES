@@ -15,7 +15,8 @@ dependencies = [
     "pydantic>=2.0",
 
     # ML - Extraction
-    "docling>=2.0",
+    "docling==2.126.0",
+    "docling-core==2.96.0",
 
     # ML - Embedding (Jina V4)
     "torch>=2.0,<3.0",

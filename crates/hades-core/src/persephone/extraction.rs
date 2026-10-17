@@ -299,6 +299,16 @@ impl ExtractionClient {
     async fn do_extract(&self, request: ExtractRequest) -> Result<ExtractResult, ExtractionError> {
         let response: ExtractResponse = self.inner.clone().extract(request).await?.into_inner();
 
+        if response
+            .metadata
+            .get("extractor")
+            .is_some_and(|name| name == "pymupdf_fallback")
+        {
+            return Err(ExtractionError::InvalidResponse(
+                "degraded pymupdf_fallback extraction rejected; repair and restart the Docling service before re-ingesting".into(),
+            ));
+        }
+
         if response.full_text.is_empty()
             && response.tables.is_empty()
             && response.equations.is_empty()

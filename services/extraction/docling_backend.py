@@ -8,6 +8,8 @@ by the Rust orchestrator.
 from __future__ import annotations
 
 import gc
+from importlib.metadata import version
+from io import BytesIO
 import logging
 import threading
 import time
@@ -32,19 +34,32 @@ class ExtractionResult:
 
 
 class DoclingExtractor:
-    """Extracts structured content from PDF documents using Docling VLM.
+    """Extracts structured documents using the pinned Docling converter.
 
     Lazy-loads the docling converter on first use. Call cleanup() to
     release GPU memory when the model is no longer needed.
     """
 
-    SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".text", ".md"}
+    # Pinned Docling registry, plus the HADES Markdown spelling alias.
+    # Some formats require upstream extras/system tools. Those errors are fatal.
+    from docling.datamodel.base_models import FormatToExtensions
+    SUPPORTED_EXTENSIONS = {
+        "." + ext.lower() for extensions in FormatToExtensions.values() for ext in extensions
+    } | {".markdown"}
 
-    def __init__(self, *, use_ocr: bool = False, use_fallback: bool = True) -> None:
+    def __init__(self, *, use_ocr: bool = False, formula_enrichment: bool = False, device: str = "cpu") -> None:
         self._converter = None
         self._converter_lock = threading.Lock()
         self._use_ocr = use_ocr
-        self._use_fallback = use_fallback
+        self._formula_enrichment = formula_enrichment
+        self._device = device
+
+    @staticmethod
+    def is_mets_archive(path: str | Path) -> bool:
+        # The pinned converter uses this format probe itself. Reuse it
+        # to distinguish METS bundles from existing arXiv LaTeX archive inputs.
+        from docling.datamodel.document import _DocumentConversionInput
+        return _DocumentConversionInput._detect_mets_gbs(Path(path)) is not None
 
     @property
     def converter(self):
@@ -56,20 +71,26 @@ class DoclingExtractor:
 
                 logger.info("Loading Docling document converter...")
                 start = time.time()
+                from docling.datamodel.accelerator_options import AcceleratorOptions
                 from docling.datamodel.base_models import InputFormat
                 from docling.datamodel.pipeline_options import (
                     PdfPipelineOptions,
                     TableStructureOptions,
                 )
-                from docling.document_converter import DocumentConverter, PdfFormatOption
+                from docling.document_converter import DocumentConverter, PdfFormatOption, ImageFormatOption
 
                 pdf_options = PdfPipelineOptions(
                     do_table_structure=True,
+                    accelerator_options=AcceleratorOptions(device=self._device),
                     do_ocr=self._use_ocr,
+                    do_formula_enrichment=self._formula_enrichment,
                     table_structure_options=TableStructureOptions(do_cell_matching=True),
                 )
                 self._converter = DocumentConverter(
-                    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
+                        InputFormat.IMAGE: ImageFormatOption(pipeline_options=pdf_options),
+                    }
                 )
                 logger.info("Docling converter loaded in %.2fs", time.time() - start)
         return self._converter
@@ -97,55 +118,14 @@ class DoclingExtractor:
         if not path.is_file():
             return ExtractionResult(error=f"Not a file: {path}")
 
-        # Plain text fast path
-        if path.suffix.lower() in (".txt", ".text", ".md"):
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-                return ExtractionResult(
-                    text=text,
-                    metadata={"source": str(path), "format": path.suffix.lstrip(".")},
-                    processing_time=time.time() - start,
-                )
-            except Exception as e:
-                return ExtractionResult(error=f"Failed to read text file: {e}")
-
-        # PDF extraction via Docling
-        if path.suffix.lower() == ".pdf":
-            if effective_ocr != self._use_ocr:
-                logger.warning(
-                    "Per-call use_ocr=%s differs from converter default=%s; "
-                    "converter OCR setting cannot be changed at call time",
-                    effective_ocr, self._use_ocr,
-                )
-            return self._extract_pdf(path, start, extract_tables, extract_equations, extract_images)
-
-        return ExtractionResult(error=f"Unsupported format: {path.suffix}")
-
-    def _extract_pdf(
-        self,
-        path: Path,
-        start: float,
-        extract_tables: bool,
-        extract_equations: bool,
-        extract_images: bool,
-    ) -> ExtractionResult:
-        """Extract from PDF using Docling, with optional PyMuPDF fallback."""
-        # Validate PDF header
-        try:
-            with open(path, "rb") as f:
-                header = f.read(5)
-            if header != b"%PDF-":
-                return ExtractionResult(error=f"Invalid PDF header: {header!r}")
-        except Exception as e:
-            return ExtractionResult(error=f"Cannot read file: {e}")
-
+        if path.suffix.lower() not in self.SUPPORTED_EXTENSIONS | {".gz", ".tgz"}:
+            return ExtractionResult(error=f"Unsupported format: {path.suffix}")
+        if effective_ocr != self._use_ocr:
+            return ExtractionResult(error="Per-request OCR differs from service policy")
         try:
             return self._extract_with_docling(path, start, extract_tables, extract_equations, extract_images)
         except Exception as e:
             logger.error("Docling extraction failed for %s: %s", path, e)
-            if self._use_fallback:
-                logger.info("Attempting PyMuPDF fallback for %s", path)
-                return self._extract_fallback(path, start)
             return ExtractionResult(
                 error=f"Docling extraction failed: {e}",
                 processing_time=time.time() - start,
@@ -159,11 +139,18 @@ class DoclingExtractor:
         extract_equations: bool,
         extract_images: bool,
     ) -> ExtractionResult:
-        """Core Docling extraction �� THE ML CALL."""
-        result = self.converter.convert_single(str(path))
-
-        # Docling v2 exposes the document via result.document or result.output
-        doc = getattr(result, "document", None) or getattr(result, "output", None)
+        """Run the pinned converter and retain structured document exports."""
+        source = str(path)
+        if path.suffix.lower() == ".markdown":
+            from docling.datamodel.base_models import DocumentStream
+            source = DocumentStream(name=path.stem + ".md", stream=BytesIO(path.read_bytes()))
+        result = self.converter.convert(source)
+        status = getattr(result.status, "value", result.status)
+        if status != "success":
+            raise RuntimeError(f"Docling conversion did not complete: {status}; {getattr(result, 'errors', [])}")
+        doc = result.document
+        if doc is None:
+            raise RuntimeError("Docling returned no document")
 
         # Extract markdown as the full text
         full_text = ""
@@ -177,46 +164,40 @@ class DoclingExtractor:
         if extract_tables and doc is not None:
             for i, table in enumerate(getattr(doc, "tables", [])):
                 tables.append({
-                    "content": table.export_to_markdown() if hasattr(table, "export_to_markdown") else str(table),
-                    "caption": getattr(table, "caption", ""),
+                    "content": table.export_to_markdown(doc=doc),
+                    "caption": table.caption_text(doc),
                     "index": i,
                 })
 
         if extract_equations and doc is not None:
-            # Docling v2: try doc.equations first, fall back to scanning doc.texts
-            eq_items = getattr(doc, "equations", []) or []
-            for i, item in enumerate(eq_items):
-                equations.append({
-                    "latex": getattr(item, "text", str(item)),
-                    "text": getattr(item, "text", ""),
-                    "index": i,
-                    "is_inline": getattr(item, "is_inline", False),
-                })
-            # If no equations found via doc.equations, scan texts for formula entries
-            if not equations:
-                for item in getattr(doc, "texts", []):
-                    obj_type = getattr(item, "obj_type", "")
-                    if obj_type == "equation" or hasattr(item, "latex"):
-                        equations.append({
-                            "latex": getattr(item, "latex", getattr(item, "text", str(item))),
-                            "text": getattr(item, "text", ""),
-                            "index": len(equations),
-                            "is_inline": getattr(item, "is_inline", False),
-                        })
+            from docling_core.types.doc import DocItemLabel
+            for item in doc.texts:
+                if item.label == DocItemLabel.FORMULA:
+                    equations.append({
+                        "latex": item.text if self._formula_enrichment else "",
+                        "text": item.text,
+                        "index": len(equations),
+                        "is_inline": False,
+                    })
 
         if extract_images and doc is not None:
             for i, fig in enumerate(getattr(doc, "pictures", [])):
                 images.append({
                     "path": getattr(fig, "uri", ""),
-                    "caption": getattr(fig, "caption", ""),
+                    "caption": fig.caption_text(doc),
                     "index": i,
                 })
 
         metadata = {
             "source": str(path),
-            "format": "pdf",
+            "format": path.suffix.lower().lstrip("."),
             "extractor": "docling",
-            "num_pages": str(getattr(doc, "num_pages", 0)) if doc is not None else "0",
+            "docling_version": version("docling"),
+            "docling_core_version": version("docling-core"),
+            "formula_enrichment": str(self._formula_enrichment).lower(),
+            "ocr": str(self._use_ocr).lower(),
+            "conversion_status": "success",
+            "num_pages": str(doc.num_pages()),
         }
 
         return ExtractionResult(
@@ -227,37 +208,6 @@ class DoclingExtractor:
             metadata=metadata,
             processing_time=time.time() - start,
         )
-
-    def _extract_fallback(self, path: Path, start: float) -> ExtractionResult:
-        """Fallback extraction using PyMuPDF (no ML, text-only)."""
-        try:
-            import fitz  # PyMuPDF
-        except ImportError:
-            return ExtractionResult(
-                error="Docling failed and PyMuPDF not available for fallback",
-                processing_time=time.time() - start,
-            )
-
-        try:
-            with fitz.open(str(path)) as doc:
-                pages = [page.get_text() for page in doc]
-            full_text = "\n\n".join(pages)
-
-            return ExtractionResult(
-                text=full_text,
-                metadata={
-                    "source": str(path),
-                    "format": "pdf",
-                    "extractor": "pymupdf_fallback",
-                    "num_pages": str(len(pages)),
-                },
-                processing_time=time.time() - start,
-            )
-        except Exception as e:
-            return ExtractionResult(
-                error=f"Fallback extraction failed: {e}",
-                processing_time=time.time() - start,
-            )
 
     def cleanup(self) -> None:
         """Release GPU memory held by the Docling converter."""
