@@ -8,6 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
+/** Render local probe cases and record browser selections without a live service. */
 async function main() {
   const output = path.resolve(process.argv[2]);
   const pdfjs = path.resolve(process.argv[3]);

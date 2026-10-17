@@ -13,12 +13,26 @@ from pathlib import Path
 
 
 def main():
+    """Validate every case before loading models or creating probe artifacts."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", nargs=3, action="append", required=True,
                         metavar=("LABEL", "PDF", "PAGE"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    args.output.mkdir(parents=True, exist_ok=False)
+    cases = []
+    for label, filename, raw_page in args.case:
+        try:
+            path = Path(filename).resolve(strict=True)
+            page = int(raw_page)
+            if not path.is_file() or path.suffix.lower() != ".pdf" or page < 1:
+                raise ValueError("expected a PDF file and a positive page number")
+        except (OSError, ValueError, RuntimeError) as error:
+            parser.error(f"{label}: invalid case: {error}")
+        cases.append((label, path, page))
+    try:
+        args.output.mkdir(parents=True, exist_ok=False)
+    except OSError as error:
+        parser.error(f"cannot create output directory: {error}")
 
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
@@ -36,11 +50,7 @@ def main():
                 "docling_version": importlib.metadata.version("docling"),
                 "device": "cpu", "ocr": False, "table_structure": False,
                 "formula_enrichment": False, "cases": []}
-    for index, (label, filename, raw_page) in enumerate(args.case):
-        path = Path(filename).resolve(strict=True)
-        page = int(raw_page)
-        if page < 1 or path.suffix.lower() != ".pdf":
-            parser.error("cases require a local PDF and a positive physical page number")
+    for index, (label, path, page) in enumerate(cases):
         before = hashlib.sha256(path.read_bytes()).hexdigest()
         result = converter.convert(path, page_range=(page, page))
         if result.status.value != "success":

@@ -20,7 +20,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Added
 
 - Add reproducible CPU Docling/PDF.js layout probes and document observed anchor
-  limits for the guided-reading workflow, without database or live-service writes.
+  limits for the guided-reading workflow. Validate cases before loading models or
+  creating output, without database or live-service writes.
 
 - Add `hades graphable import` with mechanical mapping in `hades-core`, immutable
   source archives, exact source evidence, version-scoped identities, and atomic,
@@ -92,9 +93,6 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   branch; outgoing-call behavior remains covered (#179, #186).
 
 ### Fixed
-
-- Use the current Docling conversion API, reject incomplete results, and correctly
-  read page counts and linked table/picture captions in the extraction backend.
 
 - Keep appended ingestion annotations out of glossary definitions and their
   evidence. Precompute illustration coverage for content and citation mapping,

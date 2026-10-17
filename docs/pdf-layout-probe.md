@@ -73,27 +73,32 @@ user's paragraph count differs from the extractor's.
 
 ## Existing extraction adapter
 
-The inspected backend used `DocumentConverter.convert_single`, which the installed
-Docling version does not expose. This branch switches to `convert`, rejects
-incomplete conversions, reads the page-count method, and resolves table/picture
-captions through their document. Five model-free adapter tests cover the API
-contract and real Docling document types. The real-type test requires optional
-Docling dependencies and skips in lightweight CI; four API checks still run.
-A separate CPU run through `DoclingExtractor.extract`
-returned 24,596 text characters, four tables, two pictures, and four pages for the
-Mikolov PDF, with fallback disabled. Table recognition remained disabled for this
-run, so table counts do not establish table-content quality.
+The inspected backend at the base revision used
+`DocumentConverter.convert_single`, which the installed Docling version does not
+expose. The production adapter correction, dependency pins, formula handling,
+failure reporting, and recovery now belong to the separate extraction work in
+[issue #210](https://github.com/toddwbucy/HADES/issues/210) and
+[PR #211](https://github.com/toddwbucy/HADES/pull/211). This branch changes no
+production extraction code or dependency requirements. The standalone probe
+calls Docling directly and does not validate the deployed extraction service.
 
-This is local backend validation, not a live gRPC or ingestion test. Existing
-equation extraction still needs to handle current Docling `formula` labels.
+The initial local adapter experiment, before its separation into that PR,
+returned 24,596 text characters, four tables, two pictures, and four pages for
+the Mikolov PDF with fallback disabled. Table recognition remained disabled,
+so table counts do not establish table-content quality. That was a backend
+experiment, not a live gRPC or ingestion test. Consult the extraction PR for
+its supported versions and service/recovery validation.
+
 `ExtractionResult` and `proto/persephone/extraction/extraction.proto` do not yet
 transport layout provenance. Adding that data remains Python/proto work, not a
-Rust extraction rewrite. PyMuPDF was unavailable in the tested environment, so
-fallback was not validated.
+Rust extraction rewrite.
 
-Validation: all 15 tests across `test_docling_backend.py` and
-`test_extraction_ownership.py` passed, including private Unix-socket fixtures.
-Both probe scripts passed syntax checks, and `git diff --check` passed.
+The probe preflight tests check invalid paths, non-integer and non-positive pages,
+validation of later cases before model initialization, retry after invalid input,
+and preservation of an existing output directory. All three tests passed. A
+post-review run of the two-column page also passed extraction and browser
+selection with unchanged counts. Both probe scripts passed syntax checks, and
+`git diff --check` passed.
 
 ## Reproduce
 
@@ -113,7 +118,7 @@ CUDA_VISIBLE_DEVICES='' services/.venv/bin/python scripts/probe_pdf_layout.py \
 PLAYWRIGHT_MODULE=/path/to/playwright CHROMIUM_PATH=/path/to/chrome \
   node scripts/probe_pdf_layout.cjs /tmp/hades-layout-new-run /path/to/pdfjs
 
-services/.venv/bin/python -m pytest services/tests/test_docling_backend.py -q
+python3 -m unittest discover -s scripts/tests -p test_probe_pdf_layout.py -v
 ```
 
 The output directory contains the source manifest, Docling JSON per case,
