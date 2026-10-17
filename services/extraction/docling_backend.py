@@ -160,10 +160,13 @@ class DoclingExtractor:
         extract_images: bool,
     ) -> ExtractionResult:
         """Core Docling extraction �� THE ML CALL."""
-        result = self.converter.convert_single(str(path))
-
-        # Docling v2 exposes the document via result.document or result.output
-        doc = getattr(result, "document", None) or getattr(result, "output", None)
+        result = self.converter.convert(str(path))
+        status = getattr(result.status, "value", result.status)
+        if status != "success":
+            raise RuntimeError(f"Docling conversion did not complete: {status}")
+        doc = result.document
+        if doc is None:
+            raise RuntimeError("Docling returned no document")
 
         # Extract markdown as the full text
         full_text = ""
@@ -177,8 +180,8 @@ class DoclingExtractor:
         if extract_tables and doc is not None:
             for i, table in enumerate(getattr(doc, "tables", [])):
                 tables.append({
-                    "content": table.export_to_markdown() if hasattr(table, "export_to_markdown") else str(table),
-                    "caption": getattr(table, "caption", ""),
+                    "content": table.export_to_markdown(doc=doc),
+                    "caption": table.caption_text(doc),
                     "index": i,
                 })
 
@@ -208,7 +211,7 @@ class DoclingExtractor:
             for i, fig in enumerate(getattr(doc, "pictures", [])):
                 images.append({
                     "path": getattr(fig, "uri", ""),
-                    "caption": getattr(fig, "caption", ""),
+                    "caption": fig.caption_text(doc),
                     "index": i,
                 })
 
@@ -216,7 +219,7 @@ class DoclingExtractor:
             "source": str(path),
             "format": "pdf",
             "extractor": "docling",
-            "num_pages": str(getattr(doc, "num_pages", 0)) if doc is not None else "0",
+            "num_pages": str(doc.num_pages()),
         }
 
         return ExtractionResult(
