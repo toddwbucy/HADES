@@ -117,16 +117,25 @@ impl Backend {
             .ok_or_else(|| anyhow!("db query: missing results"))?;
         anyhow::ensure!(hits.len() <= limit as usize, "db query: too many results");
         let mut refs = Vec::new();
-        for hit in &hits {
+        let mut positions = Vec::new();
+        for (position, hit) in hits.iter_mut().enumerate() {
             let parent = hit
                 .get("parent_key")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow!("db query: missing parent key"))?;
-            let index = hit
-                .get("chunk_index")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow!("db query: missing chunk index"))?;
-            refs.push(serde_json::json!({"parent": parent, "index": index}));
+            let parent_id = format!("{metadata}/{parent}");
+            match hit.get("chunk_index") {
+                None | Some(serde_json::Value::Null) => {}
+                Some(value) => {
+                    let index = value
+                        .as_u64()
+                        .ok_or_else(|| anyhow!("db query: invalid chunk index"))?;
+                    refs.push(serde_json::json!({"parent": parent, "index": index}));
+                    positions.push(position);
+                }
+            }
+            hit["parent_id"] = parent_id.into();
+            hit["chunk_id"] = serde_json::Value::Null;
         }
         if !refs.is_empty() {
             let bind =
@@ -136,13 +145,12 @@ impl Backend {
                 "-b", &bind]).await?;
             let ids = parse_aql_docs(&out)?;
             anyhow::ensure!(
-                ids.len() == hits.len(),
+                ids.len() == positions.len(),
                 "chunk lookup: result count mismatch"
             );
-            for (hit, id) in hits.iter_mut().zip(ids) {
-                let parent = format!("{metadata}/{}", hit["parent_key"].as_str().unwrap());
-                hit["parent_id"] = parent.into();
-                hit["chunk_id"] = id.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            for (position, id) in positions.into_iter().zip(ids) {
+                hits[position]["chunk_id"] =
+                    id.get("id").cloned().unwrap_or(serde_json::Value::Null);
             }
         }
         Ok(serde_json::json!({"profile":profile,"results":hits}))
@@ -806,7 +814,7 @@ import json, sys
 assert sys.argv[1:3] == ['--db', 'fixture']
 if sys.argv[3:5] == ['db', 'query']:
     assert sys.argv[5:] == ['-c','codebase','-n','10','--','--database=outside; $(false)']
-    data = {'results':[{'parent_key':'file', 'chunk_index':7, 'text':'source', 'score':0.8}]}
+    data = {'results':[{'parent_key':'stale', 'chunk_index':None}, {'parent_key':'file', 'chunk_index':7, 'text':'source', 'score':0.8}, {'parent_key':'missing'}]}
 else:
     assert sys.argv[3:5] == ['db', 'aql']
     bind = json.loads(sys.argv[-1])
@@ -825,10 +833,14 @@ print(json.dumps({'success':True,'data':data}))
             .await
             .unwrap();
         assert_eq!(
-            result["results"][0]["chunk_id"],
+            result["results"][1]["chunk_id"],
             "codebase_chunks/actual-stored-key"
         );
-        assert_eq!(result["results"][0]["parent_id"], "codebase_files/file");
+        assert_eq!(result["results"][1]["parent_id"], "codebase_files/file");
+        assert_eq!(result["results"][0]["parent_id"], "codebase_files/stale");
+        assert!(result["results"][0]["chunk_id"].is_null());
+        assert_eq!(result["results"][2]["parent_id"], "codebase_files/missing");
+        assert!(result["results"][2]["chunk_id"].is_null());
         for (text, profile, limit) in [
             ("", "default", 10),
             ("a", "--bad", 10),

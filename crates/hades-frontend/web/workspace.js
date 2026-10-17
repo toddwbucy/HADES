@@ -82,7 +82,11 @@
     }
     if (connections.length > 60) $("reader-links").append(el("p", `Showing 60 of ${connections.length} connections. Use the graph to explore further.`, "hint"));
     if (!connections.length) $("reader-links").append(el("p", "No connections in the loaded view.", "hint"));
-    renderLibrary();
+    for (const button of $("library").querySelectorAll(".library-item")) {
+      const current = kind === "node" && button.dataset.id === item.id;
+      button.classList.toggle("selected", current);
+      button.setAttribute("aria-current", current ? "true" : "false");
+    }
   }
   function renderContext() {
     $("context-items").replaceChildren();
@@ -152,8 +156,13 @@
         button.append(el("small",String(hit.text || "").slice(0,180) + "…"));
         button.onclick = async () => {
           if (ticket !== epoch) return;
-          const id = hit.chunk_id || hit.parent_id; await open(id);
-          if (ticket === epoch && graph?.hasNode(id)) { await expandNode(id); if (ticket === epoch) show("node",{id,...graph.getNodeAttributes(id)}); }
+          const id = hit.chunk_id || hit.parent_id;
+          const wasLoaded = graph?.hasNode(id);
+          await open(id);
+          if (ticket === epoch && graph?.hasNode(id) && wasLoaded) {
+            await expandNode(id);
+            if (ticket === epoch) show("node",{id,...graph.getNodeAttributes(id)});
+          }
         };
         $("search-results").append(button);
       }

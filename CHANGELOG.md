@@ -84,6 +84,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Preserve parent navigation for semantic hits with missing chunk indices,
+  expand unloaded search hits once, and retain library elements during selection.
+  Correct the viewer's authentication and database-scope documentation.
+
 - The WeaverTools adapter reads graph records under `experiments/` beside
   `docs/`, and citations from each probe's `code/` as from `crates/`, pruning
   `results/` at any depth the way WeaverTools' census and `.hadesignore` do.

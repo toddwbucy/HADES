@@ -7,10 +7,11 @@
 //! so the server is a thin shell over the same coupling layer the `dump`
 //! subcommand uses.
 //!
-//! Binding is guarded to loopback or RFC1918/ULA private ranges only — the viewer
-//! reads a database and has no auth, so it must never land on a public address.
-//! The pinned database is fixed at startup and not client-selectable, containing
-//! blast radius to the one graph store this server was pointed at.
+//! Binding is restricted to loopback or RFC1918/ULA private addresses. Non-loopback
+//! binds require HTTP Basic authentication; configured authentication and Host
+//! validation cover every route. All current API routes are read-only.
+//! Clients select only databases in the startup allowlist: explicit `--db` values,
+//! or the databases accessible to the configured credentials when none are given.
 
 use crate::assemble::{Backend, discover_databases};
 use anyhow::{Context, Result, anyhow};

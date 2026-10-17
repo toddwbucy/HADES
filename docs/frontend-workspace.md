@@ -91,75 +91,74 @@ navigation, database-switch races, failure states, and mobile overflow. Live
 read-only checks should separately verify semantic retrieval and source connections
 against an explicitly selected, already-ingested corpus.
 
-## Proposed next slices: uploads and agent conversations
+## Adopted direction: guided reading
 
-These are implementation recommendations, not currently available controls.
+Owner decisions recorded on 2026-10-17. These describe future implementation,
+not controls shipped in this read-only workspace. They supersede the previous
+embedded-chat recommendation.
 
-### Upload and process a document
+The workspace supports deliberate reading and development of theory. Claude Code
+runs in its own terminal. HADES supplies shared references, durable pin sets,
+reviewable proposals, and current focus. Pins do not move the user's view.
+No interpretive note or substantive relationship becomes accepted knowledge
+without user acceptance. Mechanical source archiving, extraction, and indexing
+are allowed.
 
-Show the target database before submission. Keep a separate write-enabled
-database allowlist: permission to browse a database does not grant ingestion.
-Accept a bounded file upload into an operator-configured directory, retain the
-original filename as metadata, and allocate the stored path on the server.
-Use a content hash and database scope to identify repeat submissions. Never use
-the browser-supplied filename as a host path or silently force a replacement.
+### Architecture and ownership
 
-Reuse `ingest.start` and `ingest.status` in
-`crates/hades-core/src/dispatch.rs` and the persisted job ownership in
-`crates/hades-core/src/ingest_jobs/records.rs`. The viewer currently consumes CLI
-JSON, while these detached jobs are exposed through MCP/service dispatch. Add
-a narrow CLI adapter to the existing daemon operations before connecting the
-upload route. Starting a detached job inside a short-lived CLI process would
-lose its owner; the long-lived daemon must own the job. Avoid a second ingestion
-implementation inside the frontend.
+New importer and workspace operation logic belongs in `hades-core`. The CLI stays
+as a thin interface, including administration and recovery. A HADES service owns
+pins, proposals, and focus. The viewer will use the daemon's Unix-socket protocol
+instead of launching a CLI process per poll. This deliberately supersedes the
+CLI-only integration rule for that future work. The current Unix daemon serves
+one database, so guided reading initially uses the theory database. Start with
+scoped polling; common-write-layer change publication comes later.
 
-Display upload receipt, extraction/embedding job state, terminal errors, and
-retrieval readiness separately. Preserve the source after failure and offer
-explicit retry. Poll the existing job record initially and refresh the relevant
-view after success. Verify semantic retrieval before labeling content searchable.
+Keep extraction in the Python Docling service. Layout preservation will be an
+additive change to `docling_backend.py` and the extraction proto. Do not migrate
+extraction to Rust or add agent hosting, credentials, and chat execution to the
+viewer. Version the pin, focus, and proposal formats for later ODE integration.
 
-Ordinary file ingestion does not implement the graphable mapping documented in
-`docs/graphable-document-ingestion.md`. A document can be embedded without its
-heading/concept graph being created. A later graphable import operation should
-apply that mapping with source versions, repeat-safe identities, and a review
-step for uncertain cross-document equivalence. Do not label an upload as a
-completed graphable import until those separate operations finish.
+### Source and review contracts
 
-Acceptance: upload a small fixture to an isolated database, observe its job,
-find its exact source through semantic search, repeat without duplicate content,
-and recover from extractor/embedder failure. Validate scope changes, file/path
-limits, write permissions, and retries without touching production corpora.
+Own graphable documents use a mechanical importer for headings, glossary,
+keywords, illustrations, and declared references. The October 16 script is a
+fixture, not the importer. Exclude interpretive assertions unless supplied and
+reviewed. Follow `docs/graphable-document-ingestion.md` for revision-scoped
+identities and source preservation. Mapped, embedded, and searchable are distinct
+states.
 
-### Conversation beside the graph
+External PDFs use guided reading. For text, anchor accepted notes to the immutable
+source hash, page, exact quote, and surrounding text from the browser's PDF text
+layer, following the W3C Web Annotation selector approach. Docling boxes assist
+outlines and spoken-reference resolution; accepted text notes do not depend on
+an extractor's element numbering. Figures use page, box, and caption. Ambiguous
+or missing matches must remain visible rather than silently moving an anchor.
 
-Provisional recommendation: launch dedicated sessions through provider adapters.
-Use [Codex App Server](https://learn.chatgpt.com/docs/app-server) for threads,
-streamed turns, interruption, and approval requests. Use the
-[Claude Agent SDK or Claude Code's streaming interface](https://code.claude.com/docs/en/headless)
-for the corresponding Claude session. Both executables are available in the
-reviewed local deployment; account access and a successful integration turn
-still need verification. Keep their executable paths and authentication local.
+A proposal has its own revision. Acceptance writes exactly the reviewed revision,
+is retry-safe, returns created IDs, and preserves model origin and reviewer
+attribution. Guided-reading Claude Code permission settings deny
+`mcp__hades__kg_add_node` and `mcp__hades__kg_add_edge`: the agent proposes, and the
+HADES service performs the accepted write. This guards against accidents, not
+hostile processes. Persistent pins and decisions remain separate from accepted
+knowledge; the persistence backend is still open.
 
-HADES owns the pane, provider selection, session-to-workspace association, and
-graph reference attachments. Each provider owns its conversation execution and
-native session ID. Switching providers creates or resumes that provider's session;
-it does not silently give it the other provider's history. Include explicit graph
-IDs and bounded passages when the user sends selected context. Never infer agent
-context from screen pixels. Show provider, session, and database beside the composer.
+Before shipping browser write routes, require a custom header and an Origin
+check, use restrictive CORS, and check `Sec-Fetch-Site` where present. Plain-HTTP
+LAN browsers may omit Fetch Metadata. Read the viewer password directly from a
+file. Native MCP authorization remains separate from browser-origin checks.
 
-The server needs a supervised session bridge, streamed output, cancellation,
-permission prompts, and reconnect handling. Keep model credentials server-side
-and preserve native permission decisions. Bind HADES MCP access to the intended
-database scope. A UI label alone cannot constrain an agent's tools. Starting or
-resuming a local session also does not prove access to an existing conversation
-in another host, including the conversation used to build this frontend.
+### Implementation order and completion criteria
 
-Use the wide layout's right pane for chat and a compact attached-context tray.
-Graph links in replies should resolve exact references and reveal the object.
-An explicit send starts a turn; highlights alone do not. Retain provider session
-IDs and message reference attachments separately from canonical graph knowledge.
+1. Correct the stale server security comment and merge the tested reading
+   workspace after addressing its outstanding review findings.
+2. Implement the mechanical importer in `hades-core`. Verify identical input
+   adds nothing, a new version preserves old rows, conflicting content under an
+   existing identity is reported, and interrupted imports resume safely. Run
+   end to end on one real graphable document in an isolated database.
+3. Only after step 2 completes, compare Docling boxes with pdf.js text selection
+   on a two-column paper, an equation-heavy page, and a figure with a split caption.
 
-Acceptance: start one session for each provider, attach a selected source object,
-receive a streamed response with a resolvable graph reference, interrupt a turn,
-handle a tool approval, reconnect without duplicate submission, and switch
-databases without silently carrying a session into another write scope.
+Pins, focus, and the PDF reader follow this weekend's work. Favor installation,
+resource use, and recovery that work for early student users on unfamiliar
+machines, including a single RTX 3090. Keep deployment-specific settings local.

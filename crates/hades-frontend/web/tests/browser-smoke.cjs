@@ -13,7 +13,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
  const edges=[{id:'edges/contains',source:'notes/doc',target:'notes/section',collection:'edges',attrs:{relation:'contains'}},{id:'edges/keyword',source:'notes/section',target:'notes/concept',collection:'edges',attrs:{relation:'uses_keyword'}}];
  const chunk=node('chunks/real','chunk','Stored search passage','Section evidence.');
  const overlap={id:'links/overlap',source:chunk.id,target:'notes/section',collection:'links',attrs:{relation:'overlaps_source'}};
- let failSearch=false,delaySearch=false,delayExpand=false,searchStarted,expandStarted;
+ let failSearch=false,delaySearch=false,delayExpand=false,searchStarted,expandStarted,expandCalls=0;
  await page.route('**/api/**',async route=>{
   const u=new URL(route.request().url()),db=u.searchParams.get('db'); let value;
   switch(u.pathname){
@@ -21,7 +21,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
    case '/api/graphs': value={graphs:db==='empty'?[]:['workspace']};break;
    case '/api/graph-data':value={meta:{database:db,named_graph:'workspace',node_count:3,node_total:3,edge_count:2,edge_total:2,partial:false,node_collections:['notes'],edge_collections:['edges'],attribute_index:{notes:['type'],edges:['relation']}},nodes:nodes.map(n=>({...n,label:db==='other'?'Other '+n.label:n.label})),edges};break;
    case '/api/node':value=chunk;break;
-   case '/api/expand':if(delayExpand){expandStarted?.();await new Promise(r=>setTimeout(r,400));}value={nodes:[nodes[1],chunk],edges:[overlap]};break;
+   case '/api/expand':expandCalls++;if(delayExpand){expandStarted?.();await new Promise(r=>setTimeout(r,400));}value={nodes:[nodes[1],chunk],edges:[overlap]};break;
    case '/api/search':
     if(delaySearch){searchStarted?.();await new Promise(r=>setTimeout(r,400));}
     if(failSearch){await route.fulfill({status:502,body:'unavailable'});return;}
@@ -35,6 +35,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
  assert.equal(await page.locator('#library button').count(),2);
  assert.equal(await page.locator('#reader-body img').count(),0);
  assert.ok(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight+1),'desktop stays within viewport');
+ await page.evaluate(()=>{window.originalLibraryButton=document.querySelector('#library button');});
+ await page.locator('#library button').filter({hasText:'Source section'}).click();
+ assert.ok(await page.evaluate(()=>window.originalLibraryButton===document.querySelector('#library button')),'selection preserves library elements');
+ await page.locator('#library button').filter({hasText:'Test document'}).click();
  await page.evaluate(()=>{const t=document.querySelector('#reader-body').firstChild;const r=document.createRange();r.setStart(t,0);r.setEnd(t,23);getSelection().removeAllRanges();getSelection().addRange(r);});
  await page.locator('#add-context').click();
  await page.evaluate(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copied=text;}}});});
@@ -44,11 +48,14 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
  assert.equal(packet.references[0].excerpt,'An exact source passage');
  assert.equal(packet.references[0].id,'notes/doc');
  await page.locator('#reader-links button[aria-label="Inspect contains relationship"]').click();
+ assert.ok(await page.evaluate(()=>window.originalLibraryButton===document.querySelector('#library button')),'edge selection preserves library elements');
+ assert.equal(await page.locator('#library button[aria-current=true]').count(),0);
  await page.locator('#add-context').click();await page.locator('#copy-context').click();
  packet=JSON.parse(await page.evaluate(()=>window.copied));assert.equal(packet.references[1].kind,'edge');assert.equal(packet.references[1].to,'notes/section');
  await page.locator('#share-view').click();const edgeUrl=await page.evaluate(()=>window.copied);assert.ok(edgeUrl.includes('edge=edges%2Fcontains'));
- await page.locator('#search-query').fill('evidence');await page.locator('#search-submit').click();await page.waitForSelector('.search-hit');await page.locator('.search-hit').click();
+ await page.locator('#search-query').fill('evidence');await page.locator('#search-submit').click();await page.waitForSelector('.search-hit');const beforeExpand=expandCalls;await page.locator('.search-hit').click();
  await page.waitForFunction(()=>document.querySelector('#reader-title').textContent==='Stored search passage');
+ assert.equal(expandCalls-beforeExpand,1,'unloaded search hit expands once');
  await page.locator('#reader-links button').filter({hasText:'Source section'}).click();assert.equal(await page.locator('#reader-body').innerText(),'Section evidence.');
  await page.locator('#view-tabs button[data-view=reading]').click();assert.equal(await page.locator('#canvas').isVisible(),false);
  await page.locator('#view-tabs button[data-view=graph]').click();assert.equal(await page.locator('#reader').isVisible(),false);
