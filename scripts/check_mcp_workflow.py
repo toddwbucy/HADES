@@ -253,9 +253,11 @@ def exercise(client, database, fixture_root, timeout, report):
     report['counts'] = {col: client.call('db_count', scoped(collection=col)) for col in
                         ['research_nodes', 'research_edges', 'documents', 'chunks', 'embeddings']}
     counts = {col: row.get('count') for col, row in report['counts'].items()}
+    if any(type(count) is not int or count < 0 for count in counts.values()):
+        raise RuntimeError('Collection counts must be non-negative integers, not booleans')
     if counts['research_nodes'] != 2 or counts['research_edges'] != 2 or counts['documents'] != 1:
         raise RuntimeError('Unexpected authored or document row counts')
-    if not isinstance(counts['chunks'], int) or counts['chunks'] < 1 or counts['embeddings'] != counts['chunks']:
+    if counts['chunks'] < 1 or counts['embeddings'] != counts['chunks']:
         raise RuntimeError('Stored chunks and embeddings are missing or inconsistent')
     report['success'] = True
 

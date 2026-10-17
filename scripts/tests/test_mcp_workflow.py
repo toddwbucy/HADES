@@ -101,6 +101,41 @@ class Workflow(unittest.TestCase):
                 check.exercise(peer, 'example_smoke', Path(root), timeout, {})
             self.assertEqual(peer.calls, [])
 
+    def test_collection_counts_require_nonnegative_integers(self):
+        """Boolean, fractional, missing, and negative counts cannot certify a workflow."""
+        for collection in ['research_nodes', 'research_edges', 'documents', 'chunks', 'embeddings']:
+            for value in [True, False, 1.0, 2.0, None, '1', [], {}, -1]:
+                with self.subTest(collection=collection, value=value), tempfile.TemporaryDirectory() as root:
+                    peer = Peer()
+                    original_call = peer.call
+                    report = {'success': False}
+
+                    def invalid_count(name, args, **kwargs):
+                        """Substitute one count while keeping every other workflow step valid."""
+                        if name == 'db_count' and args['collection'] == collection:
+                            return {'count': value}
+                        return original_call(name, args, **kwargs)
+
+                    with patch.object(peer, 'call', side_effect=invalid_count), \
+                            self.assertRaisesRegex(RuntimeError, 'non-negative integers'):
+                        check.exercise(peer, 'example_smoke', Path(root), 1, report)
+                    self.assertFalse(report['success'])
+                    self.assertEqual(report['created_database'], 'example_smoke')
+
+    def test_multiple_chunks_with_matching_integer_counts_are_valid(self):
+        """Allow a fixture to yield more than one chunk when every chunk is embedded."""
+        peer = Peer()
+        original_call = peer.call
+
+        def multiple_chunks(name, args, **kwargs):
+            """Return equal positive chunk and embedding counts."""
+            if name == 'db_count' and args['collection'] in ('chunks', 'embeddings'):
+                return {'count': 2}
+            return original_call(name, args, **kwargs)
+
+        with patch.object(peer, 'call', side_effect=multiple_chunks):
+            self.assertTrue(self.exercise(peer)['success'])
+
     def test_fixture_is_daemon_readable_under_restrictive_umask(self):
         """A separate daemon account can read the new fixture, even with umask 0077."""
         peer = Peer()
