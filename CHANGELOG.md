@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Extend the graph viewer into a reading workspace with document outlines,
+  glossary navigation, semantic passage search, source connections, and bounded
+  node/edge reference packets for conversation. Preserve CLI-only integration,
+  explicit database scope, and read-only operations. Use the HADES logo and offer
+  persistent Auto, Wide, and Compact layout preferences for large displays.
+
 - Add an opt-in MCP deployment workflow check covering database creation,
   authored writes, document ingestion, semantic retrieval, and traversal, with
   explicit isolated test inputs and regression checks for false success.
@@ -77,6 +83,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   branch; outgoing-call behavior remains covered (#179, #186).
 
 ### Fixed
+
+- Preserve parent navigation for semantic hits with missing chunk indices,
+  accept legacy numeric-string indices, expand search hits once, preserve newer
+  selections during slow loads, and retain library elements during selection.
+  Correct the viewer's authentication and database-scope documentation.
 
 - The WeaverTools adapter reads graph records under `experiments/` beside
   `docs/`, and citations from each probe's `code/` as from `crates/`, pruning
