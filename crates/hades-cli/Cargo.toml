@@ -35,6 +35,7 @@ futures.workspace = true
 http-body-util.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 hades-proto = { path = "../hades-proto" }
 tonic.workspace = true
 libc.workspace = true

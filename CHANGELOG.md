@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add `hades graphable import` with mechanical mapping in `hades-core`, immutable
+  source archives, exact source evidence, version-scoped identities, and atomic,
+  retry-safe writes. Preserve unreviewed claims as source text, report unresolved
+  definitions and references, and keep embedding a separate operation. Support
+  read-only planning and reviewed Markdown extractions with original archives.
+
 - Extend the graph viewer into a reading workspace with document outlines,
   glossary navigation, semantic passage search, source connections, and bounded
   node/edge reference packets for conversation. Preserve CLI-only integration,
@@ -83,6 +89,21 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   branch; outgoing-call behavior remains covered (#179, #186).
 
 ### Fixed
+
+- Keep appended ingestion annotations out of glossary definitions and their
+  evidence. Precompute illustration coverage for content and citation mapping,
+  avoiding repeated full-entry scans on large graphable documents.
+
+- Count Markdown tabs by indentation column, accept tabs after heading markers,
+  and keep quote markers inside outer code fences literal during graphable import.
+
+- Accept indented graphable headings without interpreting blockquoted code as
+  graph structure. Keep repeat imports stable when database JSON readback
+  represents an exact integral float as an integer, while rejecting value edits.
+
+- Preserve separate unbulleted glossary definitions, accept YAML comments, and
+  keep indented fenced examples out of graphable structure. Batch import retry
+  comparisons while retaining atomic writes and conflicts on authored edits.
 
 - Preserve parent navigation for semantic hits with missing chunk indices,
   accept legacy numeric-string indices, expand search hits once, preserve newer
