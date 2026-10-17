@@ -85,7 +85,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Fixed
 
 - Preserve parent navigation for semantic hits with missing chunk indices,
-  expand unloaded search hits once, and retain library elements during selection.
+  accept legacy numeric-string indices, expand search hits once, preserve newer
+  selections during slow loads, and retain library elements during selection.
   Correct the viewer's authentication and database-scope documentation.
 
 - The WeaverTools adapter reads graph records under `experiments/` beside

@@ -2,7 +2,7 @@
 (() => {
   const M = window.HadesWorkspaceModel;
   const $ = id => document.getElementById(id);
-  let mode = "outline", selected = null, refs = [], epoch = 0, searchSequence = 0;
+  let mode = "outline", selected = null, refs = [], epoch = 0, searchSequence = 0, selectionSequence = 0;
   const el = (tag, text, className) => {
     const node = document.createElement(tag); if (text !== undefined) node.textContent = text;
     if (className) node.className = className; return node;
@@ -31,10 +31,10 @@
       ? "No matches in this loaded slice. Expand the graph or increase its limit."
       : "No matching objects. Try another library tab or graph.", "empty-state"));
   }
-  async function open(id) {
-    const ticket = epoch;
-    if (!graph?.hasNode(id)) await expandNode(id);
-    if (ticket !== epoch) return;
+  async function open(id, expand = false) {
+    const ticket = epoch, selection = ++selectionSequence;
+    if (expand || !graph?.hasNode(id)) await expandNode(id);
+    if (ticket !== epoch || selection !== selectionSequence) return;
     if (graph?.hasNode(id)) { focusNode(id); $("reader").scrollTop = 0; }
     else $("search-status").textContent = "This reference could not be loaded. Refresh the graph and try again.";
   }
@@ -157,12 +157,7 @@
         button.onclick = async () => {
           if (ticket !== epoch) return;
           const id = hit.chunk_id || hit.parent_id;
-          const wasLoaded = graph?.hasNode(id);
-          await open(id);
-          if (ticket === epoch && graph?.hasNode(id) && wasLoaded) {
-            await expandNode(id);
-            if (ticket === epoch) show("node",{id,...graph.getNodeAttributes(id)});
-          }
+          await open(id, true);
         };
         $("search-results").append(button);
       }
@@ -174,8 +169,8 @@
     loading() { epoch++; searchSequence++; selected=null; $("add-context").disabled=true; $("library").replaceChildren(); $("search-results").replaceChildren(); $("search-status").textContent=""; $("reader-title").textContent="Loading workspace…"; $("reader-body").textContent=""; $("reader-meta").replaceChildren(); $("reader-links").replaceChildren(); },
     loaded() { renderLibrary(); const root = M.library(snapshot(),"outline")[0]?.node; if (root && !pendingLink.node) selectNode(root.id); },
     expanded() { renderLibrary(); },
-    node(id) { if (id) show("node",{id,...graph.getNodeAttributes(id)}); else {selected=null;$("add-context").disabled=true;} },
-    edge(id) { show("edge",{id,source:graph.source(id),target:graph.target(id),...graph.getEdgeAttributes(id)}); },
+    node(id) { selectionSequence++; if (id) show("node",{id,...graph.getNodeAttributes(id)}); else {selected=null;$("add-context").disabled=true;} },
+    edge(id) { selectionSequence++; show("edge",{id,source:graph.source(id),target:graph.target(id),...graph.getEdgeAttributes(id)}); },
   };
   renderContext();
 })();

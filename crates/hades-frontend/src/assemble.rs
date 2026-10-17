@@ -127,10 +127,12 @@ impl Backend {
             match hit.get("chunk_index") {
                 None | Some(serde_json::Value::Null) => {}
                 Some(value) => {
-                    let index = value
+                    value
                         .as_u64()
+                        .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
                         .ok_or_else(|| anyhow!("db query: invalid chunk index"))?;
-                    refs.push(serde_json::json!({"parent": parent, "index": index}));
+                    // Preserve the stored JSON type for AQL's type-sensitive equality.
+                    refs.push(serde_json::json!({"parent": parent, "index": value}));
                     positions.push(position);
                 }
             }
@@ -814,12 +816,12 @@ import json, sys
 assert sys.argv[1:3] == ['--db', 'fixture']
 if sys.argv[3:5] == ['db', 'query']:
     assert sys.argv[5:] == ['-c','codebase','-n','10','--','--database=outside; $(false)']
-    data = {'results':[{'parent_key':'stale', 'chunk_index':None}, {'parent_key':'file', 'chunk_index':7, 'text':'source', 'score':0.8}, {'parent_key':'missing'}]}
+    data = {'results':[{'parent_key':'stale', 'chunk_index':None}, {'parent_key':'file', 'chunk_index':7, 'text':'source', 'score':0.8}, {'parent_key':'missing'}, {'parent_key':'legacy', 'chunk_index':'007'}]}
 else:
     assert sys.argv[3:5] == ['db', 'aql']
     bind = json.loads(sys.argv[-1])
-    assert bind == {'@chunks':'codebase_chunks','fk':'file_key','refs':[{'parent':'file','index':7}]}
-    data = {'results':[{'id':'codebase_chunks/actual-stored-key'}]}
+    assert bind == {'@chunks':'codebase_chunks','fk':'file_key','refs':[{'parent':'file','index':7}, {'parent':'legacy','index':'007'}]}
+    data = {'results':[{'id':'codebase_chunks/actual-stored-key'}, {'id':'codebase_chunks/legacy-key'}]}
 print(json.dumps({'success':True,'data':data}))
 "#).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -841,6 +843,10 @@ print(json.dumps({'success':True,'data':data}))
         assert!(result["results"][0]["chunk_id"].is_null());
         assert_eq!(result["results"][2]["parent_id"], "codebase_files/missing");
         assert!(result["results"][2]["chunk_id"].is_null());
+        assert_eq!(
+            result["results"][3]["chunk_id"],
+            "codebase_chunks/legacy-key"
+        );
         for (text, profile, limit) in [
             ("", "default", 10),
             ("a", "--bad", 10),
