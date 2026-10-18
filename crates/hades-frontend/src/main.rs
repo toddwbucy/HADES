@@ -1,9 +1,7 @@
 //! `hades-viewer` — a local, WebGL graph-visualization frontend for HADES graphs.
 //!
-//! Loosely coupled by design: this binary depends on no other HADES crate. It
-//! consumes the `hades` CLI's JSON/jsonl output contract (see [`assemble`]) and
-//! renders the result with a WebGL viewer. The backend we know works stays
-//! untouched — the only change to the workspace is this crate's membership.
+//! Graph reads consume the CLI JSON contract. Guided reading uses the shared
+//! core contracts over the daemon Unix socket; the daemon owns all mutations.
 //!
 //! Two modes:
 //!   * `hades-viewer dump  --db <db> --graph <g>`  -> print the graph-JSON to stdout
@@ -14,6 +12,7 @@ mod assemble;
 mod backend_process;
 mod contract;
 mod payload;
+mod reading;
 mod server;
 mod transport_limits;
 
@@ -93,6 +92,15 @@ struct ServeArgs {
     /// binding to a non-loopback address, since the viewer reads whole databases.
     #[arg(long)]
     password: Option<String>,
+    /// Read authentication password from a local file. Required for LAN reading writes.
+    #[arg(long, conflicts_with = "password")]
+    password_file: Option<std::path::PathBuf>,
+    /// Unix daemon serving the guided-reading database.
+    #[arg(long, requires = "reading_db")]
+    reading_socket: Option<std::path::PathBuf>,
+    /// Explicit database served by the reading daemon.
+    #[arg(long, requires = "reading_socket")]
+    reading_db: Option<String>,
     /// Address to bind (loopback or a private LAN IP only).
     #[arg(long, default_value = "127.0.0.1:8088")]
     bind: String,
@@ -123,11 +131,26 @@ async fn main() -> Result<()> {
                 Ok(())
             }
             Command::Serve(args) => {
+                if args.reading_socket.is_some() && args.password.is_some() {
+                    anyhow::bail!("guided reading requires --password-file rather than a command-line password");
+                }
+                let password = match args.password_file {
+                    Some(path) => Some(
+                        std::fs::read_to_string(path)?
+                            .trim_end_matches(['\r', '\n'])
+                            .to_owned(),
+                    ),
+                    None => args.password,
+                };
+                if args.reading_socket.is_some() && password.as_deref() == Some("") {
+                    anyhow::bail!("password file is empty");
+                }
                 server::serve(
                     args.hades_bin,
                     args.limit,
                     args.databases,
-                    args.password,
+                    password,
+                    args.reading_socket.zip(args.reading_db),
                     &args.bind,
                 )
                 .await

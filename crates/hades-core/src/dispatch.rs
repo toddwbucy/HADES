@@ -742,6 +742,21 @@ pub struct CodebaseStatsParams {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", content = "params")]
 pub enum DaemonCommand {
+    #[serde(rename = "reading.read")]
+    ReadingRead(crate::reading::ReadRequest),
+    #[serde(rename = "reading.capabilities")]
+    ReadingCapabilities {},
+    #[serde(rename = "reading.open")]
+    ReadingOpen(crate::reading::OpenRequest),
+    #[serde(rename = "reading.upload")]
+    ReadingUpload(crate::reading::SourceRequest),
+    #[serde(rename = "reading.extract")]
+    ReadingExtract { source_hash: String },
+    #[serde(rename = "reading.mutate")]
+    ReadingMutate(crate::reading::Mutation),
+    #[serde(rename = "reading.propose")]
+    ReadingPropose(crate::reading::Mutation),
+
     // ── System ──────────────────────────────────────────────────────
     #[serde(rename = "orient")]
     Orient(OrientParams),
@@ -1028,6 +1043,13 @@ impl DaemonCommand {
     /// - `status`, `db.health`, `db.stats`, `db.collections`, `db.graph.list`
     pub fn access_tier(&self) -> AccessTier {
         match self {
+            Self::ReadingRead(_) | Self::ReadingCapabilities {} => AccessTier::Agent,
+            Self::ReadingPropose(_) => AccessTier::Provisioning,
+            Self::ReadingOpen(_)
+            | Self::ReadingUpload(_)
+            | Self::ReadingExtract { .. }
+            | Self::ReadingMutate(_) => AccessTier::Admin,
+
             // ── Agent: bounded reads ──────────────────────────────
             Self::Orient(_) => AccessTier::Agent,
             Self::DbQuery { .. } => AccessTier::Agent,
@@ -1167,6 +1189,26 @@ pub async fn dispatch(
     cmd: DaemonCommand,
 ) -> Result<Value, DispatchError> {
     match cmd {
+        DaemonCommand::ReadingRead(p) => crate::reading::read(pool, p).await.map_err(Into::into),
+        DaemonCommand::ReadingCapabilities {} => crate::reading::capabilities(config)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::ReadingOpen(p) => crate::reading::open(pool, p).await.map_err(Into::into),
+        DaemonCommand::ReadingUpload(p) => {
+            crate::reading::upload(pool, p).await.map_err(Into::into)
+        }
+        DaemonCommand::ReadingExtract { source_hash } => {
+            crate::reading::extract(pool, config, source_hash)
+                .await
+                .map_err(Into::into)
+        }
+        DaemonCommand::ReadingMutate(p) => crate::reading::mutate(pool, p, false)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::ReadingPropose(p) => crate::reading::mutate(pool, p, true)
+            .await
+            .map_err(Into::into),
+
         DaemonCommand::GraphEmbedEmbed(params) => {
             handlers::graph_embed_embed(pool, &params.node_id)
                 .await

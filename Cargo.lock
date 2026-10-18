@@ -908,6 +908,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "hades-core",
  "libc",
  "serde",
  "serde_json",

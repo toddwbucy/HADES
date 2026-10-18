@@ -56,6 +56,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Guided-reading administration and recovery through shared core operations.
+    #[command(subcommand)]
+    Reading(commands::reading::ReadingCmd),
     /// Mechanically import graphable documents, preserving source revisions.
     #[command(subcommand)]
     Graphable(commands::graphable::GraphableCmd),
@@ -255,6 +258,9 @@ enum Commands {
             value_delimiter = ','
         )]
         mcp_ingest_roots: Vec<std::path::PathBuf>,
+        /// Permit guided-reading proposals while denying direct MCP graph/ingest writes.
+        #[arg(long, requires = "mcp_bind")]
+        mcp_guided_reading: bool,
     },
 }
 
@@ -359,6 +365,11 @@ fn main() -> anyhow::Result<()> {
 
     // ── Command dispatch ────────────────────────────────────────────────
     match cli.command {
+        Commands::Reading(command) => {
+            init_tracing();
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::reading::run(&config, command, &format))
+        }
         Commands::Graphable(command) => {
             init_tracing();
             let rt = tokio::runtime::Runtime::new()?;
@@ -709,10 +720,12 @@ fn main() -> anyhow::Result<()> {
             mcp_dbs,
             mcp_db_prefixes,
             mcp_ingest_roots,
+            mcp_guided_reading,
         } => {
             init_tracing();
             let mcp = match (mcp_bind, mcp_token_file) {
                 (Some(bind), Some(token_file)) => Some(commands::daemon::McpOptions {
+                    guided_reading: mcp_guided_reading,
                     bind,
                     token_file,
                     extra_dbs: mcp_dbs,

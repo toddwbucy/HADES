@@ -14,7 +14,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
+                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
@@ -87,6 +87,12 @@ def main():
                         help="reviewed graphable Markdown for the opt-in real-document test")
     parser.add_argument("--graphable-archive", type=Path,
                         help="original source archive for the real-document test")
+    benchmark.add_argument("--reading-e2e-python", type=Path,
+                           help="run the real guided-reading browser flow with this Python interpreter")
+    parser.add_argument("--reading-node", type=Path)
+    parser.add_argument("--reading-playwright", type=Path)
+    parser.add_argument("--reading-chromium", type=Path)
+    parser.add_argument("--reading-model-cache", type=Path)
     parser.add_argument("--benchmark-rows", type=int, default=1024)
     parser.add_argument("--benchmark-dimension", type=int, default=64)
     parser.add_argument("--benchmark-trials", type=int, default=16)
@@ -226,6 +232,16 @@ def main():
                 return
             if args.cli_lifecycle:
                 command("cli-lifecycle", ["-p", "hades-cli", "--test", "codebase_lifecycle"])
+                return
+            if args.reading_e2e_python:
+                argv = [str(args.reading_e2e_python), str(REPO / "scripts/test_guided_reading.py"),
+                        "--root", str(root), "--node", str(args.reading_node),
+                        "--playwright", str(args.reading_playwright), "--chromium", str(args.reading_chromium),
+                        "--model-cache", str(args.reading_model_cache)]
+                completed = subprocess.run(argv, cwd=REPO, env=env, timeout=args.command_timeout, check=False)
+                results["reading-e2e"] = {"passed": completed.returncode == 0}
+                if completed.returncode:
+                    raise RuntimeError("guided reading end-to-end test failed")
                 return
             if args.mcp_authored:
                 command("mcp-authored", ["-p", "hades-cli", "--test", "codebase_lifecycle",

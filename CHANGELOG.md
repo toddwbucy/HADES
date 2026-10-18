@@ -19,6 +19,26 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add human passage corrections to guided reading, with save/cancel, revision
+  history, before/after changes, and append-only restoration. Preserve original
+  extraction and accepted evidence, flag references to changed passages, and
+  include correction revisions in MCP context and authorship exports.
+
+- Add persistent Converted, Original PDF, and Side by side view controls to guided
+  reading. Wide comparison keeps both surfaces visible with independent scrolling
+  and PDF page navigation, preserving passage references and highlights.
+
+- Make the saved Docling conversion the default guided-reading surface for every
+  document format, with numbered passages and source-page comparison links. Keep
+  original PDF references available without remapping existing anchors.
+
+- Add a human-guided document reading desk with original-byte archives, PDF and
+  structured Docling views, classified highlights and figure anchors, shared
+  focus/pins, revisioned proposals, atomic human acceptance, contextual node
+  boundaries, staged reading, and authorship/outline export. Add guided-only MCP
+  authorization, browser write guards, password-file loading, and CLI recovery.
+  Preserve source/model/human attribution and keep embedding readiness separate.
+
 - Add reproducible CPU Docling/PDF.js layout probes and document observed anchor
   limits for the guided-reading workflow. Validate cases before loading models or
   creating output, without database or live-service writes.
@@ -93,6 +113,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   branch; outgoing-call behavior remains covered (#179, #186).
 
 ### Fixed
+
+- Align the guided-reading PDF text layer with the rendered page so pointer
+  selection targets the visible text. Disable classification during Bound and
+  explain how to enter Read before saving highlights.
 
 - Make Docling the primary document converter with pinned 2.126.0/core 2.96.0
   dependencies, complete-status validation, linked captions, formula policy

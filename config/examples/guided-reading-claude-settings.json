@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "mcp__hades__kg_add_node",
+      "mcp__hades__kg_add_edge",
+      "mcp__hades__kg_create"
+    ]
+  }
+}

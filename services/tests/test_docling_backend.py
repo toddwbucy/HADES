@@ -181,3 +181,25 @@ def test_default_device_is_portable(monkeypatch):
     monkeypatch.delenv("HADES_EXTRACTOR_DEVICE", raising=False)
     monkeypatch.delenv("HADES_EXTRACTOR_FALLBACK", raising=False)
     assert ExtractionConfig.from_env().device == "auto"
+
+
+def test_reading_document_keeps_structure_and_reports_unavailable_figures():
+    import json
+    from docling_core.types.doc import DoclingDocument, DocItemLabel, TableData, TableCell
+    from extraction.docling_backend import reading_document
+    doc = DoclingDocument(name="reading fixture")
+    doc.add_text(label=DocItemLabel.SECTION_HEADER, text="A heading")
+    doc.add_text(label=DocItemLabel.TEXT, text="The exact source passage.")
+    caption = doc.add_text(label=DocItemLabel.CAPTION, text="An unavailable picture.")
+    doc.add_picture(caption=caption)
+    doc.add_table(data=TableData(num_rows=1, num_cols=1, table_cells=[
+        TableCell(text="A cell",start_row_offset_idx=0,end_row_offset_idx=1,
+                  start_col_offset_idx=0,end_col_offset_idx=1)]))
+    result = json.loads(reading_document(doc))
+    assert result["format"] == "docling-blocks-v1"
+    assert any(b["kind"] == "section_header" and b["text"] == "A heading" for b in result["blocks"])
+    assert next(b for b in result["blocks"] if b["kind"] == "table")["rows"] == [["A cell"]]
+    picture = next(b for b in result["blocks"] if b["kind"] == "picture")
+    assert picture["caption"] == "An unavailable picture."
+    assert picture["image_available"] is False
+    assert any("figures" in w for w in result["warnings"])

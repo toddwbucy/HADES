@@ -55,6 +55,7 @@ fn test_extract_options_all() {
 #[test]
 fn test_extract_result_struct() {
     let result = ExtractResult {
+        reading_document_json: String::new(),
         full_text: "Hello world".to_string(),
         tables: vec![],
         equations: vec![],
