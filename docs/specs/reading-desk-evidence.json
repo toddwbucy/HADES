@@ -3,6 +3,7 @@
   "checks": [
     "renamed repeated upload resumes saved reading",
     "intentional separate reading",
+    "passage edit blocks creation and restoration before mutation",
     "remove and reload",
     "unsent message retained",
     "boundary draft blocks retry from another reading",

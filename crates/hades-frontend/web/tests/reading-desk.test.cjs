@@ -22,3 +22,16 @@ test('passage edits and unsent chat only block removal of their selected reading
   }
   assert.doesNotThrow(() => fixture({id:'another'}, ['another'])('target'));
 });
+
+test('passage edits block source creation, resumption and direct restoration before requests', async () => {
+  const switchAndOpen = source.slice(source.indexOf('function checkReadingSwitch('), source.indexOf('async function load('));
+  const archive = source.slice(source.indexOf('async function setArchived('), source.indexOf('function checkReadingSwitch('));
+  let calls = 0;
+  const {openSource, setArchived} = vm.runInNewContext(switchAndOpen + archive + ';({openSource,setArchived})', {
+    editingPassage:{text:'Unsaved correction'}, api:() => {calls++; throw Error('Unexpected request');}
+  });
+  await assert.rejects(openSource('hash', 'title'), /Save or cancel the passage edit/);
+  await assert.rejects(openSource('hash', 'title', true), /Save or cancel the passage edit/);
+  await assert.rejects(setArchived('removed', false), /Save or cancel the passage edit/);
+  assert.equal(calls, 0);
+});

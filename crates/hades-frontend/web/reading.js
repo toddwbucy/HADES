@@ -60,7 +60,7 @@ function checkRemovalDrafts(id){
  if(boundaryDrafts.has(id)||(state?.id===id&&(editingPassage||$('chat-message').value.trim())))throw Error('Save or clear your unfinished edits and chat message before removing this reading.');
 }
 async function setArchived(id,archived){
- if(archived)checkRemovalDrafts(id);
+ if(archived)checkRemovalDrafts(id);else checkReadingSwitch();
  const current=(await api(`state?session=${encodeURIComponent(id)}`)).state;
  if(!!current.archived!==archived){
   const payload={session:id,request_id:uid(),expected_revision:current.revision,actor:actor(),action:{action:'archive',archived}};
@@ -73,13 +73,15 @@ async function setArchived(id,archived){
  if(!archived)await load(id);
  status(archived?'Removed from desk. Restore it from Removed from desk; notes and history are saved.':'Restored the saved reading.');
 }
+function checkReadingSwitch(){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');}
 async function openSource(sourceHash,title,separate=false){
+ checkReadingSwitch();
  const saved=await api(separate?'open':'open-or-resume',{id:'s_'+uid().slice(0,28),title,source_hash:sourceHash,actor:actor()});
  if(saved.archived){await setArchived(saved.id,false);return;}
  await sessions();await load(saved.id);
  status(separate?'Started a separate reading.':'Opened the saved reading. Adding the same document resumes this reading.');
 }
-async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;for(const key of ['save-bound','advance','prev','next','figure','copy-context','export','outline'])$(key).disabled=false;$('bound-panel').hidden=false;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();void readingChat.selectReading();status(state.archived?'This reading was removed from the desk. Restore it from Removed from desk.':state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
+async function load(id){checkReadingSwitch();generation++;for(const key of ['save-bound','advance','prev','next','figure','copy-context','export','outline'])$(key).disabled=false;$('bound-panel').hidden=false;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();void readingChat.selectReading();status(state.archived?'This reading was removed from the desk. Restore it from Removed from desk.':state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
 async function refresh(){if(!state)return;const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(state?.id!==id)return;state=next.state;state.connectivity=next.connectivity;renderState()}
 function acceptedLink(proposal,id){
  const edge=id.startsWith(state.graph+'_edges/');
@@ -341,7 +343,7 @@ function restorePendingAction(){
   card.append(element('p',`Interrupted action in ${p.session}: ${p.action?.action||'save'} (${p.request_id})`,'muted'));
   card.append(button('Reconcile interrupted action',async()=>{
    if(localStorage.getItem(key)!==raw)throw Error('The pending action changed. Reload before reconciling it.');
-   if(p.action?.action==='archive'&&p.action.archived)checkRemovalDrafts(p.session);
+   if(p.action?.action==='archive'&&p.action.archived)checkRemovalDrafts(p.session);else checkReadingSwitch();
    await api('mutate',p);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);
    restorePendingAction();if(p.action?.action==='archive'&&p.action.archived){if(state?.id===p.session)clearReading();await sessions();status('Removed from desk. Notes and history are saved.');}else{await sessions();await load(p.session);}
   }));panel.append(card);

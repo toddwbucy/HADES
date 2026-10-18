@@ -161,7 +161,15 @@ async function main() {
       assert.equal(new URL(page.url()).searchParams.get('session'), 'browser_fixture');
       assert.equal((await state()).title, original.title);
     }
+    await page.getByRole('button', {name:'Edit passage', exact:true}).first().click();
     await page.getByText('Archived sources and recovery', {exact:true}).click();
+    for (const name of ['Start a separate reading', 'Open saved reading']) {
+      await page.getByRole('button', {name, exact:true}).click();
+      await until(async () => (await page.locator('#status').textContent()).includes('Save or cancel the passage edit'));
+      assert.equal((await active()).length, 1);
+      assert.equal(new URL(page.url()).searchParams.get('session'), 'browser_fixture');
+    }
+    await page.getByRole('button', {name:'Cancel edit', exact:true}).click();
     await page.getByRole('button', {name:'Start a separate reading', exact:true}).click();
     const separate = await until(async () => (await active()).find(s => s.id !== 'browser_fixture'));
     await until(async () => new URL(page.url()).searchParams.get('session') === separate.id);
@@ -196,6 +204,14 @@ async function main() {
     assert.equal((await active()).length, 1);
     await page.locator('#sessions .session').click();
     await until(async () => new URL(page.url()).searchParams.get('session') === 'browser_fixture');
+    // A direct restore must also reject before mutating while a passage edit is active.
+    await page.getByRole('button', {name:'Edit passage', exact:true}).first().click();
+    await page.locator('#archived-readings summary').click();
+    await page.locator(`#archived-sessions [data-session="${separate.id}"]`).getByRole('button', {name:'Restore to desk', exact:true}).click();
+    await until(async () => (await page.locator('#status').textContent()).includes('Save or cancel the passage edit'));
+    assert((await removed()).some(s => s.id === separate.id));
+    assert.equal((await active()).length, 1);
+    await page.getByRole('button', {name:'Cancel edit', exact:true}).click();
     // Do not discard unsent chat text while clearing the selected reading.
     await page.locator('[data-tab="chat"]').click();
     await page.locator('#chat-message').fill('An unfinished question');
@@ -256,7 +272,7 @@ async function main() {
     await page.setViewportSize({width:1800,height:1200});
     await page.locator('#archived-readings').evaluate(el => {el.open = true;});
     await page.screenshot({path:path.join(root, 'reading-desk-wide.png'), fullPage:true});
-    fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','remove and reload','unsent message retained','boundary draft blocks retry from another reading','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
+    fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','passage edit blocks creation and restoration before mutation','remove and reload','unsent message retained','boundary draft blocks retry from another reading','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
     assert.deepEqual(errors, []);
   }
   fs.writeFileSync(path.join(root, 'chat-evidence.json'), JSON.stringify({real_codex:real, runtime:'0.163.0', passed:true, checks:['browser passage selection','frozen MCP exchange context','restricted tools','pending proposal','human acceptance','reload without replay','release and resume', ...(!real ? ['question response','interrupt','daemon crash and ownership recovery','history reference selection','accepted knowledge snapshot'] : ['model MCP retrieval','model MCP proposal'])]}, null, 2));
