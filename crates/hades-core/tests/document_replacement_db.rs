@@ -481,3 +481,95 @@ async fn cleanup_acknowledgment_is_strict_before_document_writes() {
         );
     }
 }
+
+#[tokio::test]
+async fn document_late_windows_persist_exact_mapping_and_profile_provenance() {
+    use hades_core::chunking::prechunk::PrechunkConfig;
+    const TEXT: &str = "zero one two three four five six seven eight nine ten eleven twelve";
+    with_temp_db("document_windows", Fixtures::Empty, |pool| async move {
+        for collection in ["documents", "chunks", "embeddings"] {
+            crud::create_collection(&pool, collection, Some(2))
+                .await
+                .unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let extract_path = dir.path().join("extract.sock");
+        let listener = tokio::net::UnixListener::bind(&extract_path).unwrap();
+        let incoming = futures::stream::unfold(listener, |listener| async {
+            let next = listener.accept().await.map(|(stream, _)| stream);
+            Some((next, listener))
+        });
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(ExtractionServiceServer::new(Extractor(TEXT)))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        let mut peers = Peers(vec![server]);
+        let mut counts = Vec::new();
+        for ceiling in [20, 28] {
+            let socket = dir.path().join(format!("embed-{ceiling}.sock"));
+            peers
+                .0
+                .push(embedding_mock::start_embedder_with_ceiling(&socket, 100, ceiling).await);
+            let pipeline = Pipeline::new(
+                ExtractionClient::connect_unix_at(&extract_path)
+                    .await
+                    .unwrap(),
+                EmbeddingClient::connect_unix_at(&socket).await.unwrap(),
+                pool.clone(),
+                PipelineConfig {
+                    late_chunking: true,
+                    prechunk: PrechunkConfig {
+                        overlap_tokens: 2,
+                        safety_margin_tokens: 4,
+                        max_window_tokens: None,
+                    },
+                    ..Default::default()
+                },
+            );
+            let key = format!("window_{ceiling}");
+            let result = pipeline
+                .process_document(&dir.path().join("fixture.txt"), &key, &OneChunk)
+                .await;
+            assert!(result.success, "{result:?}");
+            let document = crud::get_document(&pool, "documents", &key).await.unwrap();
+            let plan = &document["embedding_window_plan"];
+            assert_eq!(plan["backend_ceiling_tokens"], ceiling);
+            counts.push(plan["windows"].as_array().unwrap().len());
+            let mut reconstructed = String::new();
+            for i in 0..result.chunk_count {
+                let chunk_key = format!("{key}_chunk_{i}");
+                let c = crud::get_document(&pool, "chunks", &chunk_key)
+                    .await
+                    .unwrap();
+                let e = crud::get_document(&pool, "embeddings", &format!("{chunk_key}_emb"))
+                    .await
+                    .unwrap();
+                assert_eq!(c["chunk_index"], i);
+                assert_eq!(e["chunk_index"], i);
+                assert_eq!(c["parent_chunk_index"], 0);
+                assert_eq!(e["parent_chunk_index"], 0);
+                let start = c["start_char"].as_u64().unwrap() as usize;
+                let end = c["end_char"].as_u64().unwrap() as usize;
+                assert_eq!(c["text"], &TEXT[start..end]);
+                reconstructed.push_str(c["text"].as_str().unwrap());
+                let provenance = &e["embedding_window"];
+                assert_eq!(provenance["plan"]["backend_ceiling_tokens"], ceiling);
+                assert_eq!(provenance["selected_window"], plan["chunk_windows"][i]);
+                assert!(provenance["window"]["start_byte"].as_u64().unwrap() <= start as u64);
+                assert!(provenance["window"]["end_byte"].as_u64().unwrap() >= end as u64);
+            }
+            assert_eq!(reconstructed, TEXT);
+        }
+        assert!(counts[0] > counts[1]);
+        for task in &peers.0 {
+            task.abort();
+        }
+        for task in peers.0.drain(..) {
+            let _ = task.await;
+        }
+    })
+    .await;
+}

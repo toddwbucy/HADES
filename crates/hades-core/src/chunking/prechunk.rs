@@ -9,6 +9,8 @@ pub const BYTES_PER_TOKEN_FLOOR: usize = 2;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ChunkingPolicy {
+    /// Opt in to shared context windows for document ingestion.
+    pub document_late_chunking: bool,
     pub prechunk: PrechunkConfig,
 }
 
@@ -32,6 +34,7 @@ impl Default for PrechunkConfig {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrechunkWindow {
+    pub ceiling_tokens: u32,
     pub tokens: u32,
     pub bytes: usize,
     pub overlap_bytes: usize,
@@ -61,6 +64,7 @@ impl PrechunkConfig {
             self.overlap_tokens
         );
         Ok(PrechunkWindow {
+            ceiling_tokens: ceiling,
             tokens,
             bytes: tokens as usize * BYTES_PER_TOKEN_FLOOR,
             overlap_bytes: self.overlap_tokens as usize * BYTES_PER_TOKEN_FLOOR,
@@ -237,7 +241,7 @@ async fn request(
 }
 
 /// Only the documented size error with a reported token count permits re-splitting.
-fn reported_tokens(error: &EmbeddingError) -> Option<usize> {
+pub(super) fn reported_tokens(error: &EmbeddingError) -> Option<usize> {
     let EmbeddingError::Http {
         status: 400,
         message,
@@ -283,7 +287,15 @@ pub async fn embed_chunks(
     task: &str,
     batch: Option<u32>,
     late: bool,
-) -> anyhow::Result<(Vec<TextChunk>, Vec<usize>, EmbedResult)> {
+) -> anyhow::Result<(
+    Vec<TextChunk>,
+    Vec<usize>,
+    EmbedResult,
+    Option<super::windows::WindowPlan>,
+)> {
+    if late {
+        return super::windows::embed(client, source, chunks, policy, task).await;
+    }
     let (chunks, parents) = split_input(source, chunks, policy.bytes, policy.overlap_bytes, late)?;
     let windows = pack(source, chunks, parents, policy.bytes, late)?;
     let initial = request(client, &windows, task, batch, late).await;
@@ -377,7 +389,7 @@ pub async fn embed_chunks(
         c.chunk_index = i;
         c.total_chunks = total;
     }
-    Ok((out, parents, result))
+    Ok((out, parents, result, None))
 }
 
 #[cfg(test)]
@@ -490,6 +502,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn document_late_chunking_is_an_explicit_opt_in() {
+        assert!(
+            !crate::config::HadesConfig::default()
+                .chunking
+                .document_late_chunking
+        );
+        let config: crate::config::HadesConfig =
+            serde_yaml::from_str("chunking:\n  document_late_chunking: true\n").unwrap();
+        assert!(config.chunking.document_late_chunking);
+    }
     #[test]
     fn policy_yaml_and_invalid_budgets() {
         let config: crate::config::HadesConfig = serde_yaml::from_str(

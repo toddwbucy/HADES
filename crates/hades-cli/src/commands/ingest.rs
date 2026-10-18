@@ -380,6 +380,7 @@ pub async fn run_phase(
     let embed_task = determine_embed_task(task, profile);
     let pipeline_config = PipelineConfig {
         prechunk: config.chunking.prechunk.clone(),
+        late_chunking: config.chunking.document_late_chunking,
         profile,
         embed_task,
         embed_batch_size: Some(config.embedding.batch.size),

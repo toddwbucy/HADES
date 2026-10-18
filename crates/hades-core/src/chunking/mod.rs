@@ -17,6 +17,7 @@
 
 pub mod prechunk;
 mod strategies;
+pub mod windows;
 
 pub use strategies::{SentenceChunking, SlidingWindowChunking, TokenChunking};
 
