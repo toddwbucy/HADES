@@ -85,6 +85,20 @@ for line in sys.stdin:
         continue
     try:
         result = {}
+        # Test-controlled barriers make cross-binding responsiveness and reading
+        # revision races deterministic without slowing ordinary fixture calls.
+        name = method.replace('/', '_')
+        if (root / ('fail_' + name)).exists():
+            raise ValueError('Injected failure for ' + method)
+        barrier = root / ('pause_' + name)
+        if barrier.exists():
+            with (root / ('entered_' + name)).open('a') as entered:
+                entered.write(str(os.getpid()) + '\n')
+            deadline = time.monotonic() + 15
+            while barrier.exists():
+                if time.monotonic() > deadline:
+                    raise ValueError('Fixture barrier timed out: ' + method)
+                time.sleep(.01)
         if method == 'config/read':
             result = {'config': {'mcp_servers': {'unsafe': {'enabled': True}}, 'plugins': {}}}
         elif method == 'mcpServerStatus/list':
@@ -111,6 +125,9 @@ for line in sys.stdin:
             owned[tid] = lock
             if method == 'thread/start':
                 save(tid, [])
+                if (root / 'disconnect_after_thread_start').exists():
+                    (root / 'started_thread').write_text(tid)
+                    os._exit(0)
             result = {'thread': {'id': tid}}
         elif method == 'thread/turns/list':
             result = {'data': load(params['threadId']), 'nextCursor': None}

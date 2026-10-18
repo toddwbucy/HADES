@@ -106,6 +106,17 @@ multiple matching history receipts remain unresolved; starting a new binding is
 an explicit user choice, not automatic recovery. Do not delete journal entries
 to force a retry.
 
+If the reading changes before dispatch, HADES returns a definitive rejection and
+clears the browser's saved submission. Review the updated context and send again.
+Uncertain database commits still retain the saved request for recovery.
+
+Capacity, Codex startup, and profile preparation failures leave no new binding;
+retry after correcting the cause. A known thread ID is saved before the tool audit,
+so an audit failure does not lose it. An unacknowledged thread creation remains
+unresolved: inspect Codex history before explicitly linking the recovered thread
+with `open` using the original binding ID and `thread_id`, or choosing a new
+conversation. HADES never starts a replacement thread automatically.
+
 An empty Codex conversation may not survive worker exit before its first turn.
 Missing history/uncertain creation produces an error and retains the binding;
 choose New conversation explicitly. Changing the runtime profile requires a new
@@ -113,8 +124,10 @@ binding. Existing transcripts remain readable.
 
 ## Limits and validation
 
-The initial broker allows four owned workers per daemon and 200 exchanges per
-binding. Transcript pages contain 20 exchanges. Display projections are capped at
+The initial broker allows four owned workers per daemon (including pending opens)
+and 200 exchanges per binding. Slow startup or reference retrieval for one binding
+does not block other bindings' polling, Stop, approvals, or release controls.
+Transcript pages contain 20 exchanges. Display projections are capped at
 256 KiB; full provider history stays in Codex. Recovery reads at most 8 MiB/100
 pages and reports incomplete history instead of inferring that a send never
 happened. The browser polls the bounded live projection every 750 ms. Linux daemon

@@ -111,8 +111,248 @@ async fn chat_journal_ownership_context_approval_and_disconnect_recovery() {
         assert_eq!(older["exchanges"].as_array().unwrap().len(),4); assert!(older["next_before"].is_null());
         let ids:std::collections::BTreeSet<_>=page["exchanges"].as_array().unwrap().iter().chain(older["exchanges"].as_array().unwrap()).map(|v|v["_key"].as_str().unwrap()).collect();
         assert_eq!(ids.len(),24);
-
+        review_regressions(&pool, &cfg, json!({"thread_id":b["thread_id"],"turn_id":history[0]["id"],"item_id":reference["id"]})).await;
     }).await;
+}
+
+async fn fixture_barrier(cfg: &ChatConfig, method: &str, count: usize) {
+    let path = std::path::Path::new(&cfg.home).join(format!("entered_{method}"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .count()
+            < count
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Codex did not reach the fixture barrier");
+}
+
+async fn responsive(pool: &ArangoPool, cfg: &ChatConfig, request: Value) -> Value {
+    tokio::time::timeout(Duration::from_secs(2), call(pool, cfg, request))
+        .await
+        .expect("another conversation blocked this request")
+        .unwrap()
+}
+
+async fn review_regressions(pool: &ArangoPool, cfg: &ChatConfig, reference: Value) {
+    let root = std::path::Path::new(&cfg.home);
+    let open = |id: &str| json!({"action":"open","id":id,"session":"fixture"});
+    let release = |id: &str| json!({"action":"release","binding":id});
+    let state = |id: &str| json!({"action":"state","binding":id});
+
+    // Version/startup and profile failures must leave the same binding ID usable.
+    let mut missing = cfg.clone();
+    missing.executable = root.join("missing_codex").display().to_string();
+    assert!(call(pool, &missing, open("retry_startup")).await.is_err());
+    assert!(call(pool, cfg, state("retry_startup")).await.is_err());
+    call(pool, cfg, open("retry_startup")).await.unwrap();
+    call(pool, cfg, release("retry_startup")).await.unwrap();
+    std::fs::write(root.join("fail_config_read"), "").unwrap();
+    assert!(call(pool, cfg, open("retry_profile")).await.is_err());
+    assert!(call(pool, cfg, state("retry_profile")).await.is_err());
+    std::fs::remove_file(root.join("fail_config_read")).unwrap();
+    let (a, b) = tokio::join!(
+        call(pool, cfg, open("retry_profile")),
+        call(pool, cfg, open("retry_profile"))
+    );
+    assert_eq!(
+        a.unwrap()["thread_id"],
+        b.unwrap()["thread_id"],
+        "concurrent opens must share one worker"
+    );
+    call(pool, cfg, release("retry_profile")).await.unwrap();
+
+    // A failed post-start audit must retain the known thread, without owning it.
+    std::fs::write(root.join("fail_mcpServerStatus_list"), "").unwrap();
+    assert!(call(pool, cfg, open("retry_audit")).await.is_err());
+    let audited = call(pool, cfg, state("retry_audit")).await.unwrap();
+    assert!(audited["binding"]["thread_id"].is_string());
+    assert_eq!(audited["live"]["status"], "disconnected");
+    std::fs::remove_file(root.join("fail_mcpServerStatus_list")).unwrap();
+    assert_eq!(
+        call(pool, cfg, open("retry_audit")).await.unwrap()["thread_id"],
+        audited["binding"]["thread_id"]
+    );
+    call(pool, cfg, release("retry_audit")).await.unwrap();
+
+    // Lost thread/start acknowledgement stays unknown until explicitly linked.
+    std::fs::write(root.join("disconnect_after_thread_start"), "").unwrap();
+    assert!(call(pool, cfg, open("unknown_open")).await.is_err());
+    std::fs::remove_file(root.join("disconnect_after_thread_start")).unwrap();
+    assert!(
+        call(pool, cfg, state("unknown_open")).await.unwrap()["binding"]["thread_id"].is_null()
+    );
+    assert!(
+        call(pool, cfg, open("unknown_open"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("outcome is unknown")
+    );
+    let thread = std::fs::read_to_string(root.join("started_thread")).unwrap();
+    let mut link = open("unknown_open");
+    link["thread_id"] = json!(thread);
+    assert_eq!(call(pool, cfg, link).await.unwrap()["thread_id"], thread);
+    let mut wrong = open("unknown_open");
+    wrong["thread_id"] = json!("different_thread");
+    assert!(call(pool, cfg, wrong).await.is_err());
+    call(pool, cfg, release("unknown_open")).await.unwrap();
+
+    // Three in-flight opens reserve the remaining slots, but never the registry.
+    call(pool, cfg, open("discussion")).await.unwrap();
+    call(pool, cfg, send("responsive_stop", 4, "/slow"))
+        .await
+        .unwrap();
+    wait(pool, cfg, |s| s["live"]["status"] == "inProgress").await;
+    std::fs::write(root.join("pause_config_read"), "").unwrap();
+    let mut openings = Vec::new();
+    for id in ["opening_a", "opening_b", "opening_cancelled"] {
+        let pool = pool.clone();
+        let cfg = cfg.clone();
+        let request = open(id);
+        openings.push(tokio::spawn(
+            async move { call(&pool, &cfg, request).await },
+        ));
+    }
+    fixture_barrier(cfg, "config_read", 3).await;
+    assert_eq!(
+        responsive(pool, cfg, state("discussion")).await["live"]["status"],
+        "inProgress"
+    );
+    responsive(
+        pool,
+        cfg,
+        json!({"action":"interrupt","binding":"discussion"}),
+    )
+    .await;
+    assert!(
+        call(pool, cfg, open("retry_capacity"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("four-worker limit")
+    );
+    assert!(call(pool, cfg, state("retry_capacity")).await.is_err());
+    let cancelled = openings.pop().unwrap();
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    assert!(call(pool, cfg, state("opening_cancelled")).await.is_err());
+    std::fs::remove_file(root.join("pause_config_read")).unwrap();
+    for task in openings {
+        task.await.unwrap().unwrap();
+    }
+    // The cancelled reservation is available even with three other workers alive.
+    call(pool, cfg, open("retry_capacity")).await.unwrap();
+    for id in ["opening_a", "opening_b", "retry_capacity"] {
+        call(pool, cfg, release(id)).await.unwrap();
+    }
+    wait(pool, cfg, |s| {
+        s["exchanges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["request_id"] == "responsive_stop" && e["status"] == "interrupted")
+    })
+    .await;
+
+    // Pause reference retrieval after the session snapshot, then mutate it.
+    // State, approval, and release on another binding must remain responsive.
+    call(pool, cfg, send("responsive_approval", 4, "/approval"))
+        .await
+        .unwrap();
+    let pending = wait(pool, cfg, |s| {
+        s["live"]["approvals"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    })
+    .await;
+    call(pool, cfg, open("revision_race")).await.unwrap();
+    std::fs::write(root.join("pause_thread_turns_list"), "").unwrap();
+    let mut request = send("revision_race", 4, "Compare this earlier answer");
+    request["binding"] = json!("revision_race");
+    request["references"] = json!([reference]);
+    let pool_copy = pool.clone();
+    let cfg_copy = cfg.clone();
+    let sending = tokio::spawn(async move { call(&pool_copy, &cfg_copy, request).await });
+    fixture_barrier(cfg, "thread_turns_list", 1).await;
+    responsive(pool, cfg, state("discussion")).await;
+    responsive(pool, cfg, json!({"action":"approval","binding":"discussion","generation":pending["live"]["generation"],"request_id":900,"result":{"answers":{"scope":{"answers":["Selected passage"]}}}})).await;
+    wait(pool, cfg, |s| {
+        s["exchanges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["request_id"] == "responsive_approval" && e["status"] == "completed")
+    })
+    .await;
+    responsive(pool, cfg, release("discussion")).await;
+    reading::mutate(
+        pool,
+        Mutation {
+            session: "fixture".into(),
+            request_id: "revision_race".into(),
+            expected_revision: 4,
+            actor: "human".into(),
+            action: Action::CorrectPassage {
+                block: "b1".into(),
+                passage_revision: 1,
+                text: "The revised passage.".into(),
+                restore_revision: None,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    std::fs::remove_file(root.join("pause_thread_turns_list")).unwrap();
+    let rejected = sending.await.unwrap().unwrap();
+    assert_eq!(rejected["rejected"], true);
+    assert!(
+        rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("Reading changed before dispatch")
+    );
+    let before = call(pool, cfg, state("revision_race")).await.unwrap();
+    assert!(
+        before["exchanges"].as_array().unwrap().is_empty(),
+        "rejected request must not be journaled"
+    );
+    let history: Value = serde_json::from_slice(
+        &std::fs::read(root.join(format!(
+            "{}.json",
+            before["binding"]["thread_id"].as_str().unwrap()
+        )))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        history.as_array().unwrap().is_empty(),
+        "rejected request must not reach Codex"
+    );
+    let mut corrected = send("corrected_revision", 5, "Discuss the updated passage");
+    corrected["binding"] = json!("revision_race");
+    assert_eq!(
+        call(pool, cfg, corrected).await.unwrap()["status"],
+        "dispatching"
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if call(pool, cfg, state("revision_race")).await.unwrap()["exchanges"][0]["status"]
+                == "completed"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    call(pool, cfg, release("revision_race")).await.unwrap();
 }
 
 /// Browser dependencies and optional real inference are explicit opt-ins.

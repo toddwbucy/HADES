@@ -27,6 +27,17 @@ test('lost acknowledgement preserves exact request without automatic retry', asy
   await assert.rejects(f.chat.send(), /unresolved/);
   assert.equal(calls, 1); assert.equal([...f.saved.values()][0], raw);
 });
+test('definitive revision rejection clears recovery and allows a corrected submission', async () => {
+  const calls = [];
+  const f = fixture(async payload => {
+    calls.push(payload);
+    return {rejected: true, error: 'Reading changed before dispatch; review context again'};
+  });
+  await f.chat.send(); assert.equal(f.saved.size, 0);
+  f.chat.getState = () => ({revision:4});
+  await f.chat.send(); assert.equal(f.saved.size, 0);
+  assert.deepEqual(calls.map(p => p.expected_revision), [3, 4]);
+});
 test('late poll cannot clear another conversation submission or render stale state', async () => {
   let resolve;
   const f = fixture(() => new Promise(r => {resolve = r;}));

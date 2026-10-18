@@ -47,7 +47,13 @@
     "stale approval rejection",
     "cancellation",
     "lost acknowledgement reconciliation without resend",
-    "transcript pagination"
+    "transcript pagination",
+    "retry after startup, profile, capacity, and tool-audit failures",
+    "explicit linking after lost thread-creation acknowledgement",
+    "concurrent opens share one worker per binding",
+    "pending opens reserve capacity and cancellation releases it",
+    "other bindings remain responsive during startup and reference retrieval",
+    "pre-dispatch revision race rejects without journaling or provider dispatch"
   ],
   "live_proposal_schema": {
     "rejected_tool_calls": 0
@@ -67,9 +73,9 @@
     "cli-lifecycle": true
   },
   "service_free_checks": {
-    "rust_unit_passed": 792,
+    "rust_unit_passed": 793,
     "rust_unit_ignored": 1,
-    "javascript_passed": 10,
+    "javascript_passed": 11,
     "python_run": 81,
     "python_skipped": 1,
     "formatting": true,

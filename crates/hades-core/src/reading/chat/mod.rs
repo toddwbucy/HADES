@@ -5,10 +5,10 @@ use runtime::Worker;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
     time::Duration,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore, SemaphorePermit};
 
 const BINDINGS: &str = "hades_reading_conversations";
 const EXCHANGES: &str = "hades_reading_exchanges";
@@ -74,6 +74,19 @@ impl ChatConfig {
 fn failure(message: impl Into<String>) -> HandlerError {
     HandlerError::ServiceError(message.into())
 }
+/// Stream transactions return conflicts only before commit; uncertain commit
+/// outcomes are wrapped as Request errors and must retain browser recovery data.
+fn dispatch_error(error: ArangoError) -> HandlerError {
+    match error {
+        ArangoError::Api {
+            status: 409,
+            error_num: 1200,
+            message,
+            ..
+        } => invalid(message),
+        other => db_error(other),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,10 +151,35 @@ pub enum Request {
 struct Owned {
     worker: Arc<Worker>,
     thread: String,
+    _capacity: SemaphorePermit<'static>,
 }
-static WORKERS: OnceLock<Mutex<BTreeMap<String, Owned>>> = OnceLock::new();
-fn workers() -> &'static Mutex<BTreeMap<String, Owned>> {
+static WORKERS: OnceLock<Mutex<BTreeMap<String, Arc<Owned>>>> = OnceLock::new();
+static CAPACITY: Semaphore = Semaphore::const_new(4);
+type BindingLocks = BTreeMap<String, Weak<Mutex<()>>>;
+static BINDING_LOCKS: OnceLock<StdMutex<BindingLocks>> = OnceLock::new();
+fn workers() -> &'static Mutex<BTreeMap<String, Arc<Owned>>> {
     WORKERS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+/// Serialize open/send/release for one binding without blocking other bindings
+/// or their polling, interruption, and approval requests. Idle locks are pruned.
+async fn binding_lock(key: &str) -> OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = BINDING_LOCKS
+            .get_or_init(|| StdMutex::new(BTreeMap::new()))
+            .lock()
+            .unwrap();
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        locks.get(key).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let lock = Arc::new(Mutex::new(()));
+            locks.insert(key.to_owned(), Arc::downgrade(&lock));
+            lock
+        })
+    };
+    lock.lock_owned().await
+}
+/// Clone ownership under the registry lock; never hold that lock across I/O.
+async fn owner(key: &str) -> Option<Arc<Owned>> {
+    workers().lock().await.get(key).cloned()
 }
 fn registry_key(pool: &ArangoPool, id: &str) -> String {
     format!(
@@ -324,9 +362,8 @@ pub async fn handle(
             other => other,
         },
         Request::Interrupt { binding: id } => {
-            let guard = workers().lock().await;
-            let owned = guard
-                .get(&registry_key(pool, &id))
+            let owned = owner(&registry_key(pool, &id))
+                .await
                 .ok_or_else(|| failure("Conversation is not connected"))?;
             let turn = owned
                 .worker
@@ -345,11 +382,12 @@ pub async fn handle(
                 .await
         }
         Request::Release { binding: id } => {
+            let key = registry_key(pool, &id);
+            let _binding_guard = binding_lock(&key).await;
             binding(pool, &id).await?;
-            let mut guard = workers().lock().await;
-            if let Some(owned) = guard.get(&registry_key(pool, &id)) {
-                let live = owned.worker.live.read().await;
+            if let Some(owned) = owner(&key).await {
                 let active = rows(pool.writer(), "FOR e IN hades_reading_exchanges FILTER e.binding == @binding AND e.status IN ['dispatching','acknowledged'] LIMIT 1 RETURN e._key", json!({"binding":id})).await.map_err(db_error)?;
+                let live = owned.worker.live.read().await;
                 if live.status == "inProgress" || (!live.closed && !active.is_empty()) {
                     return Err(failure(
                         "Stop the response and wait for completion before releasing this conversation",
@@ -358,7 +396,7 @@ pub async fn handle(
                 drop(live);
                 owned.worker.stop().await?;
             }
-            guard.remove(&registry_key(pool, &id));
+            workers().lock().await.remove(&key);
             Ok(json!({"released":true}))
         }
         Request::Approval {
@@ -367,9 +405,8 @@ pub async fn handle(
             request_id,
             result,
         } => {
-            let guard = workers().lock().await;
-            let owned = guard
-                .get(&registry_key(pool, &id))
+            let owned = owner(&registry_key(pool, &id))
+                .await
                 .ok_or_else(|| failure("Approval connection has ended"))?;
             if generation != owned.worker.generation {
                 return Err(failure("This approval belongs to an earlier connection"));
@@ -421,82 +458,92 @@ async fn open(
         thread_id(t)?;
     }
     config.validate()?;
-    let s = session(pool, &session_id).await?;
-    let mut registry = workers().lock().await;
     let key = registry_key(pool, &id);
+    let _binding_guard = binding_lock(&key).await;
+    let s = session(pool, &session_id).await?;
     let identity = config.identity();
     let existing = optional(pool.writer(), &format!("document/{BINDINGS}/{id}"))
         .await
         .map_err(db_error)?;
-    let mut record = if let Some(row) = existing {
+    let is_new = existing.is_none();
+    let mut record = if let Some(mut row) = existing {
         if row["session"] != session_id
             || row["profile"] != identity
             || row["source_hash"] != s.source_hash
-            || (thread.is_some() && row["thread_id"] != json!(thread))
+            || (thread.is_some()
+                && !row["thread_id"].is_null()
+                && row["thread_id"] != json!(thread))
         {
             return Err(invalid(
                 "conversation binding belongs to a different session, profile, or thread",
             ));
         }
-        if let Some(owned) = registry.get(&key) {
+        if let Some(owned) = owner(&key).await {
             if !owned.worker.live.read().await.closed {
                 return Ok(row);
             }
             owned.worker.stop().await?;
-            registry.remove(&key);
+            workers().lock().await.remove(&key);
         }
         if row["thread_id"].is_null() {
-            return Err(failure(
-                "Conversation creation outcome is unknown; inspect Codex history and explicitly link a thread",
-            ));
+            if thread.is_none() {
+                return Err(failure(
+                    "Conversation creation outcome is unknown; inspect Codex history and explicitly link a thread",
+                ));
+            }
+            row["thread_id"] = json!(thread);
         }
         row
     } else {
-        let row = json!({"_key":id,"format":"hades-reading-chat/v1","session":session_id,"source_hash":s.source_hash,"profile":identity,"provider":"codex","thread_id":thread,"created_at":chrono::Utc::now().to_rfc3339(),"position":{"page":1,"block":null}});
-        pool.writer()
-            .post(&format!("document/{BINDINGS}"), &row)
-            .await
-            .map_err(db_error)?;
-        row
+        json!({"_key":id,"format":"hades-reading-chat/v1","session":session_id,"source_hash":s.source_hash,"profile":identity,"provider":"codex","thread_id":thread,"created_at":chrono::Utc::now().to_rfc3339(),"position":{"page":1,"block":null}})
     };
-    if registry.len() >= 4 {
-        return Err(failure(
-            "Release an existing conversation before opening another (four-worker limit)",
-        ));
-    }
+    // Reserve capacity before connecting or persisting a binding. Cancellation
+    // and early failures release this permit automatically.
+    let capacity = CAPACITY.try_acquire().map_err(|_| {
+        failure("Release an existing conversation before opening another (four-worker limit)")
+    })?;
     let w = connect(config).await?;
     let outcome=async {
         let policy=w.profile(config).await?;
+        // Only thread/start can create an ambiguous provider outcome. Preparation
+        // failures leave no new binding; once dispatch is possible, keep the row.
+        if is_new {
+            pool.writer().post(&format!("document/{BINDINGS}"), &record).await.map_err(db_error)?;
+        }
         let mut params=json!({"cwd":config.cwd,"sandbox":"read-only","approvalPolicy":"on-request","approvalsReviewer":"user","config":policy,"developerInstructions":"You are discussing a document with its reader. The user message contains a frozen HADES exchange snapshot. Read reading_exchange_context with its exchange_id for that exact snapshot. Live reading_context may have changed; label any newer context. Use only the configured HADES guided-reading tools for retrieval and proposals. Proposals require an existing human highlight and remain pending until the human accepts in HADES. Never bypass this review through shell, direct database writes, or another endpoint."});
         let method=if record["thread_id"].is_string(){params["threadId"]=record["thread_id"].clone();params["excludeTurns"]=json!(true);"thread/resume"}else{"thread/start"};
-        w.call(method,params).await
+        let response = w.call(method,params).await?;
+        let thread = response["thread"]["id"]
+        .as_str()
+        .ok_or_else(|| failure("Codex returned no thread ID"))?
+        .to_owned();
+        w.live.write().await.thread = Some(thread.clone());
+        record["thread_id"] = json!(thread);
+        // Keep the known thread ID even if the following tool audit fails, so
+        // correcting the profile can resume this thread instead of creating one.
+        pool
+        .writer()
+        .patch(&format!("document/{BINDINGS}/{id}"), &json!({"thread_id":thread}))
+        .await
+        .map_err(db_error)?;
+        w.verify_tools(&thread).await?;
+        Ok(thread)
     }.await;
-    let response = match outcome {
-        Ok(v) => v,
+    let thread = match outcome {
+        Ok(thread) => thread,
         Err(e) => {
             let _ = w.stop().await;
             return Err(e);
         }
     };
-    let thread = response["thread"]["id"]
-        .as_str()
-        .ok_or_else(|| failure("Codex returned no thread ID"))?
-        .to_owned();
-    w.live.write().await.thread = Some(thread.clone());
-    if let Err(e) = w.verify_tools(&thread).await {
-        let _ = w.stop().await;
-        return Err(e);
-    }
-    record["thread_id"] = json!(thread);
-    if let Err(e) = pool
-        .writer()
-        .put(&format!("document/{BINDINGS}/{id}"), &record)
-        .await
-    {
-        let _ = w.stop().await;
-        return Err(db_error(e));
-    }
-    registry.insert(key, Owned { worker: w, thread });
+    workers().lock().await.insert(
+        key,
+        Arc::new(Owned {
+            worker: w,
+            thread,
+            _capacity: capacity,
+        }),
+    );
     Ok(record)
 }
 
@@ -575,7 +622,8 @@ async fn send(
         }
         return Ok(old);
     }
-    let registry = workers().lock().await;
+    let key = registry_key(pool, &p.binding);
+    let _binding_guard = binding_lock(&key).await;
     // Another browser can commit the same request while we wait for the owner.
     if let Some(old) = optional(pool.writer(), &format!("document/{EXCHANGES}/{id}"))
         .await
@@ -589,8 +637,8 @@ async fn send(
             ))
         };
     }
-    let owned = registry
-        .get(&registry_key(pool, &p.binding))
+    let owned = owner(&key)
+        .await
         .ok_or_else(|| failure("Resume this conversation before sending"))?;
     let live = owned.worker.live.read().await;
     if live.status == "inProgress" || live.closed {
@@ -633,7 +681,7 @@ async fn send(
         if previous.len()>=200{return Err(conflict("Conversation binding reached 200 exchanges; create a new binding"));}
         if previous.iter().any(|e|!terminal(e["status"].as_str().unwrap_or("unknown"))){return Err(conflict("An earlier exchange is unresolved; reconcile it before sending"));}
         client.post(&format!("document/{EXCHANGES}"),&copy).await?;Ok((copy,true))
-    }).await.map_err(db_error)?;
+    }).await.map_err(dispatch_error)?;
     if !record.1 {
         return Ok(record.0);
     }
@@ -803,16 +851,28 @@ fn validate_approval(prompt: &Value, result: &Value) -> Result<(), HandlerError>
 
 /// Release provider workers during orderly daemon shutdown.
 pub async fn shutdown() {
-    let mut registry = workers().lock().await;
+    let registry = std::mem::take(&mut *workers().lock().await);
     for owned in registry.values() {
         let _ = owned.worker.stop().await;
     }
-    registry.clear();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dispatch_conflicts_are_definitive_but_uncertain_commits_are_not() {
+        assert!(matches!(
+            dispatch_error(conflict("Reading changed before dispatch")),
+            HandlerError::InvalidParameter { .. }
+        ));
+        assert!(matches!(
+            dispatch_error(ArangoError::Request(
+                "transaction commit outcome uncertain: connection lost".into()
+            )),
+            HandlerError::Query { .. }
+        ));
+    }
     #[test]
     fn permissions_cannot_bypass_reading_review() {
         for method in [
