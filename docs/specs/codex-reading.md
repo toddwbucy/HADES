@@ -2,8 +2,9 @@
 
 Investigation for [#214](https://github.com/toddwbucy/HADES/issues/214).
 Verified on 2026-10-18 with **codex-cli 0.163.0** on Linux, using the configured
-`gpt-6-astra` model. This is a design and protocol proof of concept; the production
-reading desk does not yet have embedded chat. Claude-specific verification is deferred.
+`gpt-6-astra` model. The original investigation below is preserved as protocol
+evidence. The Codex broker and reading-desk integration now implement its follow-ups;
+see [setup and recovery](../codex-reading.md). Claude-specific verification is deferred.
 
 ## Decision
 
@@ -106,8 +107,10 @@ configuration. Validate the effective profile on resume. An imported conversatio
 must not inherit unrestricted graph-write tools merely because its previous client
 used them. Retain the guided-reading MCP restrictions described in
 [guided-reading.md](../guided-reading.md). Tool approval never accepts a knowledge
-graph proposal on the reader's behalf. This investigation did not reconnect MCP
-or exercise proposal acceptance; that integration remains a follow-up.
+graph proposal on the reader's behalf. The initial investigation did not reconnect
+MCP or exercise proposal acceptance.
+The subsequent [implementation validation](codex-reading-integration-evidence.json)
+now covers both through the real browser and a disposable database.
 
 ## Persistent contracts
 
@@ -210,24 +213,30 @@ durable ambiguous-send protection, exclusive journal claims, receipt ambiguity,
 and the UTF-8 byte limit. The live probe covers the actual runtime rather than
 mocking its writer lock or message-ID behavior.
 
-## Scoped follow-ups and limits
+## Implementation status and remaining limits
 
-1. **Codex broker and runtime profile:** process supervision, version/schema checks,
-   source-filtered conversation discovery, read-only history selection, atomic
-   resume, ownership-error mapping, and explicit release. Keep unsupported versions
-   read-only until equivalent ownership behavior has been verified.
-2. **Bindings and exchange journal:** durable database records, exact snapshots,
-   submission serialization, reference provenance, complete-history reconciliation,
-   and source-revision handling. The SQLite probe demonstrates the contract only.
-3. **Reading-desk UI:** the three conversation actions, chat streaming, reading
-   position, visible context, cancellation, approval/input UI, and reconnect states.
-4. **Guided-reading integration:** enforce MCP permissions on imported sessions,
-   resolve immutable exchange context, and test human review/acceptance with a
-   disposable database. Prove the complete browser workflow and multi-tab recovery.
-5. **Claude comparison:** evaluate its ownership, history access, resume, approval,
-   cancellation, and authentication constraints independently against these contracts.
+The Codex follow-ups are implemented in `hades-core::reading::chat`, the reading
+HTTP adapter, and `reading-chat.js`: supervised workers, runtime profiles,
+conversation discovery/reference/resume, durable bindings/exchanges, frozen
+context, history reconciliation, approval/input handling, and explicit release.
+`reading_exchange_context` exposes each immutable snapshot through MCP. The
+[operator guide](../codex-reading.md) documents configuration and recovery.
 
-The completed experiment is the backend protocol slice of the proposed proof of
-concept, using a real local document fixture and real Codex inference. It does not
-claim a shipped HADES chat panel, universal access to ChatGPT web/cloud conversations,
-cross-machine history transfer, or compatibility with untested Codex versions.
+The browser contract uses a disposable database and verifies MCP proposals remain
+pending until human acceptance. Controlled tests cover duplicate submissions,
+source corrections, reference provenance, cancellation, lost acknowledgements,
+pagination, stale browser responses, and daemon-crash ownership recovery. Real
+Codex inference verifies the same browser/MCP integration, restricted tool inventory,
+release, and resume. See [sanitized integration evidence](codex-reading-integration-evidence.json).
+
+The production implementation commits directly to `dispatching` before writing to
+Codex; a separate `prepared` queue is unnecessary for its single dispatch owner.
+Browser updates poll a bounded live projection. Only the verified runtime version
+is enabled, including for history browsing. Its supported approval policy is
+`on-request`; the runtime rejects `untrusted`. Reading-tool approvals allow only
+the pending allowlisted call, without persistent permission grants.
+
+Claude's ownership, history, resume, approval, cancellation, and authentication
+constraints still require independent verification. This implementation does not
+claim universal access to ChatGPT web/cloud conversations, cross-machine history
+transfer, or compatibility with untested Codex versions.

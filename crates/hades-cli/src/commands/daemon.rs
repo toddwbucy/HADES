@@ -230,6 +230,8 @@ async fn run_inner(
         }
     }
 
+    hades_core::reading::chat::shutdown().await;
+
     // Cleanup socket file.
     let _ = std::fs::remove_file(socket);
     tracing::info!("socket removed, daemon stopped");

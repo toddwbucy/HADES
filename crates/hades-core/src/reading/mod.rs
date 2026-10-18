@@ -1,4 +1,5 @@
 //! Human-guided reading: source archives, revisioned drafts, and atomic acceptance.
+pub mod chat;
 mod model;
 use crate::{
     config::HadesConfig,

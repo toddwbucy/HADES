@@ -97,6 +97,7 @@ jobs:
         run: |
           node crates/hades-frontend/web/tests/workspace.test.cjs
           node crates/hades-frontend/web/tests/reading-poll.test.cjs
+          node crates/hades-frontend/web/tests/reading-chat.test.cjs
 
       - name: cargo build
         run: cargo build --workspace --verbose

@@ -75,3 +75,17 @@ environment variables. Add the target to the isolated runner, ensure strict mode
 fails when prerequisites are missing, and assert meaningful stored state after
 failure/retry. CI green is evidence only for the gates listed above, not live
 inference, production reboot behavior, backup restoration, or retrieval quality.
+
+## Codex reading contracts
+
+The isolated database matrix includes `reading_chat`: durable request deduplication,
+immutable passage/reference context, ownership exclusion, approvals, interruption,
+receipt reconciliation, and transcript pagination. It uses a deterministic App
+Server fixture and requires no Codex account. CI also runs
+`node crates/hades-frontend/web/tests/reading-chat.test.cjs` for browser recovery
+and stale response handling.
+
+The opt-in [browser and real Codex checks](../codex-reading.md#limits-and-validation)
+use the same private server runner and `with_temp_db`. They exercise the actual
+viewer/daemon/MCP path, human graph acceptance, and worker reconnect. Real inference
+requires explicit authentication input; it is not a CI prerequisite.
