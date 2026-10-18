@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::process::Command;
 use tokio::task::JoinHandle;
@@ -29,6 +29,8 @@ include!("fixtures/provisioning_scope_outcomes.rs");
 
 struct Embedder {
     fail: Arc<AtomicBool>,
+    models_calls: Arc<AtomicUsize>,
+    fail_repeated_models: Arc<AtomicBool>,
     hold: Arc<AtomicBool>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -52,6 +54,10 @@ impl Embedder {
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let fail = Arc::new(AtomicBool::new(false));
         let fault = fail.clone();
+        let models_calls = Arc::new(AtomicUsize::new(0));
+        let model_requests = models_calls.clone();
+        let fail_repeated_models = Arc::new(AtomicBool::new(false));
+        let models_fault = fail_repeated_models.clone();
         let hold = Arc::new(AtomicBool::new(false));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -59,8 +65,17 @@ impl Embedder {
         let entered_request = entered.clone();
         let release_request = release.clone();
         let app = Router::new()
-            .route("/v1/models", get(|| async {
-                Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]}))
+            .route("/v1/models", get(move || {
+                let calls = model_requests.clone();
+                let fault = models_fault.clone();
+                async move {
+                    if calls.fetch_add(1, Ordering::SeqCst) > 0 && fault.load(Ordering::SeqCst) {
+                        return (axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({"error":"model metadata unavailable after preflight"})));
+                    }
+                    (axum::http::StatusCode::OK,
+                        Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]})))
+                }
             }))
             .route("/v1/embeddings", post(move |Json(body): Json<Value>| {
                 let fault = fault.clone();
@@ -99,6 +114,8 @@ impl Embedder {
         });
         Self {
             fail,
+            models_calls,
+            fail_repeated_models,
             hold,
             entered,
             release,
@@ -108,6 +125,70 @@ impl Embedder {
         }
     }
 }
+
+#[tokio::test]
+async fn raw_files_reuse_run_embedding_policy_when_metadata_becomes_unavailable() {
+    with_temp_db("raw_window_policy", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        embedder.fail_repeated_models.store(true, Ordering::SeqCst);
+        let tree = tempfile::tempdir().unwrap();
+        for name in ["first.legacy", "second.legacy"] {
+            std::fs::write(tree.path().join(name), "quartz raw text\n".repeat(2000)).unwrap();
+        }
+        std::fs::write(
+            tree.path().join("parsed.py"),
+            "def quartz():\n    return 1\n",
+        )
+        .unwrap();
+        // Both Python analyzers reject this, exercising ingest_file's fallback.
+        std::fs::write(tree.path().join("broken.py"), "def (").unwrap();
+        cli(
+            &pool,
+            &embedder,
+            &[
+                "codebase",
+                "ingest",
+                tree.path().to_str().unwrap(),
+                "--unparsed-ext",
+                "legacy",
+            ],
+            true,
+        )
+        .await;
+        assert_eq!(embedder.models_calls.load(Ordering::SeqCst), 1);
+        for name in ["first.legacy", "second.legacy", "parsed.py", "broken.py"] {
+            let key = keys::scoped_file_key(tree.path().to_str().unwrap(), name);
+            let file = pool
+                .reader()
+                .get(&format!("document/codebase_files/{key}"))
+                .await
+                .unwrap();
+            assert!(file["embedding_count"].as_u64().unwrap() > 0, "{file}");
+            assert_eq!(file["chunk_count"], file["embedding_count"]);
+            if name != "parsed.py" {
+                assert_eq!(file["analyzer"], "raw-text", "{file}");
+            }
+        }
+        let budgets = hades_core::db::query::query(
+            &pool,
+            "FOR e IN codebase_embeddings RETURN DISTINCT e.window_tokens",
+            None,
+            None,
+            false,
+            hades_core::db::query::ExecutionTarget::Reader,
+        )
+        .await
+        .unwrap()
+        .results;
+        assert_eq!(
+            budgets,
+            vec![json!(8192 - 256)],
+            "all files use the preflight ceiling and margin"
+        );
+    })
+    .await;
+}
+
 fn vector(text: &str) -> Vec<f32> {
     let mut vector = vec![0.; 2048];
     let index = if text.contains("sapphire") {

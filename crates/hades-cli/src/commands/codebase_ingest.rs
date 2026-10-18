@@ -431,6 +431,7 @@ pub async fn run_phase(
                         &db,
                         embedder.as_ref(),
                         config,
+                        embedding_window,
                         file_path,
                         &rel_path,
                         None,
@@ -1597,6 +1598,7 @@ async fn ingest_file(
                     db,
                     embedder,
                     config,
+                    embedding_window,
                     file_path,
                     rel_path,
                     Some(lang.name()),
@@ -2230,6 +2232,7 @@ async fn ingest_unparsed_file(
     db: &ArangoPool,
     embedder: Option<&EmbeddingClient>,
     config: &HadesConfig,
+    embedding_window: Option<PrechunkWindow>,
     file_path: &Path,
     rel_path: &str,
     language_label: Option<&str>,
@@ -2293,7 +2296,6 @@ async fn ingest_unparsed_file(
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
     let chunker = AstChunking::new(Vec::new());
-    let embedding_window = resolve_embedding_window(embedder, config).await?;
     let (chunks, parents, embedding_docs, embedding_error, window_plan) = prepare_embeddings(
         embedder,
         config,
@@ -4009,7 +4011,7 @@ mod tests {
             pool.writer().post(&format!("document/{}",CODEBASE.symbols), &json!({"_key":old,"file_key":file})).await.unwrap();
             let endpoint=format!("{}/{}",CODEBASE.symbols,old);
             pool.writer().post(&format!("document/{}",CODEBASE.calls_edges), &json!({"_key":"prior","_from":endpoint,"_to":endpoint,"resolution":"semantic"})).await.unwrap();
-            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
+            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),None,&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
             assert!(result.success);
             assert!(pool.writer().get(&format!("document/{}/prior",CODEBASE.calls_edges)).await.is_ok(),"raw replacement purged semantic edge");
             super::super::codebase_persist::prune_semantic_orphans(&pool,vec![endpoint]).await.unwrap();
@@ -4731,6 +4733,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4753,6 +4756,7 @@ mod tests {
                     &pool,
                     None,
                     &config,
+                    None,
                     &path,
                     "file.py",
                     Some("python"),
@@ -4777,6 +4781,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4802,6 +4807,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),

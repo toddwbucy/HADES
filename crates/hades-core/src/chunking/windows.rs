@@ -205,7 +205,13 @@ fn assign(
                 parents.push(chunk.chunk_index);
                 selected.push(window);
             } else {
-                let middle = ceil(source, start + (end - start) / 2);
+                let midpoint = start + (end - start) / 2;
+                let mut middle = ceil(source, midpoint);
+                // Rounding through a trailing scalar can reach end even when
+                // the passage has an interior boundary before that scalar.
+                if middle == end {
+                    middle = floor(source, midpoint);
+                }
                 anyhow::ensure!(
                     start < middle && middle < end,
                     "context window cannot hold one UTF-8 character"
@@ -457,6 +463,32 @@ mod tests {
                 assert_eq!(source.get(c.start_char..c.end_char), Some(c.text.as_str()));
             }
         }
+    }
+
+    #[test]
+    fn mixed_width_passages_split_at_an_interior_boundary() {
+        for (source, budget) in [("x🦀x".to_owned(), 4), ("x🦀x".repeat(50), 40)] {
+            let windows = ranges(&source, 0, source.len(), budget, 0).unwrap();
+            let input = vec![chunk(&source, 0, source.len(), 42)];
+            let (chunks, parents, selected) = assign(&source, &input, &windows).unwrap();
+            assert_eq!(
+                chunks.iter().map(|c| c.text.as_str()).collect::<String>(),
+                source
+            );
+            assert!(chunks.windows(2).all(|c| c[0].end_char == c[1].start_char));
+            for (i, c) in chunks.iter().enumerate() {
+                assert_eq!(parents[i], 42);
+                assert_eq!(c.chunk_index, i);
+                assert_eq!(c.total_chunks, chunks.len());
+                assert_eq!(source.get(c.start_char..c.end_char), Some(c.text.as_str()));
+                assert_eq!(
+                    nearest(&windows, c.start_char, c.end_char),
+                    Some(selected[i])
+                );
+            }
+        }
+        // A single scalar really is unsplittable if no context contains it.
+        assert!(assign("🦀", &[chunk("🦀", 0, 4, 0)], &[]).is_err());
     }
 
     #[test]
