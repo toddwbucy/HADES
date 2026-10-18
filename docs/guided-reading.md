@@ -6,6 +6,10 @@ references and proposes notes or connections. Only human acceptance publishes
 interpretation to the graph. No agent chat, model credentials, or agent execution
 runs in the browser.
 
+For the proposed embedded chat workflow, see the
+[Codex conversation investigation](specs/codex-reading.md). It records verified
+session ownership and recovery behavior; the chat panel is not implemented yet.
+
 ## Start a reading workspace
 
 Build the CLI and viewer, and regenerate the extraction bindings before starting

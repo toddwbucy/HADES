@@ -1,0 +1,52 @@
+{
+  "codex_version": "codex-cli 0.163.0",
+  "model": "gpt-6-astra",
+  "checks": {
+    "exec_requires_explicit_source_filter": true,
+    "read_history_without_ownership": true,
+    "other_process_status": {
+      "type": "notLoaded"
+    },
+    "idle_owner_refuses_second_writer": {
+      "code": -32600,
+      "message": "thread <synthetic-thread-id> already has an active writer"
+    },
+    "unsubscribe_does_not_release_writer_immediately": {
+      "code": -32600,
+      "message": "thread <synthetic-thread-id> already has an active writer"
+    },
+    "resume_after_owner_exit": true,
+    "cli_history_recalled": true,
+    "repeated_client_id_creates_second_turn": true,
+    "lost_ack_recovered_without_resend": true,
+    "document_snapshot_streaming_reference_and_reopen": true,
+    "approval_declined": true,
+    "interrupt_pending_approval": true,
+    "approval_resolution_after_turn_completion": true,
+    "turn_after_interruption": true,
+    "legacy_writer_lock": {
+      "code": -32600,
+      "message": "thread <synthetic-thread-id> already has an active writer"
+    },
+    "legacy_items_pagination_error": {
+      "code": -32601,
+      "message": "thread/items/list is not supported yet"
+    },
+    "missing_thread_error": {
+      "code": -32600,
+      "message": "no rollout found for thread id <synthetic-thread-id>"
+    },
+    "writer_released_after_process_kill": true
+  },
+  "status": "passed",
+  "verified_on": "2026-10-18",
+  "repository_base": "7423624e029c6f117e122456c06a721bf407cb82",
+  "scope": "Synthetic protocol proof of concept; no HADES database or production UI",
+  "exploratory_checks": {
+    "active_cli_resume_rejected": {
+      "code": -32600,
+      "message": "thread <synthetic-thread-id> already has an active writer"
+    },
+    "empty_thread_not_persisted_before_first_turn": true
+  }
+}
