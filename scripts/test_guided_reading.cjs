@@ -5,7 +5,7 @@ const [root,url,mcp]=process.argv.slice(2);let mcpSession=null,requestId=0;
 async function rpc(method,params){const response=await fetch(mcp,{method:'POST',headers:{Authorization:'Bearer isolated-reading-fixture-token','Content-Type':'application/json',Accept:'application/json, text/event-stream',...(mcpSession?{'Mcp-Session-Id':mcpSession,'MCP-Protocol-Version':'2024-11-05'}:{})},body:JSON.stringify({jsonrpc:'2.0',id:++requestId,method,params})});mcpSession=response.headers.get('mcp-session-id')||mcpSession;const text=await response.text();if(!response.ok)throw Error(`MCP HTTP ${response.status}: ${text}`);const parsed=text.startsWith('data:')||text.includes('\ndata:')?text.split('\n').filter(l=>l.startsWith('data:')&&l.slice(5).trim()).map(l=>JSON.parse(l.slice(5))).find(v=>v.id===requestId):JSON.parse(text);if(parsed.error)throw Error(JSON.stringify(parsed.error));return parsed.result}
 async function tool(name,args){const result=await rpc('tools/call',{name,arguments:args});if(result.isError)throw Error(JSON.stringify(result));const value=JSON.parse(result.content.find(c=>c.type==='text').text);assert.equal(value.success,true,JSON.stringify(value));return value.data}
 async function main(){await rpc('initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'hades-reading-e2e',version:'1'}});await fetch(mcp,{method:'POST',headers:{Authorization:'Bearer isolated-reading-fixture-token','Content-Type':'application/json',Accept:'application/json, text/event-stream','Mcp-Session-Id':mcpSession},body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})});const tools=await rpc('tools/list',{});assert(tools.tools.some(t=>t.name==='reading_propose'));const denied=await rpc('tools/call',{name:'kg_create',arguments:{db:'reading_e2e',name:'must_not_create'}});assert.equal(denied.isError,true);assert(JSON.stringify(denied).includes('guided reading'));
-const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH,headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1800,height:1200}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH,headless:true,args:['--no-sandbox']});const context=await browser.newContext({viewport:{width:1800,height:1200}});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
 async function state(){return page.evaluate(async()=>{const id=new URLSearchParams(location.search).get('session');return (await(await fetch('/api/reading/state?session='+id)).json()).state})}
 async function revision(n){
  const deadline=Date.now()+30000;
@@ -128,10 +128,31 @@ for(const extension of ['docx','pdf']){
  assert.equal(revisedRecord.session.proposals.proposal1.draft.note,'The human revised the proposed note.');
  assert(revisedRecord.reference_warnings.some(w=>w.highlight===correctedHighlight.id));
  fs.writeFileSync(path.join(root,'reading-'+extension+'-correction-record.json'),JSON.stringify(revisedRecord,null,2));
+ // Both accepted note/basis links and accepted relationship links must resolve
+ // through the real viewer, with edges inspected instead of expanded as nodes.
+ s=await state();await page.locator('#stages').getByRole('button',{name:'connect',exact:true}).click();await revision(s.revision+1);s=await state();
+ await tool('reading_propose',{db:'reading_e2e',session:s.id,request_id:'edge_proposal',expected_revision:s.revision,actor:'model:fixture',action:{action:'propose',id:'relationship1',draft:{...draft,title:'Related fixture',from:s.proposals.proposal1.created_ids[0],to:s.graph+'_nodes/bound_1',relation:'supports'}}});
+ await page.locator('[data-tab="proposals"]').click();
+ await page.getByRole('button',{name:'Review exact revision'}).waitFor();await page.getByRole('button',{name:'Review exact revision'}).click();
+ await page.locator('#accept').click();await revision(s.revision+2);s=await state();
+ await page.locator('[data-tab="knowledge"]').click();
+ const links=await page.locator('#knowledge a').evaluateAll(els=>els.map(a=>({id:a.textContent,url:a.href})));
+ assert.equal(links.length,3);
+ for(const link of links){
+  const u=new URL(link.url),edge=link.id.startsWith(s.graph+'_edges/');
+  assert.equal(u.searchParams.get('node'),s.proposals.proposal1.created_ids[0]);
+  assert.equal(u.searchParams.get('edge'),edge?link.id:null);assert.equal(u.searchParams.get('expand'),'1');
+  const view=await page.context().newPage();view.on('pageerror',e=>errors.push(e.message));
+  await view.goto(link.url);
+  await view.waitForFunction(({id,edge})=>edge?state.selectedEdge===id:state.selected===id,{id:link.id,edge});
+  if(edge)assert.equal(await view.evaluate(id=>graph.hasNode(id),link.id),false,'An edge must not become a phantom vertex');
+  await view.close();
+ }
+
 
 }
  await page.setViewportSize({width:3840,height:2400});await page.locator('#wide').click();await page.screenshot({path:path.join(root,'reading-wide.png'),fullPage:true});
  await page.setViewportSize({width:600,height:900});await page.screenshot({path:path.join(root,'reading-compact.png'),fullPage:true});
- assert.deepEqual(errors,[]);fs.writeFileSync(path.join(root,'reading-e2e.json'),JSON.stringify({passed:true,formats:['docx','pdf'],checks:['real Docling extraction','original hash','persistent view controls','wide side-by-side comparison','converted PDF/DOCX default','stable passage anchors','original PDF comparison','original figure reference compatibility','real pointer selection','Bound highlight gate','saved highlight painting','human classification','MCP exact focus','MCP proposal','human edit and acceptance','persisted attribution','pin reveal and seen','stage progression','export','reload','correction save/cancel','historical evidence reveal','corrected MCP anchors','revision diff','append-only restore','wide/compact rendering']}));console.log('Guided reading PDF + DOCX browser/MCP flow PASS');
+ assert.deepEqual(errors,[]);fs.writeFileSync(path.join(root,'reading-e2e.json'),JSON.stringify({passed:true,formats:['docx','pdf'],checks:['real Docling extraction','original hash','persistent view controls','wide side-by-side comparison','converted PDF/DOCX default','stable passage anchors','original PDF comparison','original figure reference compatibility','real pointer selection','Bound highlight gate','saved highlight painting','human classification','MCP exact focus','MCP proposal','human edit and acceptance','accepted node and edge navigation','no phantom edge vertices','persisted attribution','pin reveal and seen','stage progression','export','reload','correction save/cancel','historical evidence reveal','corrected MCP anchors','revision diff','append-only restore','wide/compact rendering']}));console.log('Guided reading PDF + DOCX browser/MCP flow PASS');
 }finally{await browser.close()}}
 main().catch(e=>{console.error(e);process.exit(1)});

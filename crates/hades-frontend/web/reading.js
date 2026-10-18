@@ -4,6 +4,7 @@ const $=id=>document.getElementById(id);
 let state=null,source=null,pdf=null,page=1,structured=true,busy=false,selectedAnchor=null,reviewing=null,database='',generation=0,figureMode=false,returnBlock=null,sideBySide=false,viewScroll={},splitScroll={},editingPassage=null,passageViews={};
 const boundaryDrafts=new Map();
 const pendingKey=db=>'hades.reading.pending.'+encodeURIComponent(db);
+const requestKey=(db,p)=>pendingKey(db)+':'+encodeURIComponent(p.session)+':'+encodeURIComponent(p.request_id);
 const actor=()=> $('actor').value.trim()||'human';
 const uid=()=>crypto.randomUUID ? crypto.randomUUID().replaceAll('-','_') : `r_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 function status(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
@@ -13,11 +14,19 @@ async function api(path,body){const response=await fetch('/api/reading/'+path,{m
 async function run(fn){if(busy)return;busy=true;try{await fn()}catch(e){status(e.message,true)}finally{busy=false}}
 async function mutate(action){if(!state)throw Error('Choose a reading session first');const payload={session:state.id,request_id:uid(),expected_revision:state.revision,actor:actor(),action};
 // Keep a failed request available for reconciliation; never blindly invent a new request ID after a lost response.
-localStorage.setItem(pendingKey(database),JSON.stringify({database,payload}));
-try{const result=await api('mutate',payload);localStorage.removeItem(pendingKey(database));await refresh();status(`Saved revision ${result.revision}${result.created_ids.length?' · accepted graph objects created':''}`);return result}catch(e){await refresh();throw e}}
-async function sessions(){const data=await api('state');$('sessions').replaceChildren();for(const s of data.sessions){const b=button(s.title,()=>load(s.id));b.className='session';b.append(element('div',`${s.stage} · revision ${s.revision}`,'muted'));$('sessions').append(b)}await archives()}
+const key=requestKey(database,payload),raw=JSON.stringify({database,payload});
+localStorage.setItem(key,raw);
+try{const result=await api('mutate',payload);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);await refresh();status(`Saved revision ${result.revision}${result.created_ids.length?' · accepted graph objects created':''}`);return result}catch(e){await refresh();throw e}finally{restorePendingAction()}}
+async function sessions(){const data=await api('state');$('sessions').replaceChildren();for(const s of data.sessions){const b=button(s.title,()=>load(s.id));b.className='session';b.append(element('div',`${s.stage} · revision ${s.revision}`,'muted'));$('sessions').append(b)}await archives();restorePendingAction()}
 async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();status(state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
 async function refresh(){if(!state)return;const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(state?.id!==id)return;state=next.state;state.connectivity=next.connectivity;renderState()}
+function acceptedLink(proposal,id){
+ const edge=id.startsWith(state.graph+'_edges/');
+ const node=edge?(proposal.draft.from||proposal.created_ids.find(v=>v.startsWith(state.graph+'_nodes/'))):id;
+ const params=new URLSearchParams({db:database,graph:state.graph,node,expand:'1'});
+ if(edge)params.set('edge',id);
+ return '/?'+params;
+}
 function renderState(){
 $('stages').replaceChildren(...['bound','read','connect','outline'].map((s,i)=>{const b=button(s,()=>mutate({action:'revisit',stage:s}));b.classList.toggle('current',s===state.stage);b.disabled=i>=['bound','read','connect','outline'].indexOf(state.stage);return b}));
 const boundaries=boundaryDrafts.get(state.id)||state.bound;
@@ -29,7 +38,7 @@ for(const b of document.querySelectorAll('[data-label]'))b.disabled=state.stage=
 $('selection-help').textContent=state.stage==='bound'?'Highlighting starts in Read. Enter IS and IS NOT above, then choose Save boundaries and start reading.':'Drag over the source text, then choose New node, IS, Explicit IS NOT, or Question above. Saved highlights appear on the right.';
 $('warnings').replaceChildren(...(source.structured?.warnings||['No structured content available.']).map(w=>element('p',w)));
 $('highlights').replaceChildren();for(const h of Object.values(state.highlights)){if(h.removed)continue;const c=element('section',undefined,'card');c.append(element('span',h.label.replaceAll('_',' ').toUpperCase(),'badge'),element('p',h.anchor.exact||(h.anchor.figure_box?'Figure selection (no caption supplied)':'')));if(changedReference(h))c.append(element('p',`Passage corrected: this reference uses revision ${h.anchor.passage_revision||0}. Reveal to review its original text.`,'passage-warning'));const controls=element('div',undefined,'controls');controls.append(button('Reveal',()=>reveal(h.id)),button('Share focus',()=>mutate({action:'focus',references:[h.id]})),button('Write a note',()=>newNote(h)),button('Remove',()=>mutate({action:'remove_highlight',id:h.id})));const select=element('select');select.setAttribute('aria-label','Highlight meaning');for(const l of ['node','is','is_not','question']){const o=element('option',l);o.value=l;o.selected=l===h.label;select.append(o)}select.onchange=()=>run(()=>mutate({action:'recolor',id:h.id,label:select.value}));controls.append(select);c.append(controls);$('highlights').append(c)}
-$('proposals').replaceChildren();$('knowledge').replaceChildren();for(const p of Object.values(state.proposals).sort((a,b)=>state.outline_order.indexOf(a.id)-state.outline_order.indexOf(b.id))){const c=element('section',undefined,'card');c.append(element('strong',p.draft.title),element('p',`${p.status} · revision ${p.revision} · origin: ${p.origin}`,'muted'));if(changedReference(state.highlights[p.draft.highlight]))c.append(element('p','Evidence passage corrected. Review the referenced revision; this note has not been moved.','passage-warning'));if(p.status==='pending'){c.append(element('p',p.draft.note),button('Review exact revision',()=>review(p.id)));$('proposals').append(c)}else if(p.status==='accepted'){c.append(element('p',p.draft.note));if(state.connectivity?.some(v=>v.proposal===p.id&&!v.connected))c.append(element('p','Suspect: the note or its basis path is missing from the graph.','error'));if(state.stage==='outline'&&!p.draft.from){for(const [name,direction]of [['Move up',-1],['Move down',1]])c.append(button(name,async()=>{const proposals=[...state.outline_order],i=proposals.indexOf(p.id),j=i+direction;if(j<0||j>=proposals.length)return;[proposals[i],proposals[j]]=[proposals[j],proposals[i]];await mutate({action:'order_outline',proposals})}))}if(!p.draft.is||!p.draft.is_not)c.append(element('p','One or more node boundaries remain unresolved.','muted'));for(const id of p.created_ids){const a=element('a',id);a.href=`/?db=${encodeURIComponent(database)}&graph=${encodeURIComponent(state.graph)}&node=${encodeURIComponent(id)}`;a.target='_blank';c.append(a,element('br'))}c.append(button('Reveal evidence',()=>reveal(p.draft.highlight)));$('knowledge').append(c)}else{$('proposals').append(c)}}
+$('proposals').replaceChildren();$('knowledge').replaceChildren();for(const p of Object.values(state.proposals).sort((a,b)=>state.outline_order.indexOf(a.id)-state.outline_order.indexOf(b.id))){const c=element('section',undefined,'card');c.append(element('strong',p.draft.title),element('p',`${p.status} · revision ${p.revision} · origin: ${p.origin}`,'muted'));if(changedReference(state.highlights[p.draft.highlight]))c.append(element('p','Evidence passage corrected. Review the referenced revision; this note has not been moved.','passage-warning'));if(p.status==='pending'){c.append(element('p',p.draft.note),button('Review exact revision',()=>review(p.id)));$('proposals').append(c)}else if(p.status==='accepted'){c.append(element('p',p.draft.note));if(state.connectivity?.some(v=>v.proposal===p.id&&!v.connected))c.append(element('p','Suspect: the note or its basis path is missing from the graph.','error'));if(state.stage==='outline'&&!p.draft.from){for(const [name,direction]of [['Move up',-1],['Move down',1]])c.append(button(name,async()=>{const proposals=[...state.outline_order],i=proposals.indexOf(p.id),j=i+direction;if(j<0||j>=proposals.length)return;[proposals[i],proposals[j]]=[proposals[j],proposals[i]];await mutate({action:'order_outline',proposals})}))}if(!p.draft.is||!p.draft.is_not)c.append(element('p','One or more node boundaries remain unresolved.','muted'));for(const id of p.created_ids){const a=element('a',id);a.href=acceptedLink(p,id);a.target='_blank';c.append(a,element('br'))}c.append(button('Reveal evidence',()=>reveal(p.draft.highlight)));$('knowledge').append(c)}else{$('proposals').append(c)}}
 $('pins').replaceChildren();for(const [name,pins]of Object.entries(state.pins)){const section=element('section');section.append(element('h3',name));section.append(button('Next unread pin',async()=>{const i=pins.findIndex(p=>!p.seen);if(i<0)throw Error('Every pin in this set has been seen');await reveal(pins[i].reference);await mutate({action:'seen',name,index:i})}));pins.forEach((p,i)=>section.append(button(`${p.seen?'✓':'○'} ${i+1}. ${p.note}`,async()=>{await reveal(p.reference);await mutate({action:'seen',name,index:i})})));$('pins').append(section)}
 syncConverted();paintHighlights();
 }
@@ -250,21 +259,34 @@ async function discoverCapabilities(){
  }catch(e){$('formats').textContent='Extractor unavailable. Saved readings, review, and exports remain available. Refresh to reconnect for new uploads.';}
 }
 function restorePendingAction(){
- const legacyKey='hades.reading.pending',key=pendingKey(database);
- const raw=localStorage.getItem(key)||localStorage.getItem(legacyKey);if(!raw)return;
- let saved;try{saved=JSON.parse(raw);}catch(e){status('An unreadable interrupted action was kept for manual recovery.',true);return;}
- if(!saved||saved.database!==database||!saved.payload){status('An interrupted action belongs to another database or has no database identity. It was kept for recovery and will not be replayed here.',true);return;}
- const p=saved.payload;
- // Preserve older scoped envelopes without guessing the database of bare payloads.
- localStorage.setItem(key,raw);if(localStorage.getItem(legacyKey)===raw)localStorage.removeItem(legacyKey);
- const b=button('Reconcile interrupted action',async()=>{
-  // Another tab or a later action may have replaced this receipt since rendering.
-  if(localStorage.getItem(key)!==raw)throw Error('The pending action changed. Reload before reconciling it.');
-  await api('mutate',p);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);
-  await load(p.session);b.remove();
- });
- $('sessions').prepend(b);status('An interrupted action is available for exact retry. No automatic duplicate was submitted.');
+ if(!database)return;
+ let panel=$('pending-actions');if(!panel){panel=element('div');panel.id='pending-actions';$('sessions').prepend(panel);}panel.replaceChildren();
+ const legacyKeys=new Set(['hades.reading.pending',pendingKey(database)]),prefix=pendingKey(database)+':';
+ for(const originalKey of Object.keys(localStorage).filter(k=>legacyKeys.has(k)||k.startsWith(prefix))){
+  const raw=localStorage.getItem(originalKey);if(raw===null)continue;
+  let saved;try{saved=JSON.parse(raw);}catch(e){panel.append(element('p','An unreadable interrupted action was kept for manual recovery.','error'));continue;}
+  if(saved?.database!==database||typeof saved.payload?.session!=='string'||typeof saved.payload?.request_id!=='string'){
+   panel.append(element('p','An interrupted action belongs to another database or has no database identity. It was kept for recovery and will not be replayed here.','muted'));continue;
+  }
+  const p=saved.payload,key=requestKey(database,p);
+  if(originalKey!==key){
+   const existing=localStorage.getItem(key);
+   if(existing!==null&&existing!==raw){panel.append(element('p','Conflicting retry records were kept for manual recovery.','error'));continue;}
+   // Migrate known database-scoped receipts without replacing another request.
+   localStorage.setItem(key,raw);if(localStorage.getItem(originalKey)===raw)localStorage.removeItem(originalKey);
+  }
+  if(panel.querySelectorAll('[data-request]').length&&[...panel.querySelectorAll('[data-request]')].some(el=>el.dataset.request===key))continue;
+  const card=element('section',undefined,'card');card.dataset.request=key;
+  card.append(element('p',`Interrupted action in ${p.session}: ${p.action?.action||'save'} (${p.request_id})`,'muted'));
+  card.append(button('Reconcile interrupted action',async()=>{
+   if(localStorage.getItem(key)!==raw)throw Error('The pending action changed. Reload before reconciling it.');
+   await api('mutate',p);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);
+   restorePendingAction();await load(p.session);
+  }));panel.append(card);
+ }
 }
+window.addEventListener('storage',e=>{if(e.key===null||e.key.startsWith('hades.reading.pending'))restorePendingAction()});
+
 async function start(){const config=await api('config');database=config.database;$('database').textContent=database||'Reading is not configured';if(!config.enabled)throw Error('Start the viewer with a reading daemon to enable this workflow.');await sessions();const session=new URLSearchParams(location.search).get('session');if(session)await load(session);else status('Add a document or resume a reading.');restorePendingAction();void discoverCapabilities();}
 run(start);
 async function pollReading(){if(!state||busy||document.hidden)return;try{const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(!busy&&state?.id===id&&next.state.revision>state.revision){state=next.state;state.connectivity=next.connectivity;renderState();status('Shared reading updated. New proposals and pins are ready.')}}catch(e){if(!busy)status(`Connection interrupted; polling will retry. ${e.message}`,true)}}

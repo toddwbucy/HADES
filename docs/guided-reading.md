@@ -146,11 +146,16 @@ Domain logic lives in `crates/hades-core/src/reading/`. CLI, MCP, and the viewer
 those operations. The viewer uses the daemon Unix protocol, not a CLI process per
 poll. It polls only its selected session every three seconds, recovers from failed
 polls, and retains an interrupted mutation's exact request for explicit retry.
-Pending actions are stored separately per database. Switching databases preserves
+Pending actions are stored separately per database, session, and request. Later
+saves and other browser tabs cannot replace an unresolved request. Recovery lists
+each pending action and removes only its own receipt after a successful exact retry.
+Switching databases preserves
 other pending actions and never replays them in the new database. Older pending
 records with no database identity stay available in browser storage for manual
 recovery and are not offered for replay. Browser writes also carry the expected
 database, so a stale tab cannot write after the viewer is reconfigured.
+Accepted knowledge links distinguish nodes from relationships. Relationship and
+basis links open the graph at a real endpoint and select the edge.
 
 - `hades_reading_sources`: source-hash archives and derived reading surfaces.
 - `hades_reading_sessions`: current projections, pins, focus, outline order.
