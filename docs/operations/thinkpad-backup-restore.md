@@ -37,6 +37,11 @@ the reading archive only covers sources uploaded through guided reading.
 3. Use matching `arangodump` with an explicitly selected socket and database:
 
    ```bash
+   umask 077
+   backup_base="$HOME/.local/share/hades/backups"
+   mkdir -p "$backup_base"
+   backup_dir=$(mktemp -d "$backup_base/workspace-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+   chmod 700 "$backup_dir"
    arangodump --configuration none \
      --server.endpoint unix:///home/todd/.local/share/hades/run/arango.sock \
      --server.database Conveyance_KG --server.username root \
@@ -48,7 +53,8 @@ the reading archive only covers sources uploaded through guided reading.
    line. Automated runs can use `--server.password '@HADES_BACKUP_PASSWORD@'`
    with a privately supplied environment value.
 4. Copy the configuration, units, binaries and referenced transcripts. Compare
-   the database inventory again; reject the artifact if it changed. Save hashes
+   the database inventory again, including every system collection (notably
+   `_analyzers` and `_aqlfunctions`); reject the artifact if it changed. Save hashes
    for every copied file. Restart the daemon, check readiness, then start the
    viewer. Refresh the browser; a saved conversation may require **Resume**.
 
@@ -85,11 +91,11 @@ The probe does not run model inference or resume any provider conversation.
 
 ## Recorded result and limits
 
-Backup: `~/.local/share/hades/backups/workspace-20261018T213502Z/`.
-Recovery evidence: `/tmp/hades-recovery-f3zjglde/result.json`.
+Backup: `~/.local/share/hades/backups/workspace-20261018T214440Z/`.
+Recovery evidence: `/tmp/hades-recovery-g_yzgmo2/result.json`.
 The [sanitized result](../specs/thinkpad-recovery-result.json) contains counts only.
 
-- All 19 compared collections and 46 documents matched, including graph records,
+- All 26 collections, including system collections, and 46 documents matched, including graph records,
   schemas and indexes. All 76 backed-up files passed SHA-256 verification.
 - Three original source hashes matched. All six readings, including removed
   desk items, opened and exported through HADES.
@@ -99,7 +105,7 @@ The [sanitized result](../specs/thinkpad-recovery-result.json) contains counts o
   this backup cannot supply history that was never present on disk.
 - Live services passed readiness/authentication checks after the backup.
 
-The restore command took approximately 0.21 seconds for this small database;
+The restore command took approximately 0.27 seconds for this small database;
 this is not full recovery time or a performance target. User accounts/permissions
 in `_system` were not restored, and provider authentication/resumption was not
 tested. A real replacement host must recreate database users/grants, install the

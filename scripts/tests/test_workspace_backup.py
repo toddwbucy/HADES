@@ -40,6 +40,13 @@ class BackupIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unmanifested"):
                 verified_files(root, {"files": {}})
 
+    def test_unverified_provider_transcript_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "manifest.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "provider transcript"):
+                verified_files(root, {"files": {}, "provider_transcripts": ["codex/sessions/missing.jsonl"]})
+
 
 if __name__ == "__main__":
     unittest.main()

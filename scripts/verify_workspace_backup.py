@@ -47,6 +47,12 @@ def verified_files(backup, manifest):
     actual = {str(p.relative_to(backup)) for p in backup.rglob("*") if p.is_file()}
     if actual != set(result) | {"manifest.json"}:
         raise ValueError("unmanifested backup files")
+    transcripts = manifest.get("provider_transcripts", [])
+    if len(transcripts) != len(set(transcripts)) or any(
+        name not in result or not name.startswith(("codex/sessions/", "codex/archived_sessions/"))
+        or not name.endswith(".jsonl") for name in transcripts
+    ):
+        raise ValueError("provider transcript is not a unique verified history file")
     return result
 
 
@@ -149,8 +155,6 @@ def main():
             index_keys = ("type", "fields", "unique", "sparse", "name", "storedValues", "params", "deduplicate", "estimates")
             for item in db("GET", "/_api/collection")["result"]:
                 name = item["name"]
-                if name.startswith("_") and name != "_graphs":
-                    continue
                 records = rows(name)
                 properties = db("GET", "/_api/collection/" + name + "/properties")
                 indexes = db("GET", "/_api/index?collection=" + name)["indexes"]

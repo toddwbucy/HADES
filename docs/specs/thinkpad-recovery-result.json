@@ -1,7 +1,7 @@
 {
   "passed": true,
   "server_version": "3.12.12-1",
-  "collections_compared": 19,
+  "collections_compared": 26,
   "documents_compared": 46,
   "reading_sources_verified": 3,
   "reading_sessions_opened_and_exported": 6,
@@ -10,7 +10,7 @@
   "provider_transcripts_copied": 2,
   "empty_bindings_without_provider_transcript": 1,
   "backup_files_verified": 76,
-  "restore_seconds": 0.21453225599907455,
+  "restore_seconds": 0.26527479399737786,
   "limits": [
     "one local backup, no scheduled or off-device protection",
     "provider transcript bytes checked; no provider resume or authentication tested",
