@@ -61,7 +61,7 @@ function historyPage(end) {
   const start = Math.max(1, end - 19);
   return {exchanges:Array.from({length:end - start + 1}, (_, i) => ({_key:exchangeKey(start + i),
     created_at:'2026-10-18T00:00:00Z', status:'completed', message:`Message ${start + i}`})),
-    next_before:start > 1 ? exchangeKey(start) : null, live:{status:'disconnected', items:[], approvals:[]}};
+    next_before:start > 1 ? exchangeKey(start) : null, pending:{unresolved:false, active:false}, live:{status:'disconnected', items:[], approvals:[]}};
 }
 const beforeNumber = before => Number(before.split('_')[1]) - 1;
 async function loadAll(chat, count) {
@@ -141,4 +141,28 @@ test('a late older receipt cannot clear recovery for a newly selected binding', 
   const page = historyPage(25); page.exchanges[0].request_id = 'recovered_request';
   resolve(page); await older;
   assert(f.saved.has(key));
+});
+test('stale cached acknowledgements cannot block controls after the server completes them', async () => {
+  let tip = 1;
+  const {chat} = transcriptFixture(async () => {
+    const page = historyPage(tip); page.live.status = 'completed';
+    if (tip === 1) {page.exchanges[0].status = 'acknowledged'; page.pending = {unresolved:true, active:true};}
+    return page;
+  });
+  await chat.poll();
+  assert.equal(chat.$('chat-send').disabled, true); assert.equal(chat.$('chat-release').disabled, true);
+  tip = 25; await chat.poll();
+  assert.equal(chat.exchanges.get(exchangeKey(1)).status, 'acknowledged', 'old record remains outside the latest page');
+  assert.equal(chat.$('chat-send').disabled, false); assert.equal(chat.$('chat-release').disabled, false);
+});
+test('authoritative pending state still blocks unresolved work outside the displayed page', async () => {
+  const f = transcriptFixture();
+  const page = historyPage(25); page.live.status = 'completed';
+  page.pending = {unresolved:true, active:true}; f.chat.render(page);
+  assert.equal(f.chat.$('chat-send').disabled, true); assert.equal(f.chat.$('chat-release').disabled, true);
+  page.pending.active = false; f.chat.render(page);
+  assert.equal(f.chat.$('chat-send').disabled, true); assert.equal(f.chat.$('chat-release').disabled, false);
+  page.pending.unresolved = false;
+  f.saved.set(f.pendingChatKey('test', 'binding'), JSON.stringify({request_id:'unknown_submission'}));
+  f.chat.render(page); assert.equal(f.chat.$('chat-send').disabled, true, 'an uncertain browser submission still requires recovery');
 });

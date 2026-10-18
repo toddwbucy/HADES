@@ -111,6 +111,15 @@ async fn chat_journal_ownership_context_approval_and_disconnect_recovery() {
         assert_eq!(older["exchanges"].as_array().unwrap().len(),4); assert!(older["next_before"].is_null());
         let ids:std::collections::BTreeSet<_>=page["exchanges"].as_array().unwrap().iter().chain(older["exchanges"].as_array().unwrap()).map(|v|v["_key"].as_str().unwrap()).collect();
         assert_eq!(ids.len(),24);
+        // Controls use the whole journal, including rows outside the latest page.
+        for (status, unresolved, active) in [("acknowledged",true,true),("unknown",true,false),("completed",false,false)] {
+            pool.writer().patch("document/hades_reading_exchanges/page_00",&json!({"status":status})).await.unwrap();
+            let current=call(&pool,&cfg,json!({"action":"state","binding":"reference_binding"})).await.unwrap();
+            assert!(!current["exchanges"].as_array().unwrap().iter().any(|e|e["_key"]=="page_00"));
+            assert_eq!(current["pending"],json!({"unresolved":unresolved,"active":active}));
+            let other=call(&pool,&cfg,json!({"action":"state","binding":"discussion"})).await.unwrap();
+            assert_eq!(other["pending"],json!({"unresolved":false,"active":false}));
+        }
         review_regressions(&pool, &cfg, json!({"thread_id":b["thread_id"],"turn_id":history[0]["id"],"item_id":reference["id"]})).await;
     }).await;
 }

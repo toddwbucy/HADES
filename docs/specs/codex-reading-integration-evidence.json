@@ -56,7 +56,8 @@
     "pre-dispatch revision race rejects without journaling or provider dispatch",
     "monitor stops after journal recovery even when the live turn changes",
     "monitor expiry and delayed acknowledgements preserve terminal projections",
-    "monitor updates serialize with concurrent reconciliation commits"
+    "monitor updates serialize with concurrent reconciliation commits",
+    "pending state includes exchanges outside the latest page and excludes other bindings"
   ],
   "live_proposal_schema": {
     "rejected_tool_calls": 0
@@ -67,7 +68,9 @@
     "late history pages preserve newer gap cursors",
     "late history pages cannot populate another binding",
     "older receipts clear matching saved submissions and permit another send",
-    "late receipts preserve replacement submissions and other bindings"
+    "late receipts preserve replacement submissions and other bindings",
+    "stale cached statuses cannot block controls after server recovery",
+    "authoritative pending state still blocks unresolved work outside the page"
   ],
   "isolation": {
     "database": "with_temp_db on a private ArangoDB server",
@@ -87,7 +90,7 @@
   "service_free_checks": {
     "rust_unit_passed": 795,
     "rust_unit_ignored": 1,
-    "javascript_passed": 17,
+    "javascript_passed": 19,
     "python_run": 81,
     "python_skipped": 1,
     "formatting": true,

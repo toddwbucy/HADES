@@ -331,7 +331,13 @@ pub async fn handle(
                 Value::Null
             };
             let records: Vec<_> = records.into_iter().take(20).rev().collect();
-            Ok(json!({"binding":row,"live":live,"exchanges":records,"next_before":next}))
+            // Transcript pages and browser caches may omit an exchange or retain
+            // its old status. Controls need current state for the whole binding.
+            let unresolved = rows(pool.writer(), "FOR e IN hades_reading_exchanges FILTER e.binding == @binding AND e.status NOT IN ['completed','failed','interrupted'] RETURN e.status", json!({"binding":id})).await.map_err(db_error)?;
+            let pending = json!({"unresolved":!unresolved.is_empty(),"active":unresolved.iter().any(|status| matches!(status.as_str(), Some("dispatching" | "acknowledged")))});
+            Ok(
+                json!({"binding":row,"live":live,"exchanges":records,"next_before":next,"pending":pending}),
+            )
         }
         Request::Send {
             binding: id,

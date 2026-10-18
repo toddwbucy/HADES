@@ -247,10 +247,12 @@ export class ReadingChat {
       if (nearBottom) root.scrollTop = root.scrollHeight;
       this.lastSignature = signature;
     }
-    const pending = data.exchanges.some(e => !['completed', 'failed', 'interrupted'].includes(e.status));
+    // Cached transcript rows can predate reconciliation; use the whole journal's
+    // current pending state for controls, independently of pagination.
+    const pending = data.pending.unresolved;
     this.$('chat-send').disabled = pending || live.closed || live.status === 'disconnected' || !!localStorage.getItem(pendingChatKey(this.getDatabase(), this.binding._key));
     this.$('chat-stop').disabled = live.status !== 'inProgress';
-    this.$('chat-release').disabled = live.status === 'inProgress' || (!live.closed && data.exchanges.some(e => ['dispatching', 'acknowledged'].includes(e.status)));
+    this.$('chat-release').disabled = live.status === 'inProgress' || (!live.closed && data.pending.active);
     this.$('chat-resume').disabled = !live.closed && live.status !== 'disconnected';
     this.note(this.lastError || live.error || (pending ? 'Response active or submission awaiting reconciliation.' : (live.closed || live.status === 'disconnected') ? 'Conversation saved. Resume to continue.' : 'Connected to Codex.'), !!this.lastError || !!live.error);
     this.renderApprovals(live);
