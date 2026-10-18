@@ -349,10 +349,16 @@ pub async fn mutate(pool: &ArangoPool, p: Mutation, agent: bool) -> Result<Value
         .map(str::to_owned)
         .collect();
     transaction::run_with_reads(pool,vec![SESSIONS.into(),EVENTS.into(),SOURCES.into(),nodes.clone(),edges.clone()],read_collections,move|client|async move{
-        let key=format!("{}_{}",p.session,p.request_id);
-        if let Some(event)=optional(&client,&format!("document/{EVENTS}/{key}")).await?{
-            if event["request_hash"]!=digest {return Err(conflict("request ID reused with a different payload"))}
-            return Ok(event["receipt"].clone());
+        // The colon namespace cannot overlap legacy keys (IDs exclude colons).
+        let key=format!("v2:{}",record_hash(&json!([p.session,p.request_id])));
+        let legacy_key=format!("{}_{}",p.session,p.request_id);
+        for candidate in [&key, &legacy_key] {
+            if let Some(event)=optional(&client,&format!("document/{EVENTS}/{candidate}")).await? {
+                // Legacy delimiter keys can belong to a different valid pair.
+                if event["session"]!=p.session || event["request"]["request_id"]!=p.request_id {continue;}
+                if event["request_hash"]!=digest {return Err(conflict("request ID reused with a different payload"))}
+                return Ok(event["receipt"].clone());
+            }
         }
         let mut row=client.get(&format!("document/{SESSIONS}/{}",p.session)).await?;
         let mut s:Session=serde_json::from_value(row["state"].clone()).map_err(|e|conflict(e.to_string()))?;

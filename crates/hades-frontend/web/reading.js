@@ -3,17 +3,18 @@ pdfjs.GlobalWorkerOptions.workerSrc='/vendor/pdf.worker.mjs';
 const $=id=>document.getElementById(id);
 let state=null,source=null,pdf=null,page=1,structured=true,busy=false,selectedAnchor=null,reviewing=null,database='',generation=0,figureMode=false,returnBlock=null,sideBySide=false,viewScroll={},splitScroll={},editingPassage=null,passageViews={};
 const boundaryDrafts=new Map();
+const pendingKey=db=>'hades.reading.pending.'+encodeURIComponent(db);
 const actor=()=> $('actor').value.trim()||'human';
 const uid=()=>crypto.randomUUID ? crypto.randomUUID().replaceAll('-','_') : `r_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 function status(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
 function element(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el}
 function button(text,fn){const b=element('button',text);b.onclick=()=>run(fn);return b}
-async function api(path,body){const response=await fetch('/api/reading/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json','X-Hades-Workspace':'1'}:{},body:body?JSON.stringify(body):undefined});const value=await response.json();if(!response.ok)throw Error(value.error||`Request failed (${response.status})`);return value}
+async function api(path,body){const response=await fetch('/api/reading/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json','X-Hades-Workspace':'1','X-Hades-Database':database}:{},body:body?JSON.stringify(body):undefined});const value=await response.json();if(!response.ok)throw Error(value.error||`Request failed (${response.status})`);return value}
 async function run(fn){if(busy)return;busy=true;try{await fn()}catch(e){status(e.message,true)}finally{busy=false}}
 async function mutate(action){if(!state)throw Error('Choose a reading session first');const payload={session:state.id,request_id:uid(),expected_revision:state.revision,actor:actor(),action};
 // Keep a failed request available for reconciliation; never blindly invent a new request ID after a lost response.
-localStorage.setItem('hades.reading.pending',JSON.stringify(payload));
-try{const result=await api('mutate',payload);localStorage.removeItem('hades.reading.pending');await refresh();status(`Saved revision ${result.revision}${result.created_ids.length?' · accepted graph objects created':''}`);return result}catch(e){await refresh();throw e}}
+localStorage.setItem(pendingKey(database),JSON.stringify({database,payload}));
+try{const result=await api('mutate',payload);localStorage.removeItem(pendingKey(database));await refresh();status(`Saved revision ${result.revision}${result.created_ids.length?' · accepted graph objects created':''}`);return result}catch(e){await refresh();throw e}}
 async function sessions(){const data=await api('state');$('sessions').replaceChildren();for(const s of data.sessions){const b=button(s.title,()=>load(s.id));b.className='session';b.append(element('div',`${s.stage} · revision ${s.revision}`,'muted'));$('sessions').append(b)}await archives()}
 async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();status(state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
 async function refresh(){if(!state)return;const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(state?.id!==id)return;state=next.state;state.connectivity=next.connectivity;renderState()}
@@ -248,7 +249,23 @@ async function discoverCapabilities(){
   $('upload').disabled=false;
  }catch(e){$('formats').textContent='Extractor unavailable. Saved readings, review, and exports remain available. Refresh to reconnect for new uploads.';}
 }
-async function start(){const config=await api('config');database=config.database;$('database').textContent=database||'Reading is not configured';if(!config.enabled)throw Error('Start the viewer with a reading daemon to enable this workflow.');await sessions();const session=new URLSearchParams(location.search).get('session');if(session)await load(session);else status('Add a document or resume a reading.');const pending=localStorage.getItem('hades.reading.pending');if(pending){const p=JSON.parse(pending);const b=button('Reconcile interrupted action',async()=>{await api('mutate',p);localStorage.removeItem('hades.reading.pending');await load(p.session);b.remove()});$('sessions').prepend(b);status('An interrupted action is available for exact retry. No automatic duplicate was submitted.');}void discoverCapabilities();}
+function restorePendingAction(){
+ const legacyKey='hades.reading.pending',key=pendingKey(database);
+ const raw=localStorage.getItem(key)||localStorage.getItem(legacyKey);if(!raw)return;
+ let saved;try{saved=JSON.parse(raw);}catch(e){status('An unreadable interrupted action was kept for manual recovery.',true);return;}
+ if(!saved||saved.database!==database||!saved.payload){status('An interrupted action belongs to another database or has no database identity. It was kept for recovery and will not be replayed here.',true);return;}
+ const p=saved.payload;
+ // Preserve older scoped envelopes without guessing the database of bare payloads.
+ localStorage.setItem(key,raw);if(localStorage.getItem(legacyKey)===raw)localStorage.removeItem(legacyKey);
+ const b=button('Reconcile interrupted action',async()=>{
+  // Another tab or a later action may have replaced this receipt since rendering.
+  if(localStorage.getItem(key)!==raw)throw Error('The pending action changed. Reload before reconciling it.');
+  await api('mutate',p);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);
+  await load(p.session);b.remove();
+ });
+ $('sessions').prepend(b);status('An interrupted action is available for exact retry. No automatic duplicate was submitted.');
+}
+async function start(){const config=await api('config');database=config.database;$('database').textContent=database||'Reading is not configured';if(!config.enabled)throw Error('Start the viewer with a reading daemon to enable this workflow.');await sessions();const session=new URLSearchParams(location.search).get('session');if(session)await load(session);else status('Add a document or resume a reading.');restorePendingAction();void discoverCapabilities();}
 run(start);
 async function pollReading(){if(!state||busy||document.hidden)return;try{const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(!busy&&state?.id===id&&next.state.revision>state.revision){state=next.state;state.connectivity=next.connectivity;renderState();status('Shared reading updated. New proposals and pins are ready.')}}catch(e){if(!busy)status(`Connection interrupted; polling will retry. ${e.message}`,true)}}
 setInterval(pollReading,3000);

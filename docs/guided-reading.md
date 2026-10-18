@@ -146,6 +146,11 @@ Domain logic lives in `crates/hades-core/src/reading/`. CLI, MCP, and the viewer
 those operations. The viewer uses the daemon Unix protocol, not a CLI process per
 poll. It polls only its selected session every three seconds, recovers from failed
 polls, and retains an interrupted mutation's exact request for explicit retry.
+Pending actions are stored separately per database. Switching databases preserves
+other pending actions and never replays them in the new database. Older pending
+records with no database identity stay available in browser storage for manual
+recovery and are not offered for replay. Browser writes also carry the expected
+database, so a stale tab cannot write after the viewer is reconfigured.
 
 - `hades_reading_sources`: source-hash archives and derived reading surfaces.
 - `hades_reading_sessions`: current projections, pins, focus, outline order.
@@ -154,7 +159,9 @@ polls, and retains an interrupted mutation's exact request for explicit retry.
 
 An exclusive transaction publishes a mutation, event, acceptance receipt, and graph
 writes together. Duplicate request IDs return their original receipt only for an
-identical payload and channel. Stale revisions and missing endpoints abort. Related
+identical payload and channel. New event keys hash the session/request pair
+unambiguously. Existing event keys and hashes remain unchanged, and exact legacy
+retries still return their original receipts. Stale revisions and missing endpoints abort. Related
 external collections are declared read-only within acceptance transactions. Source
 re-ingestion owns none of these authored collections.
 

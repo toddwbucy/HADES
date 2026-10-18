@@ -141,10 +141,17 @@ pub fn router<S: Clone + Send + Sync + 'static>(backend: Option<ReadingBackend>)
         .route("/api/reading/open", post(open))
         .route("/api/reading/mutate", post(mutate))
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
-        .route_layer(middleware::from_fn(browser_write_gate))
+        .route_layer(middleware::from_fn_with_state(
+            ReadingState(backend.clone()),
+            browser_write_gate,
+        ))
         .with_state(ReadingState(backend))
 }
-async fn browser_write_gate(req: Request, next: Next) -> Response {
+async fn browser_write_gate(
+    State(state): State<ReadingState>,
+    req: Request,
+    next: Next,
+) -> Response {
     if req.method() != Method::GET && req.method() != Method::HEAD {
         let headers = req.headers();
         let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
@@ -163,6 +170,21 @@ async fn browser_write_gate(req: Request, next: Next) -> Response {
             )
                 .into_response();
         }
+    }
+    if req.method() != Method::GET
+        && req.method() != Method::HEAD
+        && let Some(backend) = &state.0
+        && req
+            .headers()
+            .get("x-hades-database")
+            .and_then(|v| v.to_str().ok())
+            != Some(backend.database.as_str())
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"reading database changed; reload before writing"})),
+        )
+            .into_response();
     }
     // No cross-origin allow headers, including OPTIONS/preflight.
     let mut response = next.run(req).await;
@@ -263,6 +285,37 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use tower::ServiceExt;
+    #[tokio::test]
+    async fn stale_tabs_cannot_write_after_database_switch() {
+        for (database, expected) in [
+            (None, 409),
+            (Some("old_database"), 409),
+            (Some("current_database"), 204),
+        ] {
+            let backend = ReadingState(Some(ReadingBackend {
+                socket: "/unused".into(),
+                database: "current_database".into(),
+            }));
+            let app = Router::new()
+                .route("/probe", post(|| async { StatusCode::NO_CONTENT }))
+                .layer(middleware::from_fn_with_state(backend, browser_write_gate));
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/probe")
+                .header("host", "localhost:8088")
+                .header("origin", "http://localhost:8088")
+                .header("x-hades-workspace", "1");
+            if let Some(database) = database {
+                request = request.header("x-hades-database", database);
+            }
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), expected);
+        }
+    }
+
     #[tokio::test]
     async fn browser_writes_require_origin_custom_header_and_same_origin_metadata_when_present() {
         for (origin, custom, site, expected) in [

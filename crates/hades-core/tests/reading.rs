@@ -96,8 +96,8 @@ async fn acceptance_is_atomic_revisioned_retry_safe_and_retains_attribution() {
     assert_eq!(current["events"].as_array().unwrap().len(),11);
     assert_eq!(current["chain_valid"],true);
     // Administrators can tamper with storage, but an unchanged hash-chain head detects it.
-    let path="document/hades_reading_events/fixture_request_0";
-    let mut event=pool.writer().get(path).await.unwrap();event["actor"]=json!("tampered");pool.writer().put(path,&event).await.unwrap();
+    let path=format!("document/hades_reading_events/{}",export["events"][0]["_key"].as_str().unwrap());
+    let mut event=pool.writer().get(&path).await.unwrap();event["actor"]=json!("tampered");pool.writer().put(&path,&event).await.unwrap();
     let export=reading::read(&pool,ReadRequest{session:Some("fixture".into()),view:"export".into(),source_hash:None}).await.unwrap();assert_eq!(export["chain_valid"],false);
 }).await;
 }
@@ -356,4 +356,124 @@ async fn invalid_extractions_are_persisted_and_recoverable() {
         );
     })
     .await;
+}
+
+#[tokio::test]
+async fn event_keys_separate_identifier_pairs_and_keep_legacy_retries() {
+    use sha2::{Digest, Sha256};
+    for legacy in [false, true] {
+        with_temp_db("reading_keys", Fixtures::Empty, move |pool| async move {
+            let source = reading::upload(
+                &pool,
+                SourceRequest {
+                    filename: "fixture.txt".into(),
+                    content_base64: base64::engine::general_purpose::STANDARD
+                        .encode(b"key fixture"),
+                },
+            )
+            .await
+            .unwrap();
+            let hash = source["source_hash"].as_str().unwrap();
+            let path = format!("document/hades_reading_sources/{hash}");
+            let mut row = pool.writer().get(&path).await.unwrap();
+            row["status"] = json!("ready");
+            row["structured"] = json!({"format":"docling-blocks-v1","blocks":[]});
+            pool.writer().put(&path, &row).await.unwrap();
+            for id in ["study", "study_2026"] {
+                reading::open(
+                    &pool,
+                    OpenRequest {
+                        id: id.into(),
+                        title: id.into(),
+                        source_hash: hash.into(),
+                        actor: "human".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            }
+            let mut first = request(
+                "study",
+                0,
+                Action::Bound {
+                    is: "scope".into(),
+                    is_not: "excluded".into(),
+                },
+            );
+            first.request_id = "2026_request_0".into();
+            let second = request(
+                "study_2026",
+                0,
+                Action::Bound {
+                    is: "other scope".into(),
+                    is_not: "other exclusion".into(),
+                },
+            );
+            let receipt = reading::mutate(&pool, first.clone(), false).await.unwrap();
+            if legacy {
+                // Build the exact pre-upgrade key/hash layout in this isolated fixture.
+                let export = reading::read(
+                    &pool,
+                    ReadRequest {
+                        session: Some("study".into()),
+                        view: "export".into(),
+                        source_hash: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let mut event = export["events"][0].clone();
+                let modern = event["_key"].as_str().unwrap().to_owned();
+                let object = event.as_object_mut().unwrap();
+                for field in ["_id", "_rev", "event_hash"] {
+                    object.remove(field);
+                }
+                event["_key"] = json!("study_2026_request_0");
+                event.sort_all_objects();
+                let digest: String = Sha256::digest(serde_json::to_vec(&event).unwrap())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                event["event_hash"] = json!(digest);
+                pool.writer()
+                    .post("document/hades_reading_events", &event)
+                    .await
+                    .unwrap();
+                pool.writer()
+                    .delete(&format!("document/hades_reading_events/{modern}"))
+                    .await
+                    .unwrap();
+                let path = "document/hades_reading_sessions/study";
+                let mut row = pool.writer().get(path).await.unwrap();
+                row["state"]["last_event_hash"] = json!(digest);
+                pool.writer().put(path, &row).await.unwrap();
+            }
+            let other = reading::mutate(&pool, second.clone(), false).await.unwrap();
+            assert_eq!(
+                reading::mutate(&pool, first.clone(), false).await.unwrap(),
+                receipt
+            );
+            assert_eq!(reading::mutate(&pool, second, false).await.unwrap(), other);
+            first.actor = "changed payload".into();
+            assert!(reading::mutate(&pool, first, false).await.is_err());
+            let mut keys = vec![];
+            for session in ["study", "study_2026"] {
+                let export = reading::read(
+                    &pool,
+                    ReadRequest {
+                        session: Some(session.into()),
+                        view: "export".into(),
+                        source_hash: None,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(export["chain_valid"], true);
+                assert_eq!(export["events"].as_array().unwrap().len(), 1);
+                keys.push(export["events"][0]["_key"].clone());
+            }
+            assert_ne!(keys[0], keys[1]);
+        })
+        .await;
+    }
 }

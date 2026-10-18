@@ -114,6 +114,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Separate reading event keys by the full session/request identity while keeping
+  legacy retries valid. Scope interrupted browser actions to their database and
+  reject writes from tabs whose database no longer matches the viewer.
+
 - Keep authorship exports at one session revision during concurrent writes, and
   load saved readings and retry controls even when the extractor is unavailable.
 
