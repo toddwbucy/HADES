@@ -192,20 +192,23 @@ export class ReadingChat {
     try {
       const data = await this.api({action: 'state', binding});
       if (epoch !== this.epoch || this.binding?._key !== binding) return;
-      const key = pendingChatKey(this.getDatabase(), binding), raw = localStorage.getItem(key);
-      if (raw) {
-        let pending; try {pending = JSON.parse(raw);} catch {pending = null;}
-        if (pending && data.exchanges.some(e => e.request_id === pending.request_id)) localStorage.removeItem(key);
-      }
+      this.recoverFromHistory(binding, data.exchanges);
       this.render(data);
     } catch (e) {if (epoch === this.epoch) this.note(`Connection interrupted: ${e.message}`, true);}
     finally {this.polling = false;}
+  }
+  recoverFromHistory(binding, exchanges) {
+    const key = pendingChatKey(this.getDatabase(), binding), raw = localStorage.getItem(key);
+    if (!raw) return;
+    let pending; try {pending = JSON.parse(raw);} catch {return;}
+    if (pending && exchanges.some(e => e.request_id === pending.request_id)) localStorage.removeItem(key);
   }
   async loadOlder() {
     if (!this.binding || !this.olderCursor) return;
     const binding = this.binding._key, epoch = this.epoch, before = this.olderCursor;
     const data = await this.api({action: 'state', binding, before});
     if (epoch !== this.epoch || this.binding?._key !== binding) return;
+    this.recoverFromHistory(binding, data.exchanges);
     for (const exchange of data.exchanges) this.exchanges.set(exchange._key, exchange);
     // A concurrent poll may have discovered a newer gap while this page loaded.
     if (this.olderCursor === before) this.olderCursor = data.next_before;

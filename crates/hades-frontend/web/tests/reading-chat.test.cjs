@@ -103,3 +103,42 @@ test('a late older page cannot populate a newly selected binding', async () => {
   resolve(historyPage(20)); await older;
   assert.equal(chat.exchanges.size, 0); assert.equal(chat.olderCursor, undefined);
 });
+test('an older receipt clears only its matching saved submission and permits another send', async () => {
+  let sends = 0;
+  const f = transcriptFixture(async request => {
+    if (request.action === 'send') {sends++; return {};}
+    const page = historyPage(request.before ? beforeNumber(request.before) : 45);
+    if (request.before) page.exchanges[0].request_id = 'recovered_request';
+    return page;
+  });
+  const key = f.pendingChatKey('test', 'binding'), other = f.pendingChatKey('test', 'other');
+  f.saved.set(key, JSON.stringify({request_id:'recovered_request'}));
+  f.saved.set(other, JSON.stringify({request_id:'recovered_request'}));
+  await f.chat.poll(); assert(f.saved.has(key), 'newest page has no receipt');
+  await f.chat.loadOlder(); assert(!f.saved.has(key)); assert(f.saved.has(other));
+  f.chat.$('chat-message').value = 'Continue after recovery';
+  f.chat.$('chat-passages').selectedOptions = []; f.chat.$('chat-knowledge').selectedOptions = [];
+  await f.chat.send(); assert.equal(sends, 1);
+});
+test('an older page cannot clear a different request saved while it was loading', async () => {
+  let resolve;
+  const f = transcriptFixture(request => request.before ? new Promise(r => {resolve = r;}) : Promise.resolve(historyPage(45)));
+  const key = f.pendingChatKey('test', 'binding');
+  f.saved.set(key, JSON.stringify({request_id:'old_request'}));
+  await f.chat.poll(); const older = f.chat.loadOlder();
+  const replacement = JSON.stringify({request_id:'new_request'}); f.saved.set(key, replacement);
+  const page = historyPage(25); page.exchanges[0].request_id = 'old_request';
+  resolve(page); await older;
+  assert.equal(f.saved.get(key), replacement);
+});
+test('a late older receipt cannot clear recovery for a newly selected binding', async () => {
+  let resolve;
+  const f = transcriptFixture(() => new Promise(r => {resolve = r;}));
+  f.chat.render(historyPage(45));
+  const key = f.pendingChatKey('test', 'different');
+  f.saved.set(key, JSON.stringify({request_id:'recovered_request'}));
+  const older = f.chat.loadOlder(); f.chat.epoch++; f.chat.binding = {_key:'different'};
+  const page = historyPage(25); page.exchanges[0].request_id = 'recovered_request';
+  resolve(page); await older;
+  assert(f.saved.has(key));
+});

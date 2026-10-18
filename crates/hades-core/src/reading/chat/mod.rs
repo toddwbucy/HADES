@@ -694,56 +694,97 @@ async fn send(
     tokio::spawn(async move {
         let prompt=json!({"exchange_id":record["_key"],"context":record["context"],"message":record["message"]}).to_string();
         let started=w.call("turn/start",json!({"threadId":thread,"clientUserMessageId":record["client_id"],"input":[{"type":"text","text":prompt}]})).await;
-        let path = format!("document/{EXCHANGES}/{}", record["_key"].as_str().unwrap());
+        let id = record["_key"].as_str().unwrap();
         let turn = match started {
             Ok(v) => v["turn"]["id"].as_str().map(str::to_owned),
             Err(e) => {
-                let _ = pool
-                    .writer()
-                    .patch(&path, &json!({"status":"unknown","error":e.to_string()}))
-                    .await;
+                let _ =
+                    update_unresolved(&pool, id, json!({"status":"unknown","error":e.to_string()}))
+                        .await;
                 return;
             }
         };
         let Some(turn) = turn else {
-            let _ = pool
-                .writer()
-                .patch(&path, &json!({"status":"unknown"}))
-                .await;
+            let _ = update_unresolved(&pool, id, json!({"status":"unknown"})).await;
             return;
         };
-        let _ = pool
-            .writer()
-            .patch(
-                &path,
-                &json!({"status":"acknowledged","provider_turn":turn}),
+        if matches!(
+            update_unresolved(
+                &pool,
+                id,
+                json!({"status":"acknowledged","provider_turn":turn})
             )
-            .await;
-        for _ in 0..7200 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let live = w.live.read().await;
-            if live.turn.as_deref() == Some(&turn)
-                && (terminal(&live.status) || live.closed || live.status == "unknown")
-            {
-                let projection = live.value(&w.generation);
-                let status = live.status.clone();
-                drop(live);
-                if pool
-                    .writer()
-                    .patch(
-                        &path,
-                        &json!({"status":status,"projection":projection,"provider_turn":turn}),
-                    )
-                    .await
-                    .is_ok()
-                {
-                    return;
-                }
-            }
+            .await,
+            Ok(false)
+        ) {
+            return;
         }
-        let _=pool.writer().patch(&path,&json!({"status":"unknown","error":"Response deadline exceeded; reconcile history"})).await;
+        monitor_exchange(&pool, &w.live, &w.generation, id, &turn, 7200).await;
     });
     Ok(result)
+}
+
+/// A monitor must never replace a terminal result already saved by reconciliation.
+/// The exclusive transaction makes the status check and update atomic with all
+/// other writers, including reconciliation's ordinary document PATCH.
+async fn update_unresolved(pool: &ArangoPool, id: &str, patch: Value) -> Result<bool, ArangoError> {
+    let path = format!("document/{EXCHANGES}/{id}");
+    transaction::run(pool, vec![EXCHANGES.into()], move |client| async move {
+        let row = client.get(&path).await?;
+        if terminal(row["status"].as_str().unwrap_or("")) {
+            return Ok(false);
+        }
+        client.patch(&path, &patch).await?;
+        Ok(true)
+    })
+    .await
+}
+
+/// Follow one turn until it is persisted or recovered, even after a newer turn
+/// replaces the worker's live projection. Expiry only changes unresolved rows.
+async fn monitor_exchange(
+    pool: &ArangoPool,
+    state: &tokio::sync::RwLock<runtime::Live>,
+    generation: &str,
+    id: &str,
+    turn: &str,
+    attempts: usize,
+) {
+    for _ in 0..attempts {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(row) = pool
+            .writer()
+            .get(&format!("document/{EXCHANGES}/{id}"))
+            .await
+            && terminal(row["status"].as_str().unwrap_or(""))
+        {
+            return;
+        }
+        let live = state.read().await;
+        if live.turn.as_deref() == Some(turn)
+            && (terminal(&live.status) || live.closed || live.status == "unknown")
+        {
+            let projection = live.value(generation);
+            let status = live.status.clone();
+            drop(live);
+            if update_unresolved(
+                pool,
+                id,
+                json!({"status":status,"projection":projection,"provider_turn":turn}),
+            )
+            .await
+            .is_ok()
+            {
+                return;
+            }
+        }
+    }
+    let _ = update_unresolved(
+        pool,
+        id,
+        json!({"status":"unknown","error":"Response deadline exceeded; reconcile history"}),
+    )
+    .await;
 }
 
 async fn reconcile(
@@ -860,6 +901,75 @@ pub async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{Fixtures, with_temp_db};
+
+    #[tokio::test]
+    async fn monitor_preserves_recovery_after_live_turn_changes_and_at_expiry() {
+        with_temp_db("chat_monitor", Fixtures::Empty, |pool| async move {
+            ensure_store(&pool).await.unwrap();
+            let live = tokio::sync::RwLock::new(runtime::Live {
+                turn: Some("new_turn".into()),
+                status: "inProgress".into(),
+                ..Default::default()
+            });
+            for status in ["completed", "failed", "interrupted"] {
+                let path = format!("document/{EXCHANGES}/{status}");
+                pool.writer().post(&format!("document/{EXCHANGES}"), &json!({
+                    "_key":status, "status":"acknowledged", "provider_turn":"old_turn"
+                })).await.unwrap();
+                // Same durable update as reconciliation, before the old monitor
+                // sees completion and after a new turn replaces its projection.
+                pool.writer().patch(&path, &json!({"status":status,"projection":{"items":[{"text":"Recovered answer"}]}})).await.unwrap();
+                let recovered = pool.writer().get(&path).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(2), monitor_exchange(
+                    &pool, &live, "generation", status, "old_turn", 7200,
+                )).await.expect("monitor did not stop after journal recovery");
+                // Also cover a reconciliation racing with each later write path.
+                for patch in [json!({"status":"acknowledged"}), json!({"status":"unknown","error":"lost acknowledgement"}), json!({"status":"completed","projection":null})] {
+                    assert!(!update_unresolved(&pool, status, patch).await.unwrap());
+                }
+                monitor_exchange(&pool, &live, "generation", status, "old_turn", 0).await;
+                assert_eq!(pool.writer().get(&path).await.unwrap(), recovered, "terminal projection, status and revision must not change");
+            }
+            pool.writer().post(&format!("document/{EXCHANGES}"), &json!({"_key":"unresolved","status":"acknowledged"})).await.unwrap();
+            monitor_exchange(&pool, &live, "generation", "unresolved", "old_turn", 0).await;
+            let expired = pool.writer().get(&format!("document/{EXCHANGES}/unresolved")).await.unwrap();
+            assert_eq!(expired["status"], "unknown");
+            assert!(expired["error"].as_str().unwrap().contains("deadline exceeded"));
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn monitor_update_serializes_with_reconciliation_commit() {
+        with_temp_db("chat_monitor_race", Fixtures::Empty, |pool| async move {
+            ensure_store(&pool).await.unwrap();
+            let path = format!("document/{EXCHANGES}/race");
+            pool.writer().post(&format!("document/{EXCHANGES}"), &json!({"_key":"race","status":"acknowledged"})).await.unwrap();
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let (commit, committed) = tokio::sync::oneshot::channel();
+            let copy = pool.clone();
+            let recovery = tokio::spawn(async move {
+                transaction::run(&copy, vec![EXCHANGES.into()], move |client| async move {
+                    client.patch(&format!("document/{EXCHANGES}/race"), &json!({"status":"completed","projection":{"items":[{"text":"Recovered answer"}]}})).await?;
+                    ready.send(()).unwrap();
+                    committed.await.unwrap();
+                    Ok(())
+                }).await
+            });
+            started.await.unwrap();
+            let update = update_unresolved(&pool, "race", json!({"status":"unknown","error":"expired"}));
+            tokio::pin!(update);
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut update).await.is_err());
+            commit.send(()).unwrap();
+            recovery.await.unwrap().unwrap();
+            assert!(!update.await.unwrap(), "late update must observe the committed terminal state");
+            let saved = pool.writer().get(&path).await.unwrap();
+            assert_eq!(saved["status"], "completed");
+            assert_eq!(saved["projection"]["items"][0]["text"], "Recovered answer");
+            assert!(saved.get("error").is_none());
+        }).await;
+    }
+
     #[test]
     fn dispatch_conflicts_are_definitive_but_uncertain_commits_are_not() {
         assert!(matches!(

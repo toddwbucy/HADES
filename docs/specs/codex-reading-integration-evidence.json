@@ -53,7 +53,10 @@
     "concurrent opens share one worker per binding",
     "pending opens reserve capacity and cancellation releases it",
     "other bindings remain responsive during startup and reference retrieval",
-    "pre-dispatch revision race rejects without journaling or provider dispatch"
+    "pre-dispatch revision race rejects without journaling or provider dispatch",
+    "monitor stops after journal recovery even when the live turn changes",
+    "monitor expiry and delayed acknowledgements preserve terminal projections",
+    "monitor updates serialize with concurrent reconciliation commits"
   ],
   "live_proposal_schema": {
     "rejected_tool_calls": 0
@@ -62,7 +65,9 @@
     "idle-tab transcript gaps remain fetchable",
     "overlapping polls preserve older-history progress",
     "late history pages preserve newer gap cursors",
-    "late history pages cannot populate another binding"
+    "late history pages cannot populate another binding",
+    "older receipts clear matching saved submissions and permit another send",
+    "late receipts preserve replacement submissions and other bindings"
   ],
   "isolation": {
     "database": "with_temp_db on a private ArangoDB server",
@@ -74,14 +79,15 @@
   "isolated_matrix": {
     "strict-prerequisite": true,
     "graphable-unit": true,
+    "reading-chat-monitor": true,
     "database-contracts": true,
     "codebase": true,
     "cli-lifecycle": true
   },
   "service_free_checks": {
-    "rust_unit_passed": 793,
+    "rust_unit_passed": 795,
     "rust_unit_ignored": 1,
-    "javascript_passed": 14,
+    "javascript_passed": 17,
     "python_run": 81,
     "python_skipped": 1,
     "formatting": true,

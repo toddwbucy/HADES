@@ -300,6 +300,8 @@ def main():
             if args.contract:
                 if args.contract == "graphable_import":
                     command("graphable-unit", ["-p", "hades-core", "--lib", "graphable"])
+                if args.contract == "reading_chat":
+                    command("reading-chat-monitor", ["-p", "hades-core", "--lib", "reading::chat::tests::monitor_"])
                 command(args.contract, ["-p", "hades-core", "--test", args.contract])
                 return
             missing = dict(env)
@@ -307,6 +309,7 @@ def main():
             command("strict-prerequisite", ["-p", "hades-core", "--test", "arango_crud", "test_count_collection"],
                     missing, expect_missing_socket=True)
             command("graphable-unit", ["-p", "hades-core", "--lib", "graphable"])
+            command("reading-chat-monitor", ["-p", "hades-core", "--lib", "reading::chat::tests::monitor_"])
             targets = DATABASE_CONTRACTS
             command("database-contracts", ["-p", "hades-core", *[arg for target in targets for arg in ("--test", target)]])
             command("codebase", ["-p", "hades-cli", "--bin", "hades", "commands::codebase_"])

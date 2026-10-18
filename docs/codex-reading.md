@@ -98,6 +98,10 @@ messages. If an acknowledgement is lost, **Reconcile history** looks for the sav
 request's client ID in Codex history and records a uniquely matching completed
 turn. It never sends a model message.
 
+Once an exchange is reconciled to a terminal state, a delayed monitor or deadline
+cannot make it unresolved again. Loading an older transcript page also clears a
+saved browser submission when that page contains its matching request ID.
+
 **Recover saved submission** submits the browser's exact saved HADES request ID
 and payload. An existing journal entry is returned without another Codex turn;
 if the request never reached HADES, this explicit action can dispatch it once.
