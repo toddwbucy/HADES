@@ -29,8 +29,57 @@ async function mutate(action){if(!state)throw Error('Choose a reading session fi
 const key=requestKey(database,payload),raw=JSON.stringify({database,payload});
 localStorage.setItem(key,raw);
 try{const result=await api('mutate',payload);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);await refresh();status(`Saved revision ${result.revision}${result.created_ids.length?' · accepted graph objects created':''}`);return result}catch(e){await refresh();throw e}finally{restorePendingAction()}}
-async function sessions(){const data=await api('state');$('sessions').replaceChildren();for(const s of data.sessions){const b=button(s.title,()=>load(s.id));b.className='session';b.append(element('div',`${s.stage} · revision ${s.revision}`,'muted'));$('sessions').append(b)}await archives();restorePendingAction()}
-async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();void readingChat.selectReading();status(state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
+async function sessions(){
+ const [active,archived]=await Promise.all([api('state'),api('state?view=archived')]);
+ for(const [data,target,removed] of [[active,'sessions',false],[archived,'archived-sessions',true]]){
+  $(target).replaceChildren();
+  for(const item of data.sessions){
+   const card=element('section',undefined,'card');card.dataset.session=item.id;
+   if(removed){card.append(element('strong',item.title),button('Restore to desk',()=>setArchived(item.id,false)));}
+   else {const open=button(item.title,()=>load(item.id));open.className='session';open.append(element('div',`${item.stage} · revision ${item.revision}`,'muted'));card.append(open,button('Remove from desk',()=>setArchived(item.id,true)));}
+   $(target).append(card);
+  }
+  if(data.partial)$(target).append(element('p','Showing the most recent 100 readings. Add a document to find its saved reading.','muted'));
+ }
+ await archives();restorePendingAction();
+}
+function clearReading(){
+ generation++;state=null;source=null;pdf=null;selectedAnchor=null;reviewing=null;editingPassage=null;
+ passageViews={};viewScroll={};splitScroll={};returnBlock=null;sideBySide=false;figureMode=false;figureStart=null;
+ $('figure').classList.remove('active');$('figure-caption').hidden=true;$('reader').classList.remove('side-by-side','figure-mode');
+ for(const id of ['view-converted','view-pdf','view-split'])$(id).disabled=true;
+ for(const id of ['stages','warnings','highlights','proposals','knowledge','pins'])$(id).replaceChildren();
+ $('reader').replaceChildren(element('div','Add a document or restore a saved reading.','empty'));
+ $('title').textContent='Choose a document to begin';$('original').hidden=true;$('bound-panel').hidden=true;
+ for(const id of ['save-bound','advance','prev','next','figure','copy-context','export','outline'])$(id).disabled=true;
+ for(const b of document.querySelectorAll('[data-label]'))b.disabled=true;
+ $('selection-help').textContent='Choose a document to begin.';$('page-label').textContent='';
+ history.replaceState(null,'','/reading');void readingChat.selectReading();
+}
+function checkRemovalDrafts(id){
+ if(state?.id===id&&(editingPassage||boundaryDrafts.has(id)||$('chat-message').value.trim()))throw Error('Save or clear your unfinished edits and chat message before removing this reading.');
+}
+async function setArchived(id,archived){
+ if(archived)checkRemovalDrafts(id);
+ const current=(await api(`state?session=${encodeURIComponent(id)}`)).state;
+ if(!!current.archived!==archived){
+  const payload={session:id,request_id:uid(),expected_revision:current.revision,actor:actor(),action:{action:'archive',archived}};
+  const key=requestKey(database,payload),raw=JSON.stringify({database,payload});localStorage.setItem(key,raw);
+  try {await api('mutate',payload);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);}
+  finally {restorePendingAction();}
+ }
+ if(archived&&state?.id===id)clearReading();
+ await sessions();
+ if(!archived)await load(id);
+ status(archived?'Removed from desk. Restore it from Removed from desk; notes and history are saved.':'Restored the saved reading.');
+}
+async function openSource(sourceHash,title,separate=false){
+ const saved=await api(separate?'open':'open-or-resume',{id:'s_'+uid().slice(0,28),title,source_hash:sourceHash,actor:actor()});
+ if(saved.archived){await setArchived(saved.id,false);return;}
+ await sessions();await load(saved.id);
+ status(separate?'Started a separate reading.':'Opened the saved reading. Adding the same document resumes this reading.');
+}
+async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;for(const key of ['save-bound','advance','prev','next','figure','copy-context','export','outline'])$(key).disabled=false;$('bound-panel').hidden=false;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();void readingChat.selectReading();status(state.archived?'This reading was removed from the desk. Restore it from Removed from desk.':state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
 async function refresh(){if(!state)return;const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(state?.id!==id)return;state=next.state;state.connectivity=next.connectivity;renderState()}
 function acceptedLink(proposal,id){
  const edge=id.startsWith(state.graph+'_edges/');
@@ -257,7 +306,7 @@ $('wide').onclick=()=>run(async()=>{
 });
 document.body.classList.toggle('wide',localStorage.getItem('hades.reading.wide')==='true');updateViewControls();
 $('actor').value=localStorage.getItem('hades.reading.actor')||'human';$('actor').onchange=()=>localStorage.setItem('hades.reading.actor',actor());
-$('upload').onchange=()=>run(async()=>{const file=$('upload').files[0];if(!file)return;if(file.size>8*1024*1024)throw Error('This reading slice accepts originals up to 8 MiB. The file was not uploaded.');status('Archiving original bytes…');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));const archive=await api('upload',{filename:file.name,content_base64:btoa(binary)});localStorage.setItem('hades.reading.archived',archive.source_hash);status('Original archived. Docling is preparing the reading view…');const extracted=await api('extract',{source_hash:archive.source_hash});await archives();if(extracted.status!=='ready')throw Error(`Original retained. Extraction failed: ${extracted.error}`);const id='s_'+uid().slice(0,28);await api('open',{id,title:file.name,source_hash:archive.source_hash,actor:actor()});await sessions();await load(id);});
+$('upload').onchange=()=>run(async()=>{const file=$('upload').files[0];if(!file)return;if(file.size>8*1024*1024)throw Error('This reading slice accepts originals up to 8 MiB. The file was not uploaded.');status('Archiving original bytes…');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));const archive=await api('upload',{filename:file.name,content_base64:btoa(binary)});localStorage.setItem('hades.reading.archived',archive.source_hash);status('Original archived. Docling is preparing the reading view…');const extracted=await api('extract',{source_hash:archive.source_hash});await archives();if(extracted.status!=='ready')throw Error(`Original retained. Extraction failed: ${extracted.error}`);await openSource(archive.source_hash,file.name);$('upload').value='';});
 function download(name,body,type){const url=URL.createObjectURL(new Blob([body],{type}));const a=element('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 $('export').onclick=()=>run(async()=>{if(!state)throw Error('Choose a session');download(state.id+'-authorship.json',JSON.stringify(await api(`state?session=${state.id}&view=export`),null,2),'application/json')});
 $('outline').onclick=()=>run(async()=>{if(!state||state.stage!=='outline')throw Error('Complete Connect to export the outline.');const v=await api(`state?session=${state.id}`);download(state.id+'-outline.md',v.outline,'text/markdown')});
@@ -292,16 +341,17 @@ function restorePendingAction(){
   card.append(element('p',`Interrupted action in ${p.session}: ${p.action?.action||'save'} (${p.request_id})`,'muted'));
   card.append(button('Reconcile interrupted action',async()=>{
    if(localStorage.getItem(key)!==raw)throw Error('The pending action changed. Reload before reconciling it.');
+   if(p.action?.action==='archive'&&p.action.archived)checkRemovalDrafts(p.session);
    await api('mutate',p);if(localStorage.getItem(key)===raw)localStorage.removeItem(key);
-   restorePendingAction();await load(p.session);
+   restorePendingAction();if(p.action?.action==='archive'&&p.action.archived){if(state?.id===p.session)clearReading();await sessions();status('Removed from desk. Notes and history are saved.');}else{await sessions();await load(p.session);}
   }));panel.append(card);
  }
 }
 window.addEventListener('storage',e=>{if(e.key===null||e.key.startsWith('hades.reading.pending'))restorePendingAction()});
 
-async function start(){const config=await api('config');database=config.database;$('database').textContent=database||'Reading is not configured';if(!config.enabled)throw Error('Start the viewer with a reading daemon to enable this workflow.');await sessions();const session=new URLSearchParams(location.search).get('session');if(session)await load(session);else status('Add a document or resume a reading.');restorePendingAction();void discoverCapabilities();}
+async function start(){const config=await api('config');database=config.database;$('database').textContent=database||'Reading is not configured';if(!config.enabled)throw Error('Start the viewer with a reading daemon to enable this workflow.');await sessions();const session=new URLSearchParams(location.search).get('session');if(session)await load(session);else {clearReading();status('Add a document or resume a reading.');}restorePendingAction();void discoverCapabilities();}
 run(start);
-async function pollReading(){if(!state||busy||document.hidden)return;try{const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(!busy&&state?.id===id&&next.state.revision>state.revision){state=next.state;state.connectivity=next.connectivity;renderState();status('Shared reading updated. New proposals and pins are ready.')}}catch(e){if(!busy)status(`Connection interrupted; polling will retry. ${e.message}`,true)}}
+async function pollReading(){if(!state||busy||document.hidden)return;try{const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(!busy&&state?.id===id&&next.state.revision>state.revision){const archiveChanged=!!state.archived!==!!next.state.archived;state=next.state;state.connectivity=next.connectivity;renderState();if(archiveChanged)await sessions();if(state?.id!==id)return;status(state.archived?'This reading was removed from the desk. Restore it from Removed from desk.':'Shared reading updated. New proposals and pins are ready.')}}catch(e){if(!busy)status(`Connection interrupted; polling will retry. ${e.message}`,true)}}
 setInterval(pollReading,3000);
 
 function anchorRoot(a){
@@ -327,4 +377,16 @@ let figureStart=null;
 $('reader').addEventListener('pointerdown',e=>{if(!figureMode)return;const sheet=e.target.closest('.pdf-page');if(!sheet)return;const rect=sheet.getBoundingClientRect();figureStart={sheet,x:Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width)),y:Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))};e.preventDefault();});
 $('reader').addEventListener('pointerup',e=>{if(!figureStart)return;const start=figureStart;figureStart=null;const rect=start.sheet.getBoundingClientRect();const x=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width)),y=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height));const box=[Math.min(x,start.x),Math.min(y,start.y),Math.abs(x-start.x),Math.abs(y-start.y)];if(box[2]<.01||box[3]<.01)return;selectedAnchor={source_hash:state.source_hash,figure_box:box,representation:'pdf-figure-v1',page,block:null,exact:$('figure-caption').value,prefix:'',suffix:''};status('Figure area selected. Choose a classification. A caption can be preserved by selecting it separately.');});
 
-async function archives(){const data=await api('state?view=sources');$('sources').replaceChildren();for(const source of data.sources){const c=element('section',undefined,'card');c.append(element('strong',source.filename),element('p',source.status,'muted'));if(source.error)c.append(element('p',source.error,'error'));c.append(button(source.status==='ready'?'Start another reading':'Retry preparation',async()=>{if(source.status!=='ready'){status('Preparing the archived source…');const result=await api('extract',{source_hash:source.source_hash});await archives();if(result.status!=='ready')throw Error(result.error||'Preparation failed')}const id='s_'+uid().slice(0,28);await api('open',{id,title:source.filename,source_hash:source.source_hash,actor:actor()});await sessions();await load(id)}));$('sources').append(c)}}
+async function archives(){
+ const data=await api('state?view=sources');$('sources').replaceChildren();
+ for(const saved of data.sources){
+  const card=element('section',undefined,'card');card.append(element('strong',saved.filename),element('p',saved.status,'muted'));
+  if(saved.error)card.append(element('p',saved.error,'error'));
+  card.append(button(saved.status==='ready'?'Open saved reading':'Retry preparation',async()=>{
+   if(saved.status!=='ready'){status('Preparing the archived source…');const result=await api('extract',{source_hash:saved.source_hash});await archives();if(result.status!=='ready')throw Error(result.error||'Preparation failed');}
+   await openSource(saved.source_hash,saved.filename);
+  }));
+  if(saved.status==='ready')card.append(button('Start a separate reading',()=>openSource(saved.source_hash,saved.filename,true)));
+  $('sources').append(card);
+ }
+}

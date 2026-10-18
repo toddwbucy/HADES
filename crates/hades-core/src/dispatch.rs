@@ -752,6 +752,8 @@ pub enum DaemonCommand {
     ReadingCapabilities {},
     #[serde(rename = "reading.open")]
     ReadingOpen(crate::reading::OpenRequest),
+    #[serde(rename = "reading.open_or_resume")]
+    ReadingOpenOrResume(crate::reading::OpenRequest),
     #[serde(rename = "reading.upload")]
     ReadingUpload(crate::reading::SourceRequest),
     #[serde(rename = "reading.extract")]
@@ -1053,6 +1055,7 @@ impl DaemonCommand {
             Self::ReadingChat(_) => AccessTier::Admin,
             Self::ReadingPropose(_) => AccessTier::Provisioning,
             Self::ReadingOpen(_)
+            | Self::ReadingOpenOrResume(_)
             | Self::ReadingUpload(_)
             | Self::ReadingExtract { .. }
             | Self::ReadingMutate(_) => AccessTier::Admin,
@@ -1211,6 +1214,9 @@ pub async fn dispatch(
             .await
             .map_err(Into::into),
         DaemonCommand::ReadingOpen(p) => crate::reading::open(pool, p).await.map_err(Into::into),
+        DaemonCommand::ReadingOpenOrResume(p) => crate::reading::open_or_resume(pool, p)
+            .await
+            .map_err(Into::into),
         DaemonCommand::ReadingUpload(p) => {
             crate::reading::upload(pool, p).await.map_err(Into::into)
         }

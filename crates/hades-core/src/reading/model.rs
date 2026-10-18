@@ -74,6 +74,8 @@ pub struct Session {
     pub graph_collections: Vec<String>,
     pub revision: u64,
     pub stage: String,
+    #[serde(default)]
+    pub archived: bool,
     pub bound: Bound,
     pub highlights: BTreeMap<String, Highlight>,
     pub proposals: BTreeMap<String, Proposal>,
@@ -109,6 +111,9 @@ pub struct Pin {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    Archive {
+        archived: bool,
+    },
     CorrectPassage {
         block: String,
         passage_revision: u64,
@@ -282,6 +287,7 @@ impl Session {
             graph_collections: vec![],
             revision: 0,
             stage: "bound".into(),
+            archived: false,
             bound: Bound::default(),
             highlights: BTreeMap::new(),
             proposals: BTreeMap::new(),
@@ -312,6 +318,7 @@ impl Session {
         }
         let mut writes = vec![];
         match &p.action {
+            Action::Archive { archived } => self.archived = *archived,
             Action::CorrectPassage {
                 block,
                 passage_revision,

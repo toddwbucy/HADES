@@ -146,6 +146,96 @@ async function main() {
   }
   assert.deepEqual(errors, []);
   await api('chat', {action:'release', binding:binding._key});
+  if (!real) {
+    const original = await state(), savedBindings = (await api('chat', {action:'bindings',session:'browser_fixture'})).bindings;
+    const active = async () => (await api('state')).sessions;
+    const removed = async () => (await api('state?view=archived')).sessions;
+    // The source is already prepared; only capability discovery is stubbed.
+    await page.route('**/api/reading/capabilities', route => route.fulfill({json:{extensions:['.txt']}}));
+    await page.reload();
+    await page.waitForFunction(() => !document.querySelector('#upload').disabled);
+    for (const name of ['renamed-fixture.txt', 'another-name.txt']) {
+      await page.locator('#upload').setInputFiles({name, mimeType:'text/plain', buffer:Buffer.from('The reader checks a claim against the selected passage.')});
+      await until(async () => (await page.locator('#status').textContent()).includes('Opened the saved reading'));
+      assert.equal((await active()).length, 1);
+      assert.equal(new URL(page.url()).searchParams.get('session'), 'browser_fixture');
+      assert.equal((await state()).title, original.title);
+    }
+    await page.getByText('Archived sources and recovery', {exact:true}).click();
+    await page.getByRole('button', {name:'Start a separate reading', exact:true}).click();
+    const separate = await until(async () => (await active()).find(s => s.id !== 'browser_fixture'));
+    await until(async () => new URL(page.url()).searchParams.get('session') === separate.id);
+    await page.locator(`#sessions [data-session="${separate.id}"]`).getByRole('button', {name:'Remove from desk', exact:true}).click();
+    await until(async () => (await removed()).some(s => s.id === separate.id));
+    await page.waitForFunction(() => !location.search && document.querySelector('#chat-controls').hidden);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#sessions .session'));
+    assert.equal((await active()).length, 1);
+    await page.locator('#sessions .session').click();
+    await until(async () => new URL(page.url()).searchParams.get('session') === 'browser_fixture');
+    // Do not discard unsent chat text while clearing the selected reading.
+    await page.locator('[data-tab="chat"]').click();
+    await page.locator('#chat-message').fill('An unfinished question');
+    const removeOriginal = () => page.locator('#sessions [data-session="browser_fixture"]').getByRole('button', {name:'Remove from desk', exact:true}).click();
+    await removeOriginal();
+    await until(async () => (await page.locator('#status').textContent()).includes('unfinished edits'));
+    assert.equal((await active()).length, 1);
+    await page.locator('#chat-message').fill('');
+    // Lose the acknowledgement after committing removal, then reconcile exactly.
+    let lost = false;
+    await page.route('**/api/reading/mutate', async route => {
+      if (!lost && route.request().postDataJSON().action.action === 'archive') {
+        lost = true; await route.fetch(); await route.abort('failed');
+      } else await route.continue();
+    });
+    await removeOriginal();
+    await until(async () => (await state()).archived);
+    await page.locator('#chat-message').fill('Keep this draft during retry');
+    await page.getByRole('button', {name:'Reconcile interrupted action', exact:true}).click();
+    await until(async () => (await page.locator('#status').textContent()).includes('unfinished edits'));
+    assert.equal(await page.locator('#chat-message').inputValue(), 'Keep this draft during retry');
+    await page.locator('#chat-message').fill('');
+    await page.getByRole('button', {name:'Reconcile interrupted action', exact:true}).click();
+    await page.waitForFunction(() => !location.search && document.querySelector('#chat-controls').hidden);
+    assert.equal((await active()).length, 0);
+    assert.equal((await state()).revision, original.revision + 1);
+    await page.reload();
+    await page.locator('#archived-readings summary').click();
+    const restore = () => page.locator('#archived-sessions [data-session="browser_fixture"]').getByRole('button', {name:'Restore to desk', exact:true}).click();
+    await restore();
+    await until(async () => !(await state()).archived);
+    await page.waitForFunction(() => location.search.includes('browser_fixture') && document.querySelector('[data-anchor-text]'));
+    const restored = await state();
+    for (const field of ['graph','bound','highlights','proposals','corrections']) assert.deepEqual(restored[field], original[field]);
+    assert.deepEqual((await api('chat', {action:'bindings',session:'browser_fixture'})).bindings.map(b => b._key).sort(), savedBindings.map(b => b._key).sort());
+    assert.equal((await api('state?session=browser_fixture&view=export')).chain_valid, true);
+    // Restore the saved transcript and measure real CSS, including the chat override.
+    await page.locator('[data-tab="chat"]').click();
+    await page.locator('#chat-bindings').selectOption(binding._key);
+    await until(async () => (await page.locator('#chat-messages').textContent()).length > 0);
+    const widths = () => page.evaluate(() => ['.library','.document','.review'].map(s => document.querySelector(s).getBoundingClientRect().width));
+    const layoutChecks = [];
+    for (const width of [1280,1800,2560]) {
+      await page.setViewportSize({width,height:1200});
+      if (await page.locator('body').evaluate(el => el.classList.contains('wide'))) await page.locator('#wide').click();
+      const compact = await widths();
+      await page.locator('#wide').click();
+      const wide = await widths();
+      assert(wide[0] > compact[0], `left panel grows at ${width}`);
+      assert(wide[2] > compact[2], `chat panel grows at ${width}`);
+      assert(wide[1] >= 400, `document remains usable at ${width}`);
+      layoutChecks.push({viewport:width,compact,wide});
+    }
+    await page.setViewportSize({width:1000,height:1200});
+    assert.equal((await page.locator('main').evaluate(el => getComputedStyle(el).gridTemplateColumns)).split(' ').length, 2);
+    await page.setViewportSize({width:600,height:1200});
+    assert.equal(await page.locator('main').evaluate(el => getComputedStyle(el).display), 'block');
+    await page.setViewportSize({width:1800,height:1200});
+    await page.locator('#archived-readings').evaluate(el => {el.open = true;});
+    await page.screenshot({path:path.join(root, 'reading-desk-wide.png'), fullPage:true});
+    fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','remove and reload','unsent message retained','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
+    assert.deepEqual(errors, []);
+  }
   fs.writeFileSync(path.join(root, 'chat-evidence.json'), JSON.stringify({real_codex:real, runtime:'0.163.0', passed:true, checks:['browser passage selection','frozen MCP exchange context','restricted tools','pending proposal','human acceptance','reload without replay','release and resume', ...(!real ? ['question response','interrupt','daemon crash and ownership recovery','history reference selection','accepted knowledge snapshot'] : ['model MCP retrieval','model MCP proposal'])]}, null, 2));
   console.log('Reading chat browser/MCP contract passed:', root);
 }

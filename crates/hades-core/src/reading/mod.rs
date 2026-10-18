@@ -213,6 +213,29 @@ pub async fn extract(
 }
 
 pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerError> {
+    open_internal(pool, p, false).await
+}
+
+/// Default desk entry point: reuse a saved reading, including pre-existing IDs.
+/// A deterministic new ID makes concurrent additions and lost-response retries
+/// converge without creating extra reading graphs. Full hashes still validate identity.
+pub async fn open_or_resume(pool: &ArangoPool, mut p: OpenRequest) -> Result<Value, HandlerError> {
+    hash_valid(&p.source_hash)?;
+    Session::new(&p).map_err(invalid)?;
+    ensure(pool).await?;
+    let existing = rows(pool.writer(), "FOR s IN hades_reading_sessions FILTER s.state.source_hash == @hash SORT s.state.archived == true ASC, s.opened_at ASC, s._key ASC LIMIT 1 RETURN s.state", json!({"hash":p.source_hash})).await.map_err(db_error)?;
+    if let Some(state) = existing.first() {
+        return Ok(state.clone());
+    }
+    p.id = format!("s_{}", &p.source_hash[..30]);
+    open_internal(pool, p, true).await
+}
+
+async fn open_internal(
+    pool: &ArangoPool,
+    p: OpenRequest,
+    reuse: bool,
+) -> Result<Value, HandlerError> {
     hash_valid(&p.source_hash)?;
     let mut s = Session::new(&p).map_err(invalid)?;
     if s.graph.contains('-') {
@@ -235,7 +258,7 @@ pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerErr
         .map_err(db_error)?
     {
         if existing["state"]["source_hash"] != p.source_hash
-            || existing["state"]["title"] != p.title
+            || (!reuse && existing["state"]["title"] != p.title)
         {
             return Err(invalid(
                 "session identity already belongs to different content",
@@ -309,7 +332,7 @@ pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerErr
     }
     transaction::run(pool,vec![SESSIONS.into(),EVENTS.into()],move|client|async move{
         if let Some(existing)=optional(&client,&format!("document/{SESSIONS}/{}",s.id)).await?{
-            if existing["state"]["source_hash"]!=p.source_hash || existing["state"]["title"]!=p.title{return Err(conflict("session identity already belongs to different content"))}
+            if existing["state"]["source_hash"]!=p.source_hash || (!reuse && existing["state"]["title"]!=p.title){return Err(conflict("session identity already belongs to different content"))}
             return Ok(existing["state"].clone());
         }
         client.post(&format!("document/{SESSIONS}"),&json!({"_key":s.id,"state":s,"opened_by":p.actor,"opened_at":chrono::Utc::now().to_rfc3339(),"format":FORMAT})).await?;
@@ -430,7 +453,7 @@ pub async fn read(pool: &ArangoPool, p: ReadRequest) -> Result<Value, HandlerErr
         };
     }
     let Some(id) = p.session else {
-        let result=rows(pool.writer(),"FOR s IN hades_reading_sessions SORT s.opened_at DESC LIMIT 101 RETURN {id:s._key,title:s.state.title,source_hash:s.state.source_hash,stage:s.state.stage,revision:s.state.revision}",json!({})).await;
+        let result=rows(pool.writer(),"FOR s IN hades_reading_sessions FILTER (s.state.archived == true) == @archived SORT s.opened_at DESC, s._key ASC LIMIT 101 RETURN {id:s._key,title:s.state.title,source_hash:s.state.source_hash,stage:s.state.stage,revision:s.state.revision,archived:s.state.archived == true}",json!({"archived":p.view == "archived"})).await;
         return match result {
             Ok(v) => Ok(
                 json!({"sessions":v.iter().take(100).collect::<Vec<_>>(),"partial":v.len()>100,"database":pool.database()}),
