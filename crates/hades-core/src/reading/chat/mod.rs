@@ -154,6 +154,7 @@ pub enum Request {
 }
 struct Owned {
     worker: Arc<Worker>,
+    approvals: Mutex<()>,
     thread: String,
     _capacity: SemaphorePermit<'static>,
 }
@@ -417,26 +418,24 @@ pub async fn handle(
             let _guard = binding_lock(&key).await;
             binding(pool, &id).await?;
             let owned = owner(&key).await;
-            let mut live = if let Some(owned) = &owned {
-                Some(owned.worker.live.write().await)
-            } else {
-                None
+            let persist = async {
+                pool.writer()
+                    .patch(
+                        &format!("document/{BINDINGS}/{id}"),
+                        &json!({"allow_reads":allowed}),
+                    )
+                    .await
+                    .map_err(db_error)
             };
-            // Serialize decisions with the provider reader. Revoke in memory
-            // before persistence; grant only after a confirmed durable write.
-            if let Some(live) = live.as_mut() {
-                live.allow_reads = false;
-            }
-            pool.writer()
-                .patch(
-                    &format!("document/{BINDINGS}/{id}"),
-                    &json!({"allow_reads":allowed}),
-                )
-                .await
-                .map_err(db_error)?;
-            if let (Some(owned), Some(live)) = (&owned, live.as_mut()) {
-                live.allow_reads = allowed;
-                owned.worker.approve_pending_reads(live).await?;
+            if let Some(owned) = &owned {
+                // Serialize manual decisions with transitions without placing
+                // approvals behind a potentially slow open/send lifecycle lock.
+                let _approval_guard = owned.approvals.lock().await;
+                let mut live =
+                    persist_read_permission(&owned.worker.live, allowed, persist).await?;
+                owned.worker.approve_pending_reads(&mut live).await?;
+            } else {
+                persist.await?;
             }
             Ok(json!({"allow_reads":allowed}))
         }
@@ -452,6 +451,7 @@ pub async fn handle(
             if generation != owned.worker.generation {
                 return Err(failure("This approval belongs to an earlier connection"));
             }
+            let _approval_guard = owned.approvals.lock().await;
             let mut live = owned.worker.live.write().await;
             let prompt = live
                 .approvals
@@ -582,11 +582,26 @@ async fn open(
         key,
         Arc::new(Owned {
             worker: w,
+            approvals: Mutex::new(()),
             thread,
             _capacity: capacity,
         }),
     );
     Ok(record)
+}
+
+/// Keep the provider event stream and polling responsive during persistence.
+/// Callers serialize permission transitions and manual approvals separately.
+async fn persist_read_permission<'a>(
+    live: &'a tokio::sync::RwLock<runtime::Live>,
+    allowed: bool,
+    persist: impl std::future::Future<Output = Result<Value, HandlerError>>,
+) -> Result<tokio::sync::RwLockWriteGuard<'a, runtime::Live>, HandlerError> {
+    live.write().await.allow_reads = false;
+    persist.await?;
+    let mut live = live.write().await;
+    live.allow_reads = allowed;
+    Ok(live)
 }
 
 #[derive(Clone, Serialize)]
@@ -1024,6 +1039,44 @@ mod tests {
             )),
             HandlerError::Query { .. }
         ));
+    }
+    #[tokio::test]
+    async fn permission_persistence_keeps_provider_state_responsive_and_fails_closed() {
+        for succeed in [false, true] {
+            let live = Arc::new(tokio::sync::RwLock::new(runtime::Live::default()));
+            live.write().await.allow_reads = true;
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (finish, finished) = tokio::sync::oneshot::channel();
+            let pending_live = live.clone();
+            let task = tokio::spawn(async move {
+                persist_read_permission(&pending_live, true, async move {
+                    started.send(()).unwrap();
+                    finished.await.unwrap();
+                    if succeed {
+                        Ok(json!({}))
+                    } else {
+                        Err(failure("write failed"))
+                    }
+                })
+                .await
+                .is_ok()
+            });
+            ready.await.unwrap();
+            // Provider events, polling and monitoring can acquire state while
+            // the database write is deliberately held at the barrier.
+            {
+                let mut state = live
+                    .try_write()
+                    .expect("persistence held the live state lock");
+                assert!(!state.allow_reads, "grant must wait for persistence");
+                state.status = "completed".into();
+            }
+            finish.send(()).unwrap();
+            assert_eq!(task.await.unwrap(), succeed);
+            let state = live.read().await;
+            assert_eq!(state.allow_reads, succeed);
+            assert_eq!(state.status, "completed");
+        }
     }
     #[test]
     fn permissions_cannot_bypass_reading_review() {

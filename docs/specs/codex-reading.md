@@ -241,7 +241,9 @@ it does not persist grants in Codex or broaden the runtime's tool inventory.
 It matches the current thread/turn, server, empty approval schema, and a unique
 in-progress call with matching arguments. Ambiguous calls and proposals never
 qualify. Permission changes serialize with binding lifecycle operations and
-live approval decisions; grants become active only after successful persistence.
+manual approval decisions; grants become active only after successful persistence.
+Automatic read approval stays disabled during persistence. Provider events,
+polling, and response monitoring remain responsive while the database write waits.
 
 Claude's ownership, history, resume, approval, cancellation, and authentication
 constraints still require independent verification. This implementation does not

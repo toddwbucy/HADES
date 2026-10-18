@@ -77,7 +77,10 @@ async function main() {
   await page.locator('#chat-send').click();
   await until(async () => {
     const allow = page.locator('#chat-approvals [data-reading-tool]').first();
-    if (real && await allow.count()) await allow.click();
+    if (real && await allow.count()) {
+      assert.equal(await allow.getAttribute('data-reading-tool'), 'reading_propose', 'remembered reads must not require approval');
+      await allow.click(); // Proposal approval remains an explicit human action.
+    }
     const current = await chatState();
     if (current.exchanges[0]?.status === 'failed') throw Error(JSON.stringify(current.live));
     return current.exchanges[0]?.status === 'completed';
