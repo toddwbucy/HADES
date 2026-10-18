@@ -233,8 +233,17 @@ The production implementation commits directly to `dispatching` before writing t
 Codex; a separate `prepared` queue is unnecessary for its single dispatch owner.
 Browser updates poll a bounded live projection. Only the verified runtime version
 is enabled, including for history browsing. Its supported approval policy is
-`on-request`; the runtime rejects `untrusted`. Reading-tool approvals allow only
-the pending allowlisted call, without persistent permission grants.
+`on-request`; the runtime rejects `untrusted`. **Allow once** authorizes only the
+pending allowlisted call. An explicit **Always allow reads in this conversation**
+choice persists `allow_reads` on the HADES binding and is revocable while connected
+or disconnected. The broker answers verified read-tool prompts on that worker;
+it does not persist grants in Codex or broaden the runtime's tool inventory.
+It matches the current thread/turn, server, empty approval schema, and a unique
+in-progress call with matching arguments. Ambiguous calls and proposals never
+qualify. Permission changes serialize with binding lifecycle operations and
+manual approval decisions; grants become active only after successful persistence.
+Automatic read approval stays disabled during persistence. Provider events,
+polling, and response monitoring remain responsive while the database write waits.
 
 Claude's ownership, history, resume, approval, cancellation, and authentication
 constraints still require independent verification. This implementation does not

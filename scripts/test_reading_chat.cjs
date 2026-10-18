@@ -70,12 +70,17 @@ async function main() {
   }, 60000);
   const chatState = () => api('chat', {action:'state', binding:binding._key});
   await until(async () => !(await page.locator('#chat-send').isDisabled()));
+  await page.getByRole('button', {name:'Always allow reads in this conversation', exact:true}).click();
+  await until(async () => (await chatState()).binding.allow_reads === true);
   await page.locator('#chat-passages').selectOption(highlight.id);
   await page.locator('#chat-message').fill(real ? 'Retrieve the frozen passage and propose a brief sourced note for my review (proposal ID codex_proposal, actor model:codex). Use the reading MCP tools and leave acceptance to me.' : 'Discuss this selected passage.');
   await page.locator('#chat-send').click();
   await until(async () => {
     const allow = page.locator('#chat-approvals [data-reading-tool]').first();
-    if (real && await allow.count()) await allow.click();
+    if (real && await allow.count()) {
+      assert.equal(await allow.getAttribute('data-reading-tool'), 'reading_propose', 'remembered reads must not require approval');
+      await allow.click(); // Proposal approval remains an explicit human action.
+    }
     const current = await chatState();
     if (current.exchanges[0]?.status === 'failed') throw Error(JSON.stringify(current.live));
     return current.exchanges[0]?.status === 'completed';
@@ -96,6 +101,7 @@ async function main() {
   assert.equal(proposal.status, 'pending'); assert.equal(proposal.created_ids.length, 0);
   await page.reload(); await page.locator('[data-tab="chat"]').click();
   await page.locator('#chat-messages').getByText(exchange.message, {exact:true}).waitFor();
+  await page.getByRole('button', {name:'Revoke remembered read permission', exact:true}).waitFor();
   assert.equal((await chatState()).exchanges.length, 1, 'reload cannot replay a message');
   await page.locator('#chat-release').click();
   await until(async () => (await chatState()).live.status === 'disconnected');
@@ -117,6 +123,18 @@ async function main() {
     await until(async () => {assert.equal(replacement.exitCode, null); return (await chatState()).live.status === 'disconnected';});
     await api('chat', {action:'open',id:binding._key,session:binding.session,thread_id:binding.thread_id});
     assert.equal((await chatState()).binding.thread_id, binding.thread_id);
+    assert.equal((await chatState()).binding.allow_reads, true);
+  }
+  await page.getByRole('button', {name:'Revoke remembered read permission', exact:true}).click();
+  await until(async () => (await chatState()).binding.allow_reads === false);
+  if (!real) {
+    const count = (await chatState()).exchanges.length;
+    await page.locator('#chat-message').fill('/read-tool'); await page.locator('#chat-send').click();
+    await page.getByRole('button', {name:'Allow db_get once', exact:true}).waitFor();
+    await page.getByRole('button', {name:'Always allow reads in this conversation', exact:true}).click();
+    await until(async () => (await chatState()).exchanges[count]?.status === 'completed');
+    await page.locator('#chat-message').fill('/read-tool'); await page.locator('#chat-send').click();
+    await until(async () => (await chatState()).exchanges[count + 1]?.status === 'completed');
   }
   await page.locator('[data-tab="proposals"]').click();
   await page.getByRole('button', {name:'Review exact revision'}).first().click();
@@ -124,6 +142,7 @@ async function main() {
   await until(async () => (await state()).proposals.codex_proposal.status === 'accepted');
   assert((await state()).proposals.codex_proposal.created_ids.length > 0);
   await page.locator('[data-tab="chat"]').click();
+  await until(async () => (await page.locator('#chat-status').textContent()) === 'Connected to Codex.');
   await page.locator('#chat-messages').evaluate(el => {el.scrollTop = el.scrollHeight;});
   await page.locator('.document').evaluate(el => {el.scrollTop = el.scrollHeight;});
   await page.screenshot({path:path.join(root, 'codex-reading.png'), fullPage:true});
@@ -132,6 +151,8 @@ async function main() {
     await page.getByRole('button', {name:'Include in next message', exact:true}).first().click();
     await page.locator('#chat-new').click();
     const next = await until(async () => (await api('chat', {action:'bindings',session:'browser_fixture'})).bindings.find(b => b.thread_id && b._key !== binding._key));
+    assert.notEqual(next.allow_reads, true);
+    await page.getByRole('button', {name:'Always allow reads in this conversation', exact:true}).waitFor();
     await page.locator('#chat-knowledge').selectOption('codex_proposal');
     await page.locator('#chat-message').fill('Compare the earlier message and the selected accepted note.');
     await page.locator('#chat-send').click();

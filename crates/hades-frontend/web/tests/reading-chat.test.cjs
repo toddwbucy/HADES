@@ -66,6 +66,26 @@ function historyPage(end) {
     next_before:start > 1 ? exchangeKey(start) : null, pending:{unresolved:false, active:false}, live:{status:'disconnected', items:[], approvals:[]}};
 }
 const beforeNumber = before => Number(before.split('_')[1]) - 1;
+test('remembered read permission is explicit, revocable and reflects saved state', async () => {
+  const calls = [], {chat} = transcriptFixture(async value => calls.push(value));
+  delete chat.renderApprovals;
+  chat.act = fn => fn(); chat.poll = async () => {};
+  const live = {generation:'g1', approvals:[]};
+  chat.renderApprovals(live, false);
+  const root = chat.$('chat-approvals');
+  let button = root.children[0].children.find(n => n.tag === 'button');
+  assert.equal(button.textContent, 'Always allow reads in this conversation');
+  assert.equal(calls.length, 0, 'rendering does not grant permission');
+  await button.onclick();
+  assert.equal(JSON.stringify(calls[0]), JSON.stringify({action:'read_permission',binding:'binding',allowed:true}));
+  chat.renderApprovals(live, true);
+  button = root.children[0].children.find(n => n.tag === 'button');
+  assert.equal(button.textContent, 'Revoke remembered read permission');
+  await button.onclick(); assert.equal(calls[1].allowed, false);
+  chat.epoch++; chat.binding = {_key:'other'};
+  await button.onclick(); assert.equal(calls.length, 2, 'stale control cannot change another conversation');
+});
+
 async function loadAll(chat, count) {
   for (let i = 0; chat.olderCursor && i < 12; i++) await chat.loadOlder();
   assert.equal(chat.olderCursor, null);
