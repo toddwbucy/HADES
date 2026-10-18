@@ -114,6 +114,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Keep authorship exports at one session revision during concurrent writes, and
+  load saved readings and retry controls even when the extractor is unavailable.
+
 - Save boundary drafts before entering Read, keep unsaved fields through failed
   actions and polling, and explain the specific requirement blocking a stage.
 

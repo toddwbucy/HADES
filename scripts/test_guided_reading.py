@@ -73,7 +73,7 @@ def main():
         processes.append(child)
         return child
     try:
-        spawn('extractor',[sys.executable,'-m','extraction.server'],repo/'services')
+        extractor = spawn('extractor',[sys.executable,'-m','extraction.server'],repo/'services')
         deadline=time.monotonic()+30
         while not (root/'extractor.sock').exists():
             if time.monotonic()>deadline: raise RuntimeError('extractor did not bind')
@@ -102,6 +102,11 @@ def main():
         browser_env=dict(env,PLAYWRIGHT_MODULE=str(a.playwright),CHROMIUM_PATH=str(a.chromium))
         subprocess.run([str(a.node),str(repo/'scripts/test_guided_reading.cjs'),str(root),url,
                         f'http://127.0.0.1:{mcp_port}/mcp'],env=browser_env,check=True,timeout=600)
+        # Saved sessions must remain usable with the real extractor stopped.
+        extractor.terminate()
+        extractor.wait(timeout=20)
+        subprocess.run([str(a.node),str(repo/'scripts/test_reading_offline.cjs'),str(root),url],
+                       env=browser_env,check=True,timeout=120)
     finally:
         for child in reversed(processes):
             child.terminate()

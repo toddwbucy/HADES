@@ -464,7 +464,12 @@ pub async fn read(pool: &ArangoPool, p: ReadRequest) -> Result<Value, HandlerErr
         return Ok(packet);
     }
     if p.view == "export" {
-        let events=rows(pool.writer(),"FOR e IN hades_reading_events FILTER e.session == @session SORT e.sequence LIMIT 2001 RETURN e",json!({"session":id})).await.map_err(db_error)?;
+        // Events are append-only and commit atomically with the session projection.
+        // Keep this export at the sampled revision even if a writer commits next.
+        let revision = state["revision"]
+            .as_u64()
+            .ok_or_else(|| invalid("session revision missing"))?;
+        let events=rows(pool.writer(),"FOR e IN hades_reading_events FILTER e.session == @session AND e.sequence <= @revision SORT e.sequence LIMIT 2001 RETURN e",json!({"session":id,"revision":revision})).await.map_err(db_error)?;
         let mut previous = String::new();
         let mut chain_valid = events.len() as u64 == state["revision"].as_u64().unwrap_or(u64::MAX);
         for (index, event) in events.iter().enumerate() {

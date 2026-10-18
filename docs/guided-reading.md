@@ -159,8 +159,9 @@ external collections are declared read-only within acceptance transactions. Sour
 re-ingestion owns none of these authored collections.
 
 The `chain_valid` export field checks sequence, hashes, and the stored chain head.
-It detects changed records relative to that head; administrators can rewrite both
-history and the head. Attribution names are declared participant labels, not
+Exports include events only through the sampled session revision, so concurrent
+appends cannot invalidate a valid history. It detects changed records relative to
+that head; administrators can rewrite both history and the head. Attribution names are declared participant labels, not
 cryptographic identities or distinct bearer-token principals.
 
 Archiving, preparing, mapping accepted knowledge, embedding, and semantic readiness
@@ -182,6 +183,10 @@ hades --db reading_trial reading read --view sources
 hades --db reading_trial reading extract SOURCE_SHA256
 hades --db reading_trial reading apply /private/exact-saved-mutation.json
 ```
+
+Saved readings, review, interrupted-action reconciliation, and export remain
+available when the extractor is offline. New uploads stay disabled until
+capability discovery succeeds. Refresh to reconnect after restoring the extractor.
 
 An extraction request can take up to ten minutes. A lost response does not justify
 changing source identity. Inspect the archived source and retry preparation; a

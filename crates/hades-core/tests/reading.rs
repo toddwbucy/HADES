@@ -78,6 +78,23 @@ async fn acceptance_is_atomic_revisioned_retry_safe_and_retains_attribution() {
     // Page-edge figure coordinates must survive the database JSON number round trip.
     reading::mutate(&pool,apply(9,Action::Highlight{id:"whole_page".into(),label:"question".into(),anchor:Anchor{passage_revision:0,correction_session:None,source_hash:uploaded["source_hash"].as_str().unwrap().into(),figure_box:Some([0.0,0.0,1.0,1.0]),representation:"pdf-figure-v1".into(),page:Some(1),block:None,exact:String::new(),prefix:String::new(),suffix:String::new()}}),false).await.unwrap();
     let export=reading::read(&pool,ReadRequest{session:Some("fixture".into()),view:"export".into(),source_hash:None}).await.unwrap();assert_eq!(export["chain_valid"],true);
+    // Deterministically simulate an export that sampled revision N just before
+    // another writer committed N+1: expose the sampled projection while the
+    // appended event is already visible. Only this isolated fixture rewinds it.
+    let session_path="document/hades_reading_sessions/fixture";
+    let sampled=pool.writer().get(session_path).await.unwrap();
+    reading::mutate(&pool,apply(10,Action::Focus{references:vec!["h1".into()]}),false).await.unwrap();
+    let latest=pool.writer().get(session_path).await.unwrap();
+    pool.writer().put(session_path,&sampled).await.unwrap();
+    let snapshot=reading::read(&pool,ReadRequest{session:Some("fixture".into()),view:"export".into(),source_hash:None}).await.unwrap();
+    assert_eq!(snapshot["session"]["revision"],10);
+    assert_eq!(snapshot["events"].as_array().unwrap().len(),10);
+    assert_eq!(snapshot["chain_valid"],true);
+    pool.writer().put(session_path,&latest).await.unwrap();
+    let current=reading::read(&pool,ReadRequest{session:Some("fixture".into()),view:"export".into(),source_hash:None}).await.unwrap();
+    assert_eq!(current["session"]["revision"],11);
+    assert_eq!(current["events"].as_array().unwrap().len(),11);
+    assert_eq!(current["chain_valid"],true);
     // Administrators can tamper with storage, but an unchanged hash-chain head detects it.
     let path="document/hades_reading_events/fixture_request_0";
     let mut event=pool.writer().get(path).await.unwrap();event["actor"]=json!("tampered");pool.writer().put(path,&event).await.unwrap();
