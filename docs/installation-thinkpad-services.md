@@ -44,6 +44,45 @@ The embedding configuration passed GPU inference, late chunking, and explicit
 oversized-input rejection at this ceiling. This is not the GPU's maximum window.
 This YAML is an override excerpt, not a complete replacement configuration.
 
+### Codex reading chat
+
+Enabled after PR #218 on 2026-10-18. Install and authenticate **codex-cli
+0.163.0**, create the dedicated working directory with mode 0700, and append
+these overrides to the same HADES YAML:
+
+```yaml
+reading_chat:
+  enabled: true
+  executable: /usr/bin/codex
+  home: /home/todd/.codex
+  cwd: /home/todd/.local/share/hades/reading-workspace
+  mcp_url: http://127.0.0.1:10444/mcp
+  mcp_token_env: HADES_READING_MCP_TOKEN
+```
+
+The existing Codex home provides authentication and conversation history. The
+working directory is separate from the source checkout. Create
+`~/.config/hades/reading-chat.env` with mode 0600:
+
+```ini
+HADES_READING_MCP_TOKEN=<EXISTING_TOKEN_ACCEPTED_BY_MCP_TOKEN_FILE>
+```
+
+Use an existing non-comment token from `~/.config/hades/mcp-token`; do not
+generate an unrelated value or put the token in YAML. Load this environment
+file only into the daemon using
+`~/.config/systemd/user/hades-daemon.service.d/reading-chat.conf`:
+
+```ini
+[Service]
+EnvironmentFile=/home/todd/.config/hades/reading-chat.env
+```
+
+Install matching daemon/viewer binaries, run `systemctl --user daemon-reload`,
+then restart `hades-daemon.service` followed by `hades-viewer.service`. The
+existing guided-reading MCP flags below already cover `Conveyance_KG`. See
+[Reading with Codex](codex-reading.md) for conversation ownership and recovery.
+
 ## `~/.config/hades/arangod.conf`
 
 ```ini

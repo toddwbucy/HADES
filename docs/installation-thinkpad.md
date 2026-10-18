@@ -414,6 +414,81 @@ Preserve logs, JSON reports, and screenshots from `/tmp/hades-tests-*` under
 - Service restart persistence: passed. Reboot/login startup passed for ArangoDB,
   extractor, daemon, and viewer. Embedder enabled afterward and restart-tested.
 
+## Codex chat deployment after PR #218
+
+On 2026-10-18, merge commit `557477973665c5dc53ee9ef11df02f282f63c4dc`
+was built with:
+
+```bash
+cargo build --release --locked -p hades-cli -p hades-frontend -j 6
+```
+
+The release `hades` and `hades-viewer` binaries were installed atomically into
+`~/.local/bin/`. Prior binaries and HADES YAML were preserved in
+`~/.local/share/hades/backups/pr218-20261018T180539Z/`. Both application services
+were restarted; ArangoDB, extraction, and embedding stayed running.
+
+Codex chat uses `/usr/bin/codex` version 0.163.0, the existing authenticated
+`~/.codex` history, and a dedicated `~/.local/share/hades/reading-workspace/`.
+The MCP token is supplied through a private daemon-only environment file and
+systemd drop-in. Exact configuration is in the
+[service snapshot](installation-thinkpad-services.md#codex-reading-chat).
+
+Installed checks confirmed matching release hashes and running executable
+paths, all five services enabled/active, daemon database readiness, authenticated
+browser HTTP 200, unauthenticated HTTP 401, and MCP discovery. Both browser
+pages loaded without JavaScript errors. The reading chat API reported enabled
+and successfully listed existing Codex conversations. These deployment checks
+did not resume a conversation, send a model message, or write research records;
+they are distinct from the isolated chat contracts described in
+[Reading with Codex](codex-reading.md#limits-and-validation).
+
+Local evidence is saved in `.local-install/reading-chat-deployment.json`,
+`.local-install/installed-reading-chat-check.json`,
+`.local-install/installed-services-check.json`, and browser screenshots under
+`.local-install/browser/`. These files are intentionally outside Git.
+
+## Reading desk and permission deployment after PRs #219 and #220
+
+On 2026-10-18, merged main commit
+`15e2c9565a9c051ca8a2b17c625cc6005b3aa0fa` was built from the isolated checkout
+`/tmp/hades-deploy-219-220`, preserving the development checkout and its local
+installation notes:
+
+```bash
+CARGO_TARGET_DIR=/home/todd/Projects/HADES/target \
+  cargo build --release --locked -p hades-cli -p hades-frontend -j 6
+```
+
+Both release executables were backed up to
+`~/.local/share/hades/backups/pr219-220-20261018T200827Z/` and atomically replaced
+in `~/.local/bin/`. The viewer and daemon were stopped for the replacement, then
+the daemon was started and checked for database readiness before starting the
+viewer. Configuration was unchanged. ArangoDB, the extractor, and the embedder
+kept their existing process IDs throughout the deployment.
+
+The preflight found six saved readings, three saved conversations, and no active
+conversation turns. Installed checks confirmed all five services enabled/active,
+matching running release binaries, authenticated HTTP 200, unauthenticated HTTP
+401, MCP discovery, and Codex history discovery. All six reading identities and
+source hashes remained present. The browser loaded without JavaScript errors,
+showed removal/archive controls, and widened both side panels. At 1800px, chat
+expanded from 576px to 684px and the reading desk from 220px to 324px.
+
+Refresh an existing browser tab to load the new assets. In a saved conversation,
+**Always allow reads in this conversation** enables remembered read approval;
+**Revoke remembered read permission** removes it. Installation does not enable
+that preference automatically. Use **Resume** if the conversation was disconnected
+by the daemon restart. Reading removal/restoration and duplicate prevention are
+described in [Guided document reading](guided-reading.md).
+
+Deployment checks issued no research mutations or model messages. Functional
+mutation tests ran separately against disposable databases before merging.
+Local evidence is in `.local-install/reading-desk-deployment.json`,
+`.local-install/installed-reading-desk-check.json`, and
+`.local-install/browser/installed-reading-desk-wide.png`. The deployment manifest
+is also stored with the backup binaries. These local artifacts are outside Git.
+
 ## Current operating state
 
 All five user services are enabled and active. Guided reading is available at
@@ -421,4 +496,6 @@ All five user services are enabled and active. Guided reading is available at
 `http://127.0.0.1:8087/v1`, and MCP uses `http://127.0.0.1:10444/mcp`.
 The model unloads after 900 idle seconds and reloads on demand. Check
 `systemctl --user status hades-embedder.service` and `/v1/models` when diagnosing
-embedding availability. No Olympus data has been restored.
+embedding availability. Codex chat is enabled in the reading desk; open a saved
+reading and select **Chat** to create or explicitly resume a conversation.
+No Olympus data has been restored.
