@@ -95,13 +95,29 @@ impl Live {
         self.allow_reads
             && !self.closed
             && self.status == "inProgress"
-            && request["params"]["threadId"].as_str() == self.thread.as_deref()
-            && request["params"]["turnId"].as_str() == self.turn.as_deref()
+            && self.matches_scope(&request["params"])
             && self.approval(request.clone())["read_only"] == true
     }
+    fn matches_scope(&self, params: &Value) -> bool {
+        [
+            ("threadId", self.thread.as_deref()),
+            ("turnId", self.turn.as_deref()),
+        ]
+        .into_iter()
+        .all(|(key, live)| {
+            params[key]
+                .as_str()
+                .zip(live)
+                .is_some_and(|(request, live)| !request.is_empty() && request == live)
+        })
+    }
     pub fn from_turn(turn: &Value) -> Self {
-        let mut state = Self::default();
-        state.event(&json!({"method":"turn/started","params":{"turn":turn}}));
+        // A history projection has no execution ownership or live thread scope.
+        let mut state = Self {
+            turn: turn["id"].as_str().map(str::to_owned),
+            status: "inProgress".into(),
+            ..Self::default()
+        };
         for item in turn["items"].as_array().into_iter().flatten() {
             state.event(
                 &json!({"method":"item/completed","params":{"turnId":turn["id"],"item":item}}),
@@ -116,6 +132,12 @@ impl Live {
     fn event(&mut self, event: &Value) {
         let p = &event["params"];
         let method = event["method"].as_str().unwrap_or("");
+        if method == "turn/started"
+            && (p["threadId"].as_str().is_none_or(str::is_empty)
+                || p["turn"]["id"].as_str().is_none_or(str::is_empty))
+        {
+            return;
+        }
         if let Some(thread) = p["threadId"].as_str() {
             if self
                 .thread
@@ -316,10 +338,8 @@ impl Worker {
                 } else {
                     let mut state = live.write().await;
                     if message.get("id").is_some() {
-                        let scoped = message["params"]["threadId"].as_str()
-                            == state.thread.as_deref()
-                            && message["params"]["turnId"].as_str() == state.turn.as_deref();
-                        if !scoped || state.status != "inProgress" {
+                        if !state.matches_scope(&message["params"]) || state.status != "inProgress"
+                        {
                             continue;
                         }
                         if state.approvals.len() < 8 && bytes.len() <= 16000 {
@@ -614,7 +634,9 @@ mod tests {
     #[test]
     fn terminal_event_clears_approvals_and_ignores_old_turns() {
         let mut s = Live::default();
-        s.event(&json!({"method":"turn/started","params":{"turn":{"id":"new"}}}));
+        s.event(
+            &json!({"method":"turn/started","params":{"threadId":"thread","turn":{"id":"new"}}}),
+        );
         s.approvals.insert("1".into(), json!({"id":1}));
         s.event(
             &json!({"method":"turn/completed","params":{"turn":{"id":"old","status":"completed"}}}),
@@ -625,5 +647,49 @@ mod tests {
         assert_eq!(s.status, "interrupted");
         s.event(&json!({"method":"serverRequest/resolved","params":{"requestId":1}}));
         assert!(s.approvals.is_empty());
+    }
+    #[test]
+    fn approval_scope_requires_present_nonempty_thread_and_turn_ids() {
+        for thread in [None, Some(""), Some("thread")] {
+            for turn in [None, Some(""), Some("turn")] {
+                let live = Live {
+                    thread: thread.map(str::to_owned),
+                    turn: turn.map(str::to_owned),
+                    allow_reads: true,
+                    status: "inProgress".into(),
+                    ..Live::default()
+                };
+                assert_eq!(
+                    live.matches_scope(&json!({"threadId":thread,"turnId":turn})),
+                    thread == Some("thread") && turn == Some("turn")
+                );
+                assert!(!live.matches_scope(&json!({})));
+            }
+        }
+    }
+    #[test]
+    fn malformed_turn_start_cannot_establish_or_replace_execution_scope() {
+        for thread in [Value::Null, json!(""), json!("thread")] {
+            for turn in [Value::Null, json!(""), json!("turn")] {
+                if thread == "thread" && turn == "turn" {
+                    continue;
+                }
+                let event = json!({"method":"turn/started","params":{"threadId":thread,"turn":{"id":turn}}});
+                let mut live = Live::default();
+                live.event(&event);
+                assert!(live.thread.is_none() && live.turn.is_none());
+                assert_ne!(live.status, "inProgress");
+                live.event(&json!({"method":"turn/started","params":{"threadId":"thread","turn":{"id":"current"}}}));
+                live.approvals
+                    .insert("pending".into(), json!({"id":"pending"}));
+                let before = live.value("g");
+                live.event(&event);
+                assert_eq!(live.value("g"), before);
+            }
+        }
+        let recovered = Live::from_turn(&json!({"id":"history","status":"completed","items":[]}));
+        assert_eq!(recovered.status, "completed");
+        assert!(recovered.thread.is_none());
+        assert!(!recovered.matches_scope(&json!({"turnId":"history"})));
     }
 }
