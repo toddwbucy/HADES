@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use hades_core::HadesConfig;
 use hades_core::chunking::ChunkingStrategy;
-use hades_core::chunking::prechunk::BYTES_PER_TOKEN_FLOOR;
+use hades_core::chunking::prechunk::PrechunkWindow;
 use hades_core::code::lsp::go_symbols::GoSymbolExtractor;
 use hades_core::code::lsp::symbols::FileExtraction;
 use hades_core::code::lsp::{
@@ -216,7 +216,7 @@ pub async fn run_phase(
     // Ask the backend what it will accept, once per run. The answer is a
     // property of the load profile the embedder happens to be running, so it
     // cannot be a constant and must not be read per file.
-    let window_bytes = embed_window_bytes(embedder.as_ref(), config).await?;
+    let embedding_window = resolve_embedding_window(embedder.as_ref(), config).await?;
 
     // Ensure codebase collections exist.
     ensure_collections(&db).await?;
@@ -431,6 +431,7 @@ pub async fn run_phase(
                         &db,
                         embedder.as_ref(),
                         config,
+                        embedding_window,
                         file_path,
                         &rel_path,
                         None,
@@ -468,7 +469,7 @@ pub async fn run_phase(
                     force,
                     allow_analysis_downgrade,
                     gopls_cmd.is_some(),
-                    window_bytes,
+                    embedding_window,
                     namespace,
                     &source_git,
                 )
@@ -900,13 +901,13 @@ static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
 });
 
 /// Resolve the shared policy before any file writes; no guessed backend ceiling.
-async fn embed_window_bytes(
+async fn resolve_embedding_window(
     embedder: Option<&EmbeddingClient>,
     config: &HadesConfig,
-) -> Result<usize> {
+) -> Result<Option<PrechunkWindow>> {
     match embedder {
-        Some(client) => Ok(config.chunking.prechunk.from_backend(client).await?.bytes),
-        None => Ok(usize::MAX), // no embedding request or row will be produced
+        Some(client) => Ok(Some(config.chunking.prechunk.from_backend(client).await?)),
+        None => Ok(None), // no embedding request or row will be produced
     }
 }
 
@@ -916,7 +917,7 @@ async fn prepare_embeddings(
     config: &HadesConfig,
     source: &str,
     chunks: Vec<hades_core::chunking::TextChunk>,
-    window_bytes: usize,
+    embedding_window: Option<PrechunkWindow>,
     fkey: &str,
     late: bool,
 ) -> Result<(
@@ -924,16 +925,13 @@ async fn prepare_embeddings(
     Vec<usize>,
     Vec<Value>,
     Option<String>,
+    Option<hades_core::chunking::windows::WindowPlan>,
 )> {
     let Some(client) = embedder.filter(|_| !chunks.is_empty()) else {
         let parents = chunks.iter().map(|c| c.chunk_index).collect();
-        return Ok((chunks, parents, Vec::new(), None));
+        return Ok((chunks, parents, Vec::new(), None, None));
     };
-    let policy = hades_core::chunking::prechunk::PrechunkWindow {
-        tokens: (window_bytes / BYTES_PER_TOKEN_FLOOR) as u32,
-        bytes: window_bytes,
-        overlap_bytes: config.chunking.prechunk.overlap_tokens as usize * BYTES_PER_TOKEN_FLOOR,
-    };
+    let policy = embedding_window.context("missing resolved embedding window")?;
     match hades_core::chunking::prechunk::embed_chunks(
         client,
         source,
@@ -945,7 +943,8 @@ async fn prepare_embeddings(
     )
     .await
     {
-        Ok((chunks, parents, r)) => {
+        Ok((chunks, parents, r, plan)) => {
+            let summary = plan.as_ref().map(|p| p.summary()).unwrap_or(Value::Null);
             let rows = chunks.iter().zip(&r.embeddings).map(|(c, vector)| {
                 let ckey = keys::chunk_key(fkey, c.chunk_index);
                 let mut row = json!({"_key": keys::embedding_key(&ckey), "chunk_key": ckey,
@@ -954,11 +953,18 @@ async fn prepare_embeddings(
                     "window_tokens": policy.tokens});
                 let index = row["chunk_index"].as_u64().expect("mapped chunk index") as usize;
                 row["parent_chunk_index"] = json!(parents[index]);
+                row["embedding_window"] = plan.as_ref().map(|p| p.chunk_provenance(index, &summary)).unwrap_or(Value::Null);
                 row
             }).collect();
-            Ok((chunks, parents, rows, None))
+            Ok((chunks, parents, rows, None, plan))
         }
-        Err(e) => Ok((Vec::new(), Vec::new(), Vec::new(), Some(e.to_string()))),
+        Err(e) => Ok((
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some(e.to_string()),
+            None,
+        )),
     }
 }
 
@@ -1549,7 +1555,7 @@ async fn ingest_file(
     force: bool,
     allow_analysis_downgrade: bool,
     gopls_scheduled: bool,
-    window_bytes: usize,
+    embedding_window: Option<PrechunkWindow>,
     namespace: &str,
     source_git: &Option<hades_core::source_git::SourceGit>,
 ) -> Result<FileResult> {
@@ -1592,6 +1598,7 @@ async fn ingest_file(
                     db,
                     embedder,
                     config,
+                    embedding_window,
                     file_path,
                     rel_path,
                     Some(lang.name()),
@@ -1737,12 +1744,12 @@ async fn ingest_file(
 
     // Chunk with AST-aligned chunking.
     let chunker = AstChunking::new(analysis.top_level_defs.clone());
-    let (chunks, parents, embedding_docs, embedding_error) = prepare_embeddings(
+    let (chunks, parents, embedding_docs, embedding_error, window_plan) = prepare_embeddings(
         embedder,
         config,
         &source,
         chunker.chunk(&source),
-        window_bytes,
+        embedding_window,
         &fkey,
         !*LATE_CHUNKING_DISABLED,
     )
@@ -1883,7 +1890,7 @@ async fn ingest_file(
         .filter_map(|d| d["_key"].as_str())
         .collect::<std::collections::HashSet<_>>()
         .len();
-    let file_doc = file_document(FileRow {
+    let mut file_doc = file_document(FileRow {
         key: &fkey,
         namespace,
         source_git,
@@ -1902,6 +1909,7 @@ async fn ingest_file(
         fallback_reason: analysis.fallback_reason.as_deref(),
     });
 
+    file_doc["embedding_window_plan"] = json!(window_plan);
     let remapped_symbols = symbol_key_remap.len();
     let stored = super::codebase_persist::Replacement {
         key: fkey.clone(),
@@ -2224,6 +2232,7 @@ async fn ingest_unparsed_file(
     db: &ArangoPool,
     embedder: Option<&EmbeddingClient>,
     config: &HadesConfig,
+    embedding_window: Option<PrechunkWindow>,
     file_path: &Path,
     rel_path: &str,
     language_label: Option<&str>,
@@ -2287,13 +2296,12 @@ async fn ingest_unparsed_file(
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
     let chunker = AstChunking::new(Vec::new());
-    let window_bytes = embed_window_bytes(embedder, config).await?;
-    let (chunks, parents, embedding_docs, embedding_error) = prepare_embeddings(
+    let (chunks, parents, embedding_docs, embedding_error, window_plan) = prepare_embeddings(
         embedder,
         config,
         &source,
         chunker.chunk(&source),
-        window_bytes,
+        embedding_window,
         &fkey,
         false,
     )
@@ -2340,7 +2348,7 @@ async fn ingest_unparsed_file(
     // Merge the file node — preserve any pre-existing fields, set only ours,
     // create if absent.
     let total_lines = source.lines().count();
-    let fields = file_document(FileRow {
+    let mut fields = file_document(FileRow {
         key: &fkey,
         namespace,
         source_git,
@@ -2359,6 +2367,7 @@ async fn ingest_unparsed_file(
         analyzer: "raw-text",
         fallback_reason: Some(fallback_reason),
     });
+    fields["embedding_window_plan"] = json!(window_plan);
     super::codebase_persist::Replacement {
         key: fkey.clone(),
         expected_revision,
@@ -4002,7 +4011,7 @@ mod tests {
             pool.writer().post(&format!("document/{}",CODEBASE.symbols), &json!({"_key":old,"file_key":file})).await.unwrap();
             let endpoint=format!("{}/{}",CODEBASE.symbols,old);
             pool.writer().post(&format!("document/{}",CODEBASE.calls_edges), &json!({"_key":"prior","_from":endpoint,"_to":endpoint,"resolution":"semantic"})).await.unwrap();
-            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
+            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),None,&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
             assert!(result.success);
             assert!(pool.writer().get(&format!("document/{}/prior",CODEBASE.calls_edges)).await.is_ok(),"raw replacement purged semantic edge");
             super::super::codebase_persist::prune_semantic_orphans(&pool,vec![endpoint]).await.unwrap();
@@ -4206,7 +4215,7 @@ mod tests {
                         false,
                         false,
                         false,
-                        12_000,
+                        None,
                         "",
                         &None,
                     )
@@ -4710,7 +4719,7 @@ mod tests {
                 false,
                 false,
                 false,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -4724,6 +4733,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4746,6 +4756,7 @@ mod tests {
                     &pool,
                     None,
                     &config,
+                    None,
                     &path,
                     "file.py",
                     Some("python"),
@@ -4770,6 +4781,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4795,6 +4807,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4922,7 +4935,7 @@ mod tests {
                 false,
                 false,
                 false,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -4968,7 +4981,7 @@ mod tests {
                 true,
                 false,
                 true,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -5012,7 +5025,7 @@ mod tests {
                 true,
                 false,
                 false,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -5113,7 +5126,7 @@ mod tests {
                     false,
                     false,
                     false,
-                    12_000,
+                    None,
                     "",
                     &None,
                 )
@@ -5145,7 +5158,7 @@ mod tests {
                     true,
                     false,
                     false,
-                    12_000,
+                    None,
                     "",
                     &None,
                 )

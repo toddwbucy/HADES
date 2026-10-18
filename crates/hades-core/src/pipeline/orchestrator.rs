@@ -19,6 +19,7 @@ use crate::persephone::extraction::{
 /// Pipeline configuration.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
+    pub late_chunking: bool,
     pub prechunk: crate::chunking::prechunk::PrechunkConfig,
     /// Collection profile to store results in.
     pub profile: &'static CollectionProfile,
@@ -38,6 +39,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             prechunk: Default::default(),
+            late_chunking: false,
             profile: CollectionProfile::default_profile(),
             embed_task: "retrieval.passage".to_string(),
             embed_batch_size: None,
@@ -326,14 +328,14 @@ impl Pipeline {
         if input.is_empty() {
             return Err(PipelineError::EmptyChunks);
         }
-        let (chunks, parents, embed_result) = crate::chunking::prechunk::embed_chunks(
+        let (chunks, parents, embed_result, window_plan) = crate::chunking::prechunk::embed_chunks(
             &self.embedder,
             &extract_result.full_text,
             input,
             window,
             &self.config.embed_task,
             self.config.embed_batch_size,
-            false,
+            self.config.late_chunking,
         )
         .await
         .map_err(|e| match e.downcast::<EmbeddingError>() {
@@ -357,6 +359,7 @@ impl Pipeline {
             &embed_result,
             &parents,
             window.tokens,
+            window_plan.as_ref(),
         )
         .await?;
 
@@ -373,6 +376,7 @@ impl Pipeline {
         embed_result: &EmbedResult,
         parents: &[usize],
         window_tokens: u32,
+        window_plan: Option<&crate::chunking::windows::WindowPlan>,
     ) -> Result<(), PipelineError> {
         let profile = self.config.profile;
 
@@ -386,6 +390,7 @@ impl Pipeline {
             "chunk_count": chunks.len(),
             "embedding_model": embed_result.model,
             "embedding_dimension": embed_result.dimension,
+            "embedding_window_plan": window_plan,
             "extractor_metadata": extract_result.metadata,
         });
 
@@ -400,6 +405,7 @@ impl Pipeline {
             .collect();
 
         // -- Embedding documents -------------------------------------------
+        let summary = window_plan.map(|p| p.summary()).unwrap_or(Value::Null);
         let embedding_docs: Vec<Value> = embed_result
             .embeddings
             .iter()
@@ -416,6 +422,9 @@ impl Pipeline {
                 row["window_tokens"] = json!(window_tokens);
                 let index = row["chunk_index"].as_u64().expect("mapped chunk index") as usize;
                 row["parent_chunk_index"] = json!(parents[index]);
+                row["embedding_window"] = window_plan
+                    .map(|p| p.chunk_provenance(index, &summary))
+                    .unwrap_or(Value::Null);
                 row
             })
             .collect();

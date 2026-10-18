@@ -148,11 +148,13 @@ sync:
 # The same root-level schema applies to every config search location, including
 # ~/.config/hades/hades.yaml and /etc/hades/hades.yaml; this is a template only.
 chunking:
+  # Explicit opt-in for documents. Existing records change only on explicit re-ingest.
+  document_late_chunking: false
   prechunk:
     overlap_tokens: 1000
     safety_margin_tokens: 256
     # Optional cap; must not exceed the reported backend max_seq_length.
     # Effective tokens = min(cap if set, max_seq_length - safety_margin_tokens).
     # Initial windows and overlap use 2.0 bytes/token; reported size errors
-    # refine the refused input's byte budget and retry with overlap.
+    # refine the byte budget. Late chunking replans the whole source before writing.
     max_window_tokens: null
