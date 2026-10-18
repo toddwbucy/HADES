@@ -232,3 +232,9 @@ python scripts/test_isolated_database.py --arangod /path/to/arangod \
 Build both debug binaries first, set `CARGO_TARGET_DIR`, and populate the Docling
 model cache beforehand. This test is offline and never selects an ambient database.
 Screenshots and exported fixture records stay in the printed temporary directory.
+
+## Document conversations
+
+The optional [Codex Chat tab](codex-reading.md) associates a local conversation
+with a reading and sends selected highlights as immutable exchange context.
+Model proposals still require human review and acceptance in this workflow.

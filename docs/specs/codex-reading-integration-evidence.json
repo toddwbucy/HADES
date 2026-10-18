@@ -1,0 +1,78 @@
+{
+  "format": "hades-codex-reading-integration/v1",
+  "verified_at": "2026-10-18",
+  "platform": "Linux",
+  "codex_version": "0.163.0",
+  "model": "gpt-6-astra",
+  "live_browser": {
+    "real_codex": true,
+    "runtime": "0.163.0",
+    "passed": true,
+    "checks": [
+      "browser passage selection",
+      "frozen MCP exchange context",
+      "restricted tools",
+      "pending proposal",
+      "human acceptance",
+      "reload without replay",
+      "release and resume",
+      "model MCP retrieval",
+      "model MCP proposal"
+    ]
+  },
+  "controlled_browser": {
+    "real_codex": false,
+    "runtime": "0.163.0",
+    "passed": true,
+    "checks": [
+      "browser passage selection",
+      "frozen MCP exchange context",
+      "restricted tools",
+      "pending proposal",
+      "human acceptance",
+      "reload without replay",
+      "release and resume",
+      "question response",
+      "interrupt",
+      "daemon crash and ownership recovery",
+      "history reference selection",
+      "accepted knowledge snapshot"
+    ]
+  },
+  "database_contracts": [
+    "durable duplicate-request suppression",
+    "changed-payload rejection",
+    "immutable context across passage correction",
+    "reference snapshot provenance",
+    "stale approval rejection",
+    "cancellation",
+    "lost acknowledgement reconciliation without resend",
+    "transcript pagination"
+  ],
+  "live_proposal_schema": {
+    "rejected_tool_calls": 0
+  },
+  "isolation": {
+    "database": "with_temp_db on a private ArangoDB server",
+    "history": "new private temporary Codex home",
+    "input": "synthetic passage only",
+    "authentication_copy_removed": true
+  },
+  "screenshot": "../screenshots/codex-reading.png",
+  "isolated_matrix": {
+    "strict-prerequisite": true,
+    "graphable-unit": true,
+    "database-contracts": true,
+    "codebase": true,
+    "cli-lifecycle": true
+  },
+  "service_free_checks": {
+    "rust_unit_passed": 792,
+    "rust_unit_ignored": 1,
+    "javascript_passed": 10,
+    "python_run": 81,
+    "python_skipped": 1,
+    "formatting": true,
+    "clippy_warnings_denied": true
+  }
+}

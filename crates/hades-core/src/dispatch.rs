@@ -742,6 +742,10 @@ pub struct CodebaseStatsParams {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", content = "params")]
 pub enum DaemonCommand {
+    #[serde(rename = "reading.chat")]
+    ReadingChat(crate::reading::chat::Request),
+    #[serde(rename = "reading.exchange_context")]
+    ReadingExchangeContext { exchange_id: String },
     #[serde(rename = "reading.read")]
     ReadingRead(crate::reading::ReadRequest),
     #[serde(rename = "reading.capabilities")]
@@ -1043,7 +1047,10 @@ impl DaemonCommand {
     /// - `status`, `db.health`, `db.stats`, `db.collections`, `db.graph.list`
     pub fn access_tier(&self) -> AccessTier {
         match self {
-            Self::ReadingRead(_) | Self::ReadingCapabilities {} => AccessTier::Agent,
+            Self::ReadingRead(_)
+            | Self::ReadingCapabilities {}
+            | Self::ReadingExchangeContext { .. } => AccessTier::Agent,
+            Self::ReadingChat(_) => AccessTier::Admin,
             Self::ReadingPropose(_) => AccessTier::Provisioning,
             Self::ReadingOpen(_)
             | Self::ReadingUpload(_)
@@ -1189,6 +1196,16 @@ pub async fn dispatch(
     cmd: DaemonCommand,
 ) -> Result<Value, DispatchError> {
     match cmd {
+        DaemonCommand::ReadingChat(p) => {
+            crate::reading::chat::handle(pool, &config.reading_chat, p)
+                .await
+                .map_err(Into::into)
+        }
+        DaemonCommand::ReadingExchangeContext { exchange_id } => {
+            crate::reading::chat::exchange_context(pool, &exchange_id)
+                .await
+                .map_err(Into::into)
+        }
         DaemonCommand::ReadingRead(p) => crate::reading::read(pool, p).await.map_err(Into::into),
         DaemonCommand::ReadingCapabilities {} => crate::reading::capabilities(config)
             .await

@@ -295,6 +295,12 @@ macro_rules! db_field_doc {
     };
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ReadingExchangeArgs {
+    db: Option<String>,
+    exchange_id: String,
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReadingReadArgs {
     db: Option<String>,
@@ -310,8 +316,29 @@ struct ReadingProposeArgs {
     expected_revision: u64,
     /// Attribution label, not a credential. Include harness/model identity when known.
     actor: String,
-    /// {"action":"propose","id":"...","draft":{"title","note","is":null,"is_not":null,"standing","highlight","basis","from":null,"to":null,"relation":null,"inferred":false,"rationale":null}} or {"action":"pins","name":"...","pins":[{"reference":"...","note":"...","seen":false}]}. Only these two actions are permitted.
-    action: serde_json::Value,
+    /// Example: {"action":"propose","id":"note1","draft":{"title":"A title","note":"A sourced note","is":null,"is_not":null,"standing":"Source status or qualification","highlight":"existing_human_highlight_id","basis":"Why this belongs within the reading boundaries","from":null,"to":null,"relation":null,"inferred":false,"rationale":null}}. The highlight key is named "highlight", not "highlight_id". Include standing, basis, and inferred. Alternatively: {"action":"pins","name":"context","pins":[{"reference":"existing_reference_id","note":"Reason for pinning","seen":false}]}. Only these two actions are permitted.
+    action: ReadingAgentAction,
+}
+/// Publish the actual nested schema so a model need not guess required draft fields.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum ReadingAgentAction {
+    Propose {
+        id: String,
+        draft: Box<hades_core::reading::Draft>,
+    },
+    Pins {
+        name: String,
+        pins: Vec<hades_core::reading::Pin>,
+    },
+}
+impl From<ReadingAgentAction> for hades_core::reading::Action {
+    fn from(value: ReadingAgentAction) -> Self {
+        match value {
+            ReadingAgentAction::Propose { id, draft } => Self::Propose { id, draft: *draft },
+            ReadingAgentAction::Pins { name, pins } => Self::Pins { name, pins },
+        }
+    }
 }
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DbOnlyArgs {
@@ -674,6 +701,21 @@ impl HadesMcpServer {
 #[tool_router]
 impl HadesMcpServer {
     #[tool(
+        description = "Read the immutable document and selected-conversation context sent for one HADES chat exchange. Unlike live reading_context, this snapshot does not change when the reader moves or corrects a passage. Use the exchange_id supplied with the user message."
+    )]
+    async fn reading_exchange_context(
+        &self,
+        Parameters(a): Parameters<ReadingExchangeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::ReadingExchangeContext {
+                exchange_id: a.exchange_id,
+            },
+        )
+        .await
+    }
+    #[tool(
         description = "Read guided-reading sessions, current human focus, pins, and proposal decisions. Exact source references do not imply that the agent sees the browser. Poll explicitly; reading does not trigger execution."
     )]
     async fn reading_context(
@@ -697,8 +739,7 @@ impl HadesMcpServer {
         &self,
         Parameters(a): Parameters<ReadingProposeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let action = serde_json::from_value(a.action)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let action = a.action.into();
         self.run(
             a.db,
             DaemonCommand::ReadingPropose(hades_core::reading::Mutation {
@@ -1269,6 +1310,27 @@ use super::cursor_mock;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_tool_publishes_draft_fields_and_excludes_human_actions() {
+        let schema = serde_json::to_value(schemars::schema_for!(ReadingProposeArgs)).unwrap();
+        let draft = &schema["$defs"]["Draft"];
+        for field in ["highlight", "standing", "basis", "inferred"] {
+            assert!(draft["properties"].get(field).is_some());
+            assert!(
+                draft["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(field))
+            );
+        }
+        assert!(
+            serde_json::from_value::<ReadingAgentAction>(
+                serde_json::json!({"action":"accept","id":"proposal","proposal_revision":1})
+            )
+            .is_err()
+        );
+    }
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use tower::ServiceExt;
@@ -1509,6 +1571,7 @@ mod tests {
                 "kg_create",
                 "orient",
                 "reading_context",
+                "reading_exchange_context",
                 "reading_propose",
                 "smell_report",
                 "task_create",

@@ -14,7 +14,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
+                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
@@ -107,6 +107,11 @@ def main():
                         help="original source archive for the real-document test")
     benchmark.add_argument("--reading-e2e-python", type=Path,
                            help="run the real guided-reading browser flow with this Python interpreter")
+    benchmark.add_argument("--reading-chat-browser", action="store_true",
+                           help="run browser/Codex reading contracts on a disposable database")
+    parser.add_argument("--reading-chat-auth", type=Path,
+                        help="opt into real Codex inference using a temporary private copy of this auth.json")
+    parser.add_argument("--reading-chat-codex", type=Path, default=Path("/usr/bin/codex"))
     parser.add_argument("--reading-node", type=Path)
     parser.add_argument("--reading-playwright", type=Path)
     parser.add_argument("--reading-chromium", type=Path)
@@ -130,6 +135,10 @@ def main():
         if path and not path.is_file():
             parser.error("graphable input must name an existing file")
 
+    if args.reading_chat_browser and not (args.reading_playwright and args.reading_chromium):
+        parser.error("reading chat browser requires --reading-playwright and --reading-chromium")
+    if args.reading_chat_auth and not args.reading_chat_browser:
+        parser.error("reading chat authentication requires --reading-chat-browser")
     root = Path(tempfile.mkdtemp(prefix="hades-tests-", dir="/tmp"))
     print(f"Isolated test artifacts: {root}", flush=True)
     sock = root / "arango.sock"
@@ -250,6 +259,17 @@ def main():
                 return
             if args.cli_lifecycle:
                 command("cli-lifecycle", ["-p", "hades-cli", "--test", "codebase_lifecycle"])
+                return
+            if args.reading_chat_browser:
+                env.update(HADES_CHAT_TEST_ROOT=str(root),
+                           PLAYWRIGHT_MODULE=str(args.reading_playwright.absolute()),
+                           CHROMIUM_PATH=str(args.reading_chromium.absolute()),
+                           HADES_CHAT_CODEX=str(args.reading_chat_codex.absolute()))
+                if args.reading_chat_auth:
+                    env["HADES_CHAT_TEST_AUTH"] = str(args.reading_chat_auth.absolute())
+                run_reading_e2e(["cargo", "test", "--locked", "--offline", "-p", "hades-core",
+                                 "--test", "reading_chat", "reading_chat_browser", "--", "--ignored", "--nocapture"],
+                                env, args.command_timeout, results)
                 return
             if args.reading_e2e_python:
                 argv = [str(args.reading_e2e_python), str(REPO / "scripts/test_guided_reading.py"),

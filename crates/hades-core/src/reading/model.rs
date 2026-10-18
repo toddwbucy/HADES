@@ -30,7 +30,7 @@ pub struct Highlight {
     pub label: String,
     pub removed: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
     pub title: String,
@@ -99,7 +99,7 @@ pub struct PassageRevision {
     pub at: String,
     pub restored_from: Option<u64>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Pin {
     pub reference: String,

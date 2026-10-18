@@ -132,6 +132,16 @@ pub fn router<S: Clone + Send + Sync + 'static>(backend: Option<ReadingBackend>)
                 )
             }),
         )
+        .route(
+            "/reading-chat.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/reading-chat.js"),
+                )
+            }),
+        )
+        .route("/api/reading/chat", post(chat))
         .route("/api/reading/config", get(configuration))
         .route("/api/reading/capabilities", get(capabilities))
         .route("/api/reading/state", get(read))
@@ -204,6 +214,12 @@ async fn call(state: ReadingState, cmd: DaemonCommand) -> Response {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error":e}))).into_response(),
     }
+}
+async fn chat(
+    State(s): State<ReadingState>,
+    Json(p): Json<hades_core::reading::chat::Request>,
+) -> Response {
+    call(s, DaemonCommand::ReadingChat(p)).await
 }
 async fn configuration(State(s): State<ReadingState>) -> Json<Value> {
     Json(json!({"enabled":s.0.is_some(),"database":s.0.map(|b|b.database)}))

@@ -10,6 +10,7 @@ description = "Core library: config, DB client, graph engine, pipeline logic"
 [dependencies]
 libc.workspace = true
 serde.workspace = true
+schemars.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true
