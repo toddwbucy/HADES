@@ -477,3 +477,333 @@ async fn event_keys_separate_identifier_pairs_and_keep_legacy_retries() {
         .await;
     }
 }
+
+#[test]
+fn removing_a_reading_preserves_legacy_state_and_is_human_only() {
+    let initial = Session::new(&OpenRequest {
+        id: "desk".into(),
+        title: "Desk".into(),
+        source_hash: "a".repeat(64),
+        actor: "human".into(),
+    })
+    .unwrap();
+    let mut legacy = serde_json::to_value(&initial).unwrap();
+    legacy.as_object_mut().unwrap().remove("archived");
+    let mut state: Session = serde_json::from_value(legacy).unwrap();
+    assert!(!state.archived);
+    let remove = request("desk", 0, Action::Archive { archived: true });
+    assert!(state.apply(&remove, true).is_err());
+    state.apply(&remove, false).unwrap();
+    assert!(state.archived);
+    assert_eq!(state.stage, initial.stage);
+    assert_eq!(state.graph, initial.graph);
+    state
+        .apply(
+            &request("desk", 1, Action::Archive { archived: false }),
+            false,
+        )
+        .unwrap();
+    assert!(!state.archived);
+    assert_eq!(state.revision, 2);
+}
+
+#[tokio::test]
+async fn desk_resumes_identical_sources_and_archives_without_losing_work() {
+    with_temp_db("reading_desk", Fixtures::Empty, |pool| async move {
+        let uploaded = reading::upload(
+            &pool,
+            SourceRequest {
+                filename: "desk.txt".into(),
+                content_base64: base64::engine::general_purpose::STANDARD.encode(b"Desk fixture"),
+            },
+        )
+        .await
+        .unwrap();
+        let hash = uploaded["source_hash"].as_str().unwrap().to_owned();
+        pool.writer()
+            .patch(
+                &format!("document/hades_reading_sources/{hash}"),
+                &json!({"status":"ready","structured":{"format":"docling-blocks-v1","blocks":[]}}),
+            )
+            .await
+            .unwrap();
+        let open = |id: &str, title: &str| OpenRequest {
+            id: id.into(),
+            title: title.into(),
+            source_hash: hash.clone(),
+            actor: "human".into(),
+        };
+        // Concurrent additions with different client IDs and filenames converge.
+        let (one, two) = tokio::join!(
+            reading::open_or_resume(&pool, open("one", "desk.txt")),
+            reading::open_or_resume(&pool, open("two", "renamed.txt"))
+        );
+        let one = one.unwrap();
+        assert_eq!(one, two.unwrap());
+        let id = one["id"].as_str().unwrap();
+        let list = |view: &str| ReadRequest {
+            session: None,
+            source_hash: None,
+            view: view.into(),
+        };
+        assert_eq!(
+            reading::read(&pool, list("")).await.unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let graph = one["graph"].as_str().unwrap();
+        reading::mutate(
+            &pool,
+            request(
+                id,
+                0,
+                Action::Bound {
+                    is: "A saved reading".into(),
+                    is_not: "Disposable notes".into(),
+                },
+            ),
+            false,
+        )
+        .await
+        .unwrap();
+        let before = reading::read(
+            &pool,
+            ReadRequest {
+                session: Some(id.into()),
+                source_hash: None,
+                view: "export".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let removal = request(id, 1, Action::Archive { archived: true });
+        assert!(reading::mutate(&pool, removal.clone(), true).await.is_err());
+        let receipt = reading::mutate(&pool, removal.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt,
+            reading::mutate(&pool, removal, false).await.unwrap()
+        );
+        assert!(
+            reading::read(&pool, list("")).await.unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reading::read(&pool, list("archived")).await.unwrap()["sessions"][0]["id"],
+            id
+        );
+        let resumed = reading::open_or_resume(&pool, open("retry", "renamed again.txt"))
+            .await
+            .unwrap();
+        assert_eq!(resumed["id"], id);
+        assert_eq!(resumed["revision"], 2);
+        assert_eq!(resumed["archived"], true);
+        // An explicitly separate reading stays separate and is preferred while active.
+        let separate = reading::open(&pool, open("separate", "Deliberate second reading"))
+            .await
+            .unwrap();
+        assert_eq!(
+            reading::open_or_resume(&pool, open("another", "desk.txt"))
+                .await
+                .unwrap()["id"],
+            separate["id"]
+        );
+        assert!(
+            reading::mutate(
+                &pool,
+                request(id, 1, Action::Archive { archived: false }),
+                false
+            )
+            .await
+            .is_err()
+        );
+        reading::mutate(
+            &pool,
+            request(id, 2, Action::Archive { archived: false }),
+            false,
+        )
+        .await
+        .unwrap();
+        let restored = reading::read(
+            &pool,
+            ReadRequest {
+                session: Some(id.into()),
+                source_hash: None,
+                view: "export".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored["chain_valid"], true);
+        assert_eq!(restored["session"]["bound"], before["session"]["bound"]);
+        assert_eq!(restored["session"]["graph"], graph);
+        assert_eq!(restored["events"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            pool.writer()
+                .get(&format!("collection/{graph}_nodes/count"))
+                .await
+                .unwrap()["count"],
+            1
+        );
+        assert_eq!(
+            reading::read(&pool, list("")).await.unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            reading::read(&pool, list("archived")).await.unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        // Old sessions without the flag remain visible and resumable.
+        let path = "document/hades_reading_sessions/separate";
+        let mut legacy = pool.writer().get(path).await.unwrap();
+        legacy["state"].as_object_mut().unwrap().remove("archived");
+        pool.writer().put(path, &legacy).await.unwrap();
+        assert_eq!(
+            reading::read(&pool, list("")).await.unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn full_readings_can_be_archived_and_restored_with_a_complete_bounded_export() {
+    with_temp_db("reading_full", Fixtures::Empty, |pool| async move {
+        let uploaded = reading::upload(
+            &pool,
+            SourceRequest {
+                filename: "full.txt".into(),
+                content_base64: base64::engine::general_purpose::STANDARD
+                    .encode(b"Full reading fixture"),
+            },
+        )
+        .await
+        .unwrap();
+        let hash = uploaded["source_hash"].as_str().unwrap();
+        pool.writer()
+            .patch(
+                &format!("document/hades_reading_sources/{hash}"),
+                &json!({"status":"ready","structured":{"format":"docling-blocks-v1","blocks":[]}}),
+            )
+            .await
+            .unwrap();
+        reading::open(
+            &pool,
+            OpenRequest {
+                id: "full".into(),
+                title: "Full reading".into(),
+                source_hash: hash.into(),
+                actor: "human".into(),
+            },
+        )
+        .await
+        .unwrap();
+        reading::mutate(
+            &pool,
+            request(
+                "full",
+                0,
+                Action::Bound {
+                    is: "Saved work".into(),
+                    is_not: "Disposable work".into(),
+                },
+            ),
+            false,
+        )
+        .await
+        .unwrap();
+        // Real journal entries exercise the export query and its single-batch limit.
+        for revision in 1..MAX_SESSION_EVENTS {
+            reading::mutate(
+                &pool,
+                request("full", revision, Action::Focus { references: vec![] }),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let archive = request(
+            "full",
+            MAX_SESSION_EVENTS,
+            Action::Archive { archived: true },
+        );
+        assert!(reading::mutate(&pool, archive.clone(), true).await.is_err());
+        let receipt = reading::mutate(&pool, archive.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            reading::mutate(&pool, archive, false).await.unwrap(),
+            receipt
+        );
+        for revision in MAX_SESSION_EVENTS + 1..MAX_SESSION_EVENTS + ARCHIVE_EVENT_ALLOWANCE {
+            assert!(
+                reading::mutate(
+                    &pool,
+                    request("full", revision, Action::Focus { references: vec![] }),
+                    false
+                )
+                .await
+                .is_err()
+            );
+            reading::mutate(
+                &pool,
+                request(
+                    "full",
+                    revision,
+                    Action::Archive {
+                        archived: revision % 2 == 0,
+                    },
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let revision = MAX_SESSION_EVENTS + ARCHIVE_EVENT_ALLOWANCE;
+        assert!(
+            reading::mutate(
+                &pool,
+                request("full", revision, Action::Archive { archived: true }),
+                false
+            )
+            .await
+            .is_err()
+        );
+        let export = reading::read(
+            &pool,
+            ReadRequest {
+                session: Some("full".into()),
+                source_hash: None,
+                view: "export".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(export["session"]["revision"], revision);
+        assert_eq!(export["session"]["archived"], false);
+        assert_eq!(export["session"]["bound"]["is"], "Saved work");
+        assert_eq!(export["events"].as_array().unwrap().len() as u64, revision);
+        assert_eq!(export["chain_valid"], true);
+        assert_eq!(
+            pool.writer()
+                .get("collection/reading_full_nodes/count")
+                .await
+                .unwrap()["count"],
+            1
+        );
+    })
+    .await;
+}

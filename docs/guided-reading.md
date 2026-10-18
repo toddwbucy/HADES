@@ -3,12 +3,10 @@
 HADES provides a human-led reading desk at `/reading`. The human marks source
 passages and their meaning. An agent in its own terminal reads those exact
 references and proposes notes or connections. Only human acceptance publishes
-interpretation to the graph. No agent chat, model credentials, or agent execution
-runs in the browser.
-
-For the proposed embedded chat workflow, see the
-[Codex conversation investigation](specs/codex-reading.md). It records verified
-session ownership and recovery behavior; the chat panel is not implemented yet.
+interpretation to the graph. The optional [Codex Chat tab](codex-reading.md)
+connects a conversation to the reading; the daemon owns agent execution and credentials.
+See the [Codex conversation investigation](specs/codex-reading.md) for session
+ownership and recovery behavior.
 
 ## Start a reading workspace
 
@@ -84,6 +82,32 @@ do not isolate a hostile process with the operator's filesystem or database acce
 Use *Lost in the Middle* or another source for human testing only after choosing
 the intended database. Automated write tests use isolated databases and synthetic
 sources. Do not treat test acceptances as reviewed research.
+
+## Keep the reading desk tidy
+
+Adding the same document again resumes its saved reading, including when the
+filename changes but the bytes are identical. Existing readings keep their title,
+boundaries, notes, and conversation bindings. When several readings already exist,
+HADES selects the oldest active reading, falling back to the oldest removed one.
+Changed file contents are a different source.
+
+Choose **Remove from desk** on a reading card to hide it from the active list.
+Use **Removed from desk → Restore to desk** to bring it back. Removal and restoration
+are recorded human actions; they retain the original, corrections, highlights,
+accepted graph objects, and conversation history. Save or clear unfinished edits
+and chat text before removing the selected reading. An interrupted action keeps
+its exact retry receipt. Removing a reading does not stop its conversation worker;
+release a running conversation separately when needed.
+
+Under **Archived sources and recovery**, **Open saved reading** resumes or restores
+an existing reading. **Start a separate reading** deliberately creates fresh
+boundaries and notes for the same source. Existing duplicates are not merged;
+remove the copies you no longer want on the desk.
+
+On desktop screens, **Wide layout** expands both side panels, giving the chat panel
+more room for conversation text. Narrow screens retain the stacked layout.
+See the [wide-layout screenshot](screenshots/reading-desk-wide.png) and
+[browser regression evidence](specs/reading-desk-evidence.json).
 
 ## Source fidelity and anchors
 
@@ -187,8 +211,10 @@ retrieval remains available through the graph workspace for already-indexed cont
 ## Bounds and recovery
 
 This first slice accepts originals up to 8 MiB and structured surfaces up to 4 MiB.
-Sessions allow 2,000 events, 8 MiB of event history, and a 2 MiB current projection, with explicit errors at
-those limits. Lists show at most 100 sessions/sources and report partial results.
+Sessions allow 2,000 events, plus a reserve of 50 removal/restoration
+events after that limit. Exports include the entire permitted event chain. The
+8 MiB event-history and 2 MiB current-projection limits still apply, with explicit
+errors when a limit is reached. Lists show at most 100 sessions/sources and report partial results.
 Focus accepts six references. Agent context is capped at 12,000 serialized bytes;
 large packets fall back to identifiers with an explicit expansion notice.
 
@@ -196,6 +222,7 @@ large packets fall back to identifiers with an explicit expansion notice.
 hades --db reading_trial reading read
 hades --db reading_trial reading read --session SESSION --view export
 hades --db reading_trial reading read --view sources
+hades --db reading_trial reading read --view archived
 hades --db reading_trial reading extract SOURCE_SHA256
 hades --db reading_trial reading apply /private/exact-saved-mutation.json
 ```

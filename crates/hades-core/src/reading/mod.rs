@@ -97,7 +97,7 @@ async fn optional(client: &ArangoClient, path: &str) -> Result<Option<Value>, Ar
     }
 }
 async fn rows(client: &ArangoClient, query: &str, bind: Value) -> Result<Vec<Value>, ArangoError> {
-    let v=client.post("cursor",&json!({"query":query,"bindVars":bind,"batchSize":2001,"ttl":10,"options":{"maxRuntime":10}})).await?;
+    let v=client.post("cursor",&json!({"query":query,"bindVars":bind,"batchSize":MAX_SESSION_EVENTS+ARCHIVE_EVENT_ALLOWANCE+1,"ttl":10,"options":{"maxRuntime":10}})).await?;
     Ok(crate::db::query::completed_rows(&v)?.to_vec())
 }
 
@@ -110,7 +110,7 @@ pub async fn capabilities(config: &HadesConfig) -> Result<Value, HandlerError> {
         .await
         .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
     Ok(
-        json!({"format":FORMAT,"extensions":info.reading_extensions,"features":info.features,"max_source_bytes":8*1024*1024,"max_session_events":2000,"palette":{"version":"reading/v1","labels":["node","is","is_not","question"]}}),
+        json!({"format":FORMAT,"extensions":info.reading_extensions,"features":info.features,"max_source_bytes":8*1024*1024,"max_session_events":MAX_SESSION_EVENTS,"archive_event_allowance":ARCHIVE_EVENT_ALLOWANCE,"palette":{"version":"reading/v1","labels":["node","is","is_not","question"]}}),
     )
 }
 
@@ -213,6 +213,29 @@ pub async fn extract(
 }
 
 pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerError> {
+    open_internal(pool, p, false).await
+}
+
+/// Default desk entry point: reuse a saved reading, including pre-existing IDs.
+/// A deterministic new ID makes concurrent additions and lost-response retries
+/// converge without creating extra reading graphs. Full hashes still validate identity.
+pub async fn open_or_resume(pool: &ArangoPool, mut p: OpenRequest) -> Result<Value, HandlerError> {
+    hash_valid(&p.source_hash)?;
+    Session::new(&p).map_err(invalid)?;
+    ensure(pool).await?;
+    let existing = rows(pool.writer(), "FOR s IN hades_reading_sessions FILTER s.state.source_hash == @hash SORT s.state.archived == true ASC, s.opened_at ASC, s._key ASC LIMIT 1 RETURN s.state", json!({"hash":p.source_hash})).await.map_err(db_error)?;
+    if let Some(state) = existing.first() {
+        return Ok(state.clone());
+    }
+    p.id = format!("s_{}", &p.source_hash[..30]);
+    open_internal(pool, p, true).await
+}
+
+async fn open_internal(
+    pool: &ArangoPool,
+    p: OpenRequest,
+    reuse: bool,
+) -> Result<Value, HandlerError> {
     hash_valid(&p.source_hash)?;
     let mut s = Session::new(&p).map_err(invalid)?;
     if s.graph.contains('-') {
@@ -235,7 +258,7 @@ pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerErr
         .map_err(db_error)?
     {
         if existing["state"]["source_hash"] != p.source_hash
-            || existing["state"]["title"] != p.title
+            || (!reuse && existing["state"]["title"] != p.title)
         {
             return Err(invalid(
                 "session identity already belongs to different content",
@@ -293,8 +316,11 @@ pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerErr
     let definition = json!({"name":s.graph,"edgeDefinitions":[{"collection":format!("{}_edges",s.graph),"from":s.graph_collections,"to":s.graph_collections}]});
     match pool.writer().post("gharial", &definition).await {
         Ok(_) => {}
+        // Concurrent graph creation can report either "graph already exists"
+        // or a primary-key collision in _graphs. Reuse only a verified match.
         Err(ArangoError::Api {
-            error_num: 1925, ..
+            error_num: 1925 | 1210,
+            ..
         }) => {
             let existing = pool
                 .writer()
@@ -309,7 +335,7 @@ pub async fn open(pool: &ArangoPool, p: OpenRequest) -> Result<Value, HandlerErr
     }
     transaction::run(pool,vec![SESSIONS.into(),EVENTS.into()],move|client|async move{
         if let Some(existing)=optional(&client,&format!("document/{SESSIONS}/{}",s.id)).await?{
-            if existing["state"]["source_hash"]!=p.source_hash || existing["state"]["title"]!=p.title{return Err(conflict("session identity already belongs to different content"))}
+            if existing["state"]["source_hash"]!=p.source_hash || (!reuse && existing["state"]["title"]!=p.title){return Err(conflict("session identity already belongs to different content"))}
             return Ok(existing["state"].clone());
         }
         client.post(&format!("document/{SESSIONS}"),&json!({"_key":s.id,"state":s,"opened_by":p.actor,"opened_at":chrono::Utc::now().to_rfc3339(),"format":FORMAT})).await?;
@@ -430,7 +456,7 @@ pub async fn read(pool: &ArangoPool, p: ReadRequest) -> Result<Value, HandlerErr
         };
     }
     let Some(id) = p.session else {
-        let result=rows(pool.writer(),"FOR s IN hades_reading_sessions SORT s.opened_at DESC LIMIT 101 RETURN {id:s._key,title:s.state.title,source_hash:s.state.source_hash,stage:s.state.stage,revision:s.state.revision}",json!({})).await;
+        let result=rows(pool.writer(),"FOR s IN hades_reading_sessions FILTER (s.state.archived == true) == @archived SORT s.opened_at DESC, s._key ASC LIMIT 101 RETURN {id:s._key,title:s.state.title,source_hash:s.state.source_hash,stage:s.state.stage,revision:s.state.revision,archived:s.state.archived == true}",json!({"archived":p.view == "archived"})).await;
         return match result {
             Ok(v) => Ok(
                 json!({"sessions":v.iter().take(100).collect::<Vec<_>>(),"partial":v.len()>100,"database":pool.database()}),
@@ -476,7 +502,7 @@ pub async fn read(pool: &ArangoPool, p: ReadRequest) -> Result<Value, HandlerErr
         let revision = state["revision"]
             .as_u64()
             .ok_or_else(|| invalid("session revision missing"))?;
-        let events=rows(pool.writer(),"FOR e IN hades_reading_events FILTER e.session == @session AND e.sequence <= @revision SORT e.sequence LIMIT 2001 RETURN e",json!({"session":id,"revision":revision})).await.map_err(db_error)?;
+        let events=rows(pool.writer(),"FOR e IN hades_reading_events FILTER e.session == @session AND e.sequence <= @revision SORT e.sequence LIMIT @limit RETURN e",json!({"session":id,"revision":revision,"limit":MAX_SESSION_EVENTS+ARCHIVE_EVENT_ALLOWANCE+1})).await.map_err(db_error)?;
         let mut previous = String::new();
         let mut chain_valid = events.len() as u64 == state["revision"].as_u64().unwrap_or(u64::MAX);
         for (index, event) in events.iter().enumerate() {

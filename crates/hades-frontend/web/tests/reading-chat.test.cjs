@@ -216,3 +216,20 @@ test('unsettled exchanges still render matching live output before the monitor s
     assert(text.includes('Current streamed answer')); assert(text.includes(status));
   }
 });
+
+test('removing the selected reading clears chat and discards a late poll', async () => {
+  let resolve;
+  const {chat, saved, pendingChatKey} = transcriptFixture(() => new Promise(r => {resolve = r;}));
+  chat.session = 'reading'; chat.references = [{item_id:'previous'}];
+  chat.exchanges.set('previous', {message:'Previous reading'});
+  const key = pendingChatKey('test', 'binding'); saved.set(key, JSON.stringify({request_id:'request_one'}));
+  const pending = chat.poll();
+  chat.getState = () => null;
+  await chat.selectReading();
+  assert.equal(chat.session, null); assert.equal(chat.binding, null);
+  assert.equal(chat.exchanges.size, 0); assert.equal(chat.references.length, 0);
+  assert.equal(chat.$('chat-controls').hidden, true);
+  resolve(historyPage(5)); await pending;
+  assert.equal(chat.exchanges.size, 0);
+  assert(saved.has(key), 'pending submission remains recoverable after restoration');
+});

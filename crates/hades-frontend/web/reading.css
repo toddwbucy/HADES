@@ -14,4 +14,12 @@ header{position:sticky;top:0;z-index:20;background:var(--bg);flex-wrap:wrap}.vie
 /* Document-bound conversation; source and chat retain independent scrolling. */
 #chat .controls{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}#chat button{font-size:12px}#chat select{width:100%;font-size:12px}#chat label{margin-top:12px}#chat-messages{max-height:48vh;min-height:120px;overflow:auto;margin:16px 0;overscroll-behavior:contain}.chat-exchange{border-top:1px solid var(--line);padding:14px 0}.chat-exchange p{white-space:pre-wrap;overflow-wrap:anywhere}#chat pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:220px;overflow:auto}#chat-browser{max-height:35vh;overflow:auto}#chat details{margin:8px 0}#chat summary{cursor:pointer;font-size:12px;color:var(--muted)}#chat-approvals .card{border-color:var(--accent)}
 
-@media(min-width:1101px){main:has(#chat:not([hidden])),body.wide main:has(#chat:not([hidden])){grid-template-columns:220px minmax(0,1fr) minmax(390px,32%)}}
+@media(min-width:1101px){main:has(#chat:not([hidden])){grid-template-columns:220px minmax(0,1fr) minmax(390px,32%)}}
+
+/* Wide layout shares the extra width with both side panels, especially chat. */
+@media(min-width:1101px){
+ body.wide main{grid-template-columns:clamp(240px,18vw,360px) minmax(0,1fr) clamp(400px,36vw,1000px)}
+ body.wide main:has(#chat:not([hidden])){grid-template-columns:clamp(240px,18vw,360px) minmax(0,1fr) clamp(420px,38vw,1000px)}
+}
+#sessions>.card>.session{margin:0 0 8px;border:0;padding:0}
+#archived-sessions .card>button{display:block;margin-top:8px}

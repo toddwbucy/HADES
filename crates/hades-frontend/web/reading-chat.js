@@ -62,7 +62,18 @@ export class ReadingChat {
     try {await fn();} catch (e) {this.note(e.message, true);} finally {this.acting = false;}
   }
   async selectReading() {
-    const state = this.getState(); if (!state || this.session === state.id) return;
+    const state = this.getState();
+    if (!state) {
+      this.epoch++; this.session = null; this.binding = null; this.references = [];
+      this.exchanges.clear(); this.olderCursor = undefined; this.savedBindings = [];
+      this.lastSignature = ''; this.approvalSignature = ''; this.lastError = null;
+      for (const id of ['chat-messages', 'chat-approvals', 'chat-browser', 'chat-bindings', 'chat-passages', 'chat-knowledge']) this.$(id).replaceChildren();
+      this.$('chat-controls').hidden = true;
+      this.$('chat-context-note').textContent = ''; this.renderReferences();
+      this.note('Choose a reading to connect.');
+      return;
+    }
+    if (this.session === state.id) return;
     const epoch = ++this.epoch; this.session = state.id; this.binding = null; this.references = [];
     this.lastSignature = ''; this.approvalSignature = ''; this.$('chat-messages').replaceChildren();
     this.$('chat-approvals').replaceChildren(); this.$('chat-browser').replaceChildren();

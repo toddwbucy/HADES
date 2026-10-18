@@ -149,6 +149,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(backend: Option<ReadingBackend>)
         .route("/api/reading/upload", post(upload))
         .route("/api/reading/extract", post(extract))
         .route("/api/reading/open", post(open))
+        .route("/api/reading/open-or-resume", post(open_or_resume))
         .route("/api/reading/mutate", post(mutate))
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
         .route_layer(middleware::from_fn_with_state(
@@ -235,6 +236,9 @@ async fn upload(State(s): State<ReadingState>, Json(p): Json<SourceRequest>) -> 
 }
 async fn open(State(s): State<ReadingState>, Json(p): Json<OpenRequest>) -> Response {
     call(s, DaemonCommand::ReadingOpen(p)).await
+}
+async fn open_or_resume(State(s): State<ReadingState>, Json(p): Json<OpenRequest>) -> Response {
+    call(s, DaemonCommand::ReadingOpenOrResume(p)).await
 }
 async fn mutate(State(s): State<ReadingState>, Json(p): Json<Mutation>) -> Response {
     call(s, DaemonCommand::ReadingMutate(p)).await
