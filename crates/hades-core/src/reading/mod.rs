@@ -97,7 +97,7 @@ async fn optional(client: &ArangoClient, path: &str) -> Result<Option<Value>, Ar
     }
 }
 async fn rows(client: &ArangoClient, query: &str, bind: Value) -> Result<Vec<Value>, ArangoError> {
-    let v=client.post("cursor",&json!({"query":query,"bindVars":bind,"batchSize":2001,"ttl":10,"options":{"maxRuntime":10}})).await?;
+    let v=client.post("cursor",&json!({"query":query,"bindVars":bind,"batchSize":MAX_SESSION_EVENTS+ARCHIVE_EVENT_ALLOWANCE+1,"ttl":10,"options":{"maxRuntime":10}})).await?;
     Ok(crate::db::query::completed_rows(&v)?.to_vec())
 }
 
@@ -110,7 +110,7 @@ pub async fn capabilities(config: &HadesConfig) -> Result<Value, HandlerError> {
         .await
         .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
     Ok(
-        json!({"format":FORMAT,"extensions":info.reading_extensions,"features":info.features,"max_source_bytes":8*1024*1024,"max_session_events":2000,"palette":{"version":"reading/v1","labels":["node","is","is_not","question"]}}),
+        json!({"format":FORMAT,"extensions":info.reading_extensions,"features":info.features,"max_source_bytes":8*1024*1024,"max_session_events":MAX_SESSION_EVENTS,"archive_event_allowance":ARCHIVE_EVENT_ALLOWANCE,"palette":{"version":"reading/v1","labels":["node","is","is_not","question"]}}),
     )
 }
 
@@ -502,7 +502,7 @@ pub async fn read(pool: &ArangoPool, p: ReadRequest) -> Result<Value, HandlerErr
         let revision = state["revision"]
             .as_u64()
             .ok_or_else(|| invalid("session revision missing"))?;
-        let events=rows(pool.writer(),"FOR e IN hades_reading_events FILTER e.session == @session AND e.sequence <= @revision SORT e.sequence LIMIT 2001 RETURN e",json!({"session":id,"revision":revision})).await.map_err(db_error)?;
+        let events=rows(pool.writer(),"FOR e IN hades_reading_events FILTER e.session == @session AND e.sequence <= @revision SORT e.sequence LIMIT @limit RETURN e",json!({"session":id,"revision":revision,"limit":MAX_SESSION_EVENTS+ARCHIVE_EVENT_ALLOWANCE+1})).await.map_err(db_error)?;
         let mut previous = String::new();
         let mut chain_valid = events.len() as u64 == state["revision"].as_u64().unwrap_or(u64::MAX);
         for (index, event) in events.iter().enumerate() {

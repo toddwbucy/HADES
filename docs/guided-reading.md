@@ -211,8 +211,10 @@ retrieval remains available through the graph workspace for already-indexed cont
 ## Bounds and recovery
 
 This first slice accepts originals up to 8 MiB and structured surfaces up to 4 MiB.
-Sessions allow 2,000 events, 8 MiB of event history, and a 2 MiB current projection, with explicit errors at
-those limits. Lists show at most 100 sessions/sources and report partial results.
+Sessions allow 2,000 events, plus a reserve of 50 removal/restoration
+events after that limit. Exports include the entire permitted event chain. The
+8 MiB event-history and 2 MiB current-projection limits still apply, with explicit
+errors when a limit is reached. Lists show at most 100 sessions/sources and report partial results.
 Focus accepts six references. Agent context is capped at 12,000 serialized bytes;
 large packets fall back to identifiers with an explicit expansion notice.
 

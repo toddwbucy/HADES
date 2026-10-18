@@ -678,3 +678,132 @@ async fn desk_resumes_identical_sources_and_archives_without_losing_work() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn full_readings_can_be_archived_and_restored_with_a_complete_bounded_export() {
+    with_temp_db("reading_full", Fixtures::Empty, |pool| async move {
+        let uploaded = reading::upload(
+            &pool,
+            SourceRequest {
+                filename: "full.txt".into(),
+                content_base64: base64::engine::general_purpose::STANDARD
+                    .encode(b"Full reading fixture"),
+            },
+        )
+        .await
+        .unwrap();
+        let hash = uploaded["source_hash"].as_str().unwrap();
+        pool.writer()
+            .patch(
+                &format!("document/hades_reading_sources/{hash}"),
+                &json!({"status":"ready","structured":{"format":"docling-blocks-v1","blocks":[]}}),
+            )
+            .await
+            .unwrap();
+        reading::open(
+            &pool,
+            OpenRequest {
+                id: "full".into(),
+                title: "Full reading".into(),
+                source_hash: hash.into(),
+                actor: "human".into(),
+            },
+        )
+        .await
+        .unwrap();
+        reading::mutate(
+            &pool,
+            request(
+                "full",
+                0,
+                Action::Bound {
+                    is: "Saved work".into(),
+                    is_not: "Disposable work".into(),
+                },
+            ),
+            false,
+        )
+        .await
+        .unwrap();
+        // Real journal entries exercise the export query and its single-batch limit.
+        for revision in 1..MAX_SESSION_EVENTS {
+            reading::mutate(
+                &pool,
+                request("full", revision, Action::Focus { references: vec![] }),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let archive = request(
+            "full",
+            MAX_SESSION_EVENTS,
+            Action::Archive { archived: true },
+        );
+        assert!(reading::mutate(&pool, archive.clone(), true).await.is_err());
+        let receipt = reading::mutate(&pool, archive.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            reading::mutate(&pool, archive, false).await.unwrap(),
+            receipt
+        );
+        for revision in MAX_SESSION_EVENTS + 1..MAX_SESSION_EVENTS + ARCHIVE_EVENT_ALLOWANCE {
+            assert!(
+                reading::mutate(
+                    &pool,
+                    request("full", revision, Action::Focus { references: vec![] }),
+                    false
+                )
+                .await
+                .is_err()
+            );
+            reading::mutate(
+                &pool,
+                request(
+                    "full",
+                    revision,
+                    Action::Archive {
+                        archived: revision % 2 == 0,
+                    },
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let revision = MAX_SESSION_EVENTS + ARCHIVE_EVENT_ALLOWANCE;
+        assert!(
+            reading::mutate(
+                &pool,
+                request("full", revision, Action::Archive { archived: true }),
+                false
+            )
+            .await
+            .is_err()
+        );
+        let export = reading::read(
+            &pool,
+            ReadRequest {
+                session: Some("full".into()),
+                source_hash: None,
+                view: "export".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(export["session"]["revision"], revision);
+        assert_eq!(export["session"]["archived"], false);
+        assert_eq!(export["session"]["bound"]["is"], "Saved work");
+        assert_eq!(export["events"].as_array().unwrap().len() as u64, revision);
+        assert_eq!(export["chain_valid"], true);
+        assert_eq!(
+            pool.writer()
+                .get("collection/reading_full_nodes/count")
+                .await
+                .unwrap()["count"],
+            1
+        );
+    })
+    .await;
+}

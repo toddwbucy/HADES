@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const FORMAT: &str = "hades-guided-reading/v1";
+pub const MAX_SESSION_EVENTS: u64 = 2000;
+pub const ARCHIVE_EVENT_ALLOWANCE: u64 = 50;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
@@ -307,7 +309,12 @@ impl Session {
         if self.revision != p.expected_revision {
             return Err("stale session revision; reload before changing it".into());
         }
-        if self.revision >= 2000 {
+        // Keep a bounded reserve so a full reading can leave the active desk.
+        let archive = matches!(p.action, Action::Archive { .. });
+        if archive && self.revision >= MAX_SESSION_EVENTS + ARCHIVE_EVENT_ALLOWANCE {
+            return Err("reading archive event allowance exhausted; export this work".into());
+        }
+        if self.revision >= MAX_SESSION_EVENTS && !archive {
             return Err(
                 "session event limit reached; export this work before starting another session"
                     .into(),
