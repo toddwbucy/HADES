@@ -32,6 +32,8 @@ use super::mcp_server;
 /// Options for the optional LAN MCP endpoint (#155).
 #[derive(Debug, Clone)]
 pub struct McpOptions {
+    /// Deny direct knowledge writes on this MCP endpoint.
+    pub guided_reading: bool,
     /// Explicit bind address, e.g. `192.168.0.10:8088`. Must be loopback,
     /// RFC1918, or IPv6 unique-local — validated before any socket opens.
     pub bind: String,
@@ -127,7 +129,16 @@ async fn run_inner(
                      every database name. Remove the flag to disable provisioning."
                 );
             }
-            let policy = if opts.provision_db_prefixes.is_empty()
+            let mut policy = if opts.guided_reading {
+                anyhow::ensure!(
+                    !opts.provision_db_prefixes.is_empty(),
+                    "--mcp-guided-reading requires an explicit --mcp-db-prefix"
+                );
+                ConnectionPolicy::agent_with_provisioning(service::ProvisioningLimits {
+                    database_prefixes: opts.provision_db_prefixes.clone(),
+                    ingest_roots: vec![],
+                })
+            } else if opts.provision_db_prefixes.is_empty()
                 || opts.provision_ingest_roots.is_empty()
             {
                 if !opts.provision_db_prefixes.is_empty() || !opts.provision_ingest_roots.is_empty()
@@ -151,6 +162,7 @@ async fn run_inner(
                 );
                 ConnectionPolicy::agent_with_provisioning(limits)
             };
+            policy.guided_reading = opts.guided_reading;
             // Build the full app before spawning: router/pool-cache
             // failures stop daemon startup here instead of dying silently
             // in a background task.
@@ -276,12 +288,20 @@ async fn handle_connection(
             Err(_) => return Ok(()), // client stalled mid-payload → close
         }
 
+        let request_timeout = if serde_json::from_slice::<serde_json::Value>(&payload)
+            .ok()
+            .is_some_and(|v| v["command"] == "reading.extract")
+        {
+            Duration::from_secs(610)
+        } else {
+            REQUEST_TIMEOUT
+        };
         let response = service::handle_request(
             pool,
             config,
             ConnectionPolicy::local_admin(),
             &payload,
-            REQUEST_TIMEOUT,
+            request_timeout,
         )
         .await;
 

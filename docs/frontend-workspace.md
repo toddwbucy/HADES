@@ -58,7 +58,15 @@ characters, and caps the serialized packet at 12,000 characters. Truncation is
 explicit. The tray lives only in the tab's memory. A copied view link restores
 the selected node or edge in the workspace, subject to current access and existence.
 
-## Current boundaries
+## Guided document reading
+
+The separate `/reading` desk now implements guided reading through a scoped daemon
+connection. See [Guided document reading](guided-reading.md) for setup, controls,
+format fidelity, persistence, and validation. The graph workspace described above
+retains its CLI-backed read-only API. Its copied tray is separate from the reading
+desk's durable focus and pins.
+
+## Current graph-workspace boundaries
 
 This slice is read-only. Editing, embedding submission, job progress, durable
 conversation sessions, automatic agent notifications, and live change subscriptions
@@ -95,9 +103,10 @@ against an explicitly selected, already-ingested corpus.
 
 ## Adopted direction: guided reading
 
-Owner decisions recorded on 2026-10-17. These describe future implementation,
-not controls shipped in this read-only workspace. They supersede the previous
-embedded-chat recommendation.
+Owner decisions recorded on 2026-10-17. This section retains the adopted design
+and original implementation sequence. The current implementation and its limits
+are recorded in [Guided document reading](guided-reading.md). These decisions
+supersede the previous embedded-chat recommendation.
 
 The workspace supports deliberate reading and development of theory. Claude Code
 runs in its own terminal. HADES supplies shared references, durable pin sets,

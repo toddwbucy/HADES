@@ -32,6 +32,21 @@ where
     F: FnOnce(ArangoClient) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ArangoError>> + Send + 'static,
 {
+    run_with_reads(pool, collections, Vec::new(), operation).await
+}
+
+/// As `run`, with explicit read-only collections for validating referenced endpoints.
+pub async fn run_with_reads<T, F, Fut>(
+    pool: &ArangoPool,
+    collections: Vec<String>,
+    read_collections: Vec<String>,
+    operation: F,
+) -> Result<T, ArangoError>
+where
+    T: Send + 'static,
+    F: FnOnce(ArangoClient) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ArangoError>> + Send + 'static,
+{
     if collections.is_empty() {
         return Err(ArangoError::Request(
             "transaction requires collections".into(),
@@ -44,7 +59,7 @@ where
             .post(
                 "transaction/begin",
                 &json!({
-                    "collections": {"exclusive": collections, "allowImplicit": false},
+                    "collections": {"exclusive": collections, "read": read_collections, "allowImplicit": false},
                     "lockTimeout": 5, "maxTransactionSize": 32 * 1024 * 1024
                 }),
             )

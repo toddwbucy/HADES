@@ -67,7 +67,7 @@ Acquire::Languages "none";
 ''')
                 env['APT_CONFIG'] = str(config)
                 (root / 'status').write_text('')
-                for document in ('README.md', 'scripts/install/test/Dockerfile.fresh-vps'):
+                for document in ('docs/installation.md', 'scripts/install/test/Dockerfile.fresh-vps'):
                     with self.subTest(document=document):
                         source = (ROOT / document).read_text()
                         match = re.search(r'deb (\[[^\]]+\] )?https://download.arangodb.com/arangodb312/DEBIAN/ /', source)

@@ -5,16 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Local WebGL graph-visualization frontend for HADES graphs (loosely coupled — consumes the `hades` CLI JSON contract)"
+description = "Local HADES graph and guided-reading workspace"
 
 [[bin]]
 name = "hades-viewer"
 path = "src/main.rs"
 
-# Loose coupling by design: this crate depends on NO other HADES crate. It talks
-# to HADES only through the `hades` CLI's JSON/jsonl output contract, so the
-# backend we know works stays untouched. See crate docs in src/main.rs.
 [dependencies]
+hades-core = { path = "../hades-core" }
 libc.workspace = true
 tokio.workspace = true
 axum.workspace = true

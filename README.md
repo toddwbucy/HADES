@@ -1,381 +1,300 @@
-# H.A.D.E.S. 
-### Human Augmented Data Exploration System
+# H.A.D.E.S.
+
+**Human Augmented Data Exploration System**
+
+<img src="crates/hades-frontend/web/hades-logo.png" alt="HADES logo" width="560">
 
 [![CI](https://github.com/toddwbucy/HADES/actions/workflows/ci.yml/badge.svg)](https://github.com/toddwbucy/HADES/actions/workflows/ci.yml)
 
-## *for ontology-grounded context engineering*
+HADES is a local knowledge workspace for reading sources, building persistent
+knowledge graphs, and working with an agent over the same evidence. The human
+explores and reviews in a browser. The agent retrieves context and proposes work
+through MCP. Rust services and ArangoDB hold the objects, relationships, source
+references, and review history behind both interfaces.
 
-**HADES** (Human Augmented Data Exploration System) is research infrastructure for low-latency retrieval-augmented generation over persistent, ontology-grounded knowledge graphs. It was developed as the context-management substrate for the Nested Learning research program — a year-long effort to implement and validate published work on nested-optimization memory systems from the Mirrokni et al. research group (arXiv:2512.24695, arXiv:2501.00663) — and has been empirically validated through daily use as the retrieval backend for both local inference (24–32B Qwen and Mistral variants) and commercial coding agents (Claude Code) during the project's own development.
+The human decides what matters. In guided reading, no interpretive note or
+substantive relationship becomes accepted knowledge without human acceptance.
+Archiving a source and extracting its structure are separate from accepting an
+interpretation of it. IS and IS NOT boundaries state what a node represents and
+excludes in its source context; an unstated boundary stays unresolved.
 
-The design premise under investigation is that context engineering — the structured construction of what an agent retrieves and reads on each turn — is more often the binding constraint on sustained agent coherence than raw model capability. HADES pursues this through an ontology-grounded schema and a closed operation vocabulary that together produce traceable, structured retrieval: the kind of context discipline that on-premises agent workflows require to remain coherent across long-horizon tasks.
+**Status:** active development. This README describes the current source tree.
+Guided reading and the recent workspace changes are under
+[Unreleased](CHANGELOG.md#unreleased), not a claim about an installed release.
+The browser, CLI, MCP, extraction, and embedding components must be configured
+for the workflows you use.
 
-The context-engineering methodology and schema this rests on — how a foundation document and a codebase become an axiom-gated ("IS / IS-NOT") knowledge graph in which concepts, smells, and code must *earn* their place by tracing to ratified axioms, and in which non-connection becomes a queryable signal — is formalized in **[Bastion/graph-methodology.md](Bastion/graph-methodology.md)**.
+## What you can do
 
-HADES is one *species* of a more general method — a **bastion**: a project's canon stood up as a context graph and wired into the code and release pipeline as a governance layer, on any graph-capable backend. The backend-agnostic founding document is **[Bastion/foundation/the-bastion.md](Bastion/foundation/the-bastion.md)** (the architecture), serving the philosophical foundation in **[Bastion/foundation/bastion-of-context.md](Bastion/foundation/bastion-of-context.md)** (the *why*). `graph-methodology.md` is the ArangoDB reference implementation of that method.
+| Workflow | Current capability |
+| --- | --- |
+| Explore a knowledge graph | Choose databases and graphs, browse outlines and glossary terms, inspect nodes and edges, search indexed content, and copy exact references for an agent. |
+| Read a source with an agent | Upload a supported document, bound the reading, highlight passages, share focus, review proposals, accept notes and connections, and arrange an outline. |
+| Compare and correct extraction | View the converted text beside the original PDF, correct transcription errors, inspect revision history, and reveal the wording used by an earlier note. |
+| Import a graphable document | Mechanically map declared headings, glossary terms, keywords, illustrations, and references from Markdown, preserving source versions and repeat-import identities. |
+| Create and extend graphs through MCP | Provision an authorized database, create an authored graph, and add nodes or edges through scoped tools. Guided-reading endpoints deliberately restrict agents to proposals. |
+| Index documents and code | Extract, chunk, embed, and retrieve source content. Code analysis records symbols and relationships with analyzer provenance. |
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────┐
-│                  hades (CLI)                          │
-│          14 command groups, ~85 subcommands          │
-└──────────────┬───────────────────────┬───────────────┘
-               │                       │
-   ┌───────────▼──────────┐  ┌─────────▼────────────┐
-   │     hades-core        │  │     hades-proto       │
-   │  ArangoDB client,     │  │  gRPC/protobuf for    │
-   │  graph engine,        │  │  Persephone provider  │
-   │  code analysis,       │  │  protocol             │
-   │  pipeline, chunking   │  │                       │
-   └───────────┬───────────┘  └───────────────────────┘
-               │
-   ┌───────────▼──────────┐
-   │   hades-prefetch      │
-   │  Async graph-aware    │
-   │  batch prefetcher     │
-   │  for GNN training     │
-   └───────────────────────┘
-```
-
-**External services** (GPU-bound, Python):
-
-- Embedder — Jina V4 (Qwen2.5-VL-3B + LoRA) via OpenAI-compatible HTTP on `http://localhost:8087/v1` (HADES-owned FastAPI service on dedicated GPU). The contract is the [Persephone Embedding API v1](docs/persephone-embedding-api.md).
-- Extractor — Docling VLM via gRPC on `/run/hades/extractor.sock`
-
-**Database**: ArangoDB over Unix socket at `/run/arangodb3/arangodb.sock`.
-
-## Design Decisions Relevant to the Research Questions
-
-**Unix sockets in the hot query path.** The query hot path — CLI client to daemon at `/run/hades/hades.sock`, daemon to ArangoDB at `/run/arangodb3/arangodb.sock` — uses Unix domain sockets. This is the load-bearing latency decision for query workloads and sets the floor for what the rest of the system can achieve. The embedder takes a different transport choice (HTTP-over-TCP localhost) because retrieval ingest is not latency-bound the same way and the OpenAI-compatible HTTP contract is what makes HADES engine-agnostic — see [PE-API v1](docs/persephone-embedding-api.md). The extractor remains on a Unix socket for now.
-
-**Closed operation vocabulary for model agents.** Models do not write raw AQL against HADES. The daemon exposes a bounded set of pseudo-code operations (`search`, `traverse`, `neighbors`, `materialize`, and so on) that are translated to AQL internally. The vocabulary is deliberately aligned with the training distribution of 24–32B-parameter Mistral and Qwen models, so that operation selection is reliable without task-specific fine-tuning. This also functions as a guardrail: the action space available to a model agent is finite and inspectable. See [docs/model-operation-vocabulary.md](docs/model-operation-vocabulary.md).
-
-**Ontology as data, not code.** Database ontologies are stored in the `hades_schema` collection and loaded at runtime. Schema evolution is a database operation, not a compile-and-deploy cycle. This makes it practical to run multiple research configurations from a single binary.
-
-**Tier-aware command dispatch.** The query daemon at `/run/hades/hades.sock` classifies commands into three tiers — Agent (safe reads and task management), Internal (diagnostics), and Admin (writes, DDL, raw AQL) — and supports opt-in client self-restriction via the request's `session` field. An AI-agent harness can declare `"session": "agent"` to have the daemon reject any commands above the Agent tier, preventing accidental admin actions from a model that was only meant to read. The tier metadata is documentation as much as enforcement: it makes the agent-safe command set inspectable. *Security against malicious clients is not the goal here; that is enforced at the ArangoDB layer via ACL grants on the dedicated `hades` ArangoDB user (configured at install time).* See [docs/daemon-protocol.md](docs/daemon-protocol.md).
-
-**Tiered multilingual code ingestion.** Rust uses `syn` plus rust-analyzer, Go uses Tree-sitter plus gopls, Python uses `rustpython-parser`, and C, C++, and CUDA use libclang. C-family ingestion understands namespaces, templates, overloads, calls, and CUDA kernel launches; it can consume a project's `compile_commands.json`. Registered Tree-sitter grammars provide lower-fidelity structural coverage when a dedicated analyzer is unavailable or fails. Every artifact records `semantic`, `structural`, or `text` provenance, and re-ingest will not replace a higher tier unless `--allow-analysis-downgrade` is explicit.
+The graph explorer offers Read, Split, and Graph views with Auto, Wide, and
+Compact layouts. The guided-reading desk has its own converted/original PDF
+controls and side-by-side layout. Agent conversations remain in the agent's
+terminal or client; HADES does not host a Codex or Claude Code chat session.
 
 ## Requirements
 
-**Runtime:**
+- **Linux and ArangoDB** for the local database and Unix-socket services.
+  Configure a database account and the socket paths it can access.
+- **Rust via rustup and `protoc`** to build. The compiler, rustfmt, and Clippy
+  versions are pinned in [rust-toolchain.toml](rust-toolchain.toml).
+- **Python services and model assets** for extraction or embedding. Docling
+  supplies document conversion. The reference embedder uses Jina embeddings v4
+  through the [embedding API contract](docs/persephone-embedding-api.md).
+- **A modern browser** for the workspace, with WebGL for the graph view.
 
-- [ArangoDB Community Edition](https://arango.ai/downloads/) — the persistent graph store. Required for all database-backed commands.
+Graph reads, authored graph writes, and mechanical Markdown import do not need
+an embedder. Guided-reading uploads need the extractor. Semantic search embeds
+its query, so it needs a working embedder as well as indexed content.
 
-For low-latency local deployments, HADES connects to ArangoDB over a Unix domain socket. If you are running local models and want the low-latency transport path the system was designed around, the [`arango-unix-proxy`](https://github.com/r3d91ll/arango-unix-proxy) project provides the socket proxy configuration.
+GPU choice, context length, batch size, model paths, and service addresses are
+local deployment settings. A model's maximum context is not a guarantee that it
+fits on a particular GPU. Measure on the target machine, including single-card
+installations, before increasing document limits.
 
-**Build:**
+## Build and configure
 
-- Rust edition 2024 (Rust 1.98.1)
+From a checkout, install the two Rust binaries into Cargo's binary directory:
 
-**Optional — only required for their respective command paths:**
-
-- Jina V4 embedder service exposing the [PE-API v1 HTTP contract](docs/persephone-embedding-api.md) (default `http://localhost:8087/v1`) — required for `hades embed`, `hades codebase ingest --embed`, and hybrid-search queries. Reference implementation in `services/embedding/http_server.py`.
-
-  *Two configs to keep aligned:* the embedder service's **server-side** listen address, GPU device, batch size, and idle timeout come from `/etc/hades/embedder.conf` (sourced by `hades-embedder.service` via `EnvironmentFile=`). HADES's **client-side** endpoint — where the daemon and CLI look for the embedder — comes from `embedding.service.socket` in `hades.yaml` (or the `HADES_EMBEDDER_SOCKET` env var, e.g. in `/etc/hades/daemon.conf`). The two must agree on host:port; changing one without the other silently sends client traffic to the wrong service. The `socket` field accepts `http://`, `https://`, `unix://`, and bare-path endpoint forms (the latter intended for the future `hades-weaver-bridge` Unix-socket adapter).
-
-- Docling extractor service on a Unix socket (default `/run/hades/extractor.sock`) — required for `hades extract` (paper / PDF ingestion).
-
-## Build
-
+```bash
+cargo install --locked --path crates/hades-cli
+cargo install --locked --path crates/hades-frontend
+hades --help
+hades-viewer --help
 ```
-cargo build              # debug
-cargo build --release    # release
-cargo test --workspace --lib --bins  # unit tests; DB fixtures skip without explicit setup
-cargo clippy --workspace --all-targets -- -D warnings  # lint
+
+Ensure Cargo's binary directory is on `PATH`. For development without installing,
+use `cargo build --locked --workspace`; binaries are in Cargo's debug target
+directory. No JavaScript build step is required for the bundled browser assets.
+
+Copy the configuration to a local file and review its database sockets, service
+endpoints, and resource settings before use:
+
+```bash
+install -d -m 700 "$HOME/.config/hades"
+cp -n config/hades.yaml "$HOME/.config/hades/hades.yaml"
+export HADES_CONFIG="$HOME/.config/hades/hades.yaml"
+export ARANGO_USERNAME=hades
+read -rsp 'ArangoDB password: ' ARANGO_PASSWORD
+export ARANGO_PASSWORD
 ```
 
-Binary: `target/debug/hades` or `target/release/hades`.
+Keep credentials out of YAML and Git. Set the same configuration and credentials
+in each terminal or service that launches HADES. Examples below use `research`
+as an example database, not a built-in default. Always select the database
+explicitly with `--db` (alias for `--database`). CLI output defaults to JSON on
+stdout, with logs and progress on stderr.
 
-### Test and pre-release verification
+For ArangoDB account setup and systemd installation, use the
+[system installation guide](docs/installation.md). For Python environments,
+bindings, and service entry points, use [Python services](services/README.md).
+Installing Python packages does not download every model or start services.
 
-CI gates Rust build/lint/unit and service-free contracts, Python CPU contracts,
-and isolated database workflows. The database runner provisions a private server
-and per-test databases; it does not discover or modify an installed HADES service.
+## Start with a database
+
+If you already have an authorized research database, use its name and inspect it
+before changing anything. To create a new one with credentials authorized to do so:
+
+```bash
+hades --db _system db create-database research
+hades --db research db schema init --seed empty
+hades --db research orient
+hades --db research db stats
+```
+
+Schema initialization above is for a new database. Do not force a schema reset on
+an existing corpus. Choose one of the workflows below to populate it.
+
+### Explore existing knowledge
+
+```bash
+hades-viewer serve --db research --hades-bin hades --bind 127.0.0.1:8088
+```
+
+Open **http://127.0.0.1:8088/** and choose a graph. Repeat `--db` to enable more
+databases in the picker. Omitting `--db` exposes all databases accessible to the
+configured account. Use an explicit list when you want a narrower workspace.
+
+The context tray copies bounded node/edge references and excerpts for an agent.
+A shared link can reopen a selected object. The graph explorer is read-only and
+uses **Reload** for changes made elsewhere. See
+[Knowledge workspace](docs/frontend-workspace.md) for controls and limits.
+
+### Read and review a document
+
+The `/reading` desk uses a daemon dedicated to one reading database. Follow the
+[guided-reading setup](docs/guided-reading.md#start-a-reading-workspace) to start
+that daemon, the extractor, and the viewer with matching `--reading-db` and
+`--reading-socket` settings. Enable its restricted MCP endpoint if an agent will
+participate.
+
+1. **Add a document.** The upload picker reflects the extractor's advertised
+   formats, including PDF and DOCX. Optional converter dependencies and source
+   limits still apply. The original is archived unchanged.
+2. **Bound.** State what the source IS and IS NOT. Choose **Save boundaries and
+   start reading** to enter Read and enable highlighting.
+3. **Read.** Select text in the saved conversion and classify it as New node, IS,
+   Explicit IS NOT, or Question. For PDFs, compare the original beside it.
+4. **Review and connect.** Share exact focus with the agent, inspect proposed
+   notes and relationships, edit them, and accept or reject the reviewed revision.
+5. **Outline and export.** Order accepted notes and export an outline or the JSON
+   authorship record, including model origin, human edits, and decisions.
+
+Passage corrections create new session revisions. They do not alter the original
+file or silently move earlier evidence anchors. Pins, focus, and proposals persist
+separately from accepted knowledge. Scoped polling updates the reading desk;
+`reading_context` lets an agent retrieve exact references, and `reading_propose`
+lets it submit proposals and pins. Neither polling nor copying a reference starts
+an agent turn.
+
+This slice accepts originals up to **8 MiB** and converted surfaces up to **4 MiB**.
+It does not automatically embed accepted notes or corrections. See
+[Guided document reading](docs/guided-reading.md) for recovery, attribution,
+stage requirements, and session limits.
+
+### Import an already graphable document
+
+```bash
+hades --db research graphable import paper.md --graph theory --dry-run
+hades --db research graphable import paper.md --graph theory --create-graph
+```
+
+The importer maps declared structure without rewriting the argument or inventing
+interpretive relationships. Identical repeats verify stored rows and add only
+missing ones; conflicts stop rather than overwrite reviewed content. New source
+versions retain earlier versions. This path accepts graphable Markdown, not a
+raw PDF or DOCX, and is currently a CLI operation.
+
+See [Graphable document ingestion](docs/graphable-document-ingestion.md) for the
+mapping, source archives, unresolved references, and retry behavior.
+
+### Ingest and search source content
+
+With the extractor and embedder configured, ingest a document into the new
+schema's document profile:
+
+```bash
+hades --db research ingest /path/to/paper.pdf
+hades --db research db query "context and memory" -c default -n 5
+```
+
+For a code repository, use the repository root consistently:
+
+```bash
+hades --db research codebase ingest /path/to/project
+hades --db research db query "configuration loading" -c codebase -n 5
+hades --db research codebase validate
+```
+
+Rust, Go, Python, and C/C++/CUDA have dedicated analysis paths or integrations,
+with Tree-sitter fallbacks and explicit fidelity reporting. Some paths require
+rust-analyzer, gopls, or libclang. See the
+[code graph ontology](docs/codebase-graph-ontology.md) and
+[code identity rules](docs/code-file-identities.md) before incremental updates.
+
+**Mapped, embedded, and searchable are different states.** Authored `kg_*` writes,
+mechanical imports, and accepted reading notes are traversable graph content;
+they are not automatically embedded for `db_query`. Semantic retrieval searches
+the selected collection profile, usually `default` for documents or `codebase`
+for code. Inspect `orient` and `db stats` before interpreting an empty result.
+The `--rerank` option is not implemented and exits with an error.
+
+## Connect an agent through MCP
+
+`hades daemon --mcp-bind` provides streamable HTTP at `/mcp`, authenticated with a
+bearer-token file. The endpoint offers database orientation, semantic search,
+object lookup, traversal, ingestion job status, and task operations. Optional
+provisioning adds `create_database`, schema initialization, ingestion, and
+`kg_create`, `kg_add_node`, and `kg_add_edge`.
+
+Provisioning is opt-in and constrained by database prefixes, allowed source roots,
+and ArangoDB permissions. Host-side paths passed to ingestion refer to the HADES
+server's filesystem. A general provisioning endpoint can write directly; a
+`--mcp-guided-reading` endpoint denies those direct writes and allows proposals
+for human acceptance instead.
+
+See [MCP deployment](docs/mcp-deployment.md) for endpoint setup and scope rules,
+and [Daemon protocol](docs/daemon-protocol.md) for the wire contracts. Some
+operational measurements in those documents describe a particular workstation;
+keep your own addresses, tokens, models, and GPU configuration local.
+
+The viewer and MCP server bind to loopback or private LAN addresses. Use `--password-file` for LAN viewer
+authentication; guided reading requires file-based passwords. MCP uses a separate token. These listeners serve
+plain HTTP, not TLS. Use the documented tunnel or proxy setup when needed.
+A merged change does not update a running service: install the intended binaries,
+restart the relevant services, and verify their advertised operations.
+
+## Architecture and repository layout
+
+| Component | Responsibility |
+| --- | --- |
+| `crates/hades-frontend` | Browser graph explorer and reading desk. Graph reads use CLI JSON; reading operations use the daemon's Unix socket. |
+| `crates/hades-cli` | `hades` commands, daemon entry point, and MCP transport. |
+| `crates/hades-core` | Shared operations, graphable import, guided-reading state, configuration, ArangoDB access, analysis, and ingestion pipelines. |
+| `crates/hades-proto`, `proto/` | gRPC contracts and generated Rust bindings. |
+| `crates/hades-prefetch` | Graph-aware batch preparation for training. |
+| `services/` | Python Docling extraction, embedding, training, and adapters. |
+| `config/`, `seeds/` | Configuration templates and runtime schema seeds. |
+| `docs/`, `Bastion/` | User/developer documentation, architecture, research methodology, and audit evidence. |
+| `scripts/`, `deploy/`, `services/systemd/` | Validation, packaging, and deployment templates. |
+
+ArangoDB stores persistent graph data and reading records. Extraction and
+embedding are separate services. Runtime schema data describes collection
+profiles and graph structure. Participant labels record attribution; they are
+not a substitute for credentials or authorization.
+
+## Development and validation
+
+```bash
+cargo build --locked --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --lib --bins
+cargo test -p hades-proto --test proto_types
+cargo test -p hades-core --test pipeline
+cargo test -p hades-core --test config_integration
+```
+
+Database-backed tests need explicit isolated fixtures. After fetching Cargo
+dependencies, the runner can provision a private server:
 
 ```bash
 cargo fetch --locked
 python3 scripts/test_isolated_database.py --docker
-# Alternatively, use an existing test-server binary:
+# Or use a local test-server binary:
 python3 scripts/test_isolated_database.py --arangod /path/to/arangod
 ```
 
-See [test environments and commands](docs/specs/workstation-specific-tests.md)
-for the complete matrix, hashed Python environment, resource limits, and optional
-analyzer/CUDA probes. The lifecycle fixture exercises ingest/search, modification,
-moves, retirement/deletion, graph integrity, and partial failure/retry using a
-private deterministic embedder. It does not establish production retrieval quality.
-
-Legacy `scripts/bident_burn_smoke.sh` and `scripts/cli_audit.sh` depend on named
-databases and installed services. They are not CI gates and must not be pointed at
-an active production server. Use the isolated runner for regression checks; any
-production rollout needs its own maintenance, health, backup, and rollback plan.
-
-## Install
-
-The install procedure below has been validated end-to-end on a fresh
-Ubuntu 24.04 environment via the container harness at
-`scripts/install/test/` (run `bash scripts/install/test/run-install.sh`
-inside the harness image; see the script header for details). The
-systemd-unit portion is verified only via the harness's manual-daemon
-path; the real-VPS systemd flow is documented but tested separately.
-
-### 0. Prerequisites
-
-A clean Linux machine (tested on Ubuntu 24.04; should work on any
-recent Debian-family distro). You will need root.
-
-**Install ArangoDB** following the [official docs](https://docs.arangodb.com/3.12/operations/installation/linux/).
-The short version for Debian/Ubuntu:
-
-```bash
-# Stop if fetching, converting, or authenticating the repository fails.
-set -e
-key_file=$(mktemp)
-curl -fsSL https://download.arangodb.com/arangodb312/DEBIAN/Release.key -o "$key_file"
-sudo install -d -m 0755 /etc/apt/keyrings
-sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/arangodb.gpg "$key_file"
-rm -f "$key_file"
-sudo chmod 0644 /etc/apt/keyrings/arangodb.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/arangodb.gpg] https://download.arangodb.com/arangodb312/DEBIAN/ /' \
-  | sudo tee /etc/apt/sources.list.d/arangodb.list
-sudo apt-get -o APT::Update::Error-Mode=any update && sudo apt-get install -y arangodb3
-```
-
-If APT reports an expired, missing, or invalid signing key, stop and consult
-ArangoDB's current download instructions for the supported repository and key.
-Do not disable signature verification to continue an installation. The keyring
-must be readable by APT and explicitly selected by the source's `signed-by` option.
-
-During `apt-get install` you'll be prompted to set a root password
-for ArangoDB — note it, you'll use it in step 2.
-
-**Install Rust** (edition 2024, Rust 1.98.1):
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-. ~/.cargo/env
-```
-
-**Install `protoc`** (needed by `hades-proto`'s build script):
-
-```bash
-sudo apt-get install -y protobuf-compiler
-```
-
-### 1. Build the binary
-
-From a checkout of this repo:
-
-```bash
-cargo build --release
-```
-
-This produces `target/release/hades`.
-
-### 2. Create the ArangoDB user
-
-HADES connects to ArangoDB as a dedicated `hades` user (not `root`).
-Write restrictions on specific databases are enforced by ArangoDB
-ACLs on this user — HADES has no source-level allowlist. Bootstrap
-with arangosh, using the root password you set during install:
-
-```bash
-arangosh --server.endpoint unix:///run/arangodb3/arangodb.sock \
-         --server.username root
-# (enter root password at the prompt, then in the arangosh REPL:)
-> const users = require("@arangodb/users");
-> users.save("hades", "<pick-a-password>");
-> users.grantDatabase("hades", "_system", "rw");
-> users.grantDatabase("hades", "*", "rw");   // default for new DBs
-> // Tighten specific production databases as needed:
-> // users.grantDatabase("hades", "<production-db-name>", "ro");
-```
-
-Note the password you set for `hades` — you'll use it in step 5.
-
-### 3. Install the systemd users + tmpfiles
-
-These create the Unix `hades` user and group, plus the `/run/hades`
-runtime directory. They must run **before** step 4 because the config
-file's group ownership references `hades`.
-
-```bash
-sudo install -m 644 services/systemd/hades-sysusers.conf  /etc/sysusers.d/hades.conf
-sudo install -m 644 services/systemd/hades-tmpfiles.conf  /etc/tmpfiles.d/hades.conf
-sudo systemd-sysusers
-sudo systemd-tmpfiles --create
-```
-
-After this, `getent group hades` should show the group exists.
-
-### 4. Install the binary
-
-```bash
-sudo install -m 755 target/release/hades /usr/local/bin/hades
-mkdir -p ~/.local/bin && install -m 755 target/release/hades ~/.local/bin/hades
-```
-
-The systemd daemon execs `/usr/local/bin/hades`; interactive shells
-usually pick up `~/.local/bin/hades` first. If you only update one,
-the other will silently run an older build.
-
-### 5. Install the system config
-
-```bash
-sudo mkdir -p /etc/hades
-sudo install -m 640 -o root -g hades config/hades.yaml /etc/hades/hades.yaml
-```
-
-The daemon searches `/etc/hades/hades.yaml` after the in-repo paths;
-the username (`hades`) and socket paths live there. Passwords are
-never stored in YAML — they come from the daemon's env (step 6). The
-username can also be overridden out-of-band with the `ARANGO_USERNAME`
-env var, parallel to `ARANGO_PASSWORD` / `ARANGO_HOST` / `ARANGO_PORT` /
-`ARANGO_RO_SOCKET` / `ARANGO_RW_SOCKET`.
-
-### 6. Set the daemon environment
-
-`/etc/hades/daemon.conf` is sourced by `hades-daemon.service` via
-`EnvironmentFile=`. Create it with:
-
-```bash
-sudo tee /etc/hades/daemon.conf <<'CONF'
-ARANGO_PASSWORD=<password-you-set-for-the-hades-user>
-HADES_DATABASE=_system
-ARANGO_RO_SOCKET=/run/arangodb3/arangodb.sock
-ARANGO_RW_SOCKET=/run/arangodb3/arangodb.sock
-HADES_EMBEDDER_SOCKET=http://localhost:8087/v1
-CONF
-sudo chown root:hades /etc/hades/daemon.conf
-sudo chmod 640 /etc/hades/daemon.conf
-```
-
-The daemon needs `HADES_DATABASE` set because `ArangoPool::from_config`
-opens a connection at startup; `_system` is the right default (always
-present, neutral) and dispatched commands override the target
-per-request.
-
-### 7. Enable and start the daemon
-
-```bash
-sudo install -m 644 services/systemd/hades-daemon.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now hades-daemon.service
-sudo systemctl status hades-daemon.service --no-pager
-```
-
-You should see `Active: active (running)` and a log line like
-`daemon listening socket="/run/hades/hades.sock"`.
-
-### 8. Verify
-
-`hades db stats` opens its own ArangoDB connection (it doesn't proxy
-through the daemon socket), so the CLI needs the `hades` user's
-password in its environment:
-
-```bash
-export ARANGO_PASSWORD='<password-you-set-for-the-hades-user>'
-hades --db _system db stats
-```
-
-A clean JSON response listing the `_system` database means
-authentication works and your CLI can reach ArangoDB. The
-`ARANGO_PASSWORD` export takes precedence over anything in
-`hades.yaml`; keep it in your shell environment (or in a profile
-file restricted to your user) for ongoing CLI use.
-
-The `hades-embedder.service` and `hades-extractor.service` units cover
-the optional embedder (Jina V4) and Docling extractor services —
-install only if you're using `hades embed`, `hades codebase ingest --embed`,
-or `hades extract`. Both require additional Python dependencies and (for
-the embedder) a GPU; see `services/README.md` for details.
-
-### Updating the daemon's ArangoDB password
-
-1. Rotate the password in arangosh:
-
-```javascript
-require("@arangodb/users").replace("hades", "<new-password>");
-```
-
-2. Edit `/etc/hades/daemon.conf` and replace the `ARANGO_PASSWORD=` value
-(file is `root:hades 640`, so use `sudoedit` or `sudo $EDITOR`).
-3. Restart the daemon:
-
-```bash
-sudo systemctl restart hades-daemon.service
-sudo systemctl status hades-daemon.service --no-pager
-```
-
-For interactive CLI use (outside the daemon), export `ARANGO_PASSWORD` in your
-shell — it takes precedence over anything in YAML.
-
-## Usage
-
-```
-hades --db <name> db query "attention mechanism" -n 5
-hades --db <name> db graph traverse "papers/example_paper_key" -d outbound --max-depth 3
-hades --db <name> codebase ingest /path/to/project --lang rust
-hades --db <name> codebase ingest /path/to/cuda-project --compile-commands /path/to/build
-hades --db <name> db schema init --seed nl
-hades daemon
-```
-
-For C/C++/CUDA, `--compile-commands` accepts either the JSON file or its containing directory. If omitted, HADES searches source ancestors and their `build/` directories. One database may contain files from every supported language; language detection and analysis happen per file.
-
-All output is JSON to stdout; progress and logs are written to stderr. The full command set is documented in [docs/daemon-protocol.md](docs/daemon-protocol.md).
-
-## Project Structure
-
-```
-crates/
-  hades-cli/        # Binary entry point; clap parsing, command dispatch
-  hades-core/       # Config, ArangoDB client, graph engine, pipeline, chunking
-  hades-proto/      # gRPC/protobuf for Persephone provider protocol
-  hades-prefetch/   # Async graph-aware batch prefetcher for GNN training
-```
-
-## Project Status
-
-As of v0.3.0 — production cutover from the prior Python implementation is complete; all CLI commands are native Rust.
-
-| Metric | Value |
-| --- | --- |
-| Rust source files | 100 |
-| Lines of Rust | ~36,000 |
-| Tests | ~350 |
-| PRs merged | 66 |
-| CLI subcommands | ~85 (all native Rust) |
-
-Not yet ported: `--rerank` (cross-encoder model, deferred until ONNX runtime integration).
-
-## Authorship and Development Process
-
-Authorship of the design and ownership of the resulting codebase reside with the author. Research direction, architectural decisions (Unix-socket transport layer, closed model-operation vocabulary, ontology-grounded schema, three-tier access model, data-sacrosanct operational boundaries), integration with the broader Nested Learning research program, and the dogfooding methodology are the author's work. Implementation was directed by the author with assistance from Claude Code and other contemporary AI coding agents, in the same manner that contemporary software development draws on IDE autocomplete, refactoring tools, and library code.
-
-The project additionally serves as a long-running empirical study of AI-assisted development workflows: the commit and refactor history is itself data on what retrieval and context primitives make AI coding agents effective at sustained engineering work.
-
-## Contributing
-
-The project is open to collaboration from academic and industry researchers working on retrieval latency, local LLM deployment, agent memory systems, or ontology-grounded retrieval. Issues and pull requests are welcome.
-
-## Documentation
-
-| Document | Description |
-| --- | --- |
-| [Bastion/foundation/bastion-of-context.md](Bastion/foundation/bastion-of-context.md) | Foundation Layer 1 — the philosophical *why*: cathedral / bazaar / bastion, the twelve load-bearing principles |
-| [Bastion/foundation/the-bastion.md](Bastion/foundation/the-bastion.md) | Foundation Layer 2 — the backend-agnostic architecture: invariants, the two operating modes, the construction layer (wall / scaffolding / delta ledger), code-against-documentation conformance, the backend contract, the de-ratification rite |
-| [Bastion/foundation/bastion-playbook.md](Bastion/foundation/bastion-playbook.md) | The operational playbook — how to stand up or retrofit a bastion in a Claude Code session, phase by phase, greenfield and brownfield |
-| [Bastion/graph-methodology.md](Bastion/graph-methodology.md) | Foundation Layer 3 — the ArangoDB/HADES reference implementation of the bastion method |
-| [CHANGELOG.md](CHANGELOG.md) | Release history and convention for adding entries |
-| [docs/specs/workstation-specific-tests.md](docs/specs/workstation-specific-tests.md) | Convention for integration tests that depend on workstation-specific resources |
-| [docs/daemon-protocol.md](docs/daemon-protocol.md) | Wire protocol, session model, access tiers, command reference |
-| [docs/model-operation-vocabulary.md](docs/model-operation-vocabulary.md) | Closed operation set for AI model agents |
-| [docs/codebase-graph-ontology.md](docs/codebase-graph-ontology.md) | Universal code ontology — collections, edges, named graph |
-| [docs/og-rag-report.md](docs/og-rag-report.md) | Ontology-grounded hypergraph retrieval analysis and integration proposal |
-| [docs/design-agent-memory-and-system-prompt.md](docs/design-agent-memory-and-system-prompt.md) | Cross-project design for agent memory and system prompt bootstrap |
+See [Test environments](docs/specs/workstation-specific-tests.md) for Python CPU
+contracts, analyzers, resource limits, and optional hardware checks. The
+[guided-reading validation](docs/guided-reading.md#focused-validation) runs real PDF/DOCX
+extraction, browser actions, MCP proposals, human acceptance, recovery, and export
+against private services. Automated write tests must not use research corpora.
+
+Issues and pull requests are welcome. Explain the behavior changed and the
+validation performed, and add a categorized entry under `[Unreleased]` in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Research and authorship
+
+HADES grew from research into context engineering, agent memory, and
+ontology-grounded retrieval. Todd W. Bucy directs the research and architecture
+and owns the resulting codebase, with implementation assistance from AI coding
+agents. The current workspace makes that division explicit: the agent can offer
+analysis, while the human determines what enters accepted knowledge.
+
+For the underlying method, see [Graph methodology](Bastion/graph-methodology.md),
+[The Bastion](Bastion/foundation/the-bastion.md), and
+[Bastion of Context](Bastion/foundation/bastion-of-context.md).
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). See `LICENSE` for the full text.
+[Apache License 2.0](LICENSE).

@@ -20,8 +20,8 @@ database:
   # tooling — it gets broad grants by default (rw on _system, rw on new
   # databases). Restrictions on specific production databases are managed
   # by the operator in arangosh, not by HADES code. Bootstrap the user with
-  # scripts/install/setup-arangodb-user.sh (or the manual curl recipe in
-  # the README).
+  # scripts/install/setup-arangodb-user.sh (or the manual arangosh recipe in
+  # docs/installation.md).
   username: hades
   # password: always from ARANGO_PASSWORD env var
 

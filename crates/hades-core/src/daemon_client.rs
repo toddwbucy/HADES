@@ -107,6 +107,18 @@ impl DaemonClient {
         self.request_inner(None, cmd).await
     }
 
+    /// Send once without reconnecting. Use after verifying scope on this connection.
+    pub async fn request_once(
+        &mut self,
+        cmd: DaemonCommand,
+    ) -> Result<DaemonResponse, DaemonClientError> {
+        let payload = serde_json::to_vec(&cmd)?;
+        if payload.len() > MAX_PAYLOAD as usize {
+            return Err(DaemonClientError::PayloadTooLarge(payload.len()));
+        }
+        self.send_recv(&payload).await
+    }
+
     /// Send a command with a client-chosen `request_id`.
     pub async fn request_with_id(
         &mut self,

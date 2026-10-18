@@ -160,6 +160,7 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
 
         return extraction_pb2.ExtractResponse(
             full_text=result.text,
+            reading_document_json=result.reading_document_json,
             tables=tables,
             equations=equations,
             images=images,
@@ -239,6 +240,7 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
                     extract_tables=request.extract_tables,
                     extract_equations=request.extract_equations,
                     extract_images=request.extract_images,
+                    include_reading_document=request.include_reading_document,
                     use_ocr=request.use_ocr if request.use_ocr else None,
                 ),
             )
@@ -268,6 +270,7 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
                     extract_tables=request.extract_tables,
                     extract_equations=request.extract_equations,
                     extract_images=request.extract_images,
+                    include_reading_document=request.include_reading_document,
                 ),
             )
 
@@ -279,6 +282,7 @@ class ExtractionServicer(extraction_pb2_grpc.ExtractionServiceServicer):
                 ".md", ".markdown", ".txt", ".text", ".rst",
                 ".py", ".rs", ".cu", ".cpp", ".c", ".js", ".ts", ".go", ".java",
             }),
+            reading_extensions=sorted(DoclingExtractor.SUPPORTED_EXTENSIONS),
             supported_types=[
                 extraction_pb2.SOURCE_TYPE_PDF,
                 extraction_pb2.SOURCE_TYPE_LATEX,
@@ -351,6 +355,16 @@ async def idle_monitor(servicer: ExtractionServicer, config: ExtractionConfig) -
             servicer.unload_models()
 
 
+def create_server(servicer):
+    """Build the RPC server with room for an 8 MiB source plus protobuf overhead."""
+    server = grpc_aio.server(options=[
+        ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+        ("grpc.max_send_message_length", 16 * 1024 * 1024),
+    ])
+    extraction_pb2_grpc.add_ExtractionServiceServicer_to_server(servicer, server)
+    return server
+
+
 async def serve() -> None:
     """Start the extraction gRPC server."""
     config = ExtractionConfig.from_env()
@@ -362,8 +376,7 @@ async def serve() -> None:
 
     servicer = ExtractionServicer(config)
 
-    server = grpc_aio.server()
-    extraction_pb2_grpc.add_ExtractionServiceServicer_to_server(servicer, server)
+    server = create_server(servicer)
 
     socket_path = config.socket_path
     socket_dir = Path(socket_path).parent

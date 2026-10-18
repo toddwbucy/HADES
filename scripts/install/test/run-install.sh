@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives the README install steps inside the fresh-VPS test container.
-# Each step echoes its README section heading so failures are easy to map
+# Drives the docs/installation.md install steps inside the fresh-VPS test container.
+# Each step echoes its installation-guide section heading so failures are easy to map
 # back to docs. Exits non-zero on the first failure.
 set -euo pipefail
 
@@ -61,7 +61,7 @@ echo "binary present: $(ls -l /opt/hades-source/target/release/hades)"
 
 echo
 echo "=== Step 2: Create the ArangoDB user ==="
-# Use the README's manual arangosh recipe.
+# Use the installation guide's manual arangosh recipe.
 # Use environment variables to avoid leaking the test root password.
 export ARANGO_ROOT_PASSWORD="${ARANGO_ROOT_PASSWORD:-test_root_pw_for_install_validation_only}"
 export HADES_PASSWORD="${HADES_PASSWORD:-test_hades_pw_only}"
@@ -81,7 +81,7 @@ echo
 echo "=== Step 3: Install systemd users + tmpfiles ==="
 # Creates the Unix `hades` user/group and the /run/hades runtime directory.
 # Must run BEFORE step 5 (install config) because the config file is owned
-# by group `hades`. This is the step the README previously had out of order.
+# by group `hades`. This is the step the installation guide previously had out of order.
 install -m 644 services/systemd/hades-sysusers.conf /etc/sysusers.d/hades.conf
 install -m 644 services/systemd/hades-tmpfiles.conf /etc/tmpfiles.d/hades.conf
 systemd-sysusers
@@ -133,7 +133,7 @@ cat /etc/hades/daemon.conf | sed 's/ARANGO_PASSWORD=.*/ARANGO_PASSWORD=<redacted
 
 echo
 echo "=== Step 7: Start the daemon (manual fallback — no systemd in container) ==="
-# In the README this is `systemctl enable --now hades-daemon.service`, which
+# In docs/installation.md this is `systemctl enable --now hades-daemon.service`, which
 # uses User=hades, EnvironmentFile=/etc/hades/daemon.conf, and
 # ExecStart=/usr/local/bin/hades. We can't run systemd in a vanilla
 # container, so we launch the daemon manually — but importantly, AS THE

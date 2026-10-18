@@ -28,6 +28,7 @@ pub mod graphable;
 pub mod ingest;
 pub mod mcp_server;
 pub mod output;
+pub mod reading;
 pub mod schema;
 pub mod smell;
 pub mod smell_mgmt;

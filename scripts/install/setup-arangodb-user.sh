@@ -20,8 +20,8 @@
 #   Covered by private Unix-socket HTTP contracts; fresh-host install remains
 #   unverified. Test target is a VPS —
 #   do not rely on this script for first-time setup on the development
-#   workstation; do user creation manually there. See README "Manual
-#   ArangoDB user setup" for the equivalent curl calls.
+#   workstation; do user creation manually there. See docs/installation.md,
+#   "Create the ArangoDB user", for the manual arangosh procedure.
 
 set -euo pipefail
 

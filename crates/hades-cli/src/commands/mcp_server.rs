@@ -296,6 +296,24 @@ macro_rules! db_field_doc {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ReadingReadArgs {
+    db: Option<String>,
+    session: Option<String>,
+    /// context gives bounded focus and decisions; state gives proposal details; export gives history.
+    view: Option<String>,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ReadingProposeArgs {
+    db: Option<String>,
+    session: String,
+    request_id: String,
+    expected_revision: u64,
+    /// Attribution label, not a credential. Include harness/model identity when known.
+    actor: String,
+    /// {"action":"propose","id":"...","draft":{"title","note","is":null,"is_not":null,"standing","highlight","basis","from":null,"to":null,"relation":null,"inferred":false,"rationale":null}} or {"action":"pins","name":"...","pins":[{"reference":"...","note":"...","seen":false}]}. Only these two actions are permitted.
+    action: serde_json::Value,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DbOnlyArgs {
     #[schemars(description = db_field_doc!())]
     db: Option<String>,
@@ -655,6 +673,45 @@ impl HadesMcpServer {
 
 #[tool_router]
 impl HadesMcpServer {
+    #[tool(
+        description = "Read guided-reading sessions, current human focus, pins, and proposal decisions. Exact source references do not imply that the agent sees the browser. Poll explicitly; reading does not trigger execution."
+    )]
+    async fn reading_context(
+        &self,
+        Parameters(a): Parameters<ReadingReadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::ReadingRead(hades_core::reading::ReadRequest {
+                session: a.session,
+                view: a.view.unwrap_or_else(|| "context".into()),
+                source_hash: None,
+            }),
+        )
+        .await
+    }
+    #[tool(
+        description = "Propose a sourced note/relationship from a human highlight or post a named pin set. Read session state first for the current revision and highlight IDs. Requires provisioning permission for the database. Cannot accept, edit human classifications, or advance stages. Acceptance occurs in the human viewer. Reuse the exact request ID and payload after a lost response."
+    )]
+    async fn reading_propose(
+        &self,
+        Parameters(a): Parameters<ReadingProposeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let action = serde_json::from_value(a.action)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        self.run(
+            a.db,
+            DaemonCommand::ReadingPropose(hades_core::reading::Mutation {
+                session: a.session,
+                request_id: a.request_id,
+                expected_revision: a.expected_revision,
+                actor: a.actor,
+                action,
+            }),
+        )
+        .await
+    }
+
     #[tool(
         description = "Enumerate the collections in a database with their document counts and types. Start here when surveying an unfamiliar graph: orient reports collection *profiles*, which do not name the symbol or edge collections a code graph also holds."
     )]
@@ -1451,6 +1508,8 @@ mod tests {
                 "kg_add_node",
                 "kg_create",
                 "orient",
+                "reading_context",
+                "reading_propose",
                 "smell_report",
                 "task_create",
                 "task_list",

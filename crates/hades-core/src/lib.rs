@@ -12,6 +12,7 @@ pub mod ingest_jobs;
 pub mod ingest_routing;
 pub mod persephone;
 pub mod pipeline;
+pub mod reading;
 pub mod retrieval;
 pub mod schema_apply;
 pub mod service;

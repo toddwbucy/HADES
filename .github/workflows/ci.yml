@@ -94,7 +94,9 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Frontend workspace projections
-        run: node crates/hades-frontend/web/tests/workspace.test.cjs
+        run: |
+          node crates/hades-frontend/web/tests/workspace.test.cjs
+          node crates/hades-frontend/web/tests/reading-poll.test.cjs
 
       - name: cargo build
         run: cargo build --workspace --verbose

@@ -9,7 +9,8 @@
 //!
 //! Binding is restricted to loopback or RFC1918/ULA private addresses. Non-loopback
 //! binds require HTTP Basic authentication; configured authentication and Host
-//! validation cover every route. All current API routes are read-only.
+//! validation cover every route. Graph APIs are read-only; guided-reading writes
+//! also require the browser-origin gate and execute through the scoped daemon.
 //! Clients select only databases in the startup allowlist: explicit `--db` values,
 //! or the databases accessible to the configured credentials when none are given.
 
@@ -45,6 +46,7 @@ struct AppState {
     /// unauthenticated loopback bind as a same-origin request, and read every
     /// served database. Checking Host closes that: the rebound name never matches.
     allowed_hosts: Arc<Vec<String>>,
+    reading: Option<crate::reading::ReadingBackend>,
 }
 
 impl AppState {
@@ -73,6 +75,7 @@ pub async fn serve(
     limit: Option<u32>,
     databases: Vec<String>,
     password: Option<String>,
+    reading: Option<(std::path::PathBuf, String)>,
     bind: &str,
 ) -> Result<()> {
     // No explicit --db list => serve every database the hades user can access.
@@ -94,14 +97,23 @@ pub async fn serve(
     // password, anyone on the LAN could read every served database.
     if password.is_none() && !addr.ip().is_loopback() {
         return Err(anyhow!(
-            "refusing to serve {} databases unauthenticated on {} — pass --password <PASS> \
+            "refusing to serve {} databases unauthenticated on {} — pass --password-file <PATH> \
              (browser prompts once), or bind loopback (127.0.0.1)",
             databases.len(),
             addr.ip()
         ));
     }
 
+    let reading =
+        reading.map(|(socket, database)| crate::reading::ReadingBackend { socket, database });
+    if let Some(r) = &reading {
+        if !databases.contains(&r.database) {
+            return Err(anyhow!("reading database must be in the viewer allowlist"));
+        }
+        r.verify().await.map_err(|e| anyhow!(e))?;
+    }
     let state = AppState {
+        reading,
         bin,
         limit,
         request_timeout: std::time::Duration::from_secs(60),
@@ -123,7 +135,9 @@ pub async fn serve(
 }
 
 fn build_router(state: AppState) -> Router {
+    let reading = crate::reading::router(state.reading.clone());
     Router::new()
+        .merge(reading)
         .route(
             "/",
             get(|| async { asset(INDEX_HTML, "text/html; charset=utf-8") }),
@@ -474,7 +488,12 @@ fn error_response(e: anyhow::Error) -> Response {
 
 /// Bound the whole assembly, including sequences of individually bounded children.
 async fn request_deadline(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    match tokio::time::timeout(state.request_timeout, next.run(req)).await {
+    let deadline = if req.uri().path() == "/api/reading/extract" {
+        std::time::Duration::from_secs(620)
+    } else {
+        state.request_timeout
+    };
+    match tokio::time::timeout(deadline, next.run(req)).await {
         Ok(response) => response,
         Err(_) => (
             StatusCode::GATEWAY_TIMEOUT,
@@ -504,6 +523,7 @@ mod tests {
         std::fs::write(&bin, script).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
         let router = build_router(AppState {
+            reading: None,
             bin: bin.to_str().unwrap().into(),
             limit: Some(1),
             request_timeout: std::time::Duration::from_secs(60),
@@ -632,6 +652,7 @@ else:
             std::fs::write(&bin, script).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
             let router = build_router(AppState {
+                reading: None,
                 bin: bin.to_str().unwrap().into(),
                 limit: None,
                 request_timeout: std::time::Duration::from_secs(60),
@@ -689,6 +710,7 @@ print('{"data":{"graphs":[]}}')
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
         let router = build_router(AppState {
+            reading: None,
             bin: bin.to_str().unwrap().into(),
             limit: Some(1),
             request_timeout: std::time::Duration::from_secs(60),
@@ -780,6 +802,7 @@ else:
 "#).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
         let router = build_router(AppState {
+            reading: None,
             bin: bin.to_str().unwrap().into(),
             limit: None,
             request_timeout: std::time::Duration::from_millis(350),
@@ -845,6 +868,7 @@ mod envelope_route_tests {
             std::fs::write(&bin, script).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
             let router = build_router(AppState {
+                reading: None,
                 bin: bin.to_str().unwrap().into(),
                 limit: None,
                 request_timeout: std::time::Duration::from_secs(5),

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 class ExtractionResult:
     """Structured extraction output matching the gRPC ExtractResponse."""
 
+    reading_document_json: str = ""
     text: str = ""
     tables: list[dict[str, Any]] = field(default_factory=list)
     equations: list[dict[str, Any]] = field(default_factory=list)
@@ -102,6 +103,7 @@ class DoclingExtractor:
         extract_tables: bool = True,
         extract_equations: bool = True,
         extract_images: bool = True,
+        include_reading_document: bool = False,
         use_ocr: bool | None = None,
     ) -> ExtractionResult:
         """Extract structured content from a document.
@@ -123,7 +125,7 @@ class DoclingExtractor:
         if effective_ocr != self._use_ocr:
             return ExtractionResult(error="Per-request OCR differs from service policy")
         try:
-            return self._extract_with_docling(path, start, extract_tables, extract_equations, extract_images)
+            return self._extract_with_docling(path, start, extract_tables, extract_equations, extract_images, include_reading_document)
         except Exception as e:
             logger.error("Docling extraction failed for %s: %s", path, e)
             return ExtractionResult(
@@ -138,6 +140,7 @@ class DoclingExtractor:
         extract_tables: bool,
         extract_equations: bool,
         extract_images: bool,
+        include_reading_document: bool = False,
     ) -> ExtractionResult:
         """Run the pinned converter and retain structured document exports."""
         source = str(path)
@@ -201,6 +204,7 @@ class DoclingExtractor:
         }
 
         return ExtractionResult(
+            reading_document_json=reading_document(doc) if include_reading_document else "",
             text=full_text,
             tables=tables,
             equations=equations,
@@ -229,3 +233,36 @@ class DoclingExtractor:
     @property
     def is_loaded(self) -> bool:
         return self._converter is not None
+
+
+def reading_document(doc) -> str:
+    """Safe structured data, never source HTML. No invented page or image content."""
+    import json
+    from docling_core.types.doc import TableItem, PictureItem
+
+    blocks = []
+    warnings = ["This is a derived reading view. Compare tables, equations, and images with the unchanged original."]
+    for item, level in doc.iterate_items():
+        kind = getattr(getattr(item, "label", None), "value", "group")
+        if kind == "group":
+            continue
+        block = {"id": item.self_ref, "kind": kind, "level": level,
+                 "text": getattr(item, "text", ""), "locations": []}
+        for loc in getattr(item, "prov", []):
+            block["locations"].append({"page": loc.page_no, "box": loc.bbox.model_dump(mode="json")})
+        if isinstance(item, TableItem):
+            block["caption"] = item.caption_text(doc)
+            block["text"] = item.export_to_markdown(doc=doc)
+            block["rows"] = [[cell.text for cell in row] for row in item.data.grid]
+        if isinstance(item, PictureItem):
+            block["caption"] = item.caption_text(doc)
+            block["text"] = block["caption"]
+            block["image_available"] = False
+            # Images can be unavailable when the converter was not configured to render them.
+            # Preserve the caption and a visible placeholder rather than a false reconstruction.
+            warnings.append("Some figures may be represented by their caption only. Open the original to inspect them.")
+        if kind == "formula" and not block["text"]:
+            warnings.append("At least one equation has no extracted text. Inspect the original.")
+        blocks.append(block)
+    return json.dumps({"format": "docling-blocks-v1", "blocks": blocks,
+                       "warnings": list(dict.fromkeys(warnings)), "page_count": doc.num_pages()}, ensure_ascii=False)
