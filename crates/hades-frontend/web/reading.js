@@ -57,7 +57,7 @@ function clearReading(){
  history.replaceState(null,'','/reading');void readingChat.selectReading();
 }
 function checkRemovalDrafts(id){
- if(state?.id===id&&(editingPassage||boundaryDrafts.has(id)||$('chat-message').value.trim()))throw Error('Save or clear your unfinished edits and chat message before removing this reading.');
+ if(boundaryDrafts.has(id)||(state?.id===id&&(editingPassage||$('chat-message').value.trim())))throw Error('Save or clear your unfinished edits and chat message before removing this reading.');
 }
 async function setArchived(id,archived){
  if(archived)checkRemovalDrafts(id);

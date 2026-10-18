@@ -5,6 +5,7 @@
     "intentional separate reading",
     "remove and reload",
     "unsent message retained",
+    "boundary draft blocks retry from another reading",
     "lost removal response exact retry",
     "restore notes, graph and chat bindings",
     "valid audit chain",

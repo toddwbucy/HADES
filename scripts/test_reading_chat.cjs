@@ -165,9 +165,32 @@ async function main() {
     await page.getByRole('button', {name:'Start a separate reading', exact:true}).click();
     const separate = await until(async () => (await active()).find(s => s.id !== 'browser_fixture'));
     await until(async () => new URL(page.url()).searchParams.get('session') === separate.id);
+    let separateRemovalRequests = 0;
+    await page.route('**/api/reading/mutate', async route => {
+      const payload = route.request().postDataJSON();
+      if (payload.session === separate.id && payload.action.action === 'archive') {
+        separateRemovalRequests++;
+        if (separateRemovalRequests === 1) {await route.fetch(); await route.abort('failed'); return;}
+      }
+      await route.continue();
+    });
     await page.locator(`#sessions [data-session="${separate.id}"]`).getByRole('button', {name:'Remove from desk', exact:true}).click();
     await until(async () => (await removed()).some(s => s.id === separate.id));
+    // A draft written after the lost response must block retry even from another reading.
+    await page.locator('#bound-is').fill('An unfinished boundary for the separate reading');
+    await page.locator('#sessions [data-session="browser_fixture"] .session').click();
+    await until(async () => new URL(page.url()).searchParams.get('session') === 'browser_fixture');
+    await page.getByRole('button', {name:'Reconcile interrupted action', exact:true}).click();
+    await until(async () => (await page.locator('#status').textContent()).includes('unfinished edits'));
+    assert.equal(separateRemovalRequests, 1, 'draft guard prevents the retry request');
+    assert.equal(new URL(page.url()).searchParams.get('session'), 'browser_fixture');
+    // Reset the browser's unsaved fixture draft before testing successful exact recovery.
+    await page.goto(url + '/reading?session=' + separate.id);
+    await page.waitForFunction(id => document.querySelector('#title').textContent === 'conversation-fixture.txt' && location.search.includes(id), separate.id);
+    await page.getByRole('button', {name:'Reconcile interrupted action', exact:true}).click();
     await page.waitForFunction(() => !location.search && document.querySelector('#chat-controls').hidden);
+    assert.equal(separateRemovalRequests, 2);
+    await page.unroute('**/api/reading/mutate');
     await page.reload();
     await page.waitForFunction(() => document.querySelector('#sessions .session'));
     assert.equal((await active()).length, 1);
@@ -233,7 +256,7 @@ async function main() {
     await page.setViewportSize({width:1800,height:1200});
     await page.locator('#archived-readings').evaluate(el => {el.open = true;});
     await page.screenshot({path:path.join(root, 'reading-desk-wide.png'), fullPage:true});
-    fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','remove and reload','unsent message retained','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
+    fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','remove and reload','unsent message retained','boundary draft blocks retry from another reading','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
     assert.deepEqual(errors, []);
   }
   fs.writeFileSync(path.join(root, 'chat-evidence.json'), JSON.stringify({real_codex:real, runtime:'0.163.0', passed:true, checks:['browser passage selection','frozen MCP exchange context','restricted tools','pending proposal','human acceptance','reload without replay','release and resume', ...(!real ? ['question response','interrupt','daemon crash and ownership recovery','history reference selection','accepted knowledge snapshot'] : ['model MCP retrieval','model MCP proposal'])]}, null, 2));
