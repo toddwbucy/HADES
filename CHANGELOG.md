@@ -354,6 +354,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Refresh the README around the human-agent workspace, guided reading, MCP,
+  graphable import, and source retrieval. Separate system installation into its
+  own guide and distinguish mapped content from semantic retrieval readiness.
+
 - Document structural-vector provenance and refresh boundaries, including
   ingestion retention differences and remaining audit verification (#12).
 
