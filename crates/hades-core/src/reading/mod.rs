@@ -316,8 +316,11 @@ async fn open_internal(
     let definition = json!({"name":s.graph,"edgeDefinitions":[{"collection":format!("{}_edges",s.graph),"from":s.graph_collections,"to":s.graph_collections}]});
     match pool.writer().post("gharial", &definition).await {
         Ok(_) => {}
+        // Concurrent graph creation can report either "graph already exists"
+        // or a primary-key collision in _graphs. Reuse only a verified match.
         Err(ArangoError::Api {
-            error_num: 1925, ..
+            error_num: 1925 | 1210,
+            ..
         }) => {
             let existing = pool
                 .writer()
