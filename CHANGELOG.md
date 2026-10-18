@@ -114,6 +114,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Save boundary drafts before entering Read, keep unsaved fields through failed
+  actions and polling, and explain the specific requirement blocking a stage.
+
 - Match extraction RPC limits to the guided-reading upload limit and persist
   malformed or unavailable reading surfaces as recoverable failures. Reject
   empty viewer credentials in every mode, prevent late polls from undoing newer

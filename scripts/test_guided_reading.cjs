@@ -16,7 +16,20 @@ try{await page.goto(url+'/reading');await page.waitForFunction(()=>document.quer
 for(const extension of ['docx','pdf']){
  await page.locator('#upload').setInputFiles(path.join(root,'fixture.'+extension));await page.waitForFunction(ext=>document.querySelector('#title').textContent==='fixture.'+ext,extension,{timeout:180000});await page.waitForTimeout(400);
  assert.equal(await page.locator('[data-label="node"]').isDisabled(),true);
- await page.locator('#bound-is').fill('A synthetic fixture for guided-reading validation.');await page.locator('#bound-not').fill('An accepted claim about a research paper.');await page.locator('#save-bound').click();await revision(1);await page.locator('#advance').click();await revision(2);
+ await page.locator('#bound-is').fill('A synthetic fixture for guided-reading validation.');
+ await page.locator('#advance').click();await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Fill in both IS and IS NOT'));
+ assert.equal(await page.locator('#bound-is').inputValue(),'A synthetic fixture for guided-reading validation.');
+ assert.equal((await state()).revision,0);
+ await page.locator('#bound-not').fill('An accepted claim about a research paper.');
+ // A rejected save must preserve both fields after the server refresh, even after blur.
+ await page.locator('#bound-is').fill('x'.repeat(4001));await page.locator('#status').evaluate(el=>el.classList.remove('error'));await page.locator('#save-bound').click();
+ await page.waitForFunction(()=>document.querySelector('#status').classList.contains('error'));
+ assert.equal(await page.locator('#bound-is').inputValue(),'x'.repeat(4001));
+ assert.equal(await page.locator('#bound-not').inputValue(),'An accepted claim about a research paper.');
+ await page.locator('#bound-is').fill('A synthetic fixture for guided-reading validation.');
+ if(extension==='pdf'){await page.locator('#save-bound').click();await revision(1);}
+ await page.locator('#advance').click();await revision(2);
+ assert.equal((await state()).stage,'read');
  const surface='[data-anchor-text]';assert.equal(await page.locator('.pdf-page:visible').count(),0);assert.equal(await page.locator('#surface-title').textContent(),'Converted document');await page.locator(surface).first().waitFor({timeout:30000});
  // Use a real pointer drag. Programmatic Selection bypasses text-layer hit testing.
  assert.equal(await page.locator('[data-label="node"]').isEnabled(),true);

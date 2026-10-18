@@ -2,6 +2,7 @@ import * as pdfjs from '/vendor/pdf.mjs';
 pdfjs.GlobalWorkerOptions.workerSrc='/vendor/pdf.worker.mjs';
 const $=id=>document.getElementById(id);
 let state=null,source=null,pdf=null,page=1,structured=true,busy=false,selectedAnchor=null,reviewing=null,database='',generation=0,figureMode=false,returnBlock=null,sideBySide=false,viewScroll={},splitScroll={},editingPassage=null,passageViews={};
+const boundaryDrafts=new Map();
 const actor=()=> $('actor').value.trim()||'human';
 const uid=()=>crypto.randomUUID ? crypto.randomUUID().replaceAll('-','_') : `r_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 function status(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
@@ -14,15 +15,17 @@ async function mutate(action){if(!state)throw Error('Choose a reading session fi
 localStorage.setItem('hades.reading.pending',JSON.stringify(payload));
 try{const result=await api('mutate',payload);localStorage.removeItem('hades.reading.pending');await refresh();status(`Saved revision ${result.revision}${result.created_ids.length?' · accepted graph objects created':''}`);return result}catch(e){await refresh();throw e}}
 async function sessions(){const data=await api('state');$('sessions').replaceChildren();for(const s of data.sessions){const b=button(s.title,()=>load(s.id));b.className='session';b.append(element('div',`${s.stage} · revision ${s.revision}`,'muted'));$('sessions').append(b)}await archives()}
-async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();status(state.stage==='bound'?'Complete Bound first: save IS and IS NOT, then choose Complete stage and continue.':'Drag over source text, then choose a highlight meaning.');}
+async function load(id){if(editingPassage)throw Error('Save or cancel the passage edit before switching readings.');generation++;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;history.replaceState(null,'',`/reading?session=${encodeURIComponent(id)}`);renderState();await renderSource();status(state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
 async function refresh(){if(!state)return;const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(state?.id!==id)return;state=next.state;state.connectivity=next.connectivity;renderState()}
 function renderState(){
 $('stages').replaceChildren(...['bound','read','connect','outline'].map((s,i)=>{const b=button(s,()=>mutate({action:'revisit',stage:s}));b.classList.toggle('current',s===state.stage);b.disabled=i>=['bound','read','connect','outline'].indexOf(state.stage);return b}));
-if(document.activeElement!==$('bound-is'))$('bound-is').value=state.bound.is;
-if(document.activeElement!==$('bound-not'))$('bound-not').value=state.bound.is_not;
+const boundaries=boundaryDrafts.get(state.id)||state.bound;
+if(document.activeElement!==$('bound-is'))$('bound-is').value=boundaries.is;
+if(document.activeElement!==$('bound-not'))$('bound-not').value=boundaries.is_not;
+$('advance').textContent=state.stage==='bound'?'Save boundaries and start reading':'Complete stage and continue';
 $('advance').disabled=state.stage==='outline';
 for(const b of document.querySelectorAll('[data-label]'))b.disabled=state.stage==='bound';
-$('selection-help').textContent=state.stage==='bound'?'Highlighting starts in Read. Save your IS and IS NOT boundaries, then choose Complete stage and continue.':'Drag over the source text, then choose New node, IS, Explicit IS NOT, or Question above. Saved highlights appear on the right.';
+$('selection-help').textContent=state.stage==='bound'?'Highlighting starts in Read. Enter IS and IS NOT above, then choose Save boundaries and start reading.':'Drag over the source text, then choose New node, IS, Explicit IS NOT, or Question above. Saved highlights appear on the right.';
 $('warnings').replaceChildren(...(source.structured?.warnings||['No structured content available.']).map(w=>element('p',w)));
 $('highlights').replaceChildren();for(const h of Object.values(state.highlights)){if(h.removed)continue;const c=element('section',undefined,'card');c.append(element('span',h.label.replaceAll('_',' ').toUpperCase(),'badge'),element('p',h.anchor.exact||(h.anchor.figure_box?'Figure selection (no caption supplied)':'')));if(changedReference(h))c.append(element('p',`Passage corrected: this reference uses revision ${h.anchor.passage_revision||0}. Reveal to review its original text.`,'passage-warning'));const controls=element('div',undefined,'controls');controls.append(button('Reveal',()=>reveal(h.id)),button('Share focus',()=>mutate({action:'focus',references:[h.id]})),button('Write a note',()=>newNote(h)),button('Remove',()=>mutate({action:'remove_highlight',id:h.id})));const select=element('select');select.setAttribute('aria-label','Highlight meaning');for(const l of ['node','is','is_not','question']){const o=element('option',l);o.value=l;o.selected=l===h.label;select.append(o)}select.onchange=()=>run(()=>mutate({action:'recolor',id:h.id,label:select.value}));controls.append(select);c.append(controls);$('highlights').append(c)}
 $('proposals').replaceChildren();$('knowledge').replaceChildren();for(const p of Object.values(state.proposals).sort((a,b)=>state.outline_order.indexOf(a.id)-state.outline_order.indexOf(b.id))){const c=element('section',undefined,'card');c.append(element('strong',p.draft.title),element('p',`${p.status} · revision ${p.revision} · origin: ${p.origin}`,'muted'));if(changedReference(state.highlights[p.draft.highlight]))c.append(element('p','Evidence passage corrected. Review the referenced revision; this note has not been moved.','passage-warning'));if(p.status==='pending'){c.append(element('p',p.draft.note),button('Review exact revision',()=>review(p.id)));$('proposals').append(c)}else if(p.status==='accepted'){c.append(element('p',p.draft.note));if(state.connectivity?.some(v=>v.proposal===p.id&&!v.connected))c.append(element('p','Suspect: the note or its basis path is missing from the graph.','error'));if(state.stage==='outline'&&!p.draft.from){for(const [name,direction]of [['Move up',-1],['Move down',1]])c.append(button(name,async()=>{const proposals=[...state.outline_order],i=proposals.indexOf(p.id),j=i+direction;if(j<0||j>=proposals.length)return;[proposals[i],proposals[j]]=[proposals[j],proposals[i]];await mutate({action:'order_outline',proposals})}))}if(!p.draft.is||!p.draft.is_not)c.append(element('p','One or more node boundaries remain unresolved.','muted'));for(const id of p.created_ids){const a=element('a',id);a.href=`/?db=${encodeURIComponent(database)}&graph=${encodeURIComponent(state.graph)}&node=${encodeURIComponent(id)}`;a.target='_blank';c.append(a,element('br'))}c.append(button('Reveal evidence',()=>reveal(p.draft.highlight)));$('knowledge').append(c)}else{$('proposals').append(c)}}
@@ -208,7 +211,20 @@ $('accept').onclick=()=>run(async()=>{if(JSON.stringify(edited())!==JSON.stringi
 $('reject').onclick=()=>run(async()=>{await mutate({action:'reject',id:reviewing.id,proposal_revision:reviewing.revision});$('editor').close()});
 function tab(name){for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===name);for(const n of ['highlights','proposals','knowledge'])$(n).hidden=n!==name}
 for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);
-$('save-bound').onclick=()=>run(()=>mutate({action:'bound',is:$('bound-is').value,is_not:$('bound-not').value}));$('advance').onclick=()=>run(()=>mutate({action:'advance'}));
+for(const field of ['bound-is','bound-not'])$(field).oninput=()=>{if(state)boundaryDrafts.set(state.id,{is:$('bound-is').value,is_not:$('bound-not').value});};
+async function saveBoundaries(){
+ if(!state)throw Error('Choose a reading first.');
+ const id=state.id,draft={is:$('bound-is').value,is_not:$('bound-not').value};
+ boundaryDrafts.set(id,draft);
+ if(!draft.is.trim()||!draft.is_not.trim())throw Error('Fill in both IS and IS NOT before starting to read. Your draft has been kept.');
+ if(!state.bound.revision||draft.is!==state.bound.is||draft.is_not!==state.bound.is_not)await mutate({action:'bound',...draft});
+ const current=boundaryDrafts.get(id);
+ if(current?.is===draft.is&&current?.is_not===draft.is_not)boundaryDrafts.delete(id);
+ else throw Error('The previous wording was saved. Save your latest boundary edits before continuing.');
+ renderState();
+}
+$('save-bound').onclick=()=>run(async()=>{await saveBoundaries();status('Boundaries saved. Choose Save boundaries and start reading to enable highlighting.');});
+$('advance').onclick=()=>run(async()=>{if(state?.stage==='bound')await saveBoundaries();await mutate({action:'advance'});if(state.stage==='read')status('Ready to read. Select text in a passage, then choose a highlight color.');});
 $('prev').onclick=()=>run(async()=>{if(page>1){page--;await renderSource()}});$('next').onclick=()=>run(async()=>{if(pdf&&page<pdf.numPages){page++;await renderSource()}});
 for(const mode of ['converted','pdf','split'])$('view-'+mode).onclick=()=>run(()=>setView(mode));
 $('wide').onclick=()=>run(async()=>{

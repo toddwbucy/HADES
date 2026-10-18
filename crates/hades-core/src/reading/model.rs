@@ -566,12 +566,47 @@ impl Session {
                 self.stage = stage.clone();
             }
             Action::Advance => {
-                self.stage=match self.stage.as_str() {
-                    "bound" if self.bound.revision>0 => "read",
-                    "read" if !self.highlights.is_empty() && self.proposals.values().all(|p| p.status!="pending") => "connect",
-                    "connect" if self.proposals.values().any(|p| p.status=="accepted") && self.proposals.values().all(|p| p.status!="pending") => "outline",
-                    _ => return Err("stage requirements not met: Bound needs boundaries, Read needs highlights and resolved proposals, Connect needs accepted knowledge and resolved proposals".into()),
-                }.into();
+                self.stage = match self.stage.as_str() {
+                    "bound" if self.bound.revision > 0 => "read",
+                    "read"
+                        if !self.highlights.is_empty()
+                            && self.proposals.values().all(|p| p.status != "pending") =>
+                    {
+                        "connect"
+                    }
+                    "connect"
+                        if self.proposals.values().any(|p| p.status == "accepted")
+                            && self.proposals.values().all(|p| p.status != "pending") =>
+                    {
+                        "outline"
+                    }
+                    "bound" => {
+                        return Err(
+                            "Save both IS and IS NOT boundaries before starting Read.".into()
+                        );
+                    }
+                    "read" if self.highlights.is_empty() => {
+                        return Err("Add a source highlight before completing Read.".into());
+                    }
+                    "read" => {
+                        return Err(
+                            "Accept or reject pending proposals before completing Read.".into()
+                        );
+                    }
+                    "connect" if self.proposals.values().any(|p| p.status == "pending") => {
+                        return Err(
+                            "Accept or reject pending proposals before completing Connect.".into(),
+                        );
+                    }
+                    "connect" => {
+                        return Err(
+                            "Accept at least one knowledge proposal before completing Connect."
+                                .into(),
+                        );
+                    }
+                    _ => return Err("Outline is the final reading stage.".into()),
+                }
+                .into();
             }
         }
         self.revision += 1;

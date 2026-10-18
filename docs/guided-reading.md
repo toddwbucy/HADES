@@ -52,8 +52,11 @@ do not isolate a hostile process with the operator's filesystem or database acce
    capabilities. Original bytes are hashed and archived before extraction.
    The saved conversion opens as the shared reading surface for every format.
    Failures retain the original and appear under **Archived sources and recovery**.
-2. Complete **Bound** in your own words: what the source IS and IS NOT. Save and
-   advance to **Read**. Bound revisions add graph nodes and events rather than
+2. Complete **Bound** in your own words: what the source IS and IS NOT.
+   Choose **Save boundaries and start reading** to save both fields and
+   advance to **Read**, enabling highlighting. **Save boundaries** alone keeps the
+   current stage. Failed saves and background refreshes preserve the current draft.
+   Bound revisions add graph nodes and events rather than
    replacing earlier boundaries.
 3. Select text within a converted passage and choose **New node**, **IS**, **Explicit IS NOT**, or **Question**.
    Labels accompany colors. Highlight creation, recoloring, and removal append

@@ -94,9 +94,10 @@ fn state_machine_does_not_invent_boundaries_or_allow_agent_acceptance() {
         actor: "human".into(),
     })
     .unwrap();
-    assert!(
+    assert_eq!(
         s.apply(&request("fixture", 0, Action::Advance), false)
-            .is_err()
+            .unwrap_err(),
+        "Save both IS and IS NOT boundaries before starting Read."
     );
     assert!(
         s.apply(
