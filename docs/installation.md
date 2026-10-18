@@ -12,6 +12,12 @@ works on a fresh host. Review service users, supplementary groups, filesystem
 paths, and model configuration for the destination machine before enabling units.
 Run commands below from the repository root unless a step says otherwise.
 
+For the first verified installation outside Olympus, see the
+[ThinkPad installation record](installation-thinkpad.md). It records CachyOS
+source-build prerequisites, local service configuration, GPU measurements, and
+successful ingestion/retrieval checks. It is a machine-specific record to use
+when developing a portable installation recipe.
+
 ## 0. Prerequisites
 
 These system-install steps target Ubuntu 24.04 and require root. Other

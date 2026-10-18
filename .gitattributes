@@ -2,3 +2,6 @@
 crates/hades-frontend/web/vendor/pdf.mjs linguist-vendored whitespace=-blank-at-eol
 crates/hades-frontend/web/vendor/pdf.worker.mjs linguist-vendored whitespace=-blank-at-eol
 crates/hades-frontend/web/vendor/pdf_viewer.css linguist-vendored
+
+# Unified diff context preserves upstream indentation and blank-line markers.
+scripts/install/patches/*.patch -whitespace
