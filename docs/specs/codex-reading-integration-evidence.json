@@ -58,6 +58,12 @@
   "live_proposal_schema": {
     "rejected_tool_calls": 0
   },
+  "browser_history_contracts": [
+    "idle-tab transcript gaps remain fetchable",
+    "overlapping polls preserve older-history progress",
+    "late history pages preserve newer gap cursors",
+    "late history pages cannot populate another binding"
+  ],
   "isolation": {
     "database": "with_temp_db on a private ArangoDB server",
     "history": "new private temporary Codex home",
@@ -75,7 +81,7 @@
   "service_free_checks": {
     "rust_unit_passed": 793,
     "rust_unit_ignored": 1,
-    "javascript_passed": 11,
+    "javascript_passed": 14,
     "python_run": 81,
     "python_skipped": 1,
     "formatting": true,

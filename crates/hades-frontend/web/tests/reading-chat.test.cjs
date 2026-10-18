@@ -47,3 +47,59 @@ test('late poll cannot clear another conversation submission or render stale sta
   resolve({exchanges:[{request_id:'request_one'}]}); await pending;
   assert(f.saved.has(key)); assert.equal(f.chat.polling, false);
 });
+
+function transcriptFixture(api) {
+  const f = fixture(api), elements = new Map();
+  const element = () => ({append(){}, replaceChildren(){}, scrollHeight:0, scrollTop:0, clientHeight:0});
+  delete f.chat.render; // Exercise the real renderer, with only DOM operations stubbed.
+  Object.assign(f.chat, {exchanges:new Map(), node:element, renderApprovals:()=>{},
+    $:id => {if (!elements.has(id)) elements.set(id, element()); return elements.get(id);}});
+  return f;
+}
+const exchangeKey = n => `exchange_${String(n).padStart(3, '0')}`;
+function historyPage(end) {
+  const start = Math.max(1, end - 19);
+  return {exchanges:Array.from({length:end - start + 1}, (_, i) => ({_key:exchangeKey(start + i),
+    created_at:'2026-10-18T00:00:00Z', status:'completed', message:`Message ${start + i}`})),
+    next_before:start > 1 ? exchangeKey(start) : null, live:{status:'disconnected', items:[], approvals:[]}};
+}
+const beforeNumber = before => Number(before.split('_')[1]) - 1;
+async function loadAll(chat, count) {
+  for (let i = 0; chat.olderCursor && i < 12; i++) await chat.loadOlder();
+  assert.equal(chat.olderCursor, null);
+  assert.deepEqual([...chat.exchanges.keys()].sort(), Array.from({length:count}, (_, i) => exchangeKey(i + 1)));
+  assert.equal(chat.$('chat-older').hidden, true);
+}
+test('polling after an idle tab exposes and fills a gap in previously complete history', async () => {
+  let tip = 5;
+  const {chat} = transcriptFixture(async ({before}) => historyPage(before ? beforeNumber(before) : tip));
+  await chat.poll(); assert.equal(chat.olderCursor, null);
+  tip = 65; await chat.poll();
+  assert.equal(chat.olderCursor, exchangeKey(46)); assert.equal(chat.$('chat-older').hidden, false);
+  await chat.loadOlder(); assert.equal(chat.olderCursor, exchangeKey(26));
+  await chat.poll(); assert.equal(chat.olderCursor, exchangeKey(26), 'overlapping polls preserve pagination progress');
+  await loadAll(chat, 65);
+});
+test('a late older page cannot overwrite a newer gap discovered by polling', async () => {
+  let tip = 65, resolve;
+  const {chat} = transcriptFixture(async ({before}) => {
+    if (!before) return historyPage(tip);
+    if (!resolve) return new Promise(r => {resolve = () => r(historyPage(beforeNumber(before)));});
+    return historyPage(beforeNumber(before));
+  });
+  await chat.poll();
+  const older = chat.loadOlder();
+  tip = 105; await chat.poll(); assert.equal(chat.olderCursor, exchangeKey(86));
+  resolve(); await older;
+  assert.equal(chat.olderCursor, exchangeKey(86), 'older response must retain the newer gap cursor');
+  await loadAll(chat, 105);
+});
+test('a late older page cannot populate a newly selected binding', async () => {
+  let resolve;
+  const {chat} = transcriptFixture(() => new Promise(r => {resolve = r;}));
+  chat.render(historyPage(40));
+  const older = chat.loadOlder();
+  chat.epoch++; chat.binding = {_key:'different'}; chat.exchanges.clear(); chat.olderCursor = undefined;
+  resolve(historyPage(20)); await older;
+  assert.equal(chat.exchanges.size, 0); assert.equal(chat.olderCursor, undefined);
+});

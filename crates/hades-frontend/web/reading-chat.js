@@ -203,16 +203,20 @@ export class ReadingChat {
   }
   async loadOlder() {
     if (!this.binding || !this.olderCursor) return;
-    const binding = this.binding._key, epoch = this.epoch;
-    const data = await this.api({action: 'state', binding, before: this.olderCursor});
+    const binding = this.binding._key, epoch = this.epoch, before = this.olderCursor;
+    const data = await this.api({action: 'state', binding, before});
     if (epoch !== this.epoch || this.binding?._key !== binding) return;
     for (const exchange of data.exchanges) this.exchanges.set(exchange._key, exchange);
-    this.olderCursor = data.next_before;
+    // A concurrent poll may have discovered a newer gap while this page loaded.
+    if (this.olderCursor === before) this.olderCursor = data.next_before;
     await this.poll();
   }
   render(data) {
+    // A disjoint latest page can hide exchanges added while this tab was idle.
+    // Restart pagination at that gap; overlapping polls preserve older progress.
+    const overlaps = data.exchanges.some(exchange => this.exchanges.has(exchange._key));
+    if (this.olderCursor === undefined || (data.next_before && !overlaps)) this.olderCursor = data.next_before;
     for (const exchange of data.exchanges) this.exchanges.set(exchange._key, exchange);
-    if (this.olderCursor === undefined) this.olderCursor = data.next_before;
     data = {...data, exchanges: [...this.exchanges.values()].sort((a, b) =>
       a.created_at.localeCompare(b.created_at) || a._key.localeCompare(b._key))};
     this.$('chat-older').hidden = !this.olderCursor;
