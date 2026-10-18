@@ -181,23 +181,23 @@ pub async fn extract(
     }
     .await;
     let patch = match result {
-        Ok(r) => {
-            let structured: Value =
-                serde_json::from_str(&r.reading_document_json).map_err(|_| {
-                    invalid(
-                        "extractor does not return a reading document; upgrade extraction service",
-                    )
-                })?;
-            if structured["format"] != "docling-blocks-v1" || !structured["blocks"].is_array() {
-                return Err(invalid("invalid structured reading document"));
-            }
-            if r.reading_document_json.len() > 4 * 1024 * 1024 {
-                return Err(invalid(
-                    "structured document exceeds 4 MiB limit; original is archived",
-                ));
-            }
-            json!({"status":"ready","structured":structured,"extractor_metadata":r.metadata,"representation_hash":hash(r.reading_document_json.as_bytes()),"error":null,"embedded":false,"searchable":false})
+        Ok(r) if r.reading_document_json.trim().is_empty() => {
+            json!({"status":"failed","error":"extractor returned no structured reading surface for this source"})
         }
+        Ok(r) if r.reading_document_json.len() > 4 * 1024 * 1024 => {
+            json!({"status":"failed","error":"structured document exceeds 4 MiB limit; original is archived"})
+        }
+        Ok(r) => match serde_json::from_str::<Value>(&r.reading_document_json) {
+            Ok(structured)
+                if structured["format"] == "docling-blocks-v1"
+                    && structured["blocks"].is_array() =>
+            {
+                json!({"status":"ready","structured":structured,"extractor_metadata":r.metadata,"representation_hash":hash(r.reading_document_json.as_bytes()),"error":null,"embedded":false,"searchable":false})
+            }
+            _ => {
+                json!({"status":"failed","error":"extractor returned an invalid structured reading document"})
+            }
+        },
         Err(e) => json!({"status":"failed","error":e.to_string()}),
     };
     // Only publish the first successful extraction. Anchors cannot drift on retry.

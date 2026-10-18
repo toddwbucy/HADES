@@ -250,3 +250,30 @@ def test_idle_monitor_does_not_unload_cancelled_running_worker():
             await asyncio.gather(task, monitor, return_exceptions=True)
             await service.close()
     asyncio.run(run())
+
+
+def test_server_accepts_full_upload_size_and_large_response(tmp_path):
+    """Exercise the production RPC factory beyond gRPC's default 4 MiB limit."""
+    from extraction.server import create_server, extraction_pb2_grpc as rpc
+    async def run():
+        service = ExtractionServicer(ExtractionConfig(device="cpu"))
+        payload = b"x" * (8 * 1024 * 1024)
+        service._extract_text = lambda path: ExtractionResult(text=Path(path).read_text())
+        server = create_server(service)
+        address = f"unix:{tmp_path / 'large.sock'}"
+        assert server.add_insecure_port(address)
+        await server.start()
+        channel = grpc.aio.insecure_channel(address, options=[
+            ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+            ("grpc.max_send_message_length", 16 * 1024 * 1024),
+        ])
+        try:
+            response = await rpc.ExtractionServiceStub(channel).Extract(
+                pb.ExtractRequest(file_path="large.rst", content=payload,
+                                  source_type=pb.SOURCE_TYPE_TEXT), timeout=10)
+            assert response.full_text.encode() == payload
+        finally:
+            await channel.close()
+            await server.stop(0)
+            await service.close()
+    asyncio.run(run())

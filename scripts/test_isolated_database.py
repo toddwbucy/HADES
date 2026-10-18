@@ -64,6 +64,24 @@ def stop_group(child):
     raise RuntimeError(f"private process group {child.pid} did not stop")
 
 
+def run_reading_e2e(argv, env, timeout, results):
+    """Record the browser flow's outcome and reap its private process group."""
+    # CPU Docling/Chromium need more virtual address space than bounded_process
+    # permits. Keep low scheduling priority and group ownership without that cap.
+    child = subprocess.Popen(argv, cwd=REPO, env=env, start_new_session=True,
+                             preexec_fn=lower_priority)
+    try:
+        code = child.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired, RuntimeError) as error:
+        results["reading-e2e"] = {"passed": False, "command": argv, "error": str(error)}
+        raise
+    finally:
+        stop_group(child)
+    results["reading-e2e"] = {"passed": code == 0, "exit_code": code, "command": argv}
+    if code:
+        raise RuntimeError("guided reading end-to-end test failed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     server = parser.add_mutually_exclusive_group(required=True)
@@ -238,10 +256,7 @@ def main():
                         "--root", str(root), "--node", str(args.reading_node),
                         "--playwright", str(args.reading_playwright), "--chromium", str(args.reading_chromium),
                         "--model-cache", str(args.reading_model_cache)]
-                completed = subprocess.run(argv, cwd=REPO, env=env, timeout=args.command_timeout, check=False)
-                results["reading-e2e"] = {"passed": completed.returncode == 0}
-                if completed.returncode:
-                    raise RuntimeError("guided reading end-to-end test failed")
+                run_reading_e2e(argv, env, args.command_timeout, results)
                 return
             if args.mcp_authored:
                 command("mcp-authored", ["-p", "hades-cli", "--test", "codebase_lifecycle",

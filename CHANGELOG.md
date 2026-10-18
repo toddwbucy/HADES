@@ -114,6 +114,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Match extraction RPC limits to the guided-reading upload limit and persist
+  malformed or unavailable reading surfaces as recoverable failures. Reject
+  empty viewer credentials in every mode, prevent late polls from undoing newer
+  state, and clean up the browser-test process group on timeout.
+
 - Align the guided-reading PDF text layer with the rendered page so pointer
   selection targets the visible text. Disable classification during Bound and
   explain how to enter Read before saving highlights.

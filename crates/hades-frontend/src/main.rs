@@ -134,17 +134,7 @@ async fn main() -> Result<()> {
                 if args.reading_socket.is_some() && args.password.is_some() {
                     anyhow::bail!("guided reading requires --password-file rather than a command-line password");
                 }
-                let password = match args.password_file {
-                    Some(path) => Some(
-                        std::fs::read_to_string(path)?
-                            .trim_end_matches(['\r', '\n'])
-                            .to_owned(),
-                    ),
-                    None => args.password,
-                };
-                if args.reading_socket.is_some() && password.as_deref() == Some("") {
-                    anyhow::bail!("password file is empty");
-                }
+                let password = load_password(args.password_file, args.password)?;
                 server::serve(
                     args.hades_bin,
                     args.limit,
@@ -160,4 +150,52 @@ async fn main() -> Result<()> {
     .await;
     backend_process::shutdown_and_wait().await;
     result
+}
+
+/// Read a file-backed credential without treating an empty file as authentication.
+fn load_password(
+    file: Option<std::path::PathBuf>,
+    inline: Option<String>,
+) -> anyhow::Result<Option<String>> {
+    let password = match file {
+        Some(path) => Some(
+            std::fs::read_to_string(path)?
+                .trim_end_matches(['\r', '\n'])
+                .to_owned(),
+        ),
+        None => inline,
+    };
+    anyhow::ensure!(
+        password.as_deref() != Some(""),
+        "password must not be empty"
+    );
+    Ok(password)
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::load_password;
+
+    #[test]
+    fn empty_credentials_fail_without_requiring_reading_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("password");
+        for value in ["", "\n", "\r\n"] {
+            std::fs::write(&path, value).unwrap();
+            assert!(load_password(Some(path.clone()), None).is_err());
+        }
+        assert!(load_password(None, Some(String::new())).is_err());
+        assert_eq!(load_password(None, None).unwrap(), None);
+        std::fs::write(&path, " fixture password \r\n").unwrap();
+        assert_eq!(
+            load_password(Some(path), None).unwrap().as_deref(),
+            Some(" fixture password ")
+        );
+        assert_eq!(
+            load_password(None, Some("nonempty".into()))
+                .unwrap()
+                .as_deref(),
+            Some("nonempty")
+        );
+    }
 }

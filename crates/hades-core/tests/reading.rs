@@ -194,3 +194,148 @@ async fn corrections_preserve_source_and_references_and_restore_as_new_revisions
         let other=reading::read(&pool,ReadRequest{session:Some("other_reading".into()),view:"state".into(),source_hash:None}).await.unwrap();assert!(other["state"]["corrections"].as_object().unwrap().is_empty());
     }).await;
 }
+
+#[tokio::test]
+async fn invalid_extractions_are_persisted_and_recoverable() {
+    use hades_core::config::HadesConfig;
+    use hades_proto::extraction::extraction_service_server::{
+        ExtractionService, ExtractionServiceServer,
+    };
+    use hades_proto::extraction::{
+        CapabilitiesRequest, ExtractRequest, ExtractResponse, ExtractorInfo,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tonic::{Request, Response, Status};
+
+    struct Extractor(Arc<AtomicBool>);
+    #[tonic::async_trait]
+    impl ExtractionService for Extractor {
+        async fn extract(
+            &self,
+            request: Request<ExtractRequest>,
+        ) -> Result<Response<ExtractResponse>, Status> {
+            let content = request.into_inner().content;
+            let document = if self.0.load(Ordering::SeqCst) {
+                r#"{"format":"docling-blocks-v1","blocks":[{"id":"b1","text":"Recovered passage"}]}"#.into()
+            } else {
+                match content.as_slice() {
+                    b"empty" => String::new(),
+                    b"oversized" => " ".repeat(4 * 1024 * 1024 + 1) + "{}",
+                    b"malformed" => "{".into(),
+                    b"structure" => r#"{"format":"other","blocks":{}}"#.into(),
+                    _ => return Err(Status::unavailable("fixture transport failure")),
+                }
+            };
+            Ok(Response::new(ExtractResponse {
+                reading_document_json: document,
+                full_text: "Extracted text without a usable reading surface".into(),
+                ..Default::default()
+            }))
+        }
+        async fn capabilities(
+            &self,
+            _: Request<CapabilitiesRequest>,
+        ) -> Result<Response<ExtractorInfo>, Status> {
+            Ok(Response::new(ExtractorInfo::default()))
+        }
+    }
+    with_temp_db("reading_failure", Fixtures::Empty, |pool| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("extract.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let incoming = futures::stream::unfold(listener, |listener| async {
+            Some((listener.accept().await.map(|(stream, _)| stream), listener))
+        });
+        let recovered = Arc::new(AtomicBool::new(false));
+        let service = Extractor(recovered.clone());
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(
+                    ExtractionServiceServer::new(service)
+                        .max_encoding_message_size(16 * 1024 * 1024),
+                )
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        struct Cleanup(tokio::task::JoinHandle<()>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let _cleanup = Cleanup(server);
+        let mut config = HadesConfig::default();
+        config.extraction.service.socket = socket.to_string_lossy().into_owned();
+        let mut hashes = vec![];
+        for (input, expected) in [
+            ("empty", "no structured reading surface"),
+            ("oversized", "exceeds 4 MiB"),
+            ("malformed", "invalid structured"),
+            ("structure", "invalid structured"),
+            ("transport", "fixture transport failure"),
+        ] {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(input);
+            let uploaded = reading::upload(
+                &pool,
+                SourceRequest {
+                    filename: "fixture.txt".into(),
+                    content_base64: encoded.clone(),
+                },
+            )
+            .await
+            .unwrap();
+            let hash = uploaded["source_hash"].as_str().unwrap().to_owned();
+            let result = reading::extract(&pool, &config, hash.clone())
+                .await
+                .unwrap();
+            assert_eq!(result["status"], "failed");
+            assert!(
+                result["error"].as_str().unwrap().contains(expected),
+                "{result}"
+            );
+            let stored = pool
+                .writer()
+                .get(&format!("document/hades_reading_sources/{hash}"))
+                .await
+                .unwrap();
+            assert_eq!(stored["status"], "failed");
+            assert_eq!(stored["content_base64"], encoded);
+            let listed = reading::read(
+                &pool,
+                ReadRequest {
+                    session: None,
+                    source_hash: None,
+                    view: "sources".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                listed["sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s["source_hash"] == hash && s["error"] == result["error"])
+            );
+            hashes.push(hash);
+        }
+        recovered.store(true, Ordering::SeqCst);
+        let hash = hashes.remove(0);
+        assert_eq!(
+            reading::extract(&pool, &config, hash.clone())
+                .await
+                .unwrap()["status"],
+            "ready"
+        );
+        recovered.store(false, Ordering::SeqCst);
+        assert_eq!(
+            reading::extract(&pool, &config, hash).await.unwrap()["unchanged"],
+            true
+        );
+    })
+    .await;
+}

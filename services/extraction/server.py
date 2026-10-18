@@ -355,6 +355,16 @@ async def idle_monitor(servicer: ExtractionServicer, config: ExtractionConfig) -
             servicer.unload_models()
 
 
+def create_server(servicer):
+    """Build the RPC server with room for an 8 MiB source plus protobuf overhead."""
+    server = grpc_aio.server(options=[
+        ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+        ("grpc.max_send_message_length", 16 * 1024 * 1024),
+    ])
+    extraction_pb2_grpc.add_ExtractionServiceServicer_to_server(servicer, server)
+    return server
+
+
 async def serve() -> None:
     """Start the extraction gRPC server."""
     config = ExtractionConfig.from_env()
@@ -366,8 +376,7 @@ async def serve() -> None:
 
     servicer = ExtractionServicer(config)
 
-    server = grpc_aio.server()
-    extraction_pb2_grpc.add_ExtractionServiceServicer_to_server(servicer, server)
+    server = create_server(servicer)
 
     socket_path = config.socket_path
     socket_dir = Path(socket_path).parent
