@@ -57,9 +57,24 @@ Each open/resume applies a read-only sandbox, `on-request` approvals routed to t
 user, disabled shell/web/app/plugin features, and a guided-reading MCP allowlist.
 Inherited MCP servers are disabled. HADES checks the runtime's tool inventory
 before allowing Send. The allowed tools retrieve context/graph data or propose
-notes; graph acceptance remains a human action in the Review tab. Codex may ask permission to invoke a reading tool; **Allow once** authorizes only
-that pending allowlisted call. Command/file permissions and unrelated elicitation
-can only be declined from the reading desk.
+notes; graph acceptance remains a human action in the Review tab. Codex may ask
+permission to invoke a reading tool; **Allow once** authorizes only that pending
+allowlisted call.
+
+Choose **Always allow reads in this conversation** to remember permission for
+`reading_context`, `reading_exchange_context`, `db_query`, `db_get`, `db_lookup`,
+and `graph_neighbors`. HADES saves the choice with this reading's conversation
+binding. It survives browser reloads, release/resume, and daemon restarts; another
+binding does not inherit it, even if it resumes the same Codex thread. Choosing
+it also approves any currently pending, verified read calls. It does not change
+your global Codex configuration or CLI permissions.
+
+**Revoke remembered read permission** restores prompts for subsequent calls and
+is available even while disconnected. Already dispatched calls may finish.
+`reading_propose` still requires its own approval, and proposed graph changes
+still require acceptance in Review. Command/file permissions and unrelated
+elicitation can only be declined from the reading desk. Permission defaults to
+asking each time for existing and new bindings.
 
 ## Discuss a passage
 

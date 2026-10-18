@@ -139,6 +139,10 @@ pub enum Request {
         request_id: Value,
         result: Value,
     },
+    ReadPermission {
+        binding: String,
+        allowed: bool,
+    },
     Reconcile {
         binding: String,
     },
@@ -405,6 +409,37 @@ pub async fn handle(
             workers().lock().await.remove(&key);
             Ok(json!({"released":true}))
         }
+        Request::ReadPermission {
+            binding: id,
+            allowed,
+        } => {
+            let key = registry_key(pool, &id);
+            let _guard = binding_lock(&key).await;
+            binding(pool, &id).await?;
+            let owned = owner(&key).await;
+            let mut live = if let Some(owned) = &owned {
+                Some(owned.worker.live.write().await)
+            } else {
+                None
+            };
+            // Serialize decisions with the provider reader. Revoke in memory
+            // before persistence; grant only after a confirmed durable write.
+            if let Some(live) = live.as_mut() {
+                live.allow_reads = false;
+            }
+            pool.writer()
+                .patch(
+                    &format!("document/{BINDINGS}/{id}"),
+                    &json!({"allow_reads":allowed}),
+                )
+                .await
+                .map_err(db_error)?;
+            if let (Some(owned), Some(live)) = (&owned, live.as_mut()) {
+                live.allow_reads = allowed;
+                owned.worker.approve_pending_reads(live).await?;
+            }
+            Ok(json!({"allow_reads":allowed}))
+        }
         Request::Approval {
             binding: id,
             generation,
@@ -533,6 +568,7 @@ async fn open(
         .await
         .map_err(db_error)?;
         w.verify_tools(&thread).await?;
+        w.live.write().await.allow_reads = record["allow_reads"] == true;
         Ok(thread)
     }.await;
     let thread = match outcome {

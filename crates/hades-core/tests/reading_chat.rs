@@ -19,8 +19,16 @@ async fn call(
     chat::handle(pool, cfg, serde_json::from_value::<Request>(value).unwrap()).await
 }
 async fn wait(pool: &ArangoPool, cfg: &ChatConfig, predicate: impl Fn(&Value) -> bool) -> Value {
+    wait_binding(pool, cfg, "discussion", predicate).await
+}
+async fn wait_binding(
+    pool: &ArangoPool,
+    cfg: &ChatConfig,
+    binding: &str,
+    predicate: impl Fn(&Value) -> bool,
+) -> Value {
     for _ in 0..100 {
-        let state = call(pool, cfg, json!({"action":"state","binding":"discussion"}))
+        let state = call(pool, cfg, json!({"action":"state","binding":binding}))
             .await
             .unwrap();
         if predicate(&state) {
@@ -120,8 +128,102 @@ async fn chat_journal_ownership_context_approval_and_disconnect_recovery() {
             let other=call(&pool,&cfg,json!({"action":"state","binding":"discussion"})).await.unwrap();
             assert_eq!(other["pending"],json!({"unresolved":false,"active":false}));
         }
+        remembered_read_permissions(&pool, &cfg).await;
         review_regressions(&pool, &cfg, json!({"thread_id":b["thread_id"],"turn_id":history[0]["id"],"item_id":reference["id"]})).await;
     }).await;
+}
+
+async fn remembered_read_permissions(pool: &ArangoPool, cfg: &ChatConfig) {
+    let id = "read_permission_test";
+    let open = json!({"action":"open","id":id,"session":"fixture"});
+    let b = call(pool, cfg, open.clone()).await.unwrap();
+    let send_read = |request: &str, message: &str| {
+        let mut value = send(request, 4, message);
+        value["binding"] = json!(id);
+        value
+    };
+    let pending = |v: &Value| {
+        v["live"]["approvals"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+    };
+    let completed = |v: &Value| v["pending"]["unresolved"] == false;
+    let permission = |allowed| json!({"action":"read_permission","binding":id,"allowed":allowed});
+    call(pool, cfg, send_read("read_first", "/read-tool"))
+        .await
+        .unwrap();
+    wait_binding(pool, cfg, id, pending).await;
+    // The explicit durable grant also answers a currently pending read.
+    call(pool, cfg, permission(true)).await.unwrap();
+    let state = wait_binding(pool, cfg, id, completed).await;
+    assert_eq!(state["binding"]["allow_reads"], true);
+    // Subsequent calls need no browser approval/poll to dispatch.
+    call(pool, cfg, send_read("read_next", "/read-tool"))
+        .await
+        .unwrap();
+    wait_binding(pool, cfg, id, completed).await;
+    // A worker shutdown and reopen restores the saved grant.
+    chat::shutdown().await;
+    assert_eq!(
+        call(pool, cfg, open.clone()).await.unwrap()["allow_reads"],
+        true
+    );
+    call(pool, cfg, send_read("read_reopened", "/read-tool"))
+        .await
+        .unwrap();
+    wait_binding(pool, cfg, id, completed).await;
+    call(
+        pool,
+        cfg,
+        send_read("proposal_still_prompts", "/propose-tool"),
+    )
+    .await
+    .unwrap();
+    let state = wait_binding(pool, cfg, id, pending).await;
+    assert_eq!(
+        state["live"]["approvals"][0]["reading_tool"],
+        "reading_propose"
+    );
+    call(pool, cfg, json!({"action":"approval","binding":id,"generation":state["live"]["generation"],"request_id":901,"result":{"action":"decline"}})).await.unwrap();
+    wait_binding(pool, cfg, id, completed).await;
+    call(pool, cfg, permission(false)).await.unwrap();
+    call(pool, cfg, send_read("read_revoked", "/read-tool"))
+        .await
+        .unwrap();
+    let state = wait_binding(pool, cfg, id, pending).await;
+    assert_eq!(state["binding"]["allow_reads"], false);
+    call(pool, cfg, json!({"action":"approval","binding":id,"generation":state["live"]["generation"],"request_id":901,"result":{"action":"accept","content":{}}})).await.unwrap();
+    wait_binding(pool, cfg, id, completed).await;
+    call(pool, cfg, permission(true)).await.unwrap();
+    call(pool, cfg, json!({"action":"release","binding":id}))
+        .await
+        .unwrap();
+    // Even the same native thread gets no grant in a different HADES binding.
+    let other = "read_permission_other";
+    call(
+        pool,
+        cfg,
+        json!({"action":"open","id":other,"session":"fixture","thread_id":b["thread_id"]}),
+    )
+    .await
+    .unwrap();
+    let mut request = send_read("other_binding_read", "/read-tool");
+    request["binding"] = json!(other);
+    call(pool, cfg, request).await.unwrap();
+    wait_binding(pool, cfg, other, pending).await;
+    call(pool, cfg, json!({"action":"interrupt","binding":other}))
+        .await
+        .unwrap();
+    wait_binding(pool, cfg, other, completed).await;
+    call(pool, cfg, json!({"action":"release","binding":other}))
+        .await
+        .unwrap();
+    // Revocation is also available while disconnected and survives reopen.
+    call(pool, cfg, permission(false)).await.unwrap();
+    assert_eq!(call(pool, cfg, open).await.unwrap()["allow_reads"], false);
+    call(pool, cfg, json!({"action":"release","binding":id}))
+        .await
+        .unwrap();
 }
 
 async fn fixture_barrier(cfg: &ChatConfig, method: &str, count: usize) {

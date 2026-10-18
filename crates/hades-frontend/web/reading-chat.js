@@ -257,7 +257,7 @@ export class ReadingChat {
     this.$('chat-release').disabled = live.status === 'inProgress' || (!live.closed && data.pending.active);
     this.$('chat-resume').disabled = !live.closed && live.status !== 'disconnected';
     this.note(this.lastError || live.error || (pending ? 'Response active or submission awaiting reconciliation.' : (live.closed || live.status === 'disconnected') ? 'Conversation saved. Resume to continue.' : 'Connected to Codex.'), !!this.lastError || !!live.error);
-    this.renderApprovals(live);
+    this.renderApprovals(live, data.binding?.allow_reads === true);
   }
   renderItems(root, items) {
     for (const item of items) {
@@ -267,9 +267,21 @@ export class ReadingChat {
       }
     }
   }
-  renderApprovals(live) {
-    const signature = JSON.stringify([live.generation, live.approvals]); if (signature === this.approvalSignature) return;
+  renderApprovals(live, allowReads = false) {
+    const signature = JSON.stringify([this.binding._key, live.generation, live.approvals, allowReads]); if (signature === this.approvalSignature) return;
     this.approvalSignature = signature; const root = this.$('chat-approvals'); root.replaceChildren();
+    const bindingId = this.binding._key, epoch = this.epoch;
+    const permission = allowed => this.act(async () => {
+      if (epoch !== this.epoch || bindingId !== this.binding?._key) return;
+      await this.api({action: 'read_permission', binding: bindingId, allowed});
+      await this.poll();
+    });
+    const settings = this.node('section', undefined, 'card');
+    settings.append(this.node('p', allowReads ? 'Database reads are allowed for this saved conversation until revoked.' : 'Database reads ask permission each time.'));
+    const toggle = this.node('button', allowReads ? 'Revoke remembered read permission' : 'Always allow reads in this conversation');
+    toggle.onclick = () => permission(!allowReads);
+    settings.append(toggle, this.node('p', 'Applies to reading context and database lookups. Proposals still ask permission; graph changes still require review.', 'muted'));
+    root.append(settings);
     for (const request of live.approvals || []) {
       const card = this.node('section', undefined, 'card');
       const binding = this.binding._key, generation = live.generation;

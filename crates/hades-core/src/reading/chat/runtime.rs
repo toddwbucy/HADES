@@ -28,9 +28,18 @@ const READING_TOOLS: &[&str] = &[
     "db_lookup",
     "graph_neighbors",
 ];
+const READ_TOOLS: &[&str] = &[
+    "reading_context",
+    "reading_exchange_context",
+    "db_query",
+    "db_get",
+    "db_lookup",
+    "graph_neighbors",
+];
 
 #[derive(Default)]
 pub struct Live {
+    pub allow_reads: bool,
     pub thread: Option<String>,
     pub order: Vec<String>,
     pub turn: Option<String>,
@@ -45,6 +54,7 @@ impl Live {
     fn approval(&self, mut request: Value) -> Value {
         if let Some(object) = request.as_object_mut() {
             object.remove("reading_tool");
+            object.remove("read_only");
         }
         let p = &request["params"];
         if request["method"] == "mcpServer/elicitation/request"
@@ -62,9 +72,32 @@ impl Live {
                         .is_some_and(|tool| READING_TOOLS.contains(&tool))
             })
         {
-            request["reading_tool"] = item["tool"].clone();
+            // Do not infer a read grant from ambiguous concurrent calls with
+            // identical arguments (a proposal could otherwise match a read).
+            let matches = self
+                .items
+                .values()
+                .filter(|i| {
+                    i["type"] == "mcpToolCall"
+                        && i["status"] == "inProgress"
+                        && i["server"] == "hades_reading"
+                        && i["arguments"] == p["_meta"]["tool_params"]
+                })
+                .count();
+            if matches == 1 {
+                request["reading_tool"] = item["tool"].clone();
+                request["read_only"] = json!(READ_TOOLS.contains(&item["tool"].as_str().unwrap()));
+            }
         }
         request
+    }
+    fn auto_approve(&self, request: &Value) -> bool {
+        self.allow_reads
+            && !self.closed
+            && self.status == "inProgress"
+            && request["params"]["threadId"].as_str() == self.thread.as_deref()
+            && request["params"]["turnId"].as_str() == self.turn.as_deref()
+            && self.approval(request.clone())["read_only"] == true
     }
     pub fn from_turn(turn: &Value) -> Self {
         let mut state = Self::default();
@@ -165,7 +198,7 @@ impl Live {
 pub struct Worker {
     pub live: Arc<RwLock<Live>>,
     pub generation: String,
-    input: Mutex<ChildStdin>,
+    input: Arc<Mutex<ChildStdin>>,
     child: Mutex<Child>,
     pending: Arc<Mutex<BTreeMap<u64, Reply>>>,
     next: AtomicU64,
@@ -242,11 +275,12 @@ impl Worker {
             .take()
             .ok_or_else(|| failure("Missing Codex stdin"))?;
         let live = Arc::new(RwLock::new(Live::default()));
+        let input = Arc::new(Mutex::new(input));
         let pending: Arc<Mutex<BTreeMap<u64, Reply>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let worker = Arc::new(Self {
             live: live.clone(),
             generation: format!("{:032x}", rand::random::<u128>()),
-            input: Mutex::new(input),
+            input: input.clone(),
             child: Mutex::new(child),
             pending: pending.clone(),
             next: AtomicU64::new(1),
@@ -290,6 +324,13 @@ impl Worker {
                         }
                         if state.approvals.len() < 8 && bytes.len() <= 16000 {
                             let request = state.approval(message);
+                            if state.auto_approve(&request) {
+                                if let Err(error) = send_to(&input, json!({"id":request["id"],"result":{"action":"accept","content":{}}})).await {
+                                    state.error = Some(error.to_string());
+                                    break;
+                                }
+                                continue;
+                            }
                             state.approvals.insert(request["id"].to_string(), request);
                         } else {
                             state.error = Some(
@@ -323,14 +364,22 @@ impl Worker {
         Ok(worker)
     }
     pub async fn send(&self, value: Value) -> Result<(), HandlerError> {
-        let mut bytes = serde_json::to_vec(&value).map_err(|e| failure(e.to_string()))?;
-        bytes.push(b'\n');
-        self.input
-            .lock()
-            .await
-            .write_all(&bytes)
-            .await
-            .map_err(|e| failure(format!("Codex connection lost: {e}")))
+        send_to(&self.input, value).await
+    }
+    pub async fn approve_pending_reads(&self, live: &mut Live) -> Result<(), HandlerError> {
+        let ids: Vec<_> = live
+            .approvals
+            .iter()
+            .filter(|(_, request)| live.auto_approve(request))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let request = &live.approvals[&id];
+            self.send(json!({"id":request["id"],"result":{"action":"accept","content":{}}}))
+                .await?;
+            live.approvals.remove(&id);
+        }
+        Ok(())
     }
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, HandlerError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -459,6 +508,17 @@ impl Worker {
     }
 }
 
+async fn send_to(input: &Mutex<ChildStdin>, value: Value) -> Result<(), HandlerError> {
+    let mut bytes = serde_json::to_vec(&value).map_err(|e| failure(e.to_string()))?;
+    bytes.push(b'\n');
+    input
+        .lock()
+        .await
+        .write_all(&bytes)
+        .await
+        .map_err(|e| failure(format!("Codex connection lost: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +557,59 @@ mod tests {
         }
         s.items.get_mut("tool").unwrap()["tool"] = json!("kg_add_node");
         assert!(s.approval(request)["reading_tool"].is_null());
+    }
+    #[test]
+    fn remembered_reads_require_current_unambiguous_read_call() {
+        let mut live = Live {
+            thread: Some("thread".into()),
+            turn: Some("turn".into()),
+            status: "inProgress".into(),
+            ..Live::default()
+        };
+        let request = json!({"id":901,"method":"mcpServer/elicitation/request","params":{
+            "threadId":"thread","turnId":"turn","serverName":"hades_reading","mode":"form",
+            "requestedSchema":{"type":"object","properties":{}},
+            "_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{"id":"one"}}}});
+        live.items.insert(
+            "call".into(),
+            json!({"type":"mcpToolCall","server":"hades_reading",
+            "tool":"db_get","status":"inProgress","arguments":{"id":"one"}}),
+        );
+        assert!(!live.auto_approve(&request));
+        live.allow_reads = true;
+        for tool in READ_TOOLS {
+            live.items.get_mut("call").unwrap()["tool"] = json!(tool);
+            assert!(live.auto_approve(&request), "{tool}");
+        }
+        for tool in ["reading_propose", "kg_add_node", "unknown"] {
+            live.items.get_mut("call").unwrap()["tool"] = json!(tool);
+            assert!(!live.auto_approve(&request));
+        }
+        live.items.get_mut("call").unwrap()["tool"] = json!("db_get");
+        for field in [
+            "threadId",
+            "turnId",
+            "serverName",
+            "mode",
+            "requestedSchema",
+            "_meta",
+        ] {
+            let mut changed = request.clone();
+            changed["params"][field] = Value::Null;
+            changed["read_only"] = json!(true);
+            changed["reading_tool"] = json!("db_get");
+            assert!(!live.auto_approve(&changed), "{field}");
+        }
+        let mut other = live.items["call"].clone();
+        other["tool"] = json!("reading_propose");
+        live.items.insert("other".into(), other);
+        assert!(!live.auto_approve(&request));
+        live.items.remove("other");
+        live.closed = true;
+        assert!(!live.auto_approve(&request));
+        live.closed = false;
+        live.allow_reads = false;
+        assert!(!live.auto_approve(&request));
     }
     #[test]
     fn terminal_event_clears_approvals_and_ignores_old_turns() {

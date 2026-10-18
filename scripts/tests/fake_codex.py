@@ -18,6 +18,7 @@ output_lock = threading.Lock()
 owned = {}
 active = {}
 pending = {}
+pending_tools = {}
 
 
 def emit(value):
@@ -57,6 +58,19 @@ def finish(tid, turn, text='Fixture response', status='completed'):
 
 def respond(tid, turn, prompt):
     time.sleep(.2)
+    if '/read-tool' in prompt or '/propose-tool' in prompt:
+        tool = 'reading_propose' if '/propose-tool' in prompt else 'db_get'
+        arguments = {'id': 'fixture'}
+        event('item/started', {'threadId': tid, 'turnId': turn, 'item': {
+            'id': 'tool_' + turn, 'type': 'mcpToolCall', 'status': 'inProgress',
+            'server': 'hades_reading', 'tool': tool, 'arguments': arguments}})
+        pending[901] = (tid, turn)
+        pending_tools[901] = tool
+        emit({'id': 901, 'method': 'mcpServer/elicitation/request', 'params': {
+            'threadId': tid, 'turnId': turn, 'serverName': 'hades_reading', 'mode': 'form',
+            'requestedSchema': {'type': 'object', 'properties': {}},
+            '_meta': {'codex_approval_kind': 'mcp_tool_call', 'tool_params': arguments}}})
+        return
     if '/approval' in prompt:
         pending[900] = (tid, turn)
         emit({'id': 900, 'method': 'item/tool/requestUserInput', 'params': {
@@ -77,6 +91,12 @@ for line in sys.stdin:
     if 'method' not in message:
         pair = pending.pop(message.get('id'), None)
         if pair:
+            tool = pending_tools.pop(message.get('id'), None)
+            if tool:
+                assert message['result']['action'] in ('accept', 'decline', 'cancel')
+                event('item/completed', {'threadId': pair[0], 'turnId': pair[1], 'item': {
+                    'id': 'tool_' + pair[1], 'type': 'mcpToolCall', 'status': 'completed',
+                    'server': 'hades_reading', 'tool': tool, 'arguments': {'id': 'fixture'}}})
             event('serverRequest/resolved', {'threadId': pair[0], 'requestId': message['id']})
             finish(*pair, 'Answer received; discussion continued.')
         continue
