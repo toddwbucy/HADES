@@ -233,7 +233,9 @@ export class ReadingChat {
         card.append(this.node('strong', 'You'), this.node('p', exchange.message));
         const context = this.node('details'), summary = this.node('summary', 'Context sent with this message');
         context.append(summary, this.node('pre', JSON.stringify(exchange.context, null, 2))); card.append(context);
-        const isLive = exchange.provider_turn && exchange.provider_turn === live.turn_id;
+        // A reconciled terminal result supersedes any stale worker projection.
+        const settled = ['completed', 'failed', 'interrupted'].includes(exchange.status);
+        const isLive = !settled && exchange.provider_turn && exchange.provider_turn === live.turn_id;
         const projection = isLive ? live : exchange.projection;
         this.renderItems(card, projection?.items || []);
         card.append(this.node('p', isLive ? live.status : exchange.status, 'muted'));

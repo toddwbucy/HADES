@@ -50,7 +50,9 @@ test('late poll cannot clear another conversation submission or render stale sta
 
 function transcriptFixture(api) {
   const f = fixture(api), elements = new Map();
-  const element = () => ({append(){}, replaceChildren(){}, scrollHeight:0, scrollTop:0, clientHeight:0});
+  const element = (tag, text) => ({tag, textContent:text, children:[],
+    append(...children){this.children.push(...children);}, replaceChildren(...children){this.children = children;},
+    scrollHeight:0, scrollTop:0, clientHeight:0});
   delete f.chat.render; // Exercise the real renderer, with only DOM operations stubbed.
   Object.assign(f.chat, {exchanges:new Map(), node:element, renderApprovals:()=>{},
     $:id => {if (!elements.has(id)) elements.set(id, element()); return elements.get(id);}});
@@ -165,4 +167,32 @@ test('authoritative pending state still blocks unresolved work outside the displ
   page.pending.unresolved = false;
   f.saved.set(f.pendingChatKey('test', 'binding'), JSON.stringify({request_id:'unknown_submission'}));
   f.chat.render(page); assert.equal(f.chat.$('chat-send').disabled, true, 'an uncertain browser submission still requires recovery');
+});
+function renderedText(element) {
+  return [element.textContent, ...element.children.flatMap(renderedText)].filter(text => text !== undefined);
+}
+test('recovered terminal answers replace matching disconnected or unresolved live projections', () => {
+  for (const status of ['completed', 'failed', 'interrupted']) for (const closed of [true, false]) {
+    const {chat} = transcriptFixture();
+    const page = historyPage(1), exchange = page.exchanges[0];
+    exchange.provider_turn = 'turn_one'; exchange.status = status;
+    exchange.projection = {items:[{type:'agentMessage', text:'Recovered final answer'}]};
+    page.live = {turn_id:'turn_one', status:'unknown', closed, items:[{type:'agentMessage', text:'Partial answer'}]};
+    chat.render(page);
+    const text = renderedText(chat.$('chat-messages'));
+    assert(text.includes('Recovered final answer')); assert(text.includes(status));
+    assert(!text.includes('Partial answer')); assert(!text.includes('unknown'));
+  }
+});
+test('unsettled exchanges still render matching live output before the monitor saves it', () => {
+  for (const status of ['inProgress', 'completed']) {
+    const {chat} = transcriptFixture();
+    const page = historyPage(1), exchange = page.exchanges[0];
+    exchange.provider_turn = 'turn_one'; exchange.status = 'acknowledged';
+    page.pending = {unresolved:true, active:true};
+    page.live = {turn_id:'turn_one', status, items:[{type:'agentMessage', text:'Current streamed answer'}]};
+    chat.render(page);
+    const text = renderedText(chat.$('chat-messages'));
+    assert(text.includes('Current streamed answer')); assert(text.includes(status));
+  }
 });

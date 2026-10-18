@@ -101,6 +101,8 @@ turn. It never sends a model message.
 Once an exchange is reconciled to a terminal state, a delayed monitor or deadline
 cannot make it unresolved again. Loading an older transcript page also clears a
 saved browser submission when that page contains its matching request ID.
+Recovered terminal answers take precedence over a disconnected worker's partial
+response, so they appear without releasing or resuming that worker.
 Send and Release use current journal state for the whole binding, so stale cached
 transcript entries cannot keep those controls disabled after recovery.
 
