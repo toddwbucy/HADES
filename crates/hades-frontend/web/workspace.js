@@ -52,11 +52,12 @@
     }
     if (a.standing_text) $("reader-meta").append(el("span", a.standing_text, "badge standing"));
     const body = M.text(item);
+    $("reader-body").classList.toggle("derived-text", !body);
     $("reader-body").textContent = body || (kind === "edge"
       ? `${item.source}\n${M.relation(item)}\n${item.target}`
       : "This object has no inline source text. Explore its connections or open Object details for its metadata.");
     if (kind === "edge" && a.evidence) {
-      $("reader-body").append(el("p", "Source evidence\n" + JSON.stringify(a.evidence, null, 2)));
+      $("reader-body").append(el("p", "Source evidence\n" + JSON.stringify(a.evidence, null, 2), "derived-text"));
     }
     $("reader-links").replaceChildren(el("div", "Connected objects · in this view", "eyebrow"));
     const connections = [];
@@ -104,11 +105,12 @@
     if (!selected || refs.length >= 6) { $("context-status").textContent = "The tray holds up to six references. Remove one to add another."; return; }
     const selection = window.getSelection();
     const excerpt = selection?.rangeCount && $("reader-body").contains(selection.getRangeAt(0).commonAncestorContainer) ? selection.toString() : "";
-    const ref = M.reference(scope(),selected.item,selected.kind,excerpt);
-    if (refs.some(r => r.db === ref.db && r.graph === ref.graph && r.id === ref.id && r.excerpt === ref.excerpt)) {
-      $("context-status").textContent = "That reference is already in the tray."; return;
-    }
-    try { M.contextPacket([...refs,ref]); refs.push(ref); renderContext(); $("context-status").textContent = "Added. This reference will be included with your next chat message."; }
+    try {
+      const ref = M.reference(scope(),selected.item,selected.kind,excerpt);
+      if (refs.some(r => r.db === ref.db && r.graph === ref.graph && r.id === ref.id && r.excerpt === ref.excerpt)) {
+        $("context-status").textContent = "That reference is already in the tray."; return;
+      }
+      M.contextPacket([...refs,ref]); refs.push(ref); renderContext(); $("context-status").textContent = "Added. This reference will be included with your next chat message."; }
     catch (error) { $("context-status").textContent = error.message; }
   };
   $("add-context").onmousedown = event => event.preventDefault();

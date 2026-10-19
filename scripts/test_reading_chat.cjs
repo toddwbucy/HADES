@@ -327,8 +327,14 @@ async function main() {
     assert.equal((await chatState()).exchanges.length, continued.exchanges.length, 'reload cannot replay a message');
     await page.locator('#workspace-layout').selectOption('wide');
     await page.screenshot({path:path.join(root, 'workspace-codex-chat.png'), fullPage:true});
+    const newest = (await api('chat',{action:'bindings',session:'browser_fixture'})).bindings[0];
+    assert.notEqual(newest._key, binding._key, 'exercise returning to an older conversation');
     await page.locator('#chat-reading-link').click();
     await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
+    await page.reload();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
     await page.locator('[data-tab="chat"]').click();
     await until(async () => (await page.locator('#chat-messages').textContent()).includes('Continue our reading discussion'));
     await page.locator('#chat-workspace-link').click();
@@ -337,9 +343,40 @@ async function main() {
     const free = await until(async () => {const v=await api('chat',{action:'bindings'});return v.bindings.find(b => b.session === null && b.thread_id);});
     await until(async () => (await page.locator('#chat-bindings').inputValue()) === free._key);
     await until(async () => await page.locator('#chat-send').isEnabled());
+    await page.locator('[data-library="all"]').click();
+    await page.locator('.library-item').first().click();
+    await page.locator('#reader-links button[aria-label^="Inspect "]').first().click();
+    const edgeId = await page.evaluate(() => state.selectedEdge);
+    assert(edgeId, 'fixture must select an edge');
+    // The accepted basis edge may contain stored text. Exercise the alternative
+    // projection too: no text field, with a rendered source-evidence block.
+    await page.evaluate(id => {
+      const attrs={...graph.getEdgeAttribute(id, 'attrs')};
+      for(const field of ['content','body','definition','text','statement'])delete attrs[field];
+      attrs.evidence={quote:'Synthetic source evidence'};
+      graph.setEdgeAttribute(id, 'attrs', attrs); inspectEdge(id);
+    }, edgeId);
+    assert.equal(await page.locator('#reader-body').evaluate(el => getComputedStyle(el).userSelect), 'none');
+    assert.equal(await page.locator('#reader-body p').evaluate(el => getComputedStyle(el).userSelect), 'none');
+    // A programmatic selection can bypass CSS; the tray must still reject a
+    // generated summary locally instead of submitting an invalid excerpt.
+    await page.locator('#reader-body').evaluate(el => {
+      el.style.userSelect='text'; for(const child of el.children)child.style.userSelect='text';
+      const range=document.createRange(); range.selectNodeContents(el);
+      const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    });
+    await page.locator('#add-context').click();
+    assert.match(await page.locator('#context-status').textContent(), /Select only stored source text/);
+    assert.equal(await page.locator('#context-items .context-card').count(), 0);
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.locator('#add-context').click();
+    assert.equal(await page.locator('#context-items .context-card').count(), 1);
     await page.locator('#chat-message').fill('A new workspace conversation without a reading.');
     await page.locator('#chat-send').click();
     await until(async () => (await api('chat',{action:'state',binding:free._key})).exchanges[0]?.status === 'completed');
+    const edgeExchange = (await api('chat',{action:'state',binding:free._key})).exchanges[0];
+    assert.equal(edgeExchange.context.objects[0].selection.id, edgeId);
+    assert.equal(edgeExchange.context.objects[0].selection.excerpt, '');
     assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(root, 'workspace-chat-evidence.json'), JSON.stringify({passed:true, same_thread:true, same_binding:true, remembered_reads_preserved:true, frozen_graph_context:true, reload_without_replay:true, return_to_reading:true, standalone_workspace_chat:true}, null, 2));
   }

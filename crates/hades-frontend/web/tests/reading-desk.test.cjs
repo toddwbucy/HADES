@@ -2,6 +2,18 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../reading.js'), 'utf8');
+test('reading URL and workspace link retain the selected conversation and clear it on deselection', () => {
+  const code = source.slice(source.indexOf('function syncReadingConversation('), source.indexOf('const readingChat ='));
+  const link = {}, urls = [];
+  const sync = vm.runInNewContext(code + ';syncReadingConversation', {URLSearchParams,
+    state:{id:'reading', graph:'knowledge'}, database:'test', $:() => link,
+    history:{replaceState:(_state, _title, url) => urls.push(url)}});
+  sync({_key:'older'});
+  assert.equal(new URL('http://fixture'+urls.at(-1)).searchParams.get('conversation'), 'older');
+  assert.equal(new URL('http://fixture'+link.href).searchParams.get('conversation'), 'older');
+  sync(null);
+  assert.equal(urls.at(-1), '/reading?session=reading'); assert.equal(link.hidden, true);
+});
 const guard = source.slice(source.indexOf('function checkRemovalDrafts('), source.indexOf('async function setArchived('));
 function fixture(state, drafts, message = '', editingPassage = null) {
   return vm.runInNewContext(guard + ';checkRemovalDrafts', {

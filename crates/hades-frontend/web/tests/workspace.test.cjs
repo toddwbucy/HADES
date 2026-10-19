@@ -15,7 +15,7 @@ test('concepts remain document-specific even when labels match', () => {
 });
 test('reference packets retain scope, exact IDs, source version, offsets and quotation bounds', () => {
   const node=n('notes/a','section','A',10);
-  node.attrs.source_version='0.14';node.attrs.source_node_id='doc/a';
+  node.attrs.source_version='0.14';node.attrs.source_node_id='doc/a';node.attrs.content='x'.repeat(2000);
   const ref=M.reference({db:'test',graph:'workspace'},node,'node','x'.repeat(2000));
   const packet=JSON.parse(M.contextPacket([ref]));
   assert.equal(packet.references[0].id,'notes/a');
@@ -30,4 +30,15 @@ test('edge references retain their endpoints and relation, never just a visual l
 });
 test('reader preserves source text, including markup, without rewriting it', () => {
   assert.equal(M.text({attrs:{content:'<script>example</script>\n$$x$$'}}),'<script>example</script>\n$$x$$');
+});
+test('generated edge summaries and source evidence are not submitted as source excerpts', () => {
+  const scope = {db:'test', graph:'knowledge'};
+  const edge = {id:'edges/one', source:'nodes/a', target:'nodes/b', collection:'edges', attrs:{relation:'supports', evidence:{quote:'Supporting evidence'}}};
+  for (const excerpt of ['nodes/a\nsupports\nnodes/b', 'Source evidence\n{"quote":"Supporting evidence"}', 'Supporting evidence']) {
+    assert.throws(() => M.reference(scope, edge, 'edge', excerpt), /Select only stored source text/);
+  }
+  assert.equal(M.reference(scope, edge, 'edge').excerpt, '', 'whole edges remain attachable');
+  edge.attrs.text = 'Actual stored source passage.';
+  assert.equal(M.reference(scope, edge, 'edge', 'stored source').excerpt, 'stored source');
+  assert.throws(() => M.reference(scope, edge, 'edge', 'Actual stored source passage.\nSource evidence'), /Select only stored source text/);
 });

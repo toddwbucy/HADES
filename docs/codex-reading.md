@@ -114,6 +114,12 @@ selection before sending. Workspace exchanges use workspace context; earlier
 reading snapshots remain unchanged in the shared history. Proposals still require
 a human highlight and acceptance in the reading's Review tab.
 
+Passage selections use stored source text. Generated relationship summaries and
+the rendered **Source evidence** block are not selectable as passages. Clear any
+text selection to attach the whole relationship; its evidence can be inspected in
+**Object details**. Reading URLs retain the selected conversation, including older
+conversations, when refreshed or shared.
+
 Both views share interruption, approval, and lost-submission recovery controls.
 Opening the same conversation in two tabs does not create another worker. An
 active or unresolved exchange must finish or be reconciled before another send.

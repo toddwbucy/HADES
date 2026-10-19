@@ -37,6 +37,9 @@
   }
 
   function reference(scope, item, objectKind, excerpt = "") {
+    if (excerpt && !text(item).includes(excerpt)) {
+      throw new Error("Select only stored source text for a passage. Clear the text selection to attach the whole object; generated summaries and source evidence remain available in Object details.");
+    }
     const a = item.attrs || {}, location = a.source_location || {};
     const source = {};
     for (const key of ["body_start", "body_end", "start_byte", "end_byte"]) {
