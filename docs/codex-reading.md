@@ -1,4 +1,4 @@
-# Reading with Codex
+# Reading and exploring knowledge with Codex
 
 The reading desk's **Chat** tab connects a saved reading to a local Codex
 conversation. Codex manages the conversation history; HADES saves the document
@@ -92,6 +92,40 @@ asking each time for existing and new bindings.
 5. Review proposed notes in **Review**. Only **Accept reviewed revision** creates
    the corresponding graph objects.
 
+## Continue in the knowledge workspace
+
+Choose **Continue in knowledge workspace** in the reading's Chat tab. The right
+panel opens the same saved conversation: its Codex thread, exchange history,
+remembered read permission, and any running response stay with it. Use **Resume**
+if its worker has disconnected. No release or transcript copying is needed when
+moving between these two HADES views. **Return to guided reading** brings you back
+to the original reading and conversation without changing its saved page position.
+
+The workspace also supports **New conversation** without a reading. Its saved
+conversation picker includes reading and workspace conversations in the configured
+chat database, including readings removed from the desk. Chat is unavailable when
+viewing another database; select the daemon's configured database to continue.
+
+Select an object or passage, then **Add selected object** to include it from the
+reference tray in your next message. Up to six graph objects can be attached.
+HADES checks their database, graph membership, and exact excerpts, and freezes
+their IDs, revisions, provenance, and excerpts in that exchange. Refresh a stale
+selection before sending. Workspace exchanges use workspace context; earlier
+reading snapshots remain unchanged in the shared history. Proposals still require
+a human highlight and acceptance in the reading's Review tab.
+
+Passage selections use stored source text. Generated relationship summaries and
+the rendered **Source evidence** block are not selectable as passages. Clear any
+text selection to attach the whole relationship; its evidence can be inspected in
+**Object details**. Reading URLs retain the selected conversation, including older
+conversations, when refreshed or shared.
+
+Both views share interruption, approval, and lost-submission recovery controls.
+Opening the same conversation in two tabs does not create another worker. An
+active or unresolved exchange must finish or be reconciled before another send.
+
+![A guided-reading conversation continued in the knowledge workspace](screenshots/workspace-codex-chat.png)
+
 **Conversation history** opens the current thread’s earlier messages, including
 messages from before its HADES binding. **Reference messages** reads selected history without resuming that conversation.
 Selections go into the next message sent from the current/new binding. Referencing
@@ -161,6 +195,7 @@ Service-free tests:
 ```bash
 cargo test --workspace --lib --bins
 node crates/hades-frontend/web/tests/reading-chat.test.cjs
+node crates/hades-frontend/web/tests/workspace-chat.test.cjs
 ```
 
 Database and browser contracts use an isolated server and `with_temp_db`:

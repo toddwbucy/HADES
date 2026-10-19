@@ -296,6 +296,117 @@ async function main() {
     fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','passage edit blocks creation and restoration before mutation','remove and reload','unsent message retained','boundary draft blocks retry from another reading','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
     assert.deepEqual(errors, []);
   }
+  if (!real) {
+    // Continue the original saved conversation in the graph workspace, without
+    // releasing ownership or cloning its transcript into another binding.
+    await page.goto(url + '/reading?' + new URLSearchParams({session:'browser_fixture', conversation:binding._key}));
+    await page.locator('[data-tab="chat"]').click();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    const before = await chatState();
+    let releaseWorkspace, workspaceArrived;
+    const holdWorkspace = new Promise(resolve => {releaseWorkspace=resolve;});
+    const workspacePending = new Promise(resolve => {workspaceArrived=resolve;});
+    const delayWorkspace = async route => {
+      const body=route.request().postDataJSON();
+      if (body?.action !== 'bindings' || body.session) return route.continue();
+      workspaceArrived(); await holdWorkspace; await route.continue();
+    };
+    await page.route('**/api/reading/chat', delayWorkspace);
+    await page.locator('#chat-workspace-link').click();
+    await page.waitForURL(u => u.pathname === '/');
+    await workspacePending;
+    await page.locator('.library-item').first().waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key, 'graph navigation preserves a pending workspace conversation');
+    releaseWorkspace();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await page.unroute('**/api/reading/chat', delayWorkspace);
+    await until(async () => (await page.locator('#chat-messages').textContent()).includes('Discuss this selected passage.'));
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
+    if (await page.locator('#chat-resume').isEnabled()) await page.locator('#chat-resume').click();
+    await until(async () => await page.locator('#chat-send').isEnabled());
+    await page.locator('[data-library="all"]').click();
+    await page.locator('.library-item').first().click();
+    await page.locator('#add-context').click();
+    await page.locator('#chat-message').fill('Continue our reading discussion using this knowledge object.');
+    await page.locator('#chat-send').click();
+    const continued = await until(async () => {const v=await chatState(); return v.exchanges.length === before.exchanges.length + 1 && v.exchanges.at(-1).status === 'completed' && v;});
+    assert.equal(continued.binding.thread_id, before.binding.thread_id);
+    assert.equal(continued.binding.allow_reads, before.binding.allow_reads);
+    assert.equal(continued.exchanges.at(-1).context.format, 'hades-workspace-context/v1');
+    assert.equal(continued.exchanges.at(-1).context.objects.length, 1);
+    assert.equal(continued.exchanges.at(-1).context.origin_reading, 'browser_fixture');
+    await page.reload();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await until(async () => (await page.locator('#chat-messages').textContent()).includes('Continue our reading discussion'));
+    assert.equal((await chatState()).exchanges.length, continued.exchanges.length, 'reload cannot replay a message');
+    await page.locator('#workspace-layout').selectOption('wide');
+    await page.screenshot({path:path.join(root, 'workspace-codex-chat.png'), fullPage:true});
+    const newest = (await api('chat',{action:'bindings',session:'browser_fixture'})).bindings[0];
+    assert.notEqual(newest._key, binding._key, 'exercise returning to an older conversation');
+    let releaseRestore, restorationArrived;
+    const holdRestore = new Promise(resolve => {releaseRestore=resolve;});
+    const restoring = new Promise(resolve => {restorationArrived=resolve;});
+    const failRestoration = async route => {
+      if (route.request().postDataJSON()?.action !== 'bindings') return route.continue();
+      restorationArrived(); await holdRestore;
+      await route.fulfill({status:503, contentType:'application/json', body:JSON.stringify({error:'Fixture history temporarily unavailable'})});
+    };
+    await page.route('**/api/reading/chat', failRestoration);
+    await page.locator('#chat-reading-link').click();
+    await restoring;
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key, 'keep the requested link while history is pending');
+    releaseRestore();
+    await until(async () => (await page.locator('#chat-status').textContent()).includes('Fixture history temporarily unavailable'));
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key, 'failed restoration cannot erase the direct link');
+    await page.unroute('**/api/reading/chat', failRestoration);
+    await page.reload();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
+    await page.locator('[data-tab="chat"]').click();
+    await until(async () => (await page.locator('#chat-messages').textContent()).includes('Continue our reading discussion'));
+    await page.locator('#chat-workspace-link').click();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await page.locator('#chat-new').click();
+    const free = await until(async () => {const v=await api('chat',{action:'bindings'});return v.bindings.find(b => b.session === null && b.thread_id);});
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === free._key);
+    await until(async () => await page.locator('#chat-send').isEnabled());
+    await page.locator('[data-library="all"]').click();
+    await page.locator('.library-item').first().click();
+    await page.locator('#reader-links button[aria-label^="Inspect "]').first().click();
+    const edgeId = await page.evaluate(() => state.selectedEdge);
+    assert(edgeId, 'fixture must select an edge');
+    // The accepted basis edge may contain stored text. Exercise the alternative
+    // projection too: no text field, with a rendered source-evidence block.
+    await page.evaluate(id => {
+      const attrs={...graph.getEdgeAttribute(id, 'attrs')};
+      for(const field of ['content','body','definition','text','statement'])delete attrs[field];
+      attrs.evidence={quote:'Synthetic source evidence'};
+      graph.setEdgeAttribute(id, 'attrs', attrs); inspectEdge(id);
+    }, edgeId);
+    assert.equal(await page.locator('#reader-body').evaluate(el => getComputedStyle(el).userSelect), 'none');
+    assert.equal(await page.locator('#reader-body p').evaluate(el => getComputedStyle(el).userSelect), 'none');
+    // A programmatic selection can bypass CSS; the tray must still reject a
+    // generated summary locally instead of submitting an invalid excerpt.
+    await page.locator('#reader-body').evaluate(el => {
+      el.style.userSelect='text'; for(const child of el.children)child.style.userSelect='text';
+      const range=document.createRange(); range.selectNodeContents(el);
+      const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    });
+    await page.locator('#add-context').click();
+    assert.match(await page.locator('#context-status').textContent(), /Select only stored source text/);
+    assert.equal(await page.locator('#context-items .context-card').count(), 0);
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.locator('#add-context').click();
+    assert.equal(await page.locator('#context-items .context-card').count(), 1);
+    await page.locator('#chat-message').fill('A new workspace conversation without a reading.');
+    await page.locator('#chat-send').click();
+    await until(async () => (await api('chat',{action:'state',binding:free._key})).exchanges[0]?.status === 'completed');
+    const edgeExchange = (await api('chat',{action:'state',binding:free._key})).exchanges[0];
+    assert.equal(edgeExchange.context.objects[0].selection.id, edgeId);
+    assert.equal(edgeExchange.context.objects[0].selection.excerpt, '');
+    assert.deepEqual(errors, []);
+    fs.writeFileSync(path.join(root, 'workspace-chat-evidence.json'), JSON.stringify({passed:true, same_thread:true, same_binding:true, remembered_reads_preserved:true, frozen_graph_context:true, reload_without_replay:true, return_to_reading:true, standalone_workspace_chat:true}, null, 2));
+  }
   fs.writeFileSync(path.join(root, 'chat-evidence.json'), JSON.stringify({real_codex:real, runtime:'0.163.0', passed:true, checks:['browser passage selection','frozen MCP exchange context','restricted tools','pending proposal','human acceptance','reload without replay','release and resume', ...(!real ? ['question response','interrupt','daemon crash and ownership recovery','history reference selection','accepted knowledge snapshot'] : ['model MCP retrieval','model MCP proposal'])]}, null, 2));
   console.log('Reading chat browser/MCP contract passed:', root);
 }

@@ -45,3 +45,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
   body[data-layout="compact"] #stage.split-mode #stage-content { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(260px,3fr) minmax(200px,2fr); }
 }
 @media(max-width:640px) { .brand-caption,.header-divider { display:none; }.brand-logo { width:146px; height:36px; }.header-actions { gap:6px; } }
+
+#chat .controls{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}#chat button{font-size:12px}#chat select{width:100%;font-size:12px}#chat label{margin-top:12px}#chat-messages{max-height:48vh;min-height:120px;overflow:auto;margin:16px 0;overscroll-behavior:contain}.chat-exchange{border-top:1px solid var(--edge);padding:14px 0}.chat-exchange p{white-space:pre-wrap;overflow-wrap:anywhere}#chat pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:220px;overflow:auto}#chat-browser{max-height:35vh;overflow:auto}#chat details{margin:8px 0}#chat summary{cursor:pointer;font-size:12px;color:var(--muted)}#chat-approvals .card{border-color:var(--accent)}
+#chat .controls button{width:auto;flex:1}#chat textarea{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--edge);padding:8px;font:inherit}#chat .card{padding:10px;border:1px solid var(--edge);margin:8px 0}#chat a{color:var(--accent)}#chat .error{color:#f0a29b}#chat [hidden]{display:none}#chat h2{margin-top:0}
+@media(min-width:1051px){#app{grid-template-columns:260px minmax(0,1fr) minmax(360px,30vw)}body[data-layout="wide"] #app{grid-template-columns:clamp(260px,16vw,380px) minmax(0,1fr) clamp(400px,34vw,900px)}}
+
+#reader-body.derived-text, #reader-body .derived-text { user-select:none; }

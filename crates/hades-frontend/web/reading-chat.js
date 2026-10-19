@@ -1,12 +1,12 @@
 // The daemon owns execution. This view never replays an uncertain submission.
 export const pendingChatKey = (database, binding) => `hades.chat.pending.${encodeURIComponent(database)}.${encodeURIComponent(binding)}`;
-export function makeSubmission(binding, state, message, highlights, references, requestId, knowledge = []) {
+export function makeSubmission(binding, state, message, highlights, references, requestId, knowledge = [], workspace) {
   return JSON.parse(JSON.stringify({action: 'send', binding, request_id: requestId,
-    expected_revision: state.revision, message, highlights, knowledge, references}));
+    expected_revision: state.revision, message, highlights, knowledge, references, ...(workspace === undefined ? {} : {workspace})}));
 }
 export class ReadingChat {
-  constructor({api, getState, getDatabase, getPosition, restorePosition}) {
-    Object.assign(this, {api, getState, getDatabase, getPosition, restorePosition});
+  constructor({api, getState, getDatabase, getPosition, restorePosition, workspace = false, getWorkspaceContext, onBinding = () => {}}) {
+    Object.assign(this, {api, getState, getDatabase, getPosition, restorePosition, workspace, getWorkspaceContext, onBinding});
     this.binding = null; this.session = null; this.references = []; this.epoch = 0;
     this.exchanges = new Map(); this.olderCursor = undefined; this.lastError = null;
     this.polling = false; this.acting = false; this.lastSignature = ''; this.approvalSignature = '';
@@ -61,7 +61,7 @@ export class ReadingChat {
     if (this.acting) return; this.acting = true; this.lastError = null;
     try {await fn();} catch (e) {this.note(e.message, true);} finally {this.acting = false;}
   }
-  async selectReading() {
+  async selectReading({restoring = false} = {}) {
     const state = this.getState();
     if (!state) {
       this.epoch++; this.session = null; this.binding = null; this.references = [];
@@ -70,7 +70,8 @@ export class ReadingChat {
       for (const id of ['chat-messages', 'chat-approvals', 'chat-browser', 'chat-bindings', 'chat-passages', 'chat-knowledge']) this.$(id).replaceChildren();
       this.$('chat-controls').hidden = true;
       this.$('chat-context-note').textContent = ''; this.renderReferences();
-      this.note('Choose a reading to connect.');
+      this.onBinding?.(null, {restoring});
+      this.note(this.workspace ? 'Choose the chat database to connect.' : 'Choose a reading to connect.');
       return;
     }
     if (this.session === state.id) return;
@@ -79,7 +80,7 @@ export class ReadingChat {
     this.$('chat-approvals').replaceChildren(); this.$('chat-browser').replaceChildren();
     this.exchanges.clear(); this.olderCursor = undefined; this.lastError = null;
     this.$('chat-passages').replaceChildren(); this.$('chat-knowledge').replaceChildren();
-    this.updateContext(); this.renderReferences();
+    this.onBinding?.(null, {restoring: true}); this.updateContext(); this.renderReferences();
     try {
       const config = await this.api({action: 'config'}); if (epoch !== this.epoch) return;
       this.$('chat-controls').hidden = !config.enabled;
@@ -89,6 +90,10 @@ export class ReadingChat {
     } catch (e) {if (epoch === this.epoch) this.note(e.message, true);}
   }
   updateContext() {
+    if (this.workspace) {
+      this.$('chat-context-note').textContent = 'Objects in the reference tray are included with your next message. Earlier reading context remains in this conversation’s history.';
+      return;
+    }
     const state = this.getState(); if (!state) return;
     const select = this.$('chat-passages');
     const selected = new Set([...select.selectedOptions].map(o => o.value));
@@ -105,13 +110,24 @@ export class ReadingChat {
     this.$('chat-context-note').textContent = `Source ${state.source_hash.slice(0, 12)} · reading revision ${state.revision}. Select saved highlights to include; each sent exchange keeps its exact text.`;
   }
   async bindings(epoch = this.epoch) {
-    const result = await this.api({action: 'bindings', session: this.session}); if (epoch !== this.epoch) return;
+    const result = await this.api({action: 'bindings', session: this.workspace ? null : this.session}); if (epoch !== this.epoch) return;
     const select = this.$('chat-bindings'); select.replaceChildren(this.node('option', 'Choose a saved conversation'));
     select.firstChild.value = '';
     this.savedBindings = result.bindings;
-    for (const b of result.bindings) {const o = this.node('option', `${b.provider} · ${b.thread_id || 'Creation unresolved'}`); o.value = b._key; select.append(o);}
+    for (const b of result.bindings) {const o = this.node('option', `${b.session ? 'Reading' : 'Workspace'} · ${b.thread_id || 'Creation unresolved'}`); o.value = b._key; select.append(o);}
     if (this.binding) select.value = this.binding._key;
-    else if (result.bindings.length) await this.chooseBinding(result.bindings[0]._key);
+    else if (this.preferredBinding) {
+      const id = this.preferredBinding; this.preferredBinding = null;
+      if (!this.savedBindings.some(b => b._key === id)) {
+        const data = await this.api({action: 'state', binding: id});
+        if (epoch !== this.epoch) return;
+        if (!this.workspace && data.binding.session !== this.session) throw Error('Conversation belongs to another reading.');
+        this.savedBindings.push(data.binding);
+        const option = this.node('option', data.binding.thread_id || id); option.value = id; select.append(option);
+      }
+      await this.chooseBinding(id);
+    } else if (result.bindings.length) await this.chooseBinding(result.bindings[0]._key);
+    if (result.partial) this.$('chat-reference-note').textContent = 'Showing the latest 100 saved conversations. Direct conversation links can open older ones.';
   }
   async chooseBinding(id) {
     this.exchanges.clear(); this.olderCursor = undefined; this.lastError = null;
@@ -119,20 +135,23 @@ export class ReadingChat {
     this.$('chat-bindings').value = this.binding?._key || '';
     this.$('chat-messages').replaceChildren(); this.$('chat-approvals').replaceChildren();
     this.lastSignature = ''; this.approvalSignature = '';
+    this.onBinding?.(this.binding);
     if (!this.binding) return;
     const binding = this.binding;
-    await this.restorePosition(binding.position);
+    if (!this.workspace) await this.restorePosition(binding.position);
     if (binding !== this.binding) return;
     await this.poll();
   }
   async open(threadId = null) {
-    if (!this.getState()) throw Error('Choose a reading first.');
+    if (!this.getState()) throw Error(this.workspace ? 'Choose the chat database first.' : 'Choose a reading first.');
+    const saved = this.workspace && threadId && this.savedBindings?.find(b => b.thread_id === threadId);
+    if (saved) {await this.chooseBinding(saved._key); await this.resume(); return;}
     const epoch = this.epoch;
     const id = 'chat_' + crypto.randomUUID().replaceAll('-', '');
-    const result = await this.api({action: 'open', id, session: this.session, thread_id: threadId});
+    const result = await this.api({action: 'open', id, session: this.workspace ? null : this.session, thread_id: threadId});
     if (epoch !== this.epoch) return;
     this.exchanges.clear(); this.olderCursor = undefined;
-    this.binding = result; this.$('chat-browser').replaceChildren(); await this.bindings(); await this.poll();
+    this.binding = result; this.onBinding?.(result); this.$('chat-browser').replaceChildren(); await this.bindings(); await this.poll();
   }
   async resume() {
     if (!this.binding) throw Error('Choose a saved conversation first.');
@@ -184,7 +203,8 @@ export class ReadingChat {
     if (localStorage.getItem(key)) throw Error('A submission is unresolved. Reconcile history before sending another.');
     const payload = makeSubmission(binding, this.getState(), this.$('chat-message').value,
       [...this.$('chat-passages').selectedOptions].map(o => o.value), this.references, crypto.randomUUID(),
-      [...this.$('chat-knowledge').selectedOptions].map(o => o.value));
+      [...this.$('chat-knowledge').selectedOptions].map(o => o.value),
+      this.workspace ? this.getWorkspaceContext() : undefined);
     if (!payload.message.trim()) throw Error('Write a message first.');
     const raw = JSON.stringify(payload); localStorage.setItem(key, raw);
     try {
@@ -325,6 +345,7 @@ export class ReadingChat {
     }
   }
   async savePosition() {
+    if (this.workspace) return;
     const binding = this.binding?._key; if (!binding) return;
     const position = this.getPosition(); const signature = JSON.stringify([binding, position]);
     if (signature === this.positionSignature) return;

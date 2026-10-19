@@ -27,6 +27,35 @@ test('lost acknowledgement preserves exact request without automatic retry', asy
   await assert.rejects(f.chat.send(), /unresolved/);
   assert.equal(calls, 1); assert.equal([...f.saved.values()][0], raw);
 });
+test('workspace submission freezes selected objects and uses the existing conversation', async () => {
+  const calls = [], refs = [{db:'test', graph:'knowledge', kind:'node', id:'nodes/one', excerpt:'Exact words'}];
+  const f = fixture(async payload => {calls.push(payload); return {};});
+  Object.assign(f.chat, {workspace:true, getWorkspaceContext:() => refs, poll:async () => {}});
+  await f.chat.send();
+  refs[0].excerpt = 'Edited after sending';
+  assert.equal(calls[0].binding, 'binding');
+  assert.equal(calls[0].workspace[0].excerpt, 'Exact words');
+  assert.equal(calls[0].highlights.length, 0);
+});
+test('workspace conversation selection never overwrites the saved reading position', async () => {
+  const {chat} = transcriptFixture();
+  const original = {_key:'continued', session:'reading', position:{page:7}};
+  Object.assign(chat, {workspace:true, savedBindings:[original], poll:async () => {},
+    restorePosition:async () => {throw Error('workspace must not restore reading scroll');},
+    api:async () => {throw Error('workspace must not persist reading scroll');}});
+  await chat.chooseBinding('continued');
+  await chat.savePosition();
+  assert.equal(chat.binding, original);
+  assert.equal(chat.binding.session, 'reading');
+});
+test('finding an existing workspace thread resumes its saved reading binding', async () => {
+  const {chat} = fixture(async () => {throw Error('must not create another binding');});
+  const chosen = [];
+  Object.assign(chat, {workspace:true, savedBindings:[{_key:'original', thread_id:'thread'}],
+    chooseBinding:async id => chosen.push(id), resume:async () => chosen.push('resumed')});
+  await chat.open('thread');
+  assert.deepEqual(chosen, ['original', 'resumed']);
+});
 test('definitive revision rejection clears recovery and allows a corrected submission', async () => {
   const calls = [];
   const f = fixture(async payload => {
@@ -58,6 +87,19 @@ function transcriptFixture(api) {
     $:id => {if (!elements.has(id)) elements.set(id, element()); return elements.get(id);}});
   return f;
 }
+test('restoration reports a temporary binding reset even when loading fails', async () => {
+  let reject;
+  const {chat} = transcriptFixture(() => new Promise((_resolve, fail) => {reject=fail;}));
+  const notifications = [];
+  Object.assign(chat, {getState:() => ({id:'reading'}), updateContext:() => {},
+    onBinding:(binding, options) => notifications.push({binding, restoring:options?.restoring})});
+  const pending = chat.selectReading();
+  assert.deepEqual(notifications, [{binding:null, restoring:true}]);
+  reject(Error('History unavailable')); await pending;
+  assert.equal(notifications.length, 1, 'failure must not emit a deselection');
+  chat.savedBindings = []; await chat.chooseBinding('');
+  assert.deepEqual(notifications[1], {binding:null, restoring:undefined});
+});
 const exchangeKey = n => `exchange_${String(n).padStart(3, '0')}`;
 function historyPage(end) {
   const start = Math.max(1, end - 19);

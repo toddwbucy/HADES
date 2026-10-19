@@ -96,6 +96,7 @@ jobs:
       - name: Frontend workspace projections
         run: |
           node crates/hades-frontend/web/tests/workspace.test.cjs
+          node crates/hades-frontend/web/tests/workspace-chat.test.cjs
           node crates/hades-frontend/web/tests/reading-poll.test.cjs
           node crates/hades-frontend/web/tests/reading-desk.test.cjs
           node crates/hades-frontend/web/tests/reading-chat.test.cjs
