@@ -431,6 +431,11 @@ requires evaluation. Federation is outside this feature.
 
 ## Proposed PR sequence for #225
 
+Implementation begins with the [portable identity contract](embedding-identity-contract.md).
+That first draft splits the schema/manifest/receipt foundation out of stage 1
+for review; verified serving, database persistence, and runtime enforcement are
+still required before the stage is complete or pairing can be enabled.
+
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
    Jina verification. Add isolated database creation/profile persistence and one

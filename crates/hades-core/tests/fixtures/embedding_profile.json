@@ -1,0 +1,101 @@
+{
+  "manifest": {
+    "files": [
+      {
+        "bytes": 15,
+        "md5": "cceae21246318a1c7c38c07eb0e79df1",
+        "path": "adapter.bin"
+      },
+      {
+        "bytes": 16,
+        "md5": "82e9fb28c6b069812973d69832368531",
+        "path": "config.json"
+      },
+      {
+        "bytes": 2,
+        "md5": "99914b932bd37a50b983c5e7c90ae93b",
+        "path": "tokenizer.json"
+      },
+      {
+        "bytes": 15,
+        "md5": "873a02496f5f99e2b2665c7d4682111f",
+        "path": "weights.bin"
+      }
+    ],
+    "format": "hades-model-manifest-v1"
+  },
+  "profile": {
+    "format": "hades-embedding-profile-v1",
+    "revision": 1,
+    "state": "ready",
+    "generation": "corpus-fixture-1",
+    "model": {
+      "id": "fixture/small-text-model",
+      "revision": "fixture-revision-1",
+      "manifest_md5": "36ad00d2e76767b48b3a55053472dcf5",
+      "tokenizer_files": [
+        "tokenizer.json"
+      ]
+    },
+    "capabilities": {
+      "text": true,
+      "image_embedding": false,
+      "specialized_code": false,
+      "late_chunking": false,
+      "tokenizer_offsets": false,
+      "tasks": [
+        "retrieval.passage",
+        "retrieval.query"
+      ],
+      "max_input_tokens": 2048
+    },
+    "workloads": {
+      "documents": {
+        "space": {
+          "format": "hades-embedding-space-v1",
+          "artifact_md5": "36ad00d2e76767b48b3a55053472dcf5",
+          "tokenizer_manifest_md5": "5a5d02da806c58e67e9522a441a4b5cc",
+          "tokenizer_contract": "fixture-tokenizer-v1",
+          "representation": {
+            "dimension": 384,
+            "output": "dense-f32",
+            "normalize": "l2",
+            "pooling": "masked-mean",
+            "distance": "cosine",
+            "inference_precision": "fp32",
+            "implementation": "fixture-adapter-v1"
+          },
+          "passage": {
+            "task": "retrieval.passage",
+            "prompt": "Passage: ",
+            "adapter": "text",
+            "special_tokens": "fixture-add-special-tokens-v1"
+          },
+          "query": {
+            "task": "retrieval.query",
+            "prompt": "Query: ",
+            "adapter": "text",
+            "special_tokens": "fixture-add-special-tokens-v1"
+          }
+        },
+        "chunking": {
+          "mode": "conventional",
+          "passage_tokens": 500,
+          "overlap_tokens": 100
+        },
+        "specialized_code": false
+      },
+      "code": null
+    },
+    "runtime_binding": {
+      "provider_id": "fixture-local-provider"
+    }
+  },
+  "receipt": {
+    "format": "hades-provider-receipt-v1",
+    "artifact_md5": "36ad00d2e76767b48b3a55053472dcf5",
+    "space_id": "ec03fc217ec93d932741ef76c3bc39b91fbf35176c3e563177749447950db6c4",
+    "serving_generation": "load-fixture-1"
+  },
+  "space_canonical_utf8_hex": "7b2261727469666163745f6d6435223a223336616430306432653736373637623438623361353530353334373264636635222c22666f726d6174223a2268616465732d656d62656464696e672d73706163652d7631222c2270617373616765223a7b2261646170746572223a2274657874222c2270726f6d7074223a22506173736167653a20222c227370656369616c5f746f6b656e73223a22666978747572652d6164642d7370656369616c2d746f6b656e732d7631222c227461736b223a2272657472696576616c2e70617373616765227d2c227175657279223a7b2261646170746572223a2274657874222c2270726f6d7074223a2251756572793a20222c227370656369616c5f746f6b656e73223a22666978747572652d6164642d7370656369616c2d746f6b656e732d7631222c227461736b223a2272657472696576616c2e7175657279227d2c22726570726573656e746174696f6e223a7b2264696d656e73696f6e223a3338342c2264697374616e6365223a22636f73696e65222c22696d706c656d656e746174696f6e223a22666978747572652d616461707465722d7631222c22696e666572656e63655f707265636973696f6e223a2266703332222c226e6f726d616c697a65223a226c32222c226f7574707574223a2264656e73652d663332222c22706f6f6c696e67223a226d61736b65642d6d65616e227d2c22746f6b656e697a65725f636f6e7472616374223a22666978747572652d746f6b656e697a65722d7631222c22746f6b656e697a65725f6d616e69666573745f6d6435223a223561356430326461383036633538653637653935323261343431613462356363227d"
+}
