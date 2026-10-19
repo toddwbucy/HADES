@@ -18,6 +18,7 @@ pub struct Md5Digest(String);
 impl TryFrom<String> for Md5Digest {
     type Error = ContractError;
 
+    /// Validate the wire digest without accepting uppercase or shortened forms.
     fn try_from(value: String) -> Result<Self, Self::Error> {
         require(
             value.len() == 32
@@ -31,16 +32,19 @@ impl TryFrom<String> for Md5Digest {
 }
 
 impl From<Md5Digest> for String {
+    /// Transfer the validated lowercase encoding to a serialized string.
     fn from(value: Md5Digest) -> Self {
         value.0
     }
 }
 
 impl Md5Digest {
+    /// Hash exact bytes for drift detection; this does not authenticate their origin.
     pub fn of_bytes(bytes: &[u8]) -> Self {
         Self(hex(&Md5::digest(bytes)))
     }
 
+    /// Borrow the validated lowercase digest encoding.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -100,6 +104,7 @@ pub struct ArtifactManifest {
 }
 
 impl ArtifactManifest {
+    /// Validate an explicit asset set, including path conflicts and encoded size.
     pub fn new(files: Vec<ArtifactFile>) -> Result<Self, ContractError> {
         let manifest = Self {
             format: ManifestFormat::V1,
@@ -119,6 +124,7 @@ impl ArtifactManifest {
         Ok(manifest)
     }
 
+    /// Validate and emit exact v1 UTF-8 bytes with sorted paths and object keys.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
         require(
             !self.files.is_empty() && self.files.len() <= MAX_MANIFEST_FILES,
@@ -151,6 +157,7 @@ impl ArtifactManifest {
         Ok(bytes)
     }
 
+    /// Hash the canonical manifest, excluding the aggregate digest from its input.
     pub fn digest(&self) -> Result<Md5Digest, ContractError> {
         Ok(Md5Digest::of_bytes(&self.canonical_bytes()?))
     }
@@ -165,6 +172,7 @@ impl ArtifactManifest {
     }
 }
 
+/// Reject ambiguous relative POSIX paths while preserving Unicode and backslashes.
 pub(crate) fn validate_path(path: &str) -> Result<(), ContractError> {
     require(
         !path.is_empty()

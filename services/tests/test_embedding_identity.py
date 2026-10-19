@@ -116,6 +116,7 @@ class EmbeddingIdentityTests(unittest.TestCase):
 
         class Broken:
             def read(self, size):
+                """Simulate an asset read failure without returning partial source bytes."""
                 raise OSError("fixture read error")
 
         with self.assertRaises(OSError):

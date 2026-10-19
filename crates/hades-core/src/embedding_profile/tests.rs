@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
 
+/// Load the synthetic contract shared with the Python identity suite.
 fn fixture() -> (ArtifactManifest, EmbeddingProfile, ProviderReceipt) {
     let value: Value =
         serde_json::from_str(include_str!("../../tests/fixtures/embedding_profile.json")).unwrap();
@@ -11,6 +12,7 @@ fn fixture() -> (ArtifactManifest, EmbeddingProfile, ProviderReceipt) {
     )
 }
 
+/// Decode the fixed byte vectors so tests compare serialization independently.
 fn unhex(value: &str) -> Vec<u8> {
     value
         .as_bytes()
@@ -21,11 +23,13 @@ fn unhex(value: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Construct an asset through the streaming API from synthetic source bytes.
 fn asset(path: &str, bytes: &[u8]) -> ArtifactFile {
     ArtifactFile::from_reader(path.into(), bytes).unwrap()
 }
 
 #[test]
+/// Require the Rust encoder to reproduce every approved cross-language vector.
 fn shared_manifest_vectors_match_exact_bytes_and_md5() {
     let vectors: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -70,6 +74,7 @@ fn shared_manifest_vectors_match_exact_bytes_and_md5() {
 }
 
 #[test]
+/// Keep Unicode scalar sequences distinct and apply the specified JSON escaping.
 fn manifest_escaping_preserves_controls_unicode_and_literal_backslash() {
     let path = "x/\u{1}\u{8}\t\n\u{c}\r\"\\\u{2028}\u{2029}";
     let bytes = ArtifactManifest::new(vec![asset(path, b"")])
@@ -91,6 +96,7 @@ fn manifest_escaping_preserves_controls_unicode_and_literal_backslash() {
 }
 
 #[test]
+/// Reject identities whose paths or digest encodings could be misinterpreted.
 fn manifest_rejects_ambiguous_paths_missing_assets_and_bad_digests() {
     for path in [
         "",
@@ -126,6 +132,7 @@ fn manifest_rejects_ambiguous_paths_missing_assets_and_bad_digests() {
 }
 
 #[test]
+/// Refuse unknown schemas, invalid numeric fields, malformed Unicode, and size excesses.
 fn manifest_parsing_is_strict_and_bounded() {
     let (manifest, _, _) = fixture();
     let original: Value = serde_json::to_value(manifest).unwrap();
@@ -163,6 +170,7 @@ fn manifest_parsing_is_strict_and_bounded() {
 }
 
 #[test]
+/// Cover multiple read buffers and ensure read failures cannot yield partial digests.
 fn stream_hashes_large_files_and_propagates_read_failure() {
     let bytes = vec![17; 150_000];
     let file = asset("weights.bin", &bytes);
@@ -170,6 +178,7 @@ fn stream_hashes_large_files_and_propagates_read_failure() {
     assert_eq!(file.md5, Md5Digest::of_bytes(&bytes));
     struct Broken;
     impl std::io::Read for Broken {
+        /// Simulate an asset read failure before a checksum can be completed.
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
             Err(std::io::Error::other("fixture"))
         }
@@ -178,6 +187,7 @@ fn stream_hashes_large_files_and_propagates_read_failure() {
 }
 
 #[test]
+/// Distinguish host-local relocation from changes to any required model dependency.
 fn artifact_relocation_is_stable_but_every_required_asset_changes_identity() {
     let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let paths = [
@@ -224,6 +234,7 @@ fn artifact_relocation_is_stable_but_every_required_asset_changes_identity() {
 }
 
 #[test]
+/// Resolve the small-model fixture while retaining its asymmetric task pair.
 fn fixture_profile_resolves_small_model_and_asymmetric_tasks_without_defaults() {
     let (manifest, profile, receipt) = fixture();
     let parsed =
@@ -258,6 +269,7 @@ fn fixture_profile_resolves_small_model_and_asymmetric_tasks_without_defaults() 
 }
 
 #[test]
+/// Refuse changed artifacts or inference behavior even when vector widths agree.
 fn same_dimension_is_not_enough_for_artifact_or_behavior_compatibility() {
     let (manifest, profile, receipt) = fixture();
     let original = profile.workloads.documents.as_ref().unwrap().space.clone();
@@ -319,6 +331,7 @@ fn same_dimension_is_not_enough_for_artifact_or_behavior_compatibility() {
 }
 
 #[test]
+/// Prevent accepting a response under an identity pinned before a provider reload.
 fn receipt_rejects_reload_or_identity_changes_after_binding() {
     let (manifest, profile, receipt) = fixture();
     let request = profile
@@ -354,6 +367,7 @@ fn receipt_rejects_reload_or_identity_changes_after_binding() {
 }
 
 #[test]
+/// Separate enabled workloads from advertised capabilities and workspace readiness.
 fn disabled_workloads_unready_profiles_and_unsupported_features_fail() {
     let (manifest, profile, receipt) = fixture();
     assert!(
@@ -400,6 +414,7 @@ fn disabled_workloads_unready_profiles_and_unsupported_features_fail() {
 }
 
 #[test]
+/// Fail closed on incomplete, incompatible, or forward-version profile records.
 fn malformed_profile_fields_and_unknown_versions_do_not_fall_back() {
     let (manifest, profile, _) = fixture();
     let original = serde_json::to_value(profile).unwrap();
@@ -466,6 +481,7 @@ fn malformed_profile_fields_and_unknown_versions_do_not_fall_back() {
 }
 
 #[test]
+/// Preserve vector-space identity while keeping operational and corpus pins distinct.
 fn provider_location_and_corpus_generation_are_not_vector_space_identity() {
     let (manifest, profile, receipt) = fixture();
     let mut relocated = profile.clone();

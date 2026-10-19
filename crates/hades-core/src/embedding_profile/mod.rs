@@ -20,6 +20,7 @@ use thiserror::Error;
 #[error("embedding profile: {0}")]
 pub struct ContractError(pub String);
 
+/// Convert a failed invariant into a contract error without normalizing input.
 pub(crate) fn require(condition: bool, message: &str) -> Result<(), ContractError> {
     if condition {
         Ok(())
@@ -28,6 +29,7 @@ pub(crate) fn require(condition: bool, message: &str) -> Result<(), ContractErro
     }
 }
 
+/// Bound identity labels and reject empty or control-bearing identifiers.
 pub(crate) fn label(value: &str) -> Result<(), ContractError> {
     require(
         !value.trim().is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control),
@@ -35,6 +37,7 @@ pub(crate) fn label(value: &str) -> Result<(), ContractError> {
     )
 }
 
+/// Encode digest bytes as lowercase hexadecimal, retaining leading zeroes.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

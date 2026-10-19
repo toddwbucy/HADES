@@ -13,6 +13,7 @@ pub struct SpaceId(String);
 impl TryFrom<String> for SpaceId {
     type Error = ContractError;
 
+    /// Require a complete lowercase SHA-256 encoding for a behavior-space identity.
     fn try_from(value: String) -> Result<Self, Self::Error> {
         require(
             value.len() == 64
@@ -26,12 +27,14 @@ impl TryFrom<String> for SpaceId {
 }
 
 impl From<SpaceId> for String {
+    /// Transfer the validated space identity to its wire representation.
     fn from(value: SpaceId) -> Self {
         value.0
     }
 }
 
 impl SpaceId {
+    /// Borrow the validated lowercase space identity.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -89,6 +92,7 @@ pub struct TaskBehavior {
 }
 
 impl TaskBehavior {
+    /// Bound exact prompts and require explicit task, adapter, and token-policy labels.
     fn validate(&self) -> Result<(), ContractError> {
         label(&self.task)?;
         label(&self.adapter)?;
@@ -115,6 +119,7 @@ pub struct EmbeddingSpace {
 }
 
 impl EmbeddingSpace {
+    /// Validate dimensions and behavior labels before deriving a space identity.
     pub fn validate(&self) -> Result<(), ContractError> {
         require(
             (1..=8192).contains(&self.representation.dimension),
@@ -239,6 +244,7 @@ pub struct EmbeddingProfile {
 }
 
 impl EmbeddingProfile {
+    /// Parse bounded profile JSON and validate it against the supplied artifact manifest.
     pub fn from_json(bytes: &[u8], manifest: &ArtifactManifest) -> Result<Self, ContractError> {
         require(bytes.len() <= MAX_PROFILE_BYTES, "profile exceeds 64 KiB")?;
         let profile: Self = serde_json::from_slice(bytes)
@@ -247,6 +253,8 @@ impl EmbeddingProfile {
         Ok(profile)
     }
 
+    /// Check artifact/tokenizer consistency, capabilities, tasks, and chunk budgets.
+    /// This validates declared data; it does not verify a running provider.
     pub fn validate(&self, manifest: &ArtifactManifest) -> Result<(), ContractError> {
         require(
             serde_json::to_vec(self)
@@ -401,6 +409,7 @@ pub struct ProviderReceipt {
 }
 
 impl ProviderReceipt {
+    /// Require a bounded serving-generation label in addition to typed digest syntax.
     pub fn validate(&self) -> Result<(), ContractError> {
         label(&self.serving_generation)
     }
