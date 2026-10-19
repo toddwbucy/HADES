@@ -303,9 +303,23 @@ async function main() {
     await page.locator('[data-tab="chat"]').click();
     await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
     const before = await chatState();
+    let releaseWorkspace, workspaceArrived;
+    const holdWorkspace = new Promise(resolve => {releaseWorkspace=resolve;});
+    const workspacePending = new Promise(resolve => {workspaceArrived=resolve;});
+    const delayWorkspace = async route => {
+      const body=route.request().postDataJSON();
+      if (body?.action !== 'bindings' || body.session) return route.continue();
+      workspaceArrived(); await holdWorkspace; await route.continue();
+    };
+    await page.route('**/api/reading/chat', delayWorkspace);
     await page.locator('#chat-workspace-link').click();
     await page.waitForURL(u => u.pathname === '/');
+    await workspacePending;
+    await page.locator('.library-item').first().waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key, 'graph navigation preserves a pending workspace conversation');
+    releaseWorkspace();
     await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await page.unroute('**/api/reading/chat', delayWorkspace);
     await until(async () => (await page.locator('#chat-messages').textContent()).includes('Discuss this selected passage.'));
     assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
     if (await page.locator('#chat-resume').isEnabled()) await page.locator('#chat-resume').click();
@@ -329,9 +343,22 @@ async function main() {
     await page.screenshot({path:path.join(root, 'workspace-codex-chat.png'), fullPage:true});
     const newest = (await api('chat',{action:'bindings',session:'browser_fixture'})).bindings[0];
     assert.notEqual(newest._key, binding._key, 'exercise returning to an older conversation');
+    let releaseRestore, restorationArrived;
+    const holdRestore = new Promise(resolve => {releaseRestore=resolve;});
+    const restoring = new Promise(resolve => {restorationArrived=resolve;});
+    const failRestoration = async route => {
+      if (route.request().postDataJSON()?.action !== 'bindings') return route.continue();
+      restorationArrived(); await holdRestore;
+      await route.fulfill({status:503, contentType:'application/json', body:JSON.stringify({error:'Fixture history temporarily unavailable'})});
+    };
+    await page.route('**/api/reading/chat', failRestoration);
     await page.locator('#chat-reading-link').click();
-    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
-    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
+    await restoring;
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key, 'keep the requested link while history is pending');
+    releaseRestore();
+    await until(async () => (await page.locator('#chat-status').textContent()).includes('Fixture history temporarily unavailable'));
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key, 'failed restoration cannot erase the direct link');
+    await page.unroute('**/api/reading/chat', failRestoration);
     await page.reload();
     await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
     assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);

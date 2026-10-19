@@ -15,12 +15,12 @@ const chat = new ReadingChat({
     if (!response.ok) throw Error(value.error || `Request failed (${response.status})`);
     return value;
   },
-  onBinding: binding => {
+  onBinding: (binding, {restoring = false} = {}) => {
     const link = document.getElementById('chat-reading-link'); link.hidden = !binding?.session;
     if (binding?.session) link.href = '/reading?' + new URLSearchParams({session: binding.session, conversation: binding._key});
     const url = new URL(location.href);
     if (binding) url.searchParams.set('conversation', binding._key);
-    else url.searchParams.delete('conversation');
+    else if (!restoring || url.searchParams.get('db') !== database) url.searchParams.delete('conversation');
     history.replaceState(null, '', url);
   },
 });
@@ -31,7 +31,7 @@ async function sync() {
   if (next === database) return;
   const ticket = ++sequence;
   database = next; connected = false;
-  await chat.selectReading();
+  await chat.selectReading({restoring: true});
   if (requested.db && requested.db !== database) chat.preferredBinding = null;
   try {
     const response = await fetch('/api/reading/config');

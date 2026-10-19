@@ -61,7 +61,7 @@ export class ReadingChat {
     if (this.acting) return; this.acting = true; this.lastError = null;
     try {await fn();} catch (e) {this.note(e.message, true);} finally {this.acting = false;}
   }
-  async selectReading() {
+  async selectReading({restoring = false} = {}) {
     const state = this.getState();
     if (!state) {
       this.epoch++; this.session = null; this.binding = null; this.references = [];
@@ -70,7 +70,7 @@ export class ReadingChat {
       for (const id of ['chat-messages', 'chat-approvals', 'chat-browser', 'chat-bindings', 'chat-passages', 'chat-knowledge']) this.$(id).replaceChildren();
       this.$('chat-controls').hidden = true;
       this.$('chat-context-note').textContent = ''; this.renderReferences();
-      this.onBinding?.(null);
+      this.onBinding?.(null, {restoring});
       this.note(this.workspace ? 'Choose the chat database to connect.' : 'Choose a reading to connect.');
       return;
     }
@@ -80,7 +80,7 @@ export class ReadingChat {
     this.$('chat-approvals').replaceChildren(); this.$('chat-browser').replaceChildren();
     this.exchanges.clear(); this.olderCursor = undefined; this.lastError = null;
     this.$('chat-passages').replaceChildren(); this.$('chat-knowledge').replaceChildren();
-    this.onBinding?.(null); this.updateContext(); this.renderReferences();
+    this.onBinding?.(null, {restoring: true}); this.updateContext(); this.renderReferences();
     try {
       const config = await this.api({action: 'config'}); if (epoch !== this.epoch) return;
       this.$('chat-controls').hidden = !config.enabled;

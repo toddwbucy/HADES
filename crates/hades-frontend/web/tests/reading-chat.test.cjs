@@ -87,6 +87,19 @@ function transcriptFixture(api) {
     $:id => {if (!elements.has(id)) elements.set(id, element()); return elements.get(id);}});
   return f;
 }
+test('restoration reports a temporary binding reset even when loading fails', async () => {
+  let reject;
+  const {chat} = transcriptFixture(() => new Promise((_resolve, fail) => {reject=fail;}));
+  const notifications = [];
+  Object.assign(chat, {getState:() => ({id:'reading'}), updateContext:() => {},
+    onBinding:(binding, options) => notifications.push({binding, restoring:options?.restoring})});
+  const pending = chat.selectReading();
+  assert.deepEqual(notifications, [{binding:null, restoring:true}]);
+  reject(Error('History unavailable')); await pending;
+  assert.equal(notifications.length, 1, 'failure must not emit a deselection');
+  chat.savedBindings = []; await chat.chooseBinding('');
+  assert.deepEqual(notifications[1], {binding:null, restoring:undefined});
+});
 const exchangeKey = n => `exchange_${String(n).padStart(3, '0')}`;
 function historyPage(end) {
   const start = Math.max(1, end - 19);

@@ -4,12 +4,15 @@ pdfjs.GlobalWorkerOptions.workerSrc='/vendor/pdf.worker.mjs';
 const $=id=>document.getElementById(id);
 let state=null,source=null,pdf=null,page=1,structured=true,busy=false,selectedAnchor=null,reviewing=null,database='',generation=0,figureMode=false,returnBlock=null,sideBySide=false,viewScroll={},splitScroll={},editingPassage=null,passageViews={};
 const boundaryDrafts=new Map();
-function syncReadingConversation(binding) {
+// Loading can temporarily clear the binding without deselecting its URL target.
+function syncReadingConversation(binding, {restoring=false}={}) {
  const link=$('chat-workspace-link');link.hidden=!binding;
+ const previous=new URLSearchParams(location.search);
+ const conversation=binding?._key||(restoring&&previous.get('session')===state?.id?previous.get('conversation'):null);
  const params=new URLSearchParams();
+ if(conversation)params.set('conversation',conversation);
  if(state)params.set('session',state.id);
  if(binding){
-  params.set('conversation',binding._key);
   link.href='/?'+new URLSearchParams({db:database,graph:state.graph,conversation:binding._key});
  }
  history.replaceState(null,'', '/reading'+(params.size?'?'+params:''));
@@ -93,7 +96,7 @@ async function openSource(sourceHash,title,separate=false){
  await sessions();await load(saved.id);
  status(separate?'Started a separate reading.':'Opened the saved reading. Adding the same document resumes this reading.');
 }
-async function load(id){checkReadingSwitch();generation++;for(const key of ['save-bound','advance','prev','next','figure','copy-context','export','outline'])$(key).disabled=false;$('bound-panel').hidden=false;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;syncReadingConversation(readingChat.session===id?readingChat.binding:null);renderState();await renderSource();void readingChat.selectReading();status(state.archived?'This reading was removed from the desk. Restore it from Removed from desk.':state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
+async function load(id){checkReadingSwitch();generation++;for(const key of ['save-bound','advance','prev','next','figure','copy-context','export','outline'])$(key).disabled=false;$('bound-panel').hidden=false;const loaded=await api(`state?session=${encodeURIComponent(id)}`);state=loaded.state;state.connectivity=loaded.connectivity;source=await api(`state?source_hash=${state.source_hash}`);pdf=null;page=1;selectedAnchor=null;structured=true;sideBySide=false;returnBlock=null;viewScroll={};splitScroll={};editingPassage=null;passageViews={};$('reader').replaceChildren();$('title').textContent=state.title;$('original').hidden=false;$('original').href=`/api/reading/original?source_hash=${state.source_hash}`;syncReadingConversation(readingChat.session===id?readingChat.binding:null,{restoring:true});renderState();await renderSource();void readingChat.selectReading();status(state.archived?'This reading was removed from the desk. Restore it from Removed from desk.':state.stage==='bound'?'Enter IS and IS NOT, then choose Save boundaries and start reading to enable highlighting.':'Drag over source text, then choose a highlight meaning.');}
 async function refresh(){if(!state)return;const id=state.id;const next=await api(`state?session=${encodeURIComponent(id)}`);if(state?.id!==id)return;state=next.state;state.connectivity=next.connectivity;renderState()}
 function acceptedLink(proposal,id){
  const edge=id.startsWith(state.graph+'_edges/');

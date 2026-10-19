@@ -87,7 +87,9 @@ function currentLink(nodeId, edgeId) {
     u.searchParams.set("expand", "1");
   }
   if (edgeId) u.searchParams.set("edge", edgeId);
-  const conversation = window.workspaceChat?.binding();
+  const current = new URLSearchParams(location.search);
+  const conversation = window.workspaceChat?.binding()
+    || (current.get('db') === state.db ? current.get('conversation') : null);
   if (conversation) u.searchParams.set("conversation", conversation);
   return u.toString();
 }

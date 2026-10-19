@@ -31,6 +31,19 @@ test('edge references retain their endpoints and relation, never just a visual l
 test('reader preserves source text, including markup, without rewriting it', () => {
   assert.equal(M.text({attrs:{content:'<script>example</script>\n$$x$$'}}),'<script>example</script>\n$$x$$');
 });
+test('graph navigation retains a pending conversation only within its database', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../viewer.js'), 'utf8');
+  const code = source.slice(source.indexOf('function currentLink('), source.indexOf('/// Keep the address bar'));
+  const location = {origin:'http://fixture', pathname:'/', search:'?db=research&conversation=pending'};
+  const state = {db:'research', snapshot:null};
+  const link = vm.runInNewContext(code + ';currentLink', {URL, URLSearchParams, location, state,
+    window:{workspaceChat:{binding:() => null}}, document:{getElementById:() => ({value:'0'})}});
+  assert.equal(new URL(link()).searchParams.get('conversation'), 'pending');
+  state.db='another'; assert.equal(new URL(link()).searchParams.has('conversation'), false);
+  state.db='research'; location.search='?db=research';
+  assert.equal(new URL(link()).searchParams.has('conversation'), false, 'explicit deselection stays cleared');
+});
 test('generated edge summaries and source evidence are not submitted as source excerpts', () => {
   const scope = {db:'test', graph:'knowledge'};
   const edge = {id:'edges/one', source:'nodes/a', target:'nodes/b', collection:'edges', attrs:{relation:'supports', evidence:{quote:'Supporting evidence'}}};

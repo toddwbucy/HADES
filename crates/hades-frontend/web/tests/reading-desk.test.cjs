@@ -6,7 +6,7 @@ test('reading URL and workspace link retain the selected conversation and clear 
   const code = source.slice(source.indexOf('function syncReadingConversation('), source.indexOf('const readingChat ='));
   const link = {}, urls = [];
   const sync = vm.runInNewContext(code + ';syncReadingConversation', {URLSearchParams,
-    state:{id:'reading', graph:'knowledge'}, database:'test', $:() => link,
+    location:{search:'?session=reading&conversation=older'}, state:{id:'reading', graph:'knowledge'}, database:'test', $:() => link,
     history:{replaceState:(_state, _title, url) => urls.push(url)}});
   sync({_key:'older'});
   assert.equal(new URL('http://fixture'+urls.at(-1)).searchParams.get('conversation'), 'older');
@@ -15,6 +15,22 @@ test('reading URL and workspace link retain the selected conversation and clear 
   assert.equal(urls.at(-1), '/reading?session=reading'); assert.equal(link.hidden, true);
 });
 const guard = source.slice(source.indexOf('function checkRemovalDrafts('), source.indexOf('async function setArchived('));
+test('pending reading restoration preserves its URL but switching readings or deselecting clears it', () => {
+  const code = source.slice(source.indexOf('function syncReadingConversation('), source.indexOf('const readingChat ='));
+  const location = {search:'?session=reading&conversation=requested'}, state = {id:'reading', graph:'knowledge'};
+  const sync = vm.runInNewContext(code + ';syncReadingConversation', {URLSearchParams, location, state,
+    database:'test', $:() => ({}), history:{replaceState:(_state, _title, url) => {location.search=new URL(url, 'http://fixture').search;}}});
+  // load() and selectReading() both notify while the binding is unavailable.
+  sync(null, {restoring:true}); sync(null, {restoring:true});
+  assert.equal(new URLSearchParams(location.search).get('conversation'), 'requested');
+  sync({_key:'restored'});
+  assert.equal(new URLSearchParams(location.search).get('conversation'), 'restored');
+  state.id = 'another'; sync(null, {restoring:true});
+  assert.equal(new URLSearchParams(location.search).get('session'), 'another');
+  assert.equal(new URLSearchParams(location.search).has('conversation'), false);
+  sync({_key:'chosen'}); sync(null);
+  assert.equal(new URLSearchParams(location.search).has('conversation'), false);
+});
 function fixture(state, drafts, message = '', editingPassage = null) {
   return vm.runInNewContext(guard + ';checkRemovalDrafts', {
     state, boundaryDrafts:new Map(drafts.map(id => [id, {is:'Unsaved boundary'}])),
