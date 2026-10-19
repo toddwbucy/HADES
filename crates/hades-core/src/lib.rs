@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon_client;
 pub mod db;
 pub mod dispatch;
+pub mod embedding_profile;
 pub mod graph;
 pub mod graphable;
 pub mod ingest_jobs;
