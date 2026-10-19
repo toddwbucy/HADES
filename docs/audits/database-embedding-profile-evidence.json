@@ -33,7 +33,7 @@
     }
   ],
   "validation": {
-    "relative_document_links_checked": 30,
+    "relative_document_links_checked": 31,
     "markdown_fences_balanced": true,
     "probe_python_compiles": true
   },
@@ -46,5 +46,19 @@
     "retrieval_quality_measured": false,
     "proposed_design_implemented": false
   },
-  "environment_note": "Initial private-socket contract tests were denied by the sandbox; rerun with temporary socket permission passed."
+  "environment_note": "Initial private-socket contract tests were denied by the sandbox; rerun with temporary socket permission passed.",
+  "review_followup": {
+    "manifest_vectors": 3,
+    "independent_serializations": [
+      "Python json.dumps ensure_ascii=False",
+      "Node JSON.stringify with UTF-8 file sorting"
+    ],
+    "checks": [
+      "canonical JSON",
+      "exact UTF-8 bytes",
+      "MD5",
+      "distinct NFC and NFD filenames"
+    ],
+    "probe_functions_documented": 4
+  }
 }

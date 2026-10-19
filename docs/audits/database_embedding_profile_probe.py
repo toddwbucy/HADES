@@ -19,21 +19,29 @@ import threading
 
 
 def probe(binary):
+    """Return observed model settings from one isolated CLI embedding request."""
     records = []
     with tempfile.TemporaryDirectory(prefix="hades-profile-probe-") as directory:
         root = Path(directory)
 
         class Server(socketserver.UnixStreamServer):
+            """Serve the fixture on a private Unix socket with bounded reads."""
+
             def get_request(self):
+                """Accept one connection and bound its socket operations."""
                 connection, address = super().get_request()
                 connection.settimeout(5)
                 return connection, address
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            """Capture request metadata and return synthetic dense vectors."""
+
             def log_message(self, *args):
+                """Suppress request logging so stdout contains only the report."""
                 pass
 
             def do_POST(self):
+                """Record one bounded request and return a matching mock vector."""
                 length = int(self.headers["Content-Length"])
                 if not 0 < length <= 65536:
                     self.send_error(413)

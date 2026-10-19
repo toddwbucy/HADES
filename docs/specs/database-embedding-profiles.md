@@ -232,9 +232,28 @@ For a bundle, v1 proposes a canonical UTF-8 JSON manifest with exactly
 `format` and `files`; each entry contains `path`, `bytes`, and `md5`. Sort entries
 by the UTF-8 bytes of their relative POSIX paths and serialize object keys in
 sorted order with compact separators, no BOM, and no trailing newline. File
-sizes are integers and digests are lowercase hex. Hash those exact manifest
+sizes are nonnegative base-10 integers, with no leading zeros except `0`; digests
+are lowercase hex. JSON strings preserve their Unicode scalar sequence: apply
+no NFC/NFD normalization or case folding. Reject invalid UTF-8 and lone
+surrogates. Thus precomposed and decomposed filenames are distinct paths and
+produce different manifests; do not silently rename or merge them.
+
+Emit non-ASCII characters directly as UTF-8, including U+2028/U+2029; do not use
+ASCII-only `\u` escaping. Escape quotation marks as `\"` and backslashes as
+`\\`; do not escape `/`. Use `\b`, `\t`, `\n`, `\f`, and `\r` for their
+respective control characters, and lowercase `\u00xx` for other U+0000–U+001F
+characters. Path validation still rejects NUL and invalid relative paths.
+These rules determine the bytes independently of a JSON library's defaults.
+Hash those exact manifest
 bytes with MD5, excluding the aggregate digest itself. Store that digest beside
 the manifest, not inside its own hash input.
+
+The [shared manifest test vectors](database-embedding-manifest-vectors.json)
+include synthetic source bytes, the canonical JSON string, exact UTF-8 bytes
+in hexadecimal, and expected MD5. They cover non-ASCII paths, quote/backslash
+escaping, decomposed Unicode, and file ordering by UTF-8 bytes rather than
+UTF-16 code units. Implementations must reproduce every vector before they
+publish or verify a model identity.
 
 Include all selected weight shards and their index, model/processor/tokenizer
 configuration and vocabulary, selected adapters, and model-local inference code
@@ -245,7 +264,20 @@ required assets. Resolve cache symlinks into the verified artifact snapshot;
 hash their file contents under stable logical paths rather than their host-local
 link destinations. A changed required file must change the recorded identity.
 
-This MD5 is the requested artifact identity check, not an authorization mechanism.
+Initial registration is a trusted administrative operation: an authorized local
+operator selects an approved artifact source and resolved revision; the HADES
+registrar computes the manifest from that local snapshot and persists its
+expected digest in the protected provider registry. Authorized database setup
+copies that registered identity into the database profile. Neither a browser's
+arbitrary digest nor a provider's self-reported digest establishes initial trust.
+Changing the expected identity requires explicit authorized registration and,
+for an existing database, the migration rules below.
+
+This MD5 detects accidental drift after trusted provisioning; it is not an
+authorization mechanism or authentication of an untrusted artifact source.
+If untrusted initial sources are supported later, require authenticated artifact
+provenance before registration; substituting SHA-256 alone does not establish
+that trust. Automatic artifact acquisition is outside this initial feature.
 Do not relabel the existing SHA-256-of-name `model_hash` as an artifact checksum.
 
 ### Verify what the provider loaded
