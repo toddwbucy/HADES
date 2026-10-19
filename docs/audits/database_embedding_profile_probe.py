@@ -83,17 +83,22 @@ def probe(binary):
                     raise RuntimeError("expected exactly one private mock request")
                 returned = json.loads(result.stdout)["data"]
                 return {
-                    "configured_model": "fixture/smaller-model",
-                    "configured_dimension": 384,
-                    "requested_model": records[0]["model"],
-                    "requested_task": records[0]["task"],
-                    "accepted_response_dimension": returned["dimension"],
-                    "configuration_honored": records[0]["model"] == "fixture/smaller-model"
-                    and returned["dimension"] == 384,
-                    "exit_code": result.returncode,
-                    "private_mock_only": True,
-                    "database_requests": 0,
-                    "model_downloads": 0,
+                    "configured": {"model": "fixture/smaller-model", "dimension": 384},
+                    "observed": {
+                        "requested_model": records[0]["model"],
+                        "requested_task": records[0]["task"],
+                        "accepted_response_dimension": returned["dimension"],
+                        "configuration_honored": records[0]["model"] == "fixture/smaller-model"
+                        and returned["dimension"] == 384,
+                        "exit_code": result.returncode,
+                        "mock_requests": len(records),
+                    },
+                    "scope": {
+                        "transport": "private_unix_socket",
+                        "database_requests": 0,
+                        "model_downloads": 0,
+                        "basis": "Source-audited embed text path; scope assertions, not measured counters.",
+                    },
                 }
             finally:
                 server.shutdown()

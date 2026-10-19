@@ -5,17 +5,23 @@
     "command": "python3 docs/audits/database_embedding_profile_probe.py --hades-bin /path/to/hades-built-from-audited-commit",
     "binary_sha256": "cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42",
     "binary_matches_deployment_record": true,
+    "configured": {
+      "model": "fixture/smaller-model",
+      "dimension": 384
+    },
     "observed": {
-      "configured_model": "fixture/smaller-model",
-      "configured_dimension": 384,
       "requested_model": "jinaai/jina-embeddings-v4",
       "requested_task": "retrieval.passage",
       "accepted_response_dimension": 2048,
       "configuration_honored": false,
       "exit_code": 0,
-      "private_mock_only": true,
+      "mock_requests": 1
+    },
+    "scope": {
+      "transport": "private_unix_socket",
       "database_requests": 0,
-      "model_downloads": 0
+      "model_downloads": 0,
+      "basis": "Source-audited embed text path; scope assertions, not measured counters."
     }
   },
   "tests": [
