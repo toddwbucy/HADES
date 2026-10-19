@@ -435,6 +435,8 @@ Implementation begins with the [portable identity contract](embedding-identity-c
 That first draft splits the schema/manifest/receipt foundation out of stage 1
 for review; verified serving, database persistence, and runtime enforcement are
 still required before the stage is complete or pairing can be enabled.
+The following slice adds [local registration and checked Jina loading](registered-model-loading.md);
+full provider receipts and database enforcement are still pending.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and

@@ -77,9 +77,13 @@ cannot detect a dishonest provider repeating an old receipt.
 
 ## Remaining integration boundary
 
-The next dependent changes must implement trusted registration, immutable Jina
-snapshot loading, an explicit connected-client factory, receipt transport,
-isolated database/profile persistence, and a synthetic ingest/query path. Before
+The next slice implements [local registration and checked Jina loading](registered-model-loading.md).
+It supplies artifact provenance internally; behavior-space receipts and database
+enforcement remain separate integration work.
+
+The next dependent changes must connect the checked loader to resolved behavior
+spaces, an explicit connected-client factory, receipt transport, isolated
+database/profile persistence, and a synthetic ingest/query path. Before
 activating database pairing, all applicable public entry points must enforce it,
 including background jobs and generation checks before commit. Profile CAS,
 provisioning recovery, cache isolation, legacy handling, and frontend creation
