@@ -14,7 +14,9 @@ chunking:
     max_window_tokens: null
 ```
 
-These are installation-wide settings today. Per-database profiles remain #215.
+These are installation-wide settings today. The
+[per-database profile audit and plan](specs/database-embedding-profiles.md)
+addresses #215 and proposes the implementation sequence for #225.
 The opt-in requires a backend implementing HADES's `late_chunk.boundaries`
 extension. Unsupported or malformed responses fail explicitly.
 

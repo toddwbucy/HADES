@@ -1,0 +1,50 @@
+{
+  "audit_date": "2026-10-19",
+  "audited_commit": "f930fbca1c5362f0e8e337ceeb1a1f9d21173cec",
+  "probe": {
+    "command": "python3 docs/audits/database_embedding_profile_probe.py --hades-bin /path/to/hades-built-from-audited-commit",
+    "binary_sha256": "cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42",
+    "binary_matches_deployment_record": true,
+    "observed": {
+      "configured_model": "fixture/smaller-model",
+      "configured_dimension": 384,
+      "requested_model": "jinaai/jina-embeddings-v4",
+      "requested_task": "retrieval.passage",
+      "accepted_response_dimension": 2048,
+      "configuration_honored": false,
+      "exit_code": 0,
+      "private_mock_only": true,
+      "database_requests": 0,
+      "model_downloads": 0
+    }
+  },
+  "tests": [
+    {
+      "command": "cargo test --locked -p hades-core --test embedding_client --test embedding_contract",
+      "passed": 13
+    },
+    {
+      "command": "cargo test --locked -p hades-core --lib chunking::",
+      "passed": 38
+    },
+    {
+      "command": "cargo test --locked -p hades-core --lib retrieval::",
+      "passed": 3
+    }
+  ],
+  "validation": {
+    "relative_document_links_checked": 30,
+    "markdown_fences_balanced": true,
+    "probe_python_compiles": true
+  },
+  "limits": {
+    "production_code_changed": false,
+    "production_services_restarted": false,
+    "database_writes": 0,
+    "model_downloads": 0,
+    "real_inference_requests": 0,
+    "retrieval_quality_measured": false,
+    "proposed_design_implemented": false
+  },
+  "environment_note": "Initial private-socket contract tests were denied by the sandbox; rerun with temporary socket permission passed."
+}
