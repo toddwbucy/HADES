@@ -351,6 +351,11 @@ class JinaV4Embedder:
         if self._model is not None:
             return
 
+        # A rejected snapshot can leave freed weights in the CUDA allocator.
+        # Release them before preflight measures the next load's available VRAM.
+        if self._device.startswith("cuda"):
+            gc.collect()
+            torch.cuda.empty_cache()
         self._preflight_device()
 
         logger.info(

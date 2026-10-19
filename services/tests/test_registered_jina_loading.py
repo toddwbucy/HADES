@@ -41,6 +41,10 @@ def backend(monkeypatch):
 
     class Model:
         """Return deterministic CPU vectors without loading any model weights."""
+        def to(self, device):
+            """Allow simulated CUDA loading without allocating GPU tensors."""
+            return self
+
         def requires_grad_(self, enabled):
             """Assert the real loader disables gradient tracking."""
             assert enabled is False
@@ -175,6 +179,64 @@ def test_changed_snapshot_cannot_return_accepted_vectors(backend, registry, sour
     assert backend[1].calls == (1 if during else 0)
     assert embedder.loaded_artifact is None and not embedder.is_loaded
     assert not root.exists()
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_rejected_snapshot_can_reload_without_reserved_cuda_memory(backend, registry, source, monkeypatch, device):
+    """Invalidation can recover without manual unload; CPU and loaded accesses skip cleanup."""
+    module = backend[0]
+    registration = registry.register("reload", source, REVISION)
+    monkeypatch.setattr(module.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(module.torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(module, "MIN_FREE_VRAM_MIB", 0)
+    events = []
+    retained = {"cached": False, "collected": False}
+
+    def collect():
+        """Model references held in discarded traceback cycles become collectible."""
+        assert device.startswith("cuda")
+        retained["collected"] = True
+        events.append("collect")
+
+    def empty_cache():
+        """Only release reserved blocks after collecting discarded references."""
+        assert device.startswith("cuda") and retained["collected"]
+        retained["cached"] = False
+        events.append("empty_cache")
+
+    def mem_get_info(ordinal):
+        """Expose insufficient free VRAM until the simulated allocator is cleared."""
+        assert ordinal == 0
+        events.append("preflight")
+        return (7 if retained["cached"] else 16) * 1024**3, 16 * 1024**3
+
+    monkeypatch.setattr(module.gc, "collect", collect)
+    monkeypatch.setattr(module.torch.cuda, "empty_cache", empty_cache)
+    monkeypatch.setattr(module.torch.cuda, "mem_get_info", mem_get_info)
+    embedder = module.JinaV4Embedder(device=device, registration=registration)
+    try:
+        embedder.model
+        first = embedder.loaded_artifact
+        mutate(embedder._snapshot.root)
+        with pytest.raises(ArtifactChangedError):
+            embedder.model
+        assert not embedder.is_loaded
+        retained.update(cached=True, collected=False)
+        events.clear()
+
+        embedder.model
+        assert embedder.loaded_artifact["serving_generation"] != first["serving_generation"]
+        assert events == (["collect", "empty_cache", "preflight"] if device.startswith("cuda") else [])
+        events.clear()
+        embedder.model
+        with embedder._artifact_lock, embedder._load_lock:
+            embedder._load_unlocked()
+        assert events == []
+    finally:
+        # Cleanup uses real CPU collection without exercising the CUDA double.
+        embedder._device = "cpu"
+        monkeypatch.undo()
+        embedder.unload()
 
 
 def test_registered_late_chunking_retains_existing_pooling_behavior(backend, registry, source):
