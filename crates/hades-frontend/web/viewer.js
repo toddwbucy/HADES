@@ -64,6 +64,7 @@ const deepLink = (() => {
   const p = new URLSearchParams(location.search);
   return {
     db: p.get("db"),
+    conversation: p.get("conversation"),
     graph: p.get("graph"),
     node: p.get("node"),
     edge: p.get("edge"),
@@ -86,6 +87,8 @@ function currentLink(nodeId, edgeId) {
     u.searchParams.set("expand", "1");
   }
   if (edgeId) u.searchParams.set("edge", edgeId);
+  const conversation = window.workspaceChat?.binding();
+  if (conversation) u.searchParams.set("conversation", conversation);
   return u.toString();
 }
 

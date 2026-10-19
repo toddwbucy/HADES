@@ -142,6 +142,10 @@ fn build_router(state: AppState) -> Router {
             "/",
             get(|| async { asset(INDEX_HTML, "text/html; charset=utf-8") }),
         )
+        .route(
+            "/workspace-chat.js",
+            get(|| async { asset(include_str!("../web/workspace-chat.js"), JS) }),
+        )
         .route("/viewer.js", get(|| async { asset(VIEWER_JS, JS) }))
         .route(
             "/hades-logo.png",

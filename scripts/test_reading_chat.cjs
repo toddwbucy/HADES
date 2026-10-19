@@ -296,6 +296,53 @@ async function main() {
     fs.writeFileSync(path.join(root, 'desk-evidence.json'), JSON.stringify({passed:true, checks:['renamed repeated upload resumes saved reading','intentional separate reading','passage edit blocks creation and restoration before mutation','remove and reload','unsent message retained','boundary draft blocks retry from another reading','lost removal response exact retry','restore notes, graph and chat bindings','valid audit chain','wider side panels and responsive fallback'],layoutChecks}, null, 2));
     assert.deepEqual(errors, []);
   }
+  if (!real) {
+    // Continue the original saved conversation in the graph workspace, without
+    // releasing ownership or cloning its transcript into another binding.
+    await page.goto(url + '/reading?' + new URLSearchParams({session:'browser_fixture', conversation:binding._key}));
+    await page.locator('[data-tab="chat"]').click();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    const before = await chatState();
+    await page.locator('#chat-workspace-link').click();
+    await page.waitForURL(u => u.pathname === '/');
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await until(async () => (await page.locator('#chat-messages').textContent()).includes('Discuss this selected passage.'));
+    assert.equal(new URL(page.url()).searchParams.get('conversation'), binding._key);
+    if (await page.locator('#chat-resume').isEnabled()) await page.locator('#chat-resume').click();
+    await until(async () => await page.locator('#chat-send').isEnabled());
+    await page.locator('[data-library="all"]').click();
+    await page.locator('.library-item').first().click();
+    await page.locator('#add-context').click();
+    await page.locator('#chat-message').fill('Continue our reading discussion using this knowledge object.');
+    await page.locator('#chat-send').click();
+    const continued = await until(async () => {const v=await chatState(); return v.exchanges.length === before.exchanges.length + 1 && v.exchanges.at(-1).status === 'completed' && v;});
+    assert.equal(continued.binding.thread_id, before.binding.thread_id);
+    assert.equal(continued.binding.allow_reads, before.binding.allow_reads);
+    assert.equal(continued.exchanges.at(-1).context.format, 'hades-workspace-context/v1');
+    assert.equal(continued.exchanges.at(-1).context.objects.length, 1);
+    assert.equal(continued.exchanges.at(-1).context.origin_reading, 'browser_fixture');
+    await page.reload();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await until(async () => (await page.locator('#chat-messages').textContent()).includes('Continue our reading discussion'));
+    assert.equal((await chatState()).exchanges.length, continued.exchanges.length, 'reload cannot replay a message');
+    await page.locator('#workspace-layout').selectOption('wide');
+    await page.screenshot({path:path.join(root, 'workspace-codex-chat.png'), fullPage:true});
+    await page.locator('#chat-reading-link').click();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await page.locator('[data-tab="chat"]').click();
+    await until(async () => (await page.locator('#chat-messages').textContent()).includes('Continue our reading discussion'));
+    await page.locator('#chat-workspace-link').click();
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === binding._key);
+    await page.locator('#chat-new').click();
+    const free = await until(async () => {const v=await api('chat',{action:'bindings'});return v.bindings.find(b => b.session === null && b.thread_id);});
+    await until(async () => (await page.locator('#chat-bindings').inputValue()) === free._key);
+    await until(async () => await page.locator('#chat-send').isEnabled());
+    await page.locator('#chat-message').fill('A new workspace conversation without a reading.');
+    await page.locator('#chat-send').click();
+    await until(async () => (await api('chat',{action:'state',binding:free._key})).exchanges[0]?.status === 'completed');
+    assert.deepEqual(errors, []);
+    fs.writeFileSync(path.join(root, 'workspace-chat-evidence.json'), JSON.stringify({passed:true, same_thread:true, same_binding:true, remembered_reads_preserved:true, frozen_graph_context:true, reload_without_replay:true, return_to_reading:true, standalone_workspace_chat:true}, null, 2));
+  }
   fs.writeFileSync(path.join(root, 'chat-evidence.json'), JSON.stringify({real_codex:real, runtime:'0.163.0', passed:true, checks:['browser passage selection','frozen MCP exchange context','restricted tools','pending proposal','human acceptance','reload without replay','release and resume', ...(!real ? ['question response','interrupt','daemon crash and ownership recovery','history reference selection','accepted knowledge snapshot'] : ['model MCP retrieval','model MCP proposal'])]}, null, 2));
   console.log('Reading chat browser/MCP contract passed:', root);
 }

@@ -701,7 +701,7 @@ impl HadesMcpServer {
 #[tool_router]
 impl HadesMcpServer {
     #[tool(
-        description = "Read the immutable document and selected-conversation context sent for one HADES chat exchange. Unlike live reading_context, this snapshot does not change when the reader moves or corrects a passage. Use the exchange_id supplied with the user message."
+        description = "Read the immutable reading or knowledge-workspace context sent for one HADES chat exchange, including explicitly selected conversation references. Unlike live reading_context or graph lookups, this snapshot does not change when a passage or graph object changes. Use the exchange_id supplied with the user message."
     )]
     async fn reading_exchange_context(
         &self,

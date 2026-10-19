@@ -146,13 +146,16 @@
   </main>
 
   <aside id="inspector">
+    <section id="chat" aria-label="Knowledge conversation"><h2>Explore with Codex</h2><p id="chat-status" role="status">Connecting to Codex…</p><a id="chat-reading-link" hidden>Return to guided reading</a><div id="chat-controls" hidden><div class="controls"><button id="chat-new">New conversation</button><button id="chat-find">Find a conversation</button><button id="chat-history">Conversation history</button></div><label>Saved conversations<select id="chat-bindings"></select></label><div class="controls"><button id="chat-resume">Resume</button><button id="chat-release">Release to another client</button></div><div id="chat-browser"></div><button id="chat-older" hidden>Earlier exchanges</button><div id="chat-messages" role="log" aria-label="Conversation messages"></div><div id="chat-approvals"></div><details open><summary>Context for the next message</summary><p id="chat-context-note" class="muted"></p><label hidden>Passages (saved highlights)<select id="chat-passages" multiple size="4"></select></label><label hidden>Accepted knowledge<select id="chat-knowledge" multiple size="3"></select></label><p id="chat-reference-note" class="muted"></p><button id="chat-reference-clear">Clear conversation references</button></details><label>Your message<textarea id="chat-message" rows="4" maxlength="8000"></textarea></label><div class="controls"><button id="chat-send">Send</button><button id="chat-stop">Stop response</button><button id="chat-reconcile">Reconcile history</button><button id="chat-recover">Recover saved submission</button></div></div></section>
+    <details id="workspace-references" open><summary>Reference tray</summary>
     <div class="eyebrow">Conversation context</div><h1 class="context-title">A common reference</h1>
     <p class="muted">Collect exact objects and passages to discuss with your agent.</p>
     <button id="add-context" class="primary" disabled>Add selected object</button>
     <div class="hint">Select text in the reader to include a passage.</div>
     <div id="context-items"></div>
     <button id="copy-context" disabled>Copy context for agent</button><button id="clear-context" disabled>Clear context</button>
-    <p id="context-status" class="hint" role="status">References stay in this browser tab. Copy them into your conversation.</p>
+    <p id="context-status" class="hint" role="status">Objects in this tray will be included with your next chat message.</p>
+    </details>
     <button id="share-view">Copy link to this view</button>
     <details id="object-details"><summary>Object details &amp; provenance</summary><div id="inspect-body"><div class="empty">Select a node or edge.</div></div></details>
   </aside>
@@ -182,5 +185,6 @@
 <script src="/workspace-model.js"></script>
 <script src="/viewer.js"></script>
 <script src="/workspace.js"></script>
+<script type="module" src="/workspace-chat.js"></script>
 </body>
 </html>

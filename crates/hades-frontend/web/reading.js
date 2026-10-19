@@ -4,7 +4,10 @@ pdfjs.GlobalWorkerOptions.workerSrc='/vendor/pdf.worker.mjs';
 const $=id=>document.getElementById(id);
 let state=null,source=null,pdf=null,page=1,structured=true,busy=false,selectedAnchor=null,reviewing=null,database='',generation=0,figureMode=false,returnBlock=null,sideBySide=false,viewScroll={},splitScroll={},editingPassage=null,passageViews={};
 const boundaryDrafts=new Map();
-const readingChat = new ReadingChat({api: body => api('chat', body), getState: () => state, getDatabase: () => database,
+const readingChat = new ReadingChat({onBinding: binding => {
+ const link=$('chat-workspace-link');link.hidden=!binding;
+ if(binding)link.href='/?'+new URLSearchParams({db:database,graph:state.graph,conversation:binding._key});
+}, api: body => api('chat', body), getState: () => state, getDatabase: () => database,
  getPosition: () => {
   const pane=sideBySide?$('converted-pane'):document.querySelector('.document');
   const top=Math.max(0,pane.getBoundingClientRect().top);
@@ -14,6 +17,8 @@ const readingChat = new ReadingChat({api: body => api('chat', body), getState: (
   if (!position || !source) return; page=position.page||1;returnBlock=position.block||null;await renderSource();
   if(returnBlock)[...$('reader').querySelectorAll('[data-block]')].find(el=>el.dataset.block===returnBlock)?.scrollIntoView({block:'center'});
  }});
+
+readingChat.preferredBinding=new URLSearchParams(location.search).get('conversation');
 
 const pendingKey=db=>'hades.reading.pending.'+encodeURIComponent(db);
 const requestKey=(db,p)=>pendingKey(db)+':'+encodeURIComponent(p.session)+':'+encodeURIComponent(p.request_id);

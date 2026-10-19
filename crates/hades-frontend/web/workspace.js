@@ -108,7 +108,7 @@
     if (refs.some(r => r.db === ref.db && r.graph === ref.graph && r.id === ref.id && r.excerpt === ref.excerpt)) {
       $("context-status").textContent = "That reference is already in the tray."; return;
     }
-    try { M.contextPacket([...refs,ref]); refs.push(ref); renderContext(); $("context-status").textContent = "Added. Copy the references into your conversation to share them."; }
+    try { M.contextPacket([...refs,ref]); refs.push(ref); renderContext(); $("context-status").textContent = "Added. This reference will be included with your next chat message."; }
     catch (error) { $("context-status").textContent = error.message; }
   };
   $("add-context").onmousedown = event => event.preventDefault();
@@ -165,8 +165,11 @@
     } catch(error) { if (ticket === epoch && request === searchSequence) $("search-status").textContent = error.message; }
   };
   window.workspace = {
+    database: () => state.db,
+    initialConversation: () => ({db: deepLink.db, binding: deepLink.conversation}),
+    references: () => refs.map(({db, graph, kind, id, excerpt}) => ({db, graph, kind, id, excerpt})),
     empty(message) { $("reader-title").textContent="Workspace unavailable"; $("reader-body").textContent=message; },
-    loading() { epoch++; searchSequence++; selected=null; $("add-context").disabled=true; $("library").replaceChildren(); $("search-results").replaceChildren(); $("search-status").textContent=""; $("reader-title").textContent="Loading workspace…"; $("reader-body").textContent=""; $("reader-meta").replaceChildren(); $("reader-links").replaceChildren(); },
+    loading() { window.workspaceChat?.sync(); epoch++; searchSequence++; selected=null; $("add-context").disabled=true; $("library").replaceChildren(); $("search-results").replaceChildren(); $("search-status").textContent=""; $("reader-title").textContent="Loading workspace…"; $("reader-body").textContent=""; $("reader-meta").replaceChildren(); $("reader-links").replaceChildren(); },
     loaded() { renderLibrary(); const root = M.library(snapshot(),"outline")[0]?.node; if (root && !pendingLink.node) selectNode(root.id); },
     expanded() { renderLibrary(); },
     node(id) { selectionSequence++; if (id) show("node",{id,...graph.getNodeAttributes(id)}); else {selected=null;$("add-context").disabled=true;} },

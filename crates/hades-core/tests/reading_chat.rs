@@ -43,6 +43,74 @@ fn send(id: &str, revision: u64, message: &str) -> Value {
 }
 
 #[tokio::test]
+async fn workspace_chat_starts_without_readings_and_continues_the_same_reading_thread() {
+    with_temp_db("workspace_chat", Fixtures::Empty, |pool| async move {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("hades-test-fixture"), "").unwrap();
+        let cfg = ChatConfig {
+            enabled: true,
+            executable: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tests/fake_codex.py").canonicalize().unwrap().display().to_string(),
+            home: directory.path().display().to_string(), cwd: directory.path().display().to_string(),
+            mcp_url: "http://127.0.0.1:1/mcp".into(), mcp_token_env: "PATH".into(),
+        };
+        let workspace_open = json!({"action":"open","id":"workspace"});
+        let free = call(&pool, &cfg, workspace_open.clone()).await.unwrap();
+        assert!(free["session"].is_null());
+        let message = |binding: &str, id: &str| json!({"action":"send","binding":binding,"request_id":id,
+            "expected_revision":0,"message":"Continue discussing the evidence.","highlights":[],"knowledge":[],"references":[],"workspace":[]});
+        let first = call(&pool, &cfg, message("workspace", "first")).await.unwrap();
+        assert_eq!(first["context"]["format"], "hades-workspace-context/v1");
+        wait_binding(&pool, &cfg, "workspace", |v| v["exchanges"][0]["status"] == "completed").await;
+        call(&pool, &cfg, json!({"action":"release","binding":"workspace"})).await.unwrap();
+
+        let source = reading::upload(&pool, SourceRequest { filename:"origin.txt".into(), content_base64:base64::engine::general_purpose::STANDARD.encode(b"Original reading") }).await.unwrap();
+        let hash = source["source_hash"].as_str().unwrap();
+        pool.writer().patch(&format!("document/hades_reading_sources/{hash}"), &json!({"status":"ready","structured":{"format":"docling-blocks-v1","blocks":[],"warnings":[]}})).await.unwrap();
+        reading::open(&pool, OpenRequest {id:"origin".into(),title:"Original reading".into(),source_hash:hash.into(),actor:"human".into()}).await.unwrap();
+        let open = json!({"action":"open","id":"continued","session":"origin"});
+        let original = call(&pool, &cfg, open.clone()).await.unwrap();
+        call(&pool, &cfg, json!({"action":"read_permission","binding":"continued","allowed":true})).await.unwrap();
+        let mut reading_message = message("continued", "reading");
+        reading_message.as_object_mut().unwrap().remove("workspace");
+        let reading_exchange = call(&pool, &cfg, reading_message.clone()).await.unwrap();
+        assert_eq!(reading_exchange["context"]["format"], "hades-reading-context/v1");
+        wait_binding(&pool, &cfg, "continued", |v| v["exchanges"][0]["status"] == "completed").await;
+        // Removing a reading from the desk does not end its conversation.
+        reading::mutate(&pool, Mutation {session:"origin".into(), request_id:"archive".into(), expected_revision:0,actor:"human".into(),action:Action::Archive {archived:true}}, false).await.unwrap();
+        let resumed = call(&pool, &cfg, open.clone()).await.unwrap();
+        assert_eq!(resumed["thread_id"], original["thread_id"]);
+        assert_eq!(resumed["allow_reads"], true);
+
+        pool.writer().post("gharial", &json!({"name":"workspace_fixture","edgeDefinitions":[],"orphanCollections":["workspace_nodes"]})).await.unwrap();
+        pool.writer().post("document/workspace_nodes", &json!({"_key":"node","title":"Evidence","content":"An exact selected passage."})).await.unwrap();
+        let selection = json!({"db":pool.database(),"graph":"workspace_fixture","kind":"node","id":"workspace_nodes/node","excerpt":"exact selected passage"});
+        let mut continuation = message("continued", "workspace_followup"); continuation["workspace"] = json!([selection]);
+        let frozen = call(&pool, &cfg, continuation.clone()).await.unwrap();
+        assert_eq!(frozen["context"]["origin_reading"], "origin");
+        assert_eq!(frozen["context"]["objects"][0]["selection"]["excerpt"], "exact selected passage");
+        let done = wait_binding(&pool, &cfg, "continued", |v| v["exchanges"][1]["status"] == "completed").await;
+        assert_eq!(done["binding"]["thread_id"], original["thread_id"]);
+        assert_eq!(done["exchanges"][0]["context"], reading_exchange["context"]);
+        pool.writer().patch("document/workspace_nodes/node", &json!({"content":"Changed later"})).await.unwrap();
+        assert_eq!(call(&pool, &cfg, continuation.clone()).await.unwrap()["context"], frozen["context"], "exact replay retains frozen evidence without dispatch");
+        for (id, mut selection) in [("stale", selection.clone()), ("wrong_db", selection.clone()), ("wrong_graph", selection.clone())] {
+            if id == "wrong_db" {selection["db"] = json!("another_database");}
+            if id == "wrong_graph" {selection["id"] = json!("hades_reading_conversations/continued");}
+            let mut rejected = message("continued", id); rejected["workspace"] = json!([selection]);
+            assert_eq!(call(&pool, &cfg, rejected).await.unwrap()["rejected"], true);
+        }
+        let all = call(&pool, &cfg, json!({"action":"bindings"})).await.unwrap();
+        assert_eq!(all["bindings"].as_array().unwrap().len(), 2);
+        let reading_only = call(&pool, &cfg, json!({"action":"bindings","session":"origin"})).await.unwrap();
+        assert_eq!(reading_only["bindings"].as_array().unwrap().len(), 1);
+        assert!(call(&pool, &cfg, json!({"action":"open","id":"continued"})).await.is_err(), "workspace continuation cannot rebind reading provenance");
+        call(&pool, &cfg, json!({"action":"release","binding":"continued"})).await.unwrap();
+        assert_eq!(call(&pool, &cfg, open).await.unwrap()["allow_reads"], true);
+        call(&pool, &cfg, json!({"action":"release","binding":"continued"})).await.unwrap();
+    }).await;
+}
+
+#[tokio::test]
 async fn chat_journal_ownership_context_approval_and_disconnect_recovery() {
     with_temp_db("chat",Fixtures::Empty,|pool|async move{
         let directory=tempfile::tempdir().unwrap();
