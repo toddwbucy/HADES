@@ -9,6 +9,7 @@ from dataclasses import replace
 import hashlib
 import json
 import time
+import unicodedata
 
 import numpy as np
 from safetensors import safe_open
@@ -18,7 +19,7 @@ from .identity import ProviderReceipt, _exact_fields, _unique_object
 from .jina_v4 import EMBEDDING_DIM, InputTooLargeError
 from .verified_jina import PROMPTS, ReceiptMismatchError, _versions
 
-PROTOCOL = "hades-verified-jina-qualification-v1"
+PROTOCOL = "hades-verified-jina-qualification-v2"
 MIN_REPEAT_COSINE = 0.99999
 MIN_RELOAD_COSINE = 0.9999
 MAX_NORM_ERROR = 0.001
@@ -103,14 +104,19 @@ def rank(documents, passages, queries, vectors):
 
 
 def tokenizer_observation(tokenizer, samples):
-    """Check exact Unicode/whitespace round trips and retain IDs for reload comparison."""
+    """Check the declared normalization against an independent Unicode oracle."""
+    normalizer = json.loads(tokenizer.backend_tokenizer.to_str())["normalizer"]
+    require(normalizer is None or normalizer == {"type": "NFC"},
+            "qualification supports only identity or declared NFC normalization")
+    normalization = "identity" if normalizer is None else "NFC"
     observations = []
     for text in samples:
         ids = tokenizer(text, add_special_tokens=False, padding=False, truncation=False)["input_ids"]
         decoded = tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-        require(decoded == text, "tokenizer changed source Unicode or whitespace")
-        observations.append({"text": text, "ids": ids})
-    return observations
+        wanted = text if normalizer is None else unicodedata.normalize("NFC", text)
+        require(decoded == wanted, "tokenizer violated declared Unicode normalization or whitespace")
+        observations.append({"text": text, "decoded": decoded, "ids": ids})
+    return {"normalization": normalization, "samples": observations}
 
 
 def boundary_texts(tokenizer, task, ceiling):
@@ -173,7 +179,7 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None):
     report["adapter_tensors_verified"] = adapter_check(provider)
     tokenizer = provider._backend._tokenizer
     tokens = tokenizer_observation(tokenizer, cases["tokenizer_samples"])
-    report["tokenizer_samples"] = tokens
+    report["tokenizer"] = tokens
     timings = []
     report["operations"] = timings
     report["max_observed_norm_error"] = 0.0

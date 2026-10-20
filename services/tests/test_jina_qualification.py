@@ -13,7 +13,7 @@ from test_model_registration import registry, source  # noqa: F401
 from test_verified_jina_provider import provider  # noqa: F401
 from embedding.identity import ProviderReceipt
 from embedding.jina_v4 import EMBEDDING_DIM
-from embedding.qualification import checked_vectors, load_cases, qualify, rank
+from embedding.qualification import checked_vectors, load_cases, qualify, rank, tokenizer_observation
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = Path(__file__).parent / "fixtures/jina_qualification.json"
@@ -63,6 +63,26 @@ def test_retrieval_gate_rejects_wrong_first_result_and_missing_queries():
         rank(documents, passages, queries, vectors)
     with pytest.raises(ValueError, match="incomplete"):
         rank(documents, passages, queries, vectors[:0])
+
+
+def test_tokenizer_gate_requires_declared_normalization_and_preserves_whitespace(monkeypatch):
+    """Allow explicit NFC, reject other normalizers, and independently detect decoding loss."""
+    from tokenizers import Tokenizer, models, normalizers
+    from transformers import Qwen2TokenizerFast
+    raw = Tokenizer(models.WordLevel({"<unk>": 0, "é": 1, "  é\t": 2}, unk_token="<unk>"))
+    raw.normalizer = normalizers.NFC()
+    tokenizer = Qwen2TokenizerFast(tokenizer_object=raw)
+    result = tokenizer_observation(tokenizer, ["é", "é", "  é\t"])
+    assert result["normalization"] == "NFC"
+    assert [row["decoded"] for row in result["samples"]] == ["é", "é", "  é\t"]
+    assert result["samples"][0]["ids"] == result["samples"][1]["ids"]
+    with monkeypatch.context() as broken:
+        broken.setattr(tokenizer, "decode", lambda *_args, **_kwargs: "é")
+        with pytest.raises(ValueError, match="whitespace"):
+            tokenizer_observation(tokenizer, ["  é\t"])
+    tokenizer.backend_tokenizer.normalizer = normalizers.Lowercase()
+    with pytest.raises(ValueError, match="only identity or declared NFC"):
+        tokenizer_observation(tokenizer, ["É"])
 
 
 @pytest.mark.parametrize("failure", ["model", "receipt", "width", "norm", "finite", "index", "missing"])

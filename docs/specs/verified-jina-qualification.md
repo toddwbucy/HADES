@@ -11,7 +11,7 @@ database. It does not activate database pairing or change installed services.
 `services/tests/fixtures/jina_qualification.json` defines eight short documents,
 six independently specified retrieval answers, and Unicode/whitespace samples.
 The protocol and criteria are committed before real inference. Retain failed
-runs; do not weaken thresholds or choose different queries after seeing results.
+runs; do not weaken numerical/retrieval thresholds or choose different queries after seeing results.
 This is a multilingual retrieval smoke test, not the #167 evaluation baseline
 or evidence that this model is preferable to another model.
 
@@ -23,8 +23,10 @@ or evidence that this model is preferable to another model.
   expected document ranks first using independently computed cosine similarity.
 - A repeated query has cosine at least 0.99999; after unload/reload it is at least
   0.9999. Artifact and space identities stay stable while load identity changes.
-- Exact Unicode and whitespace survive tokenizer encode/decode; IDs remain
-  identical after reload. No tokenizer regex correction is applied.
+- Tokenizer encode/decode preserves whitespace and follows only its declared
+  identity or NFC normalization, checked against Python's independent Unicode
+  implementation. IDs remain identical after reload. Original database source
+  text remains byte-for-byte intact. No tokenizer regex correction is applied.
 - Both task prefixes accept an exactly fitting input. A forward hook observes
   the actual IDs reaching the model, including prefix/special-token policy.
   One additional token rejects the entire mixed batch before any forward pass.
@@ -93,6 +95,13 @@ and serving ceiling. A different library version, precision, tokenizer behavior,
 or capability needs its own evidence and compatible identity checks. A warning
 from a different Transformers installation does not establish a defect in this
 runtime; retain and investigate warnings rather than silently editing assets.
+
+The first v1 attempt stopped before embedding inference because it incorrectly
+required byte-equivalent decoded Unicode. The registered tokenizer explicitly
+declares NFC and turns combining `é` into composed `é`. Protocol v2 corrects that
+gate to verify declared NFC independently, rejects other normalization policies,
+and still requires exact whitespace preservation. The cases and numerical/ranking
+criteria did not change; the failed v1 report is retained with the run evidence.
 
 The database test uses one explicit passage per small document. Token-aware
 planning, all public CLI/MCP/job paths, code/late-chunk capabilities, trusted
