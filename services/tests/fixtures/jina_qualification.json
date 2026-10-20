@@ -1,0 +1,46 @@
+{
+  "format": "hades-jina-qualification-cases-v1",
+  "documents": [
+    {
+      "id": "photosynthesis",
+      "text": "Photosynthesis uses sunlight to convert carbon dioxide and water into sugars. Chloroplasts containing chlorophyll carry out this process in green plants."
+    },
+    {
+      "id": "database-restore",
+      "text": "An ArangoDB backup exported by arangodump can be restored with arangorestore. Restore the dump into a separate empty test database before validating its collections and document counts."
+    },
+    {
+      "id": "rust-ownership",
+      "text": "Rust ownership and borrowing prevent use-after-free without a garbage collector. The borrow checker enforces reference lifetimes and restricts conflicting mutable and immutable borrows."
+    },
+    {
+      "id": "library-hours",
+      "text": "Horario de una biblioteca ficticia: de lunes a viernes abre de nueve a dieciocho. Los sábados abre de diez a catorce. Los domingos permanece cerrada."
+    },
+    {
+      "id": "tokyo-kyoto",
+      "text": "旅行メモ：東京から京都へ行くには東海道新幹線を利用します。のぞみは東京駅と京都駅を結びます。出発前に指定席を予約しました。"
+    },
+    {
+      "id": "unicode",
+      "text": "UTF-8 encodes Unicode characters, including accented French text such as café, Japanese characters such as 東京, and emoji such as 🚀. A composed é and a combining é have different byte sequences."
+    },
+    {
+      "id": "banana-bread",
+      "text": "Banana bread uses ripe bananas, flour, eggs, and a raising agent. Mash the bananas before mixing the wet and dry ingredients, then bake the batter in a loaf pan."
+    },
+    {
+      "id": "orbits",
+      "text": "An orbit combines gravitational attraction with tangential velocity. A satellite continually falls toward its planet while moving sideways fast enough to remain above the surface."
+    }
+  ],
+  "queries": [
+    {"id": "plants", "text": "What process lets plants make sugars using light?", "expected_document": "photosynthesis"},
+    {"id": "restore", "text": "Which tool restores an ArangoDB dump?", "expected_document": "database-restore"},
+    {"id": "memory", "text": "How does Rust prevent use-after-free without a garbage collector?", "expected_document": "rust-ownership"},
+    {"id": "saturday", "text": "¿A qué hora cierra la biblioteca los sábados?", "expected_document": "library-hours"},
+    {"id": "train", "text": "東京から京都へ行く新幹線は何ですか？", "expected_document": "tokyo-kyoto"},
+    {"id": "encoding", "text": "Which encoding represents accented French text and Japanese characters?", "expected_document": "unicode"}
+  ],
+  "tokenizer_samples": ["café é 東京 🚀", "  spaces\tand\nnewlines  ", "résumé—naïve; 日本語 123.45"]
+}

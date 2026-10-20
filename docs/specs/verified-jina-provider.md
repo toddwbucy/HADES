@@ -117,11 +117,14 @@ tokenizer loading; its runtime metadata fits the bound. Transformers 4.57.6
 emitted a regex warning during that check. Its local detection also considers
 configuration metadata, so this warning alone does not establish a Jina tokenizer
 defect. Record and resolve it with tokenizer/quality fixtures during real-model
-qualification; no regex correction was applied here. No installed weights were
-registered, copied, loaded, or used for inference.
+qualification; no regex correction was applied in that initial slice. No installed
+weights were registered, copied, loaded, or used for inference in that slice.
 
-Real GPU qualification, tokenization/quality evaluation, performance measurement,
-late/code capability implementation, trusted provider discovery, profile
-persistence, guarded ingest/query commits, legacy provenance handling, and frontend
-creation remain pending. Database pairing stays disabled until the applicable
-public entry points enforce it together.
+The opt-in [real-model qualification protocol](verified-jina-qualification.md)
+now covers fixed retrieval/tokenizer checks, performance observations, reloads,
+and the actual HTTP/Rust/disposable-database flow. Internal profile persistence and
+guarded preplanned document ingest/query commits are implemented. General quality
+evaluation, token-aware planning, late/code capabilities, trusted provider
+discovery, public entry-point enforcement, legacy policy, and frontend creation
+remain pending. Database pairing stays disabled until the applicable public entry
+points enforce it together.

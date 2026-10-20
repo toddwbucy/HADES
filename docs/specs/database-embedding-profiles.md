@@ -451,8 +451,13 @@ The [document integration](profile-bound-documents.md) connects those primitives
 for preplanned conventional text, atomic publication, and guarded exact retrieval.
 Disposable databases and private synthetic providers cover the end-to-end flow,
 including different dimensions and provider reloads. Token-aware chunk planning,
-real-Jina qualification, provisioning ownership/recovery, schema/provider readiness
+provisioning ownership/recovery, schema/provider readiness
 checks, portable job pins, and public enforcement remain pending.
+
+The [real-Jina qualification protocol](verified-jina-qualification.md) adds an
+opt-in fixed retrieval/tokenizer/reload suite and the real provider HTTP-to-Rust
+document round trip on a disposable database. It records runtime-specific evidence
+without activating public pairing or claiming a general quality benchmark.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
