@@ -448,10 +448,12 @@ The [persistence slice](persisted-embedding-profiles.md) adds internal new-datab
 profile/manifest storage, immutable revisions, an atomic readiness pointer, and
 a transaction-scoped prepared-write guard. It has no production callers.
 The [document integration](profile-bound-documents.md) connects those primitives
-for preplanned conventional text, atomic publication, and guarded exact retrieval.
+for conventional text, atomic publication, and guarded exact retrieval.
 Disposable databases and private synthetic providers cover the end-to-end flow,
-including different dimensions and provider reloads. Token-aware chunk planning,
-provisioning ownership/recovery, schema/provider readiness
+including different dimensions and provider reloads.
+[Token-aware planning](profile-token-planning.md) now uses the verified serving
+tokenizer, retains counted source spans, and removes the caller-supplied-span path.
+Provisioning ownership/recovery, schema/provider readiness
 checks, portable job pins, and public enforcement remain pending.
 
 The [real-Jina qualification protocol](verified-jina-qualification.md) adds an

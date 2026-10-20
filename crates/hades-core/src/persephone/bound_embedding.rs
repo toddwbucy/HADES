@@ -4,6 +4,9 @@
 //! issued after verified loading. This client enforces that receipt over the
 //! wire; it cannot establish the provider's honesty or authorize database writes.
 
+use super::passage_plan::{PassagePlan, validate_source};
+use http::Method;
+use serde_json::json;
 use std::time::Duration;
 
 use crate::embedding_profile::{
@@ -42,6 +45,7 @@ pub struct BoundEmbeddingClient {
     binding: BoundEmbeddingRequest,
     chunking: ChunkPolicy,
     role: EmbeddingRole,
+    max_input_tokens: u32,
 }
 
 impl BoundEmbeddingClient {
@@ -89,12 +93,52 @@ impl BoundEmbeddingClient {
             binding,
             chunking: selected.chunking.clone(),
             role,
+            max_input_tokens: profile.capabilities.max_input_tokens,
         })
     }
 
     /// Inspect the immutable pin without exposing an unbound client or setter.
     pub fn binding(&self) -> &BoundEmbeddingRequest {
         &self.binding
+    }
+
+    /// Plan complete conventional passages using the pinned provider's real tokenizer.
+    /// Both counts and UTF-8 spans are admitted before any embedding work is sent.
+    pub async fn plan_passages(
+        &self,
+        text: &str,
+    ) -> Result<BoundEmbeddingResult<PassagePlan>, EmbeddingError> {
+        validate_source(text)?;
+        require(
+            self.role == EmbeddingRole::Passage,
+            "only passage roles can plan documents",
+        )?;
+        let ChunkPolicy::Conventional {
+            passage_tokens,
+            overlap_tokens,
+        } = self.chunking
+        else {
+            return Err(EmbeddingError::InvalidResponse(
+                "late passage planning is unavailable".into(),
+            ));
+        };
+        let output: PassagePlan = self
+            .inner
+            .request_typed(
+                Method::POST,
+                "/passages",
+                Some(&json!({
+                    "model":self.binding.model,"task":self.binding.task,"input":text,
+                    "passage_tokens":passage_tokens,"overlap_tokens":overlap_tokens,
+                    "max_input_tokens":self.max_input_tokens,
+                })),
+            )
+            .await?;
+        output.validate(text, &self.binding, &self.chunking, self.max_input_tokens)?;
+        Ok(BoundEmbeddingResult {
+            output,
+            binding: self.binding.clone(),
+        })
     }
 
     /// Embed queries or conventional passages using only the bound task.

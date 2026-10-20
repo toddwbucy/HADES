@@ -10,6 +10,7 @@ use hades_core::embedding_profile::{
 use hades_core::persephone::bound_embedding::{BoundEmbeddingClient, ProviderConnection};
 use hades_core::persephone::embedding::{EmbeddingEndpoint, EmbeddingError};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct Fixture {
@@ -98,14 +99,17 @@ impl Mock {
                         assert!(headers.len() < 8192);
                     }
                     let headers = String::from_utf8(headers).unwrap();
-                    assert!(headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
+                    assert!(headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n")
+                        || headers.starts_with("POST /v1/passages HTTP/1.1\r\n"));
                     let length: usize = headers.lines().find_map(|line| {
                         line.to_lowercase().strip_prefix("content-length:").map(|n| n.trim().parse().unwrap())
                     }).unwrap();
-                    assert!(length < 1024 * 1024);
+                    assert!(length < 3 * 1024 * 1024);
                     let mut body = vec![0; length];
                     stream.read_exact(&mut body).await.unwrap();
-                    requests.push(serde_json::from_slice(&body).unwrap());
+                    let mut request: Value = serde_json::from_slice(&body).unwrap();
+                    request["_fixture_path"] = json!(headers.lines().next().unwrap());
+                    requests.push(request);
                     let wire = format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len());
                     // Rejection by the client's byte limit can close the socket early.
                     let _ = stream.write_all(wire.as_bytes()).await;
@@ -152,6 +156,216 @@ impl Drop for Mock {
         if let Some(server) = &self.server {
             server.abort();
         }
+    }
+}
+
+/// Describe a tokenizer-owned complete plan independently of the client's expected receipt.
+fn passage_plan(fixture: &Fixture, text: &str) -> Value {
+    json!({"format":"hades-token-passages-v1", "model":fixture.profile.model.id,
+        "task":"retrieval.passage", "receipt":fixture.receipt,
+        "source_sha256":Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        "passage_tokens":500,"overlap_tokens":100,"max_input_tokens":2048,
+        "spans":[{"start_byte":0,"end_byte":text.len(),"body_tokens":3,"input_tokens":6,"overlap_tokens":0}]})
+}
+
+/// The database owns policy/task/identity; the response preserves source-byte coordinates.
+#[tokio::test]
+async fn plans_with_explicit_policy_and_same_provider_pin() {
+    let fixture = Fixture::new(false);
+    let text = "café e\u{301} 東京";
+    let mock = Mock::json(vec![passage_plan(&fixture, text)]);
+    let client = fixture.connect(&mock, EmbeddingRole::Passage).await;
+    let result = client.plan_passages(text).await.unwrap();
+    assert_eq!(result.binding, *client.binding());
+    assert_eq!(result.output.spans[0].end_byte, text.len());
+    let requests = mock.finish().await;
+    assert_eq!(requests[0]["_fixture_path"], "POST /v1/passages HTTP/1.1");
+    assert_eq!(requests[0]["input"], text);
+    assert_eq!(requests[0]["passage_tokens"], 500);
+    assert_eq!(requests[0]["overlap_tokens"], 100);
+    assert_eq!(requests[0]["max_input_tokens"], 2048);
+    assert_eq!(requests[0]["expected_receipt"], json!(fixture.receipt));
+}
+
+/// Overlap is measured independently; zero-overlap profiles require adjacent source spans.
+#[tokio::test]
+async fn planning_checks_overlap_and_effective_serving_ceiling() {
+    let text = "café e\u{301} 東京";
+    for variant in [
+        "valid",
+        "adjacent",
+        "overlap_count",
+        "serving_ceiling",
+        "zero_policy",
+    ] {
+        let mut fixture = Fixture::new(false);
+        let mut response = passage_plan(&fixture, text);
+        response["spans"] = json!([
+            {"start_byte":0,"end_byte":6,"body_tokens":3,"input_tokens":6,"overlap_tokens":0},
+            {"start_byte":3,"end_byte":text.len(),"body_tokens":6,"input_tokens":9,"overlap_tokens":2}
+        ]);
+        match variant {
+            "adjacent" => {
+                response["spans"][1]["start_byte"] = json!(6);
+                response["spans"][1]["overlap_tokens"] = json!(0);
+            }
+            "overlap_count" => response["spans"][1]["overlap_tokens"] = json!(101),
+            "serving_ceiling" => response["max_input_tokens"] = json!(8),
+            "zero_policy" => {
+                fixture
+                    .profile
+                    .workloads
+                    .documents
+                    .as_mut()
+                    .unwrap()
+                    .chunking = ChunkPolicy::Conventional {
+                    passage_tokens: 500,
+                    overlap_tokens: 0,
+                };
+                response["overlap_tokens"] = json!(0);
+                response["spans"][1]["overlap_tokens"] = json!(0);
+            }
+            _ => {}
+        }
+        let mock = Mock::json(vec![response]);
+        let client = fixture.connect(&mock, EmbeddingRole::Passage).await;
+        assert_eq!(
+            client.plan_passages(text).await.is_ok(),
+            matches!(variant, "valid" | "adjacent"),
+            "{variant}"
+        );
+        mock.finish().await;
+    }
+}
+
+/// Small plan metadata must not authorize more than 4 MiB of repeated source allocation.
+#[tokio::test]
+async fn planning_bounds_aggregate_overlap_bytes() {
+    let fixture = Fixture::new(false);
+    let text = "x".repeat(1024 * 1024);
+    let mut response = passage_plan(&fixture, &text);
+    response["spans"] = json!(
+        (0..5)
+            .map(|i| json!({
+                "start_byte":i,"end_byte":text.len()-4+i,"body_tokens":3,"input_tokens":6,
+                "overlap_tokens":if i == 0 { 0 } else { 1 }
+            }))
+            .collect::<Vec<_>>()
+    );
+    let mock = Mock::json(vec![response]);
+    let client = fixture.connect(&mock, EmbeddingRole::Passage).await;
+    let error = client
+        .plan_passages(&text)
+        .await
+        .err()
+        .expect("overlap amplification must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("overlapping passages exceed 4 MiB"),
+        "{error}"
+    );
+    mock.finish().await;
+}
+
+/// Reject duplicate/unknown/coerced fields before a plan can authorize slicing or inference.
+#[tokio::test]
+async fn planning_wire_retains_strict_duplicate_and_type_checks() {
+    let fixture = Fixture::new(false);
+    let original = passage_plan(&fixture, "é apple").to_string();
+    for raw in [
+        original.replacen("\"spans\":", "\"spans\":[],\"spans\":", 1),
+        original.replacen("\"end_byte\":", "\"end_byte\":8,\"end_byte\":", 1),
+        original.replacen(
+            "\"passage_tokens\":",
+            "\"passage_tokens\":500,\"passage_tokens\":",
+            1,
+        ),
+        original.replacen("\"body_tokens\":3", "\"body_tokens\":3.0", 1),
+        original.replacen("\"body_tokens\":3", "\"body_tokens\":\"3\"", 1),
+        original.replacen("\"body_tokens\":3", "\"body_tokens\":3,\"unknown\":1", 1),
+        original.replacen("\"spans\":", "\"unknown\":1,\"spans\":", 1),
+    ] {
+        let mock = Mock::new(vec![(200, raw)]);
+        let client = fixture.connect(&mock, EmbeddingRole::Passage).await;
+        assert!(client.plan_passages("é apple").await.is_err());
+        assert_eq!(mock.finish().await.len(), 1);
+    }
+}
+
+/// Guard whole-source coverage, Unicode boundaries, metadata, and finite request fan-out.
+#[tokio::test]
+async fn plans_refuse_invalid_source_coverage_and_resource_amplification() {
+    let fixture = Fixture::new(false);
+    let original = passage_plan(&fixture, "é apple");
+    let mut responses = Vec::new();
+    for (field, value) in [
+        ("start_byte", json!(1)),
+        ("end_byte", json!(1)),
+        ("end_byte", json!(7)),
+        ("end_byte", json!(9)),
+        ("body_tokens", json!(501)),
+        ("input_tokens", json!(0)),
+        ("input_tokens", json!(2049)),
+        ("overlap_tokens", json!(1)),
+    ] {
+        let mut response = original.clone();
+        response["spans"][0][field] = value;
+        responses.push(response);
+    }
+    for (field, value) in [
+        ("format", json!("other")),
+        ("source_sha256", json!("0".repeat(64))),
+        ("model", json!("other")),
+        ("task", json!("retrieval.query")),
+        ("passage_tokens", json!(499)),
+        ("overlap_tokens", json!(99)),
+        ("max_input_tokens", json!(0)),
+        ("max_input_tokens", json!(2049)),
+        ("spans", json!([])),
+        ("spans", json!(vec![original["spans"][0].clone(); 129])),
+    ] {
+        let mut response = original.clone();
+        response[field] = value;
+        responses.push(response);
+    }
+    for ranges in [
+        vec![(0, 2), (3, 8)],
+        vec![(0, 4), (0, 8)],
+        vec![(0, 8), (2, 6)],
+    ] {
+        let mut response = original.clone();
+        response["spans"]=json!(ranges.into_iter().map(|(start,end)| {
+            json!({"start_byte":start,"end_byte":end,"body_tokens":2,"input_tokens":5,"overlap_tokens":0})
+        }).collect::<Vec<_>>());
+        responses.push(response);
+    }
+    for response in responses {
+        let mock = Mock::json(vec![response]);
+        let client = fixture.connect(&mock, EmbeddingRole::Passage).await;
+        assert!(client.plan_passages("é apple").await.is_err());
+        mock.finish().await;
+    }
+}
+
+/// Queries, late policies, blank text and oversized sources are refused without transport.
+#[tokio::test]
+async fn unsupported_planning_is_rejected_before_contact() {
+    for (late, role, text) in [
+        (false, EmbeddingRole::Query, "one".into()),
+        (true, EmbeddingRole::Passage, "one".into()),
+        (false, EmbeddingRole::Passage, " \n\t".into()),
+        (
+            false,
+            EmbeddingRole::Passage,
+            "x".repeat(2 * 1024 * 1024 + 1),
+        ),
+    ] {
+        let fixture = Fixture::new(late);
+        let mock = Mock::json(vec![]);
+        let client = fixture.connect(&mock, role).await;
+        assert!(client.plan_passages(&text).await.is_err());
+        assert!(mock.finish().await.is_empty());
     }
 }
 

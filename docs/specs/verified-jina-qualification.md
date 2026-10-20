@@ -34,6 +34,12 @@ or evidence that this model is preferable to another model.
 - A private verified HTTP server supplies real vectors to the Rust bound client.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
   bindings, and retrieves all six expected answers from stored vectors.
+- After those retrieval checks, the fixed Unicode text in
+  `services/tests/fixtures/jina_passage_planning.txt` must produce multiple
+  conventional passages with overlap. The source bytes survive storage; every
+  stored body/input/overlap count is independently checked with the same live
+  tokenizer. Search validates all persisted chunks. The report retains the plan,
+  source SHA-256, whole-input token count, and recount result.
 
 `report.json` records success/failure, the failing stage and partial observations,
 exact suite SHA-256, implementation commit/dirty status, manifest, runtime versions,
@@ -126,6 +132,29 @@ Triton C-header macro redefinition warning; neither altered registered assets.
 It emitted no tokenizer regex warning. These results qualify this recorded
 runtime, not the separate Transformers 4.57.6 environment or legacy vector space.
 
+## ThinkPad token-planning result: 2026-10-20
+
+The [token-planning report](../evidence/jina-token-planning-thinkpad-2026-10-20.json)
+passed on clean implementation commit `8dc3de2b6aadc52d52d70bbac26c0272c0bc80d1`,
+using the same registered artifacts, runtime, and embedding space as above.
+The original six retrieval answers ranked first in both provider and stored-vector
+checks. The additional fixed Unicode source produced:
+
+| Observation | Result |
+| --- | --- |
+| Original source | 12,384 UTF-8 bytes; 2,402 prompt-inclusive tokens |
+| Saved policy / effective serving ceiling | 500 body tokens, at most 50 overlap tokens / 2,048 input tokens |
+| Persisted passages | 6; five with 500 body / 502 input tokens, one with 150 / 152 |
+| Actual overlaps | 0 for the first passage, then 50 tokens each |
+| Independent recount | All 6 persisted body/input/overlap counts match |
+| Long-document planning, embedding, commit, and full search scan | 2.52 s |
+
+The full plan and original source SHA-256 are retained in the report. The source
+bytes, including combining accents, survived unchanged. These measurements
+qualify this conventional planning path; they do not establish semantic chunk
+quality or late-chunk behavior. Private database/provider cleanup completed,
+GPU usage returned to its initial 495 MiB, and installed services were unchanged.
+
 ## Scope of the result
 
 Qualification applies to the recorded artifacts, runtime, numerical contract,
@@ -141,7 +170,9 @@ gate to verify declared NFC independently, rejects other normalization policies,
 and still requires exact whitespace preservation. The cases and numerical/ranking
 criteria did not change; the failed v1 report is retained with the run evidence.
 
-The database test uses one explicit passage per small document. Token-aware
-planning, all public CLI/MCP/job paths, code/late-chunk capabilities, trusted
-provider discovery, recoverable provisioning, legacy policy, and frontend
-creation remain separate work. Public pairing remains gated.
+The original result above used one explicit passage per small document. The
+current protocol adds [token-aware planning](profile-token-planning.md) and a
+long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
+paths, code/late-chunk capabilities, trusted provider discovery, recoverable
+provisioning, legacy policy, and frontend creation remain separate work.
+Public pairing remains gated.

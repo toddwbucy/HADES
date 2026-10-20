@@ -15,6 +15,7 @@ use hades_core::{
     pipeline::profiled_documents::ProfiledDocuments,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::oneshot,
@@ -89,6 +90,9 @@ struct Gate {
 struct State {
     receipt: ProviderReceipt,
     requests: Vec<Value>,
+    plans: Vec<Value>,
+    plan_patch: Option<Value>,
+    plan_gate: Option<Gate>,
     fault: Option<(usize, Fault)>,
     gate: Option<Gate>,
 }
@@ -121,6 +125,9 @@ impl Peer {
         let state = Arc::new(Mutex::new(State {
             receipt: fixture.receipt.clone(),
             requests: Vec::new(),
+            plans: Vec::new(),
+            plan_patch: None,
+            plan_gate: None,
             fault: None,
             gate: None,
         }));
@@ -135,7 +142,8 @@ impl Peer {
                         assert!(headers.len() < 8192);
                     }
                     let headers = String::from_utf8(headers).unwrap();
-                    assert!(headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
+                    let planning = headers.starts_with("POST /v1/passages HTTP/1.1\r\n");
+                    assert!(planning || headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
                     let length: usize = headers.lines().find_map(|line| {
                         line.to_lowercase().strip_prefix("content-length:")
                             .map(|n| n.trim().parse().unwrap())
@@ -144,16 +152,41 @@ impl Peer {
                     let mut body = vec![0; length];
                     stream.read_exact(&mut body).await.unwrap();
                     let request: Value = serde_json::from_slice(&body).unwrap();
-                    let (receipt, fault, gate) = {
+                    let (receipt, fault, gate, patch) = {
                         let mut state = observed.lock().unwrap();
-                        state.requests.push(request.clone());
-                        let fault = state.fault.filter(|(at, _)| *at == state.requests.len()).map(|(_, f)| f);
-                        (state.receipt.clone(), fault, state.gate.take())
+                        if planning {
+                            state.plans.push(request.clone());
+                            (state.receipt.clone(), None, state.plan_gate.take(), state.plan_patch.take())
+                        } else {
+                            state.requests.push(request.clone());
+                            let fault = state.fault.filter(|(at, _)| *at == state.requests.len()).map(|(_, f)| f);
+                            (state.receipt.clone(), fault, state.gate.take(), None)
+                        }
                     };
                     if let Some(gate) = gate {
                         let _ = gate.started.send(());
                         let _ = gate.release.await;
                     }
+                    let mut body = if planning {
+                        let text = request["input"].as_str().unwrap();
+                        let mut offset = 0;
+                        let spans: Vec<_> = text.split_inclusive('\n').map(|part| {
+                            let start = offset;
+                            offset += part.len();
+                            let count = part.chars().count();
+                            json!({"start_byte":start,"end_byte":offset,
+                                "body_tokens":count,"input_tokens":count+3,"overlap_tokens":0})
+                        }).collect();
+                        let mut plan = json!({"format":"hades-token-passages-v1",
+                            "model":model,"task":"retrieval.passage","receipt":receipt,
+                            "source_sha256":Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            "passage_tokens":request["passage_tokens"],"overlap_tokens":request["overlap_tokens"],
+                            "max_input_tokens":request["max_input_tokens"],"spans":spans});
+                        if let Some(patch) = patch {
+                            for (key,value) in patch.as_object().unwrap() { plan[key] = value.clone(); }
+                        }
+                        plan
+                    } else {
                     let data: Vec<_> = request["input"].as_array().unwrap().iter().enumerate()
                         .map(|(index, text)| {
                             let mut vector = vec![0.0; dimension];
@@ -166,7 +199,8 @@ impl Peer {
                             }
                             json!({"index":index,"embedding":vector})
                         }).collect();
-                    let mut body = json!({"model":model,"receipt":receipt,"data":data});
+                    json!({"model":model,"receipt":receipt,"data":data})
+                    };
                     let status = match fault {
                         Some(Fault::MissingReceipt) => { body.as_object_mut().unwrap().remove("receipt"); 200 }
                         Some(Fault::WrongModel) => { body["model"] = json!("other"); 200 }
@@ -204,6 +238,24 @@ impl Peer {
     /// Capture exact requests for task, model, batching, and receipt assertions.
     pub fn requests(&self) -> Vec<Value> {
         self.state.lock().unwrap().requests.clone()
+    }
+    /// Inspect planning separately so embedding batching assertions stay explicit.
+    pub fn plans(&self) -> Vec<Value> {
+        self.state.lock().unwrap().plans.clone()
+    }
+    /// Corrupt exactly one plan response before any embedding is requested.
+    pub fn patch_next_plan(&self, patch: Value) {
+        self.state.lock().unwrap().plan_patch = Some(patch);
+    }
+    /// Hold planning to test policy changes before the first embedding request.
+    pub fn hold_next_plan(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (started, receive) = oneshot::channel();
+        let (release, wait) = oneshot::channel();
+        self.state.lock().unwrap().plan_gate = Some(Gate {
+            started,
+            release: wait,
+        });
+        (receive, release)
     }
     /// Simulate a provider identity/load change independently of client expectations.
     pub fn set_receipt(&self, receipt: ProviderReceipt) {

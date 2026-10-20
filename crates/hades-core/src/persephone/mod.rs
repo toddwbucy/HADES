@@ -16,3 +16,4 @@
 pub mod bound_embedding;
 pub mod embedding;
 pub mod extraction;
+pub mod passage_plan;

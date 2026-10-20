@@ -28,6 +28,7 @@ async def database_roundtrip(provider, context, output, server_args):
     """Own a private verified HTTP server while the strict runner owns its database."""
     import uvicorn
     from embedding.verified_http import create_verified_app
+    from embedding.qualification import check_stored_plan
 
     class OwnedServer(uvicorn.Server):
         """Leave process signals with the qualification owner, including runner cleanup."""
@@ -76,6 +77,8 @@ async def database_roundtrip(provider, context, output, server_args):
             result = json.loads((output / "database.json").read_text())
             if result.get("passed") is not True:
                 raise RuntimeError("database report did not acknowledge success")
+            result["planning"]["tokenizer_recheck"] = check_stored_plan(
+                provider, context["planning_text"], result["planning"]["plan"])
             return result
         finally:
             if child is not None and child.returncode is None:
@@ -159,7 +162,8 @@ def main(argv=None):
         report["stage"] = "database"
         print("Running verified HTTP -> Rust -> disposable database round trip...", flush=True)
         context = {"provider_id": args.provider, "description": report["provider"]["description"],
-                   "manifest": report["manifest"], "cases": cases, "suite_sha256": digest}
+                   "manifest": report["manifest"], "cases": cases, "suite_sha256": digest,
+                   "planning_text": (REPO / "services/tests/fixtures/jina_passage_planning.txt").read_text(encoding="utf-8")}
         server_args = ["--docker"] if args.docker else ["--arangod", str(args.arangod.absolute())]
         report["database"] = asyncio.run(database_roundtrip(provider, context, output, server_args))
         report.update(passed=True, stage="complete")

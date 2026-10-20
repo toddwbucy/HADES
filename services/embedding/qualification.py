@@ -135,6 +135,47 @@ def boundary_texts(tokenizer, task, ceiling):
     return fitting, oversized
 
 
+def check_stored_plan(provider, text, plan):
+    """Independently recount persisted byte slices under the same actual provider load."""
+    raw = text.encode("utf-8")
+    require(plan["source_sha256"] == hashlib.sha256(raw).hexdigest(), "planning source changed")
+    expected = ProviderReceipt.from_dict(plan["receipt"])
+    with provider._operation(expected):
+        tokenizer = provider._backend._tokenizer
+
+        def count(value, rendered=False):
+            """Use direct tokenizer calls, without the planner's search or accounting helpers."""
+            return len(tokenizer((PROMPTS["retrieval.passage"] if rendered else "") + value,
+                                 add_special_tokens=rendered, padding=False, truncation=False,
+                                 split_special_tokens=False)["input_ids"])
+
+        whole = count(text, True)
+        require(count(text) > plan["passage_tokens"], "long fixture did not exceed the passage budget")
+        require(len(plan["spans"]) > 1, "long fixture was not split")
+        previous = None
+        saw_overlap = False
+        for span in plan["spans"]:
+            start, end = span["start_byte"], span["end_byte"]
+            value = raw[start:end].decode("utf-8")
+            require(value.strip() and count(value) == span["body_tokens"] <= plan["passage_tokens"],
+                    "stored body count differs from tokenizer")
+            require(0 < count(value, True) == span["input_tokens"] <= plan["max_input_tokens"],
+                    "stored rendered count differs from tokenizer")
+            if previous is None:
+                require(start == 0 and span["overlap_tokens"] == 0, "invalid first passage")
+            else:
+                require(previous["start_byte"] < start <= previous["end_byte"] < end,
+                        "stored passages do not cover source in order")
+                overlap = raw[start:previous["end_byte"]].decode("utf-8")
+                require(count(overlap) == span["overlap_tokens"] <= plan["overlap_tokens"],
+                        "stored overlap differs from tokenizer")
+                saw_overlap |= start < previous["end_byte"]
+            previous = span
+        require(previous["end_byte"] == len(raw) and saw_overlap,
+                "long fixture did not preserve complete coverage with overlap")
+    return {"passed": True, "whole_input_tokens": whole, "checked_passages": len(plan["spans"])}
+
+
 def verify_adapters(provider):
     """Compare every registered LoRA checkpoint tensor with the actual loaded tensor."""
     backend = provider._backend
