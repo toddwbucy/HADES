@@ -1,0 +1,220 @@
+{
+  "passed": false,
+  "started_at": "2026-10-20T17:32:01.499110+00:00",
+  "stage": "provider",
+  "suite_sha256": "45d3a94d24272e0c3b6063a53271b485dabeb0b336d4ead83ffffd2bfca8b868",
+  "implementation_commit": "f3e752795d67b918ed49c5161f385f433f89710e",
+  "implementation_dirty": false,
+  "manifest": {
+    "files": [
+      {
+        "bytes": 900,
+        "md5": "e3d8a34e76d8605deb9abb0a9898e4cd",
+        "path": "adapters/adapter_config.json"
+      },
+      {
+        "bytes": 359863776,
+        "md5": "a4845feaf4ccffd8bab31a4945782b6b",
+        "path": "adapters/adapter_model.safetensors"
+      },
+      {
+        "bytes": 605,
+        "md5": "b9a7a9cfe915c587f6fa31268b8529b0",
+        "path": "added_tokens.json"
+      },
+      {
+        "bytes": 1049,
+        "md5": "3d8fdf3471faa9db32648cda73421c08",
+        "path": "chat_template.json"
+      },
+      {
+        "bytes": 2751,
+        "md5": "5565fe9bb4494c1a40833279ee637ecf",
+        "path": "config.json"
+      },
+      {
+        "bytes": 274,
+        "md5": "a188f833fecee2e341b2d2ea6594eb90",
+        "path": "config_sentence_transformers.json"
+      },
+      {
+        "bytes": 750,
+        "md5": "6a130c11b70896ab880c206436d2c11b",
+        "path": "configuration_jina_embeddings_v4.py"
+      },
+      {
+        "bytes": 7743,
+        "md5": "0a1885abef9253fb2dfa1211247cb11e",
+        "path": "custom_lora_module.py"
+      },
+      {
+        "bytes": 7550,
+        "md5": "c636cf5449f8fd53013303b481ef94d9",
+        "path": "custom_st.py"
+      },
+      {
+        "bytes": 126,
+        "md5": "009f52f586d87af762b250bded66eec2",
+        "path": "generation_config.json"
+      },
+      {
+        "bytes": 1671853,
+        "md5": "72dacf1de43bc354dc3c521e44ed0b24",
+        "path": "merges.txt"
+      },
+      {
+        "bytes": 4997750728,
+        "md5": "c3569721409e7144c86174ab30c55375",
+        "path": "model-00001-of-00002.safetensors"
+      },
+      {
+        "bytes": 2512111904,
+        "md5": "d9a9efb1c515e5dd0256f841a2f31960",
+        "path": "model-00002-of-00002.safetensors"
+      },
+      {
+        "bytes": 65592,
+        "md5": "d413ef978cca5984d051a9df854ea6cf",
+        "path": "model.safetensors.index.json"
+      },
+      {
+        "bytes": 22602,
+        "md5": "3b7d8ddcfe5055908b8aa1e06ab61e32",
+        "path": "modeling_jina_embeddings_v4.py"
+      },
+      {
+        "bytes": 168,
+        "md5": "43a03d45966f19ceba418ddb86a9c91f",
+        "path": "modules.json"
+      },
+      {
+        "bytes": 726,
+        "md5": "3b6c4b9af0450c1a90d56bde88999fa6",
+        "path": "preprocessor_config.json"
+      },
+      {
+        "bytes": 133535,
+        "md5": "01ea9ade2100957bb89119d6e2e7c97d",
+        "path": "qwen2_5_vl.py"
+      },
+      {
+        "bytes": 613,
+        "md5": "5708ee87a0925280424b5caa0906752f",
+        "path": "special_tokens_map.json"
+      },
+      {
+        "bytes": 11421896,
+        "md5": "aa2988694a177776324112349a8df055",
+        "path": "tokenizer.json"
+      },
+      {
+        "bytes": 7306,
+        "md5": "74c4cd015f8f9fd11ed1c87ed7a5863a",
+        "path": "tokenizer_config.json"
+      },
+      {
+        "bytes": 2776833,
+        "md5": "613b8e4a622c4a2c90e9e1245fc540d6",
+        "path": "vocab.json"
+      }
+    ],
+    "format": "hades-model-manifest-v1"
+  },
+  "provider": {
+    "protocol": "hades-verified-jina-qualification-v1",
+    "criteria": {
+      "all_expected_documents_rank_first": true,
+      "max_norm_error": 0.001,
+      "minimum_repeat_cosine": 0.99999,
+      "minimum_reload_cosine": 0.9999
+    },
+    "runtime": {
+      "device": "cuda:0",
+      "libraries": {
+        "torch": "2.14.1",
+        "transformers": "4.52.4",
+        "tokenizers": "0.21.4",
+        "peft": "0.15.2",
+        "accelerate": "1.15.0",
+        "flash-attn": "absent",
+        "triton": "3.8.0"
+      },
+      "cuda_runtime": "13.0",
+      "gpu": "NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU"
+    },
+    "initial_load_seconds": 18.601598541019484,
+    "initial_receipt": {
+      "format": "hades-provider-receipt-v1",
+      "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+      "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3",
+      "serving_generation": "52512240324a4eb1aad82ad6f904a2b2"
+    },
+    "description": {
+      "model": {
+        "id": "jinaai/jina-embeddings-v4",
+        "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+        "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+        "tokenizer_files": [
+          "added_tokens.json",
+          "config.json",
+          "merges.txt",
+          "special_tokens_map.json",
+          "tokenizer.json",
+          "tokenizer_config.json",
+          "vocab.json"
+        ]
+      },
+      "space": {
+        "format": "hades-embedding-space-v1",
+        "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+        "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+        "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+        "representation": {
+          "dimension": 2048,
+          "output": "dense-f32",
+          "normalize": "l2",
+          "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+          "distance": "cosine",
+          "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+          "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+        },
+        "passage": {
+          "task": "retrieval.passage",
+          "prompt": "Passage: ",
+          "adapter": "retrieval",
+          "special_tokens": "qwen2-add-special-tokens-v1"
+        },
+        "query": {
+          "task": "retrieval.query",
+          "prompt": "Query: ",
+          "adapter": "retrieval",
+          "special_tokens": "qwen2-add-special-tokens-v1"
+        }
+      },
+      "receipt": {
+        "format": "hades-provider-receipt-v1",
+        "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+        "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3",
+        "serving_generation": "52512240324a4eb1aad82ad6f904a2b2"
+      },
+      "capabilities": {
+        "text": true,
+        "image_embedding": false,
+        "specialized_code": false,
+        "late_chunking": false,
+        "tokenizer_offsets": false,
+        "tasks": [
+          "retrieval.passage",
+          "retrieval.query"
+        ],
+        "max_input_tokens": 2048
+      }
+    },
+    "adapter_tensors_verified": 1518
+  },
+  "error": {
+    "type": "ValueError",
+    "message": "tokenizer changed source Unicode or whitespace"
+  },
+  "finished_at": "2026-10-20T17:32:22.453767+00:00"
+}

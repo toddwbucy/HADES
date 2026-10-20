@@ -88,6 +88,44 @@ The command never discovers a live corpus or starts/restarts installed services.
 Caught interruption writes a failed report and unwinds cleanup; SIGKILL or
 machine failure cannot guarantee cleanup.
 
+## ThinkPad result: 2026-10-20
+
+The [complete report](../evidence/jina-qualification-thinkpad-2026-10-20.json)
+passed on clean implementation commit `d9474e5200027b83b2dc58fe89688c9308bb0bb3`.
+The [failed tokenizer preflight](../evidence/jina-qualification-thinkpad-2026-10-20-preflight.json)
+is retained for the protocol correction described below.
+
+The run used the NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU, CUDA runtime
+13.0, PyTorch 2.14.1, Transformers 4.52.4, tokenizers 0.21.4, PEFT 0.15.2,
+and Accelerate 1.15.0. No FlashAttention package was installed. The private native
+ArangoDB reported 3.12.12-1. Jina revision
+`853c867b65b749f3c3c72a06868140d842e04f06` supplied 22 assets totaling
+7,885,849,280 bytes, with aggregate manifest MD5
+`446160668af00248832ed8cf5d8d4432`.
+
+| Observation | Result |
+|---|---|
+| Loaded adapter tensors checked against registered bytes | 1,518 |
+| Provider retrieval / stored-vector retrieval | 6/6 expected first in each |
+| Maximum vector norm error | 7.47e-8 |
+| Repeated / reloaded query cosine | 1.0 / 1.0 |
+| Both task boundaries | 2,048 actual forward tokens accepted; 2,049 refused with zero forwards |
+| Private load / reload | 18.06 s / 16.44 s |
+| Eight passages / six queries, direct provider | 3.11 s / 0.89 s |
+| Eight document commits / individual stored-vector query | 4.40 s / 0.51–0.53 s |
+| Peak CUDA allocation / reservation during provider gates | 8.71 GiB / 9.16 GiB |
+
+The final space ID is
+`3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3`.
+The database round trip used the new post-reload receipt; the original receipt
+was refused. Serving snapshots were removed and GPU memory returned to its
+pre-run level. Installed HADES services were not restarted.
+
+This runtime emitted a video-processor configuration deprecation warning and a
+Triton C-header macro redefinition warning; neither altered registered assets.
+It emitted no tokenizer regex warning. These results qualify this recorded
+runtime, not the separate Transformers 4.57.6 environment or legacy vector space.
+
 ## Scope of the result
 
 Qualification applies to the recorded artifacts, runtime, numerical contract,
