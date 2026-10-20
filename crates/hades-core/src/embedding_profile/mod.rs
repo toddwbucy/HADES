@@ -7,6 +7,7 @@
 
 mod contract;
 mod manifest;
+pub mod store;
 #[cfg(test)]
 mod tests;
 
