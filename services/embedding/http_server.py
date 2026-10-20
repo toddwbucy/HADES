@@ -185,10 +185,11 @@ class AppState:
     """State held across requests: the embedder, request bookkeeping,
     and the idle-monitor task."""
 
-    def __init__(self, config: EmbeddingConfig) -> None:
+    def __init__(self, config: EmbeddingConfig, *, embedder=None) -> None:
+        """Own either the default backend or an explicitly supplied internal provider."""
         self.config = config
         # Eager construction; the underlying model loads lazily on first embed.
-        self.embedder = JinaV4Embedder(
+        self.embedder = embedder if embedder is not None else JinaV4Embedder(
             model_name=config.model_name,
             device=config.device,
             use_fp16=config.use_fp16,

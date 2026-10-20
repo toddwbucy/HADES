@@ -18,6 +18,7 @@ MANIFEST_FORMAT = "hades-model-manifest-v1"
 RECEIPT_FORMAT = "hades-provider-receipt-v1"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_MANIFEST_FILES = 4096
+MAX_SPACE_BYTES = 64 * 1024
 
 
 def _require(condition: bool, message: str) -> None:
@@ -53,6 +54,44 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
         _require(key not in result, "duplicate JSON key")
         result[key] = value
     return result
+
+
+def embedding_space_id(space: dict) -> str:
+    """Validate and hash the Rust-compatible v1 embedding behavior document."""
+    _exact_fields(space, {"format", "artifact_md5", "tokenizer_manifest_md5",
+                          "tokenizer_contract", "representation", "passage", "query"})
+    _require(space["format"] == "hades-embedding-space-v1", "unknown embedding space format")
+    for field in ("artifact_md5", "tokenizer_manifest_md5"):
+        _hex(space[field], 32)
+
+    def label(value):
+        """Match the portable contract's bounded control-free behavior labels."""
+        _require(isinstance(value, str) and bool(value.strip())
+                 and len(value.encode("utf-8")) <= 4096
+                 and not any(ord(c) <= 31 or 127 <= ord(c) <= 159 for c in value),
+                 "invalid embedding behavior label")
+
+    label(space["tokenizer_contract"])
+    rep = space["representation"]
+    _exact_fields(rep, {"dimension", "output", "normalize", "pooling", "distance",
+                       "inference_precision", "implementation"})
+    _require(type(rep["dimension"]) is int and 1 <= rep["dimension"] <= 8192,
+             "invalid embedding dimension")
+    _require(rep["output"] == "dense-f32" and rep["normalize"] in ("none", "l2")
+             and rep["distance"] in ("cosine", "dot", "euclidean"), "unsupported representation")
+    for field in ("pooling", "inference_precision", "implementation"):
+        label(rep[field])
+    for role in ("passage", "query"):
+        task = space[role]
+        _exact_fields(task, {"task", "prompt", "adapter", "special_tokens"})
+        for field in ("task", "adapter", "special_tokens"):
+            label(task[field])
+        _require(isinstance(task["prompt"], str) and len(task["prompt"].encode("utf-8")) <= 16384,
+                 "invalid embedding prompt")
+    encoded = json.dumps(space, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    _require(len(encoded) <= MAX_SPACE_BYTES, "embedding space exceeds 64 KiB")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)

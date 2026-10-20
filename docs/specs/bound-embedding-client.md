@@ -5,7 +5,9 @@ This slice of [#225](https://github.com/toddwbucy/HADES/issues/225) connects the
 HTTP client. `persephone::bound_embedding::BoundEmbeddingClient` is an explicit,
 opt-in library boundary. No CLI, MCP, background job, or frontend operation uses
 it yet. The installed Jina HTTP service does not issue full provider receipts;
-its responses will be rejected by this client.
+its responses will be rejected by this client. The internal
+[verified Jina provider](verified-jina-provider.md) now implements the producing
+side for conventional retrieval, without installation activation.
 
 ## Construct a fixed binding
 
@@ -56,11 +58,12 @@ refresh identity, retry against another provider, or accept a newer generation.
 An HTTP 409 provider refusal is returned to the caller. A new load requires a
 fresh trusted observation and explicit client construction.
 
-The future provider implementation must compare `expected_receipt` against its
+The provider implementation must compare `expected_receipt` against its
 actual loaded artifact/behavior/generation before inference, hold that identity
 through the complete operation, and recheck before returning its own `receipt`.
-Echoing the request is insufficient. This PR implements the consuming client;
-provider admission enforcement remains pending.
+Echoing the request is insufficient. The [verified provider](verified-jina-provider.md)
+implements this boundary for its explicit conventional text contract. Production
+activation and additional capabilities remain pending.
 
 ## Request policy and persistence boundary
 
@@ -75,10 +78,11 @@ Results carry the captured `BoundEmbeddingRequest` alongside vectors. This is
 not permission to write to a database. The orchestrator must retain database
 identity and recheck profile revision, corpus generation, and job ownership
 before committing. This client does not tokenize, enforce token budgets, choose
-chunk boundaries, or manage caches. Those policies, Jina behavior-space derivation,
-provider receipt production, profile persistence, and enforcement at every public
-entry point remain prerequisites for enabling database pairing. Existing clients
-retain their previous wire behavior.
+chunk boundaries, or manage caches. The verified provider now implements a
+conventional Jina behavior space and receipt production. Complete workload
+policies, profile persistence, and enforcement at every public entry point remain
+prerequisites for enabling database pairing. Existing clients retain their
+previous wire behavior.
 
 ## Validation
 

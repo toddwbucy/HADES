@@ -12,7 +12,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from embedding.identity import (
     ArtifactFile, ArtifactManifest, MAX_MANIFEST_BYTES, MAX_MANIFEST_FILES,
-    ProviderReceipt,
+    ProviderReceipt, embedding_space_id,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,10 +130,29 @@ class EmbeddingIdentityTests(unittest.TestCase):
         self.assertEqual(canonical.hex(), fixture["space_canonical_utf8_hex"])
         receipt = ProviderReceipt.from_dict(fixture["receipt"])
         self.assertEqual(hashlib.sha256(canonical).hexdigest(), receipt.space_id)
+        self.assertEqual(embedding_space_id(space), receipt.space_id)
         manifest = ArtifactManifest.from_json(json.dumps(fixture["manifest"]).encode())
         manifest.check_digest(receipt.artifact_md5)
         self.assertEqual(receipt.to_dict(), fixture["receipt"])
         receipt.check_matches(ProviderReceipt.from_dict(receipt.to_dict()))
+
+    def test_behavior_space_rejects_unknown_fields_and_malformed_values(self):
+        """The provider's space builder uses the same strict schema as the Rust client."""
+        original = json.loads(FIXTURE.read_text())["profile"]["workloads"]["documents"]["space"]
+        for path, value in [
+            (("format",), "future"), (("extra",), True), (("artifact_md5",), "bad"),
+            (("representation", "dimension"), True), (("representation", "dimension"), 0),
+            (("representation", "dimension"), 8193), (("representation", "extra"), True),
+            (("representation", "normalize"), "automatic"), (("query", "task"), "bad\nlabel"),
+            (("query", "prompt"), "x" * 16385), (("query", "prompt"), "\ud800"),
+        ]:
+            changed = copy.deepcopy(original)
+            parent = changed
+            for key in path[:-1]:
+                parent = parent[key]
+            parent[path[-1]] = value
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                embedding_space_id(changed)
 
     def test_receipt_rejects_reload_and_identity_changes(self):
         """A provider reload invalidates a request even when weights and space match."""
