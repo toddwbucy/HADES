@@ -447,8 +447,12 @@ are still required.
 The [persistence slice](persisted-embedding-profiles.md) adds internal new-database
 profile/manifest storage, immutable revisions, an atomic readiness pointer, and
 a transaction-scoped prepared-write guard. It has no production callers.
-Provisioning ownership/recovery, schema/provider readiness checks, portable job
-pins, synthetic end-to-end ingestion/query, and public enforcement remain pending.
+The [document integration](profile-bound-documents.md) connects those primitives
+for preplanned conventional text, atomic publication, and guarded exact retrieval.
+Disposable databases and private synthetic providers cover the end-to-end flow,
+including different dimensions and provider reloads. Token-aware chunk planning,
+real-Jina qualification, provisioning ownership/recovery, schema/provider readiness
+checks, portable job pins, and public enforcement remain pending.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and

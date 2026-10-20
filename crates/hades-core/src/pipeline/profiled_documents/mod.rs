@@ -1,0 +1,488 @@
+//! Internal document admission -> verified embedding -> atomic storage -> retrieval.
+//!
+//! No public command uses this path yet. A trusted caller supplies extracted text
+//! and preplanned UTF-8 byte spans; tokenizer-exact chunk planning, provider
+//! discovery, provisioning, and all-entry-point enforcement remain prerequisites
+//! for activation. Only conventional document text and cosine ranking are supported.
+
+mod storage;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+use crate::{
+    db::{ArangoError, ArangoPool},
+    embedding_profile::{
+        BoundEmbeddingRequest, ChunkPolicy, Distance, EmbeddingRole, Normalization,
+        ProviderReceipt, WorkloadKind,
+        store::{ProfileSnapshot, ProfileStore},
+    },
+    persephone::bound_embedding::{BoundEmbeddingClient, ProviderConnection},
+    pipeline::PipelineError,
+};
+
+const FORMAT: &str = "hades-bound-document-v1";
+const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PASSAGES: usize = 128;
+const MAX_PASSAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PREPARED_BYTES: usize = 16 * 1024 * 1024;
+const COLLECTIONS: [&str; 3] = ["documents", "chunks", "embeddings"];
+
+/// A passage in the supplied extraction's UTF-8 bytes, with an exclusive end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassageSpan {
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+/// Already extracted and planned text. No filesystem, URL, or extractor is invoked.
+pub struct DocumentInput {
+    pub source_id: String,
+    pub text: String,
+    pub passages: Vec<PassageSpan>,
+}
+
+/// Private prepared rows cannot be replaced with arbitrary vectors by the caller.
+pub struct PreparedDocument {
+    snapshot: ProfileSnapshot,
+    binding: BoundEmbeddingRequest,
+    previous_revision: Option<String>,
+    document: Value,
+    chunks: Vec<Value>,
+    embeddings: Vec<Value>,
+}
+
+impl PreparedDocument {
+    /// Stable source key; passage keys additionally include the corpus generation.
+    pub fn document_key(&self) -> &str {
+        self.document["_key"]
+            .as_str()
+            .expect("constructed document key")
+    }
+}
+
+/// Published document identity and the verified provider observation used to embed it.
+#[derive(Debug, Serialize)]
+pub struct DocumentReceipt {
+    pub document_key: String,
+    pub chunks: usize,
+    pub binding: BoundEmbeddingRequest,
+}
+
+/// Complete exact-search results. A scan limit is an error, never a partial ranking.
+#[derive(Debug, Serialize)]
+pub struct SearchResult {
+    pub items: Vec<Value>,
+    pub scanned: u64,
+    pub binding: BoundEmbeddingRequest,
+}
+
+/// One fixed database/profile/provider binding, with separate passage and query roles.
+pub struct ProfiledDocuments {
+    pool: ArangoPool,
+    store: ProfileStore,
+    snapshot: ProfileSnapshot,
+    passage: BoundEmbeddingClient,
+    query: BoundEmbeddingClient,
+    normalization: Normalization,
+}
+
+impl ProfiledDocuments {
+    /// Resolve the stored profile before constructing any embedding client.
+    /// Provider connection and observation must come from trusted registration.
+    pub async fn connect(
+        pool: ArangoPool,
+        provider: ProviderConnection,
+        observed: &ProviderReceipt,
+    ) -> Result<Self, PipelineError> {
+        let store = ProfileStore::new(pool.clone())?;
+        let snapshot = store.load().await?;
+        let profile = snapshot.profile();
+        let workload = profile
+            .workloads
+            .documents
+            .as_ref()
+            .ok_or_else(|| invalid("documents are disabled_by_profile"))?;
+        ensure(
+            matches!(workload.chunking, ChunkPolicy::Conventional { .. }),
+            "this document path requires conventional chunking",
+        )?;
+        ensure(
+            workload.space.representation.distance == Distance::Cosine,
+            "this document path supports cosine distance only",
+        )?;
+        let normalization = workload.space.representation.normalize;
+        let passage = BoundEmbeddingClient::connect(
+            profile,
+            snapshot.manifest(),
+            WorkloadKind::Documents,
+            EmbeddingRole::Passage,
+            provider.clone(),
+            observed,
+        )
+        .await?;
+        let query = BoundEmbeddingClient::connect(
+            profile,
+            snapshot.manifest(),
+            WorkloadKind::Documents,
+            EmbeddingRole::Query,
+            provider,
+            observed,
+        )
+        .await?;
+        // Schema is a provisioning responsibility; never create collections as a query side effect.
+        for collection in COLLECTIONS {
+            let properties = pool
+                .writer()
+                .clone()
+                .with_response_limit(64 * 1024)?
+                .get(&format!("collection/{collection}/properties"))
+                .await?;
+            ensure(
+                properties["type"].as_u64() == Some(2),
+                "document storage requires three document collections",
+            )?;
+        }
+        Ok(Self {
+            pool,
+            store,
+            snapshot,
+            passage,
+            query,
+            normalization,
+        })
+    }
+
+    /// Admit and embed a complete preplanned extraction without database writes.
+    /// Replacement is explicit and pins the previous metadata revision before inference.
+    /// Provider overflow is returned unchanged; no truncation or fallback is attempted.
+    pub async fn prepare(
+        &self,
+        input: DocumentInput,
+        replace: bool,
+    ) -> Result<PreparedDocument, PipelineError> {
+        let texts = validate_input(&input)?;
+        self.current().await?;
+        let key = digest_key("bd", &json!([input.source_id]));
+        let previous_revision =
+            storage::previous_revision(self.pool.writer(), &key, replace, self.passage.binding())
+                .await?;
+        let result = self.passage.embed(&texts, Some(16)).await?;
+        ensure(
+            result.binding == *self.passage.binding(),
+            "prepared provider binding changed",
+        )?;
+        ensure(
+            result.output.embeddings.len() == input.passages.len(),
+            "provider returned an incomplete document",
+        )?;
+        let source_hash = hash(input.text.as_bytes());
+        let binding = result.binding;
+        let document = json!({
+            "_key":key, "format":FORMAT, "source_id":input.source_id,
+            "source_sha256":source_hash, "full_text":input.text,
+            "chunk_count":input.passages.len(), "embedding_binding":binding,
+            "passage_plan":{"format":"hades-supplied-byte-spans-v1","spans":input.passages}
+        });
+        let mut chunks = Vec::new();
+        let mut embeddings = Vec::new();
+        for (index, ((span, text), vector)) in input
+            .passages
+            .iter()
+            .zip(texts)
+            .zip(result.output.embeddings)
+            .enumerate()
+        {
+            validate_vector(&vector, binding.dimension, self.normalization)?;
+            let chunk_key = digest_key("bc", &json!([binding.generation, key, index]));
+            let common = json!({
+                "_key":chunk_key, "format":FORMAT, "parent_key":key, "chunk_key":chunk_key,
+                "chunk_index":index, "source_sha256":source_hash, "embedding_binding":binding
+            });
+            let mut chunk = common.clone();
+            chunk["text"] = json!(text);
+            chunk["span"] = json!(span);
+            chunks.push(chunk);
+            let mut embedding = common;
+            embedding["model"] = json!(binding.model);
+            embedding["dimension"] = json!(binding.dimension);
+            embedding["embedding"] = json!(vector);
+            embeddings.push(embedding);
+        }
+        ensure(
+            serde_json::to_vec(&json!([document, chunks, embeddings]))
+                .map_err(ArangoError::from)?
+                .len()
+                <= MAX_PREPARED_BYTES,
+            "prepared document exceeds 16 MiB; split the source explicitly",
+        )?;
+        Ok(PreparedDocument {
+            snapshot: self.snapshot.clone(),
+            binding,
+            previous_revision,
+            document,
+            chunks,
+            embeddings,
+        })
+    }
+
+    /// Commit a complete prepared result only under its original database admission.
+    /// Content conflicts, profile drift, write failures, and cancellation abort atomically.
+    pub async fn commit(
+        &self,
+        prepared: PreparedDocument,
+    ) -> Result<DocumentReceipt, PipelineError> {
+        ensure(
+            prepared.snapshot == self.snapshot && prepared.binding == *self.passage.binding(),
+            "prepared document belongs to a different database or provider binding",
+        )?;
+        let receipt = DocumentReceipt {
+            document_key: prepared.document_key().into(),
+            chunks: prepared.chunks.len(),
+            binding: prepared.binding.clone(),
+        };
+        self.store
+            .guarded_write(
+                &self.snapshot,
+                COLLECTIONS.iter().map(|c| (*c).into()).collect(),
+                move |client| storage::write(client, prepared),
+            )
+            .await?;
+        Ok(receipt)
+    }
+
+    /// Embed one query and rank all admitted document vectors under a coherent DB lock.
+    /// Old serving loads remain compatible only when artifact, space, profile, and
+    /// generation match. Legacy or foreign rows fail before their vectors are scored.
+    pub async fn search(
+        &self,
+        text: &str,
+        top_k: usize,
+        max_rows: u64,
+    ) -> Result<SearchResult, PipelineError> {
+        ensure(
+            !text.trim().is_empty() && text.len() <= 64 * 1024,
+            "query must contain 1..=65536 UTF-8 bytes",
+        )?;
+        ensure(
+            (1..=1000).contains(&top_k) && (1..=100_000).contains(&max_rows),
+            "search limits must be top_k 1..=1000 and max_rows 1..=100000",
+        )?;
+        self.current().await?;
+        let result = self.query.embed(&[text.into()], Some(1)).await?;
+        let vector = result
+            .output
+            .embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| invalid("query provider returned no vector"))?;
+        validate_vector(&vector, result.binding.dimension, self.normalization)?;
+        let passage = self.passage.binding().clone();
+        let normalization = self.normalization;
+        let (items, scanned) = self
+            .store
+            .guarded_write(
+                &self.snapshot,
+                COLLECTIONS.iter().map(|c| (*c).into()).collect(),
+                move |client| {
+                    storage::search(client, passage, vector, normalization, top_k, max_rows)
+                },
+            )
+            .await?;
+        Ok(SearchResult {
+            items,
+            scanned,
+            binding: result.binding,
+        })
+    }
+
+    /// Detect stale policy before external work; commit/search recheck under locks.
+    async fn current(&self) -> Result<(), PipelineError> {
+        ensure(
+            self.store.load().await? == self.snapshot,
+            "stale database profile; resolve a fresh document binding",
+        )?;
+        Ok(())
+    }
+}
+
+/// Validate complete, ordered source coverage without reinterpreting byte offsets.
+fn validate_input(input: &DocumentInput) -> Result<Vec<String>, ArangoError> {
+    ensure(
+        !input.source_id.trim().is_empty()
+            && input.source_id.len() <= 4096
+            && !input.source_id.chars().any(char::is_control),
+        "invalid source identifier",
+    )?;
+    ensure(
+        !input.text.trim().is_empty() && input.text.len() <= MAX_TEXT_BYTES,
+        "document text must be nonempty and at most 2 MiB",
+    )?;
+    ensure(
+        !input.passages.is_empty() && input.passages.len() <= MAX_PASSAGES,
+        "document requires 1..=128 preplanned passages",
+    )?;
+    let mut previous = None::<&PassageSpan>;
+    let mut texts = Vec::new();
+    let mut passage_bytes = 0;
+    for span in &input.passages {
+        ensure(
+            span.start_byte < span.end_byte
+                && span.end_byte <= input.text.len()
+                && input.text.is_char_boundary(span.start_byte)
+                && input.text.is_char_boundary(span.end_byte),
+            "invalid UTF-8 passage boundary",
+        )?;
+        ensure(
+            match previous {
+                None => span.start_byte == 0,
+                Some(p) => {
+                    span.start_byte > p.start_byte
+                        && span.start_byte <= p.end_byte
+                        && span.end_byte > p.end_byte
+                }
+            },
+            "passages must cover source bytes in order without gaps or duplicate spans",
+        )?;
+        let text = &input.text[span.start_byte..span.end_byte];
+        ensure(!text.trim().is_empty(), "passage contains no text")?;
+        passage_bytes += text.len();
+        ensure(
+            passage_bytes <= MAX_PASSAGE_BYTES,
+            "overlapping passages exceed 4 MiB",
+        )?;
+        texts.push(text.into());
+        previous = Some(span);
+    }
+    ensure(
+        previous.is_some_and(|p| p.end_byte == input.text.len()),
+        "passages do not cover the complete source",
+    )?;
+    Ok(texts)
+}
+
+/// Reject zero/nonfinite vectors and check the declared normalization before storage/scoring.
+fn validate_vector(
+    vector: &[f32],
+    dimension: u32,
+    normalization: Normalization,
+) -> Result<(), ArangoError> {
+    ensure(
+        vector.len() == dimension as usize && vector.iter().all(|v| v.is_finite()),
+        "invalid vector dimension or finite values",
+    )?;
+    let norm: f64 = vector.iter().map(|v| f64::from(*v).powi(2)).sum();
+    ensure(
+        norm.is_finite() && norm > 0.0,
+        "vector has zero or invalid norm",
+    )?;
+    ensure(
+        normalization != Normalization::L2 || (norm.sqrt() - 1.0).abs() <= 0.001,
+        "vector violates the profile's L2 normalization",
+    )?;
+    Ok(())
+}
+
+/// Encode stable keys from exact JSON tuples; arbitrary source IDs never become paths/AQL.
+fn digest_key(prefix: &str, value: &Value) -> String {
+    format!("{prefix}_{}", hash(&crate::canonical_json::to_vec(value)))
+}
+
+/// Digest exact source bytes without Unicode or whitespace normalization.
+fn hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Report rejected document policy without including source content.
+fn invalid(message: &str) -> ArangoError {
+    ArangoError::Request(format!("profile-bound documents: {message}"))
+}
+
+/// Refuse failed invariants without changing policy or falling back to a legacy writer.
+fn ensure(condition: bool, message: &str) -> Result<(), ArangoError> {
+    if condition {
+        Ok(())
+    } else {
+        Err(invalid(message))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_source_size_and_passage_count_before_inference() {
+        let mut input = DocumentInput {
+            source_id: "source".into(),
+            text: "x".repeat(MAX_TEXT_BYTES + 1),
+            passages: vec![PassageSpan {
+                start_byte: 0,
+                end_byte: MAX_TEXT_BYTES + 1,
+            }],
+        };
+        assert!(
+            validate_input(&input)
+                .unwrap_err()
+                .to_string()
+                .contains("2 MiB")
+        );
+        input.text = "x".repeat(MAX_PASSAGES + 1);
+        input.passages = (0..=MAX_PASSAGES)
+            .map(|start_byte| PassageSpan {
+                start_byte,
+                end_byte: start_byte + 1,
+            })
+            .collect();
+        assert!(
+            validate_input(&input)
+                .unwrap_err()
+                .to_string()
+                .contains("128")
+        );
+    }
+
+    #[test]
+    fn overlapping_spans_cannot_amplify_memory_beyond_admission_budget() {
+        let input = DocumentInput {
+            source_id: "source".into(),
+            text: "x".repeat(MAX_TEXT_BYTES),
+            passages: (0..3)
+                .map(|i| PassageSpan {
+                    start_byte: i,
+                    end_byte: MAX_TEXT_BYTES - 2 + i,
+                })
+                .collect(),
+        };
+        assert!(
+            validate_input(&input)
+                .unwrap_err()
+                .to_string()
+                .contains("4 MiB")
+        );
+    }
+
+    #[test]
+    fn valid_overlap_preserves_exact_unicode_source_bytes() {
+        let input = DocumentInput {
+            source_id: "source".into(),
+            text: "éabc東京".into(),
+            passages: vec![
+                PassageSpan {
+                    start_byte: 0,
+                    end_byte: 5,
+                },
+                PassageSpan {
+                    start_byte: 2,
+                    end_byte: 11,
+                },
+            ],
+        };
+        assert_eq!(validate_input(&input).unwrap(), ["éabc", "abc東京"]);
+    }
+}

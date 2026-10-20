@@ -1,0 +1,446 @@
+//! Bounded storage operations. Every mutation and search uses the profile guard's
+//! transaction client; external embedding never runs while these locks are held.
+use super::*;
+use crate::db::{ArangoClient, query};
+use crate::retrieval::TopK;
+
+const DOCUMENT_FIELDS: &[&str] = &[
+    "_key",
+    "_id",
+    "_rev",
+    "format",
+    "source_id",
+    "source_sha256",
+    "full_text",
+    "chunk_count",
+    "embedding_binding",
+    "passage_plan",
+];
+const CHUNK_FIELDS: &[&str] = &[
+    "_key",
+    "_id",
+    "_rev",
+    "format",
+    "parent_key",
+    "chunk_key",
+    "chunk_index",
+    "source_sha256",
+    "embedding_binding",
+    "text",
+    "span",
+];
+const VECTOR_FIELDS: &[&str] = &[
+    "_key",
+    "_id",
+    "_rev",
+    "format",
+    "parent_key",
+    "chunk_key",
+    "chunk_index",
+    "source_sha256",
+    "embedding_binding",
+    "model",
+    "dimension",
+    "embedding",
+];
+
+/// Check an existing source before spending inference, without adopting legacy data.
+pub(super) async fn previous_revision(
+    client: &ArangoClient,
+    key: &str,
+    replace: bool,
+    expected: &BoundEmbeddingRequest,
+) -> Result<Option<String>, ArangoError> {
+    let existing = document(client, key).await?;
+    if let Some(row) = existing {
+        ensure(
+            replace,
+            "source already exists; replacement must be explicit",
+        )?;
+        validate_document(&row, key, expected)?;
+        return Ok(Some(revision(&row)?.into()));
+    }
+    Ok(None)
+}
+
+/// A missing document is distinct from a missing collection or database.
+async fn document(client: &ArangoClient, key: &str) -> Result<Option<Value>, ArangoError> {
+    match client
+        .clone()
+        .with_response_limit(MAX_PREPARED_BYTES)?
+        .get(&format!("document/documents/{key}"))
+        .await
+    {
+        Ok(row) => Ok(Some(row)),
+        Err(ArangoError::Api {
+            status: 404,
+            error_num: 1202,
+            ..
+        }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Reject content changes after preparation, and remove only a complete managed source.
+pub(super) async fn write(
+    client: ArangoClient,
+    prepared: PreparedDocument,
+) -> Result<(), ArangoError> {
+    let key = prepared.document_key();
+    let existing = document(&client, key).await?;
+    let current_revision = existing.as_ref().map(revision).transpose()?;
+    ensure(
+        current_revision == prepared.previous_revision.as_deref(),
+        "source changed after preparation; prepare it again",
+    )?;
+    if let Some(row) = &existing {
+        validate_document(row, key, &prepared.binding)?;
+    }
+    // These bounded reads also detect stray/foreign children of a supposedly new source.
+    let chunks = children(&client, "chunks", key).await?;
+    let embeddings = children(&client, "embeddings", key).await?;
+    if let Some(row) = &existing {
+        let count = row["chunk_count"].as_u64().unwrap() as usize;
+        ensure(
+            chunks.len() == count && embeddings.len() == count,
+            "existing source has incomplete or foreign children",
+        )?;
+        let normalization = prepared
+            .snapshot
+            .profile()
+            .workloads
+            .documents
+            .as_ref()
+            .expect("admitted documents")
+            .space
+            .representation
+            .normalize;
+        for embedding in &embeddings {
+            allowed_fields(embedding, VECTOR_FIELDS)?;
+            let chunk = chunks
+                .iter()
+                .find(|c| c["_key"] == embedding["chunk_key"])
+                .ok_or_else(|| invalid("existing vector has no matching chunk"))?;
+            allowed_fields(chunk, CHUNK_FIELDS)?;
+            validate_triplet(embedding, chunk, row, &prepared.binding, normalization)?;
+            let index = embedding["chunk_index"].as_u64().unwrap() as usize;
+            let span = &row["passage_plan"]["spans"][index];
+            ensure(
+                chunk["span"] == *span,
+                "existing chunk span disagrees with source plan",
+            )?;
+            let start = span["start_byte"].as_u64().unwrap() as usize;
+            let end = span["end_byte"].as_u64().unwrap() as usize;
+            ensure(
+                chunk["text"].as_str() == Some(&row["full_text"].as_str().unwrap()[start..end]),
+                "existing chunk text disagrees with source plan",
+            )?;
+        }
+    } else {
+        ensure(
+            chunks.is_empty() && embeddings.is_empty(),
+            "new source has orphan children",
+        )?;
+    }
+    for collection in ["chunks", "embeddings"] {
+        let response = aql(
+            &client,
+            "FOR r IN @@collection FILTER r.parent_key == @parent REMOVE r IN @@collection",
+            json!({"@collection":collection,"parent":key}),
+            1,
+            MAX_PREPARED_BYTES,
+        )
+        .await?;
+        query::completed_mutation(&response)?;
+    }
+    // All prior children were validated above. Any collision with another source
+    // remains an error; overwrite is enabled only for this metadata revision.
+    let path = if existing.is_some() {
+        "document/documents?overwriteMode=replace"
+    } else {
+        "document/documents"
+    };
+    let response = client
+        .clone()
+        .with_response_limit(64 * 1024)?
+        .post(path, &prepared.document)
+        .await?;
+    acknowledged(&response, &prepared.document)?;
+    for (collection, rows) in [
+        ("chunks", prepared.chunks),
+        ("embeddings", prepared.embeddings),
+    ] {
+        for batch in rows.chunks(32) {
+            let response = client
+                .clone()
+                .with_response_limit(64 * 1024)?
+                .post(&format!("document/{collection}"), &json!(batch))
+                .await?;
+            let results = response
+                .as_array()
+                .filter(|r| r.len() == batch.len())
+                .ok_or_else(|| invalid("incomplete document insertion acknowledgment"))?;
+            for (ack, row) in results.iter().zip(batch) {
+                acknowledged(ack, row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Bound children before deletion; a source cannot own more than the admission limit.
+async fn children(
+    client: &ArangoClient,
+    collection: &str,
+    key: &str,
+) -> Result<Vec<Value>, ArangoError> {
+    let response = aql(
+        client,
+        "FOR r IN @@collection FILTER r.parent_key == @parent LIMIT @limit RETURN r",
+        json!({"@collection":collection,"parent":key,"limit":MAX_PASSAGES + 1}),
+        MAX_PASSAGES + 2,
+        MAX_PREPARED_BYTES,
+    )
+    .await?;
+    let rows = query::completed_rows(&response)?;
+    ensure(rows.len() <= MAX_PASSAGES, "source has too many children")?;
+    Ok(rows.clone())
+}
+
+/// Enforce a complete scan with bounded pages and O(K) retained search results.
+pub(super) async fn search(
+    client: ArangoClient,
+    expected: BoundEmbeddingRequest,
+    vector: Vec<f32>,
+    normalization: Normalization,
+    top_k: usize,
+    max_rows: u64,
+) -> Result<(Vec<Value>, u64), ArangoError> {
+    let mut top = TopK::new(vector, expected.model.clone(), "parent_key", top_k)?;
+    let mut after = String::new();
+    let mut scanned = 0;
+    loop {
+        // Do not filter on provenance: an incompatible row must refuse the whole
+        // result, rather than silently dropping unknown/legacy vectors.
+        let response = aql(
+            &client,
+            r#"
+            FOR e IN embeddings FILTER e._key > @after SORT e._key LIMIT 8
+                LET c = DOCUMENT("chunks", e.chunk_key)
+                LET d = DOCUMENT("documents", e.parent_key)
+                RETURN {
+                    vector: KEEP(e, "_key", "format", "parent_key", "chunk_key",
+                        "chunk_index", "source_sha256", "embedding_binding",
+                        "model", "dimension", "embedding"),
+                    chunk: KEEP(c, "_key", "format", "parent_key", "chunk_key",
+                        "chunk_index", "source_sha256", "embedding_binding", "span"),
+                    document: KEEP(d, "_key", "format", "source_sha256",
+                        "embedding_binding", "chunk_count")
+                }
+        "#,
+            json!({"after":after}),
+            9,
+            4 * 1024 * 1024,
+        )
+        .await?;
+        let rows = query::completed_rows(&response)?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            ensure(
+                scanned < max_rows,
+                "search row budget exceeded; no partial ranking returned",
+            )?;
+            validate_triplet(
+                &row["vector"],
+                &row["chunk"],
+                &row["document"],
+                &expected,
+                normalization,
+            )?;
+            let key = row["vector"]["_key"].as_str().unwrap();
+            ensure(
+                key > after.as_str(),
+                "search page keys are not strictly increasing",
+            )?;
+            after = key.into();
+            top.insert(row["vector"].clone())?;
+            scanned += 1;
+        }
+    }
+    Ok((top.into_items(), scanned))
+}
+
+/// Compare persisted identity before touching vector values. Serving load IDs
+/// describe observations, not embedding spaces; a verified identical reload is compatible.
+fn binding(row: &Value, expected: &BoundEmbeddingRequest) -> Result<(), ArangoError> {
+    ensure(row["format"] == FORMAT, "legacy or unknown document format")?;
+    let stored: BoundEmbeddingRequest = serde_json::from_value(row["embedding_binding"].clone())
+        .map_err(|_| invalid("invalid stored embedding binding"))?;
+    stored
+        .expected
+        .validate()
+        .map_err(|_| invalid("invalid stored provider receipt"))?;
+    let mut compatible = expected.clone();
+    compatible.expected.serving_generation = stored.expected.serving_generation.clone();
+    ensure(
+        stored == compatible,
+        "stored vector belongs to an incompatible embedding binding",
+    )
+}
+
+/// Validate all three provenance links, then vector representation, before ranking/deletion.
+fn validate_triplet(
+    vector: &Value,
+    chunk: &Value,
+    document: &Value,
+    expected: &BoundEmbeddingRequest,
+    normalization: Normalization,
+) -> Result<(), ArangoError> {
+    binding(vector, expected)?;
+    ensure(
+        chunk["format"] == FORMAT
+            && document["format"] == FORMAT
+            && chunk["embedding_binding"] == vector["embedding_binding"]
+            && document["embedding_binding"] == vector["embedding_binding"],
+        "stored source, chunk, and vector bindings disagree",
+    )?;
+    let count = document["chunk_count"]
+        .as_u64()
+        .filter(|n| (1..=MAX_PASSAGES as u64).contains(n))
+        .ok_or_else(|| invalid("invalid source chunk count"))?;
+    let index = vector["chunk_index"]
+        .as_u64()
+        .filter(|i| *i < count)
+        .ok_or_else(|| invalid("invalid chunk ordinal"))?;
+    let parent = document["_key"]
+        .as_str()
+        .filter(|key| valid_key(key, "bd"))
+        .ok_or_else(|| invalid("invalid source key"))?;
+    let key = digest_key("bc", &json!([expected.generation, parent, index]));
+    let digest = vector["source_sha256"]
+        .as_str()
+        .ok_or_else(|| invalid("missing source digest"))?;
+    ensure(
+        valid_digest(digest)
+            && chunk["source_sha256"] == digest
+            && document["source_sha256"] == digest
+            && vector["_key"] == key
+            && vector["chunk_key"] == key
+            && chunk["_key"] == key
+            && chunk["chunk_key"] == key
+            && vector["parent_key"] == parent
+            && chunk["parent_key"] == parent
+            && chunk["chunk_index"] == index,
+        "stored source, chunk, and vector references disagree",
+    )?;
+    ensure(
+        vector["model"] == expected.model && vector["dimension"] == expected.dimension,
+        "stored model or vector width disagrees with profile",
+    )?;
+    let values: Vec<f32> = serde_json::from_value(vector["embedding"].clone())
+        .map_err(|_| invalid("invalid stored vector values"))?;
+    validate_vector(&values, expected.dimension, normalization)
+}
+
+/// Refuse replacing unknown fields or damaged source plans; no implicit repair/adoption.
+fn validate_document(
+    row: &Value,
+    key: &str,
+    expected: &BoundEmbeddingRequest,
+) -> Result<(), ArangoError> {
+    allowed_fields(row, DOCUMENT_FIELDS)?;
+    binding(row, expected)?;
+    let source_id = row["source_id"]
+        .as_str()
+        .ok_or_else(|| invalid("missing source identity"))?;
+    let text = row["full_text"]
+        .as_str()
+        .ok_or_else(|| invalid("missing source text"))?;
+    ensure(
+        row["_key"] == key
+            && digest_key("bd", &json!([source_id])) == key
+            && row["source_sha256"] == hash(text.as_bytes()),
+        "stored source identity is invalid",
+    )?;
+    ensure(
+        row["passage_plan"]["format"] == "hades-supplied-byte-spans-v1"
+            && row["passage_plan"]
+                .as_object()
+                .is_some_and(|o| o.len() == 2),
+        "unsupported source passage plan",
+    )?;
+    let passages: Vec<PassageSpan> = serde_json::from_value(row["passage_plan"]["spans"].clone())
+        .map_err(|_| invalid("invalid stored passage plan"))?;
+    ensure(
+        row["chunk_count"].as_u64() == Some(passages.len() as u64),
+        "stored source chunk count disagrees with plan",
+    )?;
+    validate_input(&DocumentInput {
+        source_id: source_id.into(),
+        text: text.into(),
+        passages,
+    })?;
+    revision(row)?;
+    Ok(())
+}
+
+fn allowed_fields(row: &Value, fields: &[&str]) -> Result<(), ArangoError> {
+    ensure(
+        row.as_object()
+            .is_some_and(|r| r.keys().all(|k| fields.contains(&k.as_str()))),
+        "replacement would discard unknown fields",
+    )
+}
+
+fn valid_digest(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn valid_key(s: &str, prefix: &str) -> bool {
+    s.strip_prefix(prefix)
+        .and_then(|s| s.strip_prefix('_'))
+        .is_some_and(valid_digest)
+}
+
+fn revision(row: &Value) -> Result<&str, ArangoError> {
+    row["_rev"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .ok_or_else(|| invalid("missing document revision"))
+}
+
+/// HTTP 2xx alone does not acknowledge every document in a bulk write.
+fn acknowledged(ack: &Value, row: &Value) -> Result<(), ArangoError> {
+    ensure(
+        ack["error"].as_bool() != Some(true) && ack["_key"] == row["_key"],
+        "document insertion was not acknowledged",
+    )?;
+    revision(ack)?;
+    Ok(())
+}
+
+/// Every query is deliberately completed in one bounded response inside the transaction.
+async fn aql(
+    client: &ArangoClient,
+    query: &str,
+    bind: Value,
+    batch: usize,
+    bytes: usize,
+) -> Result<Value, ArangoError> {
+    client
+        .clone()
+        .with_response_limit(bytes)?
+        .post(
+            "cursor",
+            &json!({
+                "query":query, "bindVars":bind, "batchSize":batch, "ttl":5,
+                "memoryLimit":32 * 1024 * 1024,
+                "options":{"maxRuntime":5,"failOnWarning":true}
+            }),
+        )
+        .await
+}
