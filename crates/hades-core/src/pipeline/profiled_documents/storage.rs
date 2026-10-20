@@ -386,6 +386,7 @@ fn validate_document(
     Ok(())
 }
 
+/// Protect additional authored metadata from destructive whole-record replacement.
 fn allowed_fields(row: &Value, fields: &[&str]) -> Result<(), ArangoError> {
     ensure(
         row.as_object()
@@ -394,18 +395,21 @@ fn allowed_fields(row: &Value, fields: &[&str]) -> Result<(), ArangoError> {
     )
 }
 
+/// Require the canonical lowercase SHA-256 spelling used by source and key digests.
 fn valid_digest(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Distinguish generated source/chunk identities from arbitrary database keys.
 fn valid_key(s: &str, prefix: &str) -> bool {
     s.strip_prefix(prefix)
         .and_then(|s| s.strip_prefix('_'))
         .is_some_and(valid_digest)
 }
 
+/// Require a bounded Arango revision before pinning or acknowledging a document.
 fn revision(row: &Value) -> Result<&str, ArangoError> {
     row["_rev"]
         .as_str()

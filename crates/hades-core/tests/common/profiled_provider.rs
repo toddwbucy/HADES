@@ -27,6 +27,7 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// Derive a self-consistent model, provider, and space for a synthetic width.
     pub fn new(dimension: u32) -> Self {
         let value: Value =
             serde_json::from_str(include_str!("../fixtures/embedding_profile.json")).unwrap();
@@ -47,6 +48,7 @@ impl Fixture {
         }
     }
 
+    /// Publish the fixture only inside the caller's freshly allocated test database.
     pub async fn install(&self, pool: &ArangoPool) {
         let store = ProfileStore::new(pool.clone()).unwrap();
         let initial = store
@@ -61,6 +63,7 @@ impl Fixture {
         store.mark_ready(&initial).await.unwrap();
     }
 
+    /// Resolve the saved profile using the peer's independently held observation.
     pub async fn connect(&self, pool: &ArangoPool, peer: &Peer) -> ProfiledDocuments {
         ProfiledDocuments::connect(pool.clone(), peer.connection(), &peer.receipt())
             .await
@@ -99,6 +102,7 @@ pub struct Peer {
 }
 
 impl Peer {
+    /// Serve deterministic normalized vectors with injectable failures over a private socket.
     pub fn new(fixture: &Fixture) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("provider.sock");
@@ -184,6 +188,7 @@ impl Peer {
         }
     }
 
+    /// Supply transport settings without overriding any database-selected model fields.
     pub fn connection(&self) -> ProviderConnection {
         ProviderConnection {
             provider_id: self.provider_id.clone(),
@@ -192,19 +197,24 @@ impl Peer {
             max_response_bytes: 8 * 1024 * 1024,
         }
     }
+    /// Read the provider's current observation for initial connection or verified reload.
     pub fn receipt(&self) -> ProviderReceipt {
         self.state.lock().unwrap().receipt.clone()
     }
+    /// Capture exact requests for task, model, batching, and receipt assertions.
     pub fn requests(&self) -> Vec<Value> {
         self.state.lock().unwrap().requests.clone()
     }
+    /// Simulate a provider identity/load change independently of client expectations.
     pub fn set_receipt(&self, receipt: ProviderReceipt) {
         self.state.lock().unwrap().receipt = receipt;
     }
+    /// Fail the Nth subsequent request, allowing earlier batches to finish successfully.
     pub fn fault_after(&self, requests: usize, fault: Fault) {
         let mut state = self.state.lock().unwrap();
         state.fault = Some((state.requests.len() + requests, fault));
     }
+    /// Synchronize an in-flight request without using timing sleeps or polling.
     pub fn hold_next(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (started, receive) = oneshot::channel();
         let (release, wait) = oneshot::channel();
@@ -217,6 +227,7 @@ impl Peer {
 }
 
 impl Drop for Peer {
+    /// Stop fixture work on success or panic, including an unreleased request gate.
     fn drop(&mut self) {
         self.server.abort();
     }

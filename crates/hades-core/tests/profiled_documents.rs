@@ -15,6 +15,7 @@ use std::{sync::Arc, time::Duration};
 mod provider;
 use provider::{Fault, Fixture, Peer};
 
+/// Construct adjacent byte spans while retaining exact passage text and Unicode widths.
 fn input(id: &str, passages: &[&str]) -> DocumentInput {
     let mut text = String::new();
     let mut spans = Vec::new();
@@ -52,6 +53,7 @@ async fn records(pool: &ArangoPool) -> Value {
     saved
 }
 
+/// Exercise preparation and commit together, returning the generated source identity.
 async fn insert(documents: &ProfiledDocuments, id: &str, text: &[&str]) -> String {
     let prepared = documents.prepare(input(id, text), false).await.unwrap();
     documents.commit(prepared).await.unwrap().document_key
@@ -67,6 +69,7 @@ async fn touch_profile(pool: &ArangoPool) {
         .unwrap();
 }
 
+/// Verify actual wire roles and source/chunk/vector identity through a complete search.
 #[tokio::test]
 async fn roundtrip_records_identity_and_uses_asymmetric_tasks() {
     with_temp_db("bound_roundtrip", Fixtures::Empty, |pool| async move {
@@ -116,6 +119,7 @@ async fn roundtrip_records_identity_and_uses_asymmetric_tasks() {
     .await;
 }
 
+/// Preserve old and unrelated records on stale preparation or a late schema rejection.
 #[tokio::test]
 async fn replacement_is_explicit_atomic_and_rejects_stale_preparations() {
     with_temp_db("bound_replace", Fixtures::Empty, |pool| async move {
@@ -187,6 +191,7 @@ async fn replacement_is_explicit_atomic_and_rejects_stale_preparations() {
     .await;
 }
 
+/// Discard all batches when representation, receipt, or provider admission fails.
 #[tokio::test]
 async fn failed_provider_batches_never_publish_partial_documents() {
     with_temp_db("bound_provider_fail", Fixtures::Empty, |pool| async move {
@@ -245,6 +250,7 @@ async fn failed_provider_batches_never_publish_partial_documents() {
     .await;
 }
 
+/// Change policy while inference is held, then prove publication and ranking refuse it.
 #[tokio::test]
 async fn drift_during_inference_refuses_commit_and_query_results() {
     with_temp_db("bound_drift", Fixtures::Empty, |pool| async move {
@@ -293,6 +299,7 @@ async fn drift_during_inference_refuses_commit_and_query_results() {
     .await;
 }
 
+/// Retain old passage observations while requiring a fresh client after provider reload.
 #[tokio::test]
 async fn a_verified_reload_can_read_compatible_old_vectors() {
     with_temp_db("bound_reload", Fixtures::Empty, |pool| async move {
@@ -324,6 +331,7 @@ async fn a_verified_reload_can_read_compatible_old_vectors() {
     .await;
 }
 
+/// Alternate and concurrently query different widths without leaking requests or prepared work.
 #[tokio::test]
 async fn two_database_dimensions_and_providers_stay_isolated() {
     with_temp_db("bound_two", Fixtures::Empty, |one| async move {
@@ -371,6 +379,7 @@ async fn two_database_dimensions_and_providers_stay_isolated() {
     .await;
 }
 
+/// Corrupt each identity dimension and row reference; no partial ranking may escape.
 #[tokio::test]
 async fn incompatible_or_orphan_vectors_refuse_the_whole_search() {
     with_temp_db("bound_rows", Fixtures::Empty, |pool| async move {
@@ -425,6 +434,7 @@ async fn incompatible_or_orphan_vectors_refuse_the_whole_search() {
     .await;
 }
 
+/// Cross multiple scan pages and distinguish a complete result from a truncated ranking.
 #[tokio::test]
 async fn scan_limits_discard_partial_rankings_and_pages_remain_complete() {
     with_temp_db("bound_scan", Fixtures::Empty, |pool| async move {
@@ -454,6 +464,7 @@ async fn scan_limits_discard_partial_rankings_and_pages_remain_complete() {
     .await;
 }
 
+/// Reject malformed source coverage and disabled or unsupported policy before external work.
 #[tokio::test]
 async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
     with_temp_db("bound_admission", Fixtures::Empty, |pool| async move {
@@ -541,6 +552,7 @@ async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
     }
 }
 
+/// Refuse overwrites that would erase additional authored fields or unmanaged children.
 #[tokio::test]
 async fn replacement_preserves_unknown_metadata_and_foreign_children() {
     with_temp_db("bound_foreign", Fixtures::Empty, |pool| async move {
@@ -588,6 +600,7 @@ async fn replacement_preserves_unknown_metadata_and_foreign_children() {
     .await;
 }
 
+/// Cancel a request held inside the provider and verify all database records remain unchanged.
 #[tokio::test]
 async fn cancelled_inference_has_no_database_side_effects() {
     with_temp_db("bound_cancel", Fixtures::Empty, |pool| async move {

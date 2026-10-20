@@ -229,7 +229,8 @@ impl ProfiledDocuments {
     }
 
     /// Commit a complete prepared result only under its original database admission.
-    /// Content conflicts, profile drift, write failures, and cancellation abort atomically.
+    /// Conflicts, profile drift, write failures, and cancellation before commit abort atomically.
+    /// A lost commit acknowledgment has an uncertain outcome and requires reconciliation.
     pub async fn commit(
         &self,
         prepared: PreparedDocument,
@@ -416,6 +417,7 @@ fn ensure(condition: bool, message: &str) -> Result<(), ArangoError> {
 mod tests {
     use super::*;
 
+    /// Refuse oversized sources and excessive fan-out before cloning passage bodies.
     #[test]
     fn bounds_source_size_and_passage_count_before_inference() {
         let mut input = DocumentInput {
@@ -447,6 +449,7 @@ mod tests {
         );
     }
 
+    /// Bound aggregate overlap even when each individual span fits the source limit.
     #[test]
     fn overlapping_spans_cannot_amplify_memory_beyond_admission_budget() {
         let input = DocumentInput {
@@ -467,6 +470,7 @@ mod tests {
         );
     }
 
+    /// Accept overlapping byte spans without converting Unicode offsets to character counts.
     #[test]
     fn valid_overlap_preserves_exact_unicode_source_bytes() {
         let input = DocumentInput {
