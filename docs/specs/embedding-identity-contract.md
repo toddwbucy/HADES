@@ -66,7 +66,9 @@ counting remains the adapter's responsibility.
 valid ready profile, an enabled workload, and matching artifact/space identities.
 It returns the explicit model, dimension, task, profile revision, corpus generation,
 provider ID, and expected receipt. There are no Jina defaults in this resolution.
-The result is a planning value, not a connected client or permission to store data.
+The result is a planning value, not permission to store data. The opt-in
+[bound client](bound-embedding-client.md) now consumes it for receipt-enforced
+HTTP requests; production call sites do not use that client yet.
 
 `hades-provider-receipt-v1` has exactly `format`, `artifact_md5`, `space_id`, and
 `serving_generation`. Rust and Python implement the same shape. A future verified
@@ -81,8 +83,10 @@ The next slice implements [local registration and checked Jina loading](register
 It supplies artifact provenance internally; behavior-space receipts and database
 enforcement remain separate integration work.
 
-The next dependent changes must connect the checked loader to resolved behavior
-spaces, an explicit connected-client factory, receipt transport, isolated
+The [bound client](bound-embedding-client.md) implements the explicit client
+factory and consuming side of receipt transport. The next dependent changes
+must connect the checked loader to resolved behavior spaces and provider-side
+receipt enforcement, isolated
 database/profile persistence, and a synthetic ingest/query path. Before
 activating database pairing, all applicable public entry points must enforce it,
 including background jobs and generation checks before commit. Profile CAS,

@@ -13,5 +13,6 @@
 //! The training client moved out of this module to [`crate::training`] when it
 //! was decoupled from the `persephone.*` brand (issue #106).
 
+pub mod bound_embedding;
 pub mod embedding;
 pub mod extraction;
