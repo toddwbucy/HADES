@@ -71,11 +71,11 @@ before commit abort the transaction through the existing transaction owner.
 Even a change followed by restoration of the same metadata invalidates an old
 pin because its server revision changed.
 
-This is a database freshness guard, not a vector validator. Subsequent ingestion
-integration must also validate provider receipts, dimensions, workload/role,
-space/generation provenance, and all prepared rows. Query integration must use
-the pinned generation and check stored provenance before scoring. Existing
-production write/query paths do not acquire this guard yet.
+This is a database freshness guard, not a vector validator. The internal
+[document integration](profile-bound-documents.md) adds provider receipt,
+dimension, workload/role, and space/generation validation around prepared rows,
+and checks stored provenance before query scoring. Existing production
+write/query paths do not acquire this guard yet.
 
 ## Failure and recovery
 

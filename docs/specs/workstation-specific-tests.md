@@ -84,6 +84,13 @@ immutable identity records, atomic readiness publication, stale/cross-database
 refusal, metadata validation, and transaction rollback/cancellation. Select it
 with `--contract embedding_profile_store`; it is also in the default CI matrix.
 
+The `profiled_documents` contract covers the internal
+[document ingestion/search integration](profile-bound-documents.md), using
+private verified HTTP fixtures and disposable two- and three-dimensional
+databases. It checks provider/profile drift, stored provenance, atomic replacement,
+scan budgets, and database isolation. Select it with `--contract profiled_documents`;
+the default CI matrix includes it. No real model or installed service is used.
+
 ## Codex reading contracts
 
 The isolated database matrix includes `reading_chat`: durable request deduplication,

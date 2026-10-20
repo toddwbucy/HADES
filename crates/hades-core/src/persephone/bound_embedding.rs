@@ -19,6 +19,7 @@ use super::embedding::{
 /// Operational connection resolved from a trusted installation registry.
 /// Model, dimension, task, and expected identity come only from the profile.
 /// No default provider or fallback endpoint is selected by this factory.
+#[derive(Clone)]
 pub struct ProviderConnection {
     pub provider_id: String,
     pub endpoint: EmbeddingEndpoint,
