@@ -105,8 +105,9 @@ before enabling this path in an installation.
 
 `loaded_artifact` is checked internal load provenance, **not** a full provider
 receipt: it does not claim a verified task, prompt, pooling, precision, or embedding
-space. The next integration must derive those contracts, enforce expected receipts
-on requests/responses, and connect the Rust client. Database persistence, guarded
+space. The [bound Rust client](bound-embedding-client.md) now pins expected receipts
+and rejects incompatible responses. The next provider integration must derive
+those behavior contracts and enforce receipts across inference. Database persistence, guarded
 ingest/query operations, provisioning recovery, and frontend setup remain pending.
 
 CPU tests use synthetic artifact files and doubles only for model/tokenizer

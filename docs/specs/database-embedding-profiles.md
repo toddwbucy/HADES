@@ -436,7 +436,10 @@ That first draft splits the schema/manifest/receipt foundation out of stage 1
 for review; verified serving, database persistence, and runtime enforcement are
 still required before the stage is complete or pairing can be enabled.
 The following slice adds [local registration and checked Jina loading](registered-model-loading.md);
-full provider receipts and database enforcement are still pending.
+full provider receipts and database enforcement are still pending. The next
+[bound-client slice](bound-embedding-client.md) implements the explicit Rust
+factory and client-side receipt checks using a synthetic provider; it does not
+enable database pairing or complete stage 1.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
