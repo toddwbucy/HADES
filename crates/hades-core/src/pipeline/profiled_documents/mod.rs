@@ -1,8 +1,8 @@
 //! Internal document admission -> verified embedding -> atomic storage -> retrieval.
 //!
 //! No public command uses this path yet. A trusted caller supplies extracted text
-//! while the pinned provider plans token-checked UTF-8 byte spans. Provider
-//! discovery, provisioning, and all-entry-point enforcement remain prerequisites
+//! while the registered provider plans token-checked UTF-8 byte spans. Recoverable
+//! provisioning and all-entry-point enforcement remain prerequisites
 //! for activation. Only conventional document text and cosine ranking are supported.
 
 mod storage;
@@ -14,13 +14,14 @@ use sha2::{Digest, Sha256};
 use crate::{
     db::{ArangoError, ArangoPool},
     embedding_profile::{
-        BoundEmbeddingRequest, ChunkPolicy, Distance, EmbeddingRole, Normalization,
-        ProviderReceipt, WorkloadKind,
+        BoundEmbeddingRequest, ChunkPolicy, Distance, EmbeddingRole, Normalization, ProfileState,
+        WorkloadKind,
         store::{ProfileSnapshot, ProfileStore},
     },
     persephone::{
-        bound_embedding::{BoundEmbeddingClient, ProviderConnection},
+        bound_embedding::BoundEmbeddingClient,
         passage_plan::{MAX_PASSAGES, MAX_TEXT_BYTES, PassagePlan, TokenPassage, validate_source},
+        provider_registry::ProviderCatalog,
     },
     pipeline::PipelineError,
 };
@@ -82,15 +83,18 @@ pub struct ProfiledDocuments {
 
 impl ProfiledDocuments {
     /// Resolve the stored profile before constructing any embedding client.
-    /// Provider connection and observation must come from trusted registration.
+    /// Resolve the saved provider ID through protected registration and actual HTTP verification.
     pub async fn connect(
         pool: ArangoPool,
-        provider: ProviderConnection,
-        observed: &ProviderReceipt,
+        catalog: &ProviderCatalog,
     ) -> Result<Self, PipelineError> {
         let store = ProfileStore::new(pool.clone())?;
         let snapshot = store.load().await?;
         let profile = snapshot.profile();
+        ensure(
+            profile.state == ProfileState::Ready,
+            "workspace profile is not ready",
+        )?;
         let workload = profile
             .workloads
             .documents
@@ -105,24 +109,6 @@ impl ProfiledDocuments {
             "this document path supports cosine distance only",
         )?;
         let normalization = workload.space.representation.normalize;
-        let passage = BoundEmbeddingClient::connect(
-            profile,
-            snapshot.manifest(),
-            WorkloadKind::Documents,
-            EmbeddingRole::Passage,
-            provider.clone(),
-            observed,
-        )
-        .await?;
-        let query = BoundEmbeddingClient::connect(
-            profile,
-            snapshot.manifest(),
-            WorkloadKind::Documents,
-            EmbeddingRole::Query,
-            provider,
-            observed,
-        )
-        .await?;
         // Schema is a provisioning responsibility; never create collections as a query side effect.
         for collection in COLLECTIONS {
             let properties = pool
@@ -136,6 +122,27 @@ impl ProfiledDocuments {
                 "document storage requires three document collections",
             )?;
         }
+        let observed = catalog.verify_profile(profile, snapshot.manifest()).await?;
+        let passage = observed
+            .client(
+                profile,
+                snapshot.manifest(),
+                WorkloadKind::Documents,
+                EmbeddingRole::Passage,
+            )
+            .await?;
+        let query = observed
+            .client(
+                profile,
+                snapshot.manifest(),
+                WorkloadKind::Documents,
+                EmbeddingRole::Query,
+            )
+            .await?;
+        ensure(
+            store.load().await? == snapshot,
+            "workspace profile changed during provider verification",
+        )?;
         Ok(Self {
             pool,
             store,

@@ -1,6 +1,7 @@
 //! Synthetic verified HTTP peer. Receipts are provider-owned observations, never
 //! copied from the client's expected identity. All sockets are private and temporary.
 use std::{
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -11,7 +12,10 @@ use hades_core::{
     embedding_profile::{
         ArtifactManifest, EmbeddingProfile, ProfileState, ProviderReceipt, store::ProfileStore,
     },
-    persephone::{bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint},
+    persephone::{
+        bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint,
+        provider_registry::ProviderCatalog,
+    },
     pipeline::profiled_documents::ProfiledDocuments,
 };
 use serde_json::{Value, json};
@@ -20,6 +24,9 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::oneshot,
 };
+
+#[path = "registered_provider.rs"]
+mod registration_fixture;
 
 pub struct Fixture {
     pub profile: EmbeddingProfile,
@@ -36,7 +43,7 @@ impl Fixture {
             serde_json::from_value(value["profile"].clone()).unwrap();
         profile.state = ProfileState::Initializing;
         profile.model.id = format!("fixture/model-{dimension}");
-        profile.runtime_binding.provider_id = format!("fixture/provider-{dimension}");
+        profile.runtime_binding.provider_id = format!("fixture-provider-{dimension}");
         let space = &mut profile.workloads.documents.as_mut().unwrap().space;
         space.representation.dimension = dimension;
         let mut receipt: ProviderReceipt =
@@ -66,7 +73,7 @@ impl Fixture {
 
     /// Resolve the saved profile using the peer's independently held observation.
     pub async fn connect(&self, pool: &ArangoPool, peer: &Peer) -> ProfiledDocuments {
-        ProfiledDocuments::connect(pool.clone(), peer.connection(), &peer.receipt())
+        ProfiledDocuments::connect(pool.clone(), &peer.catalog())
             .await
             .unwrap()
     }
@@ -95,11 +102,14 @@ struct State {
     plan_gate: Option<Gate>,
     fault: Option<(usize, Fault)>,
     gate: Option<Gate>,
+    observations: usize,
+    verify_gate: Option<Gate>,
 }
 
 pub struct Peer {
     path: PathBuf,
     provider_id: String,
+    registry: PathBuf,
     state: Arc<Mutex<State>>,
     server: tokio::task::JoinHandle<()>,
     _directory: tempfile::TempDir,
@@ -109,9 +119,15 @@ impl Peer {
     /// Serve deterministic normalized vectors with injectable failures over a private socket.
     pub fn new(fixture: &Fixture) -> Self {
         let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let registry =
+            registration_fixture::create(directory.path(), &fixture.profile, &fixture.manifest);
         let path = directory.path().join("provider.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let model = fixture.profile.model.id.clone();
+        let description = json!({"model":fixture.profile.model,"capabilities":fixture.profile.capabilities,
+            "space":fixture.profile.workloads.documents.as_ref().or(fixture.profile.workloads.code.as_ref()).unwrap().space,
+            "receipt":fixture.receipt});
         let dimension = fixture
             .profile
             .workloads
@@ -130,6 +146,8 @@ impl Peer {
             plan_gate: None,
             fault: None,
             gate: None,
+            observations: 0,
+            verify_gate: None,
         }));
         let observed = state.clone();
         let server = tokio::spawn(async move {
@@ -143,18 +161,22 @@ impl Peer {
                     }
                     let headers = String::from_utf8(headers).unwrap();
                     let planning = headers.starts_with("POST /v1/passages HTTP/1.1\r\n");
-                    assert!(planning || headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
+                    let verifying = headers.starts_with("POST /v1/verify HTTP/1.1\r\n");
+                    assert!(verifying || planning || headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
                     let length: usize = headers.lines().find_map(|line| {
                         line.to_lowercase().strip_prefix("content-length:")
                             .map(|n| n.trim().parse().unwrap())
-                    }).unwrap();
+                    }).unwrap_or(0);
                     assert!(length < 8 * 1024 * 1024);
                     let mut body = vec![0; length];
                     stream.read_exact(&mut body).await.unwrap();
-                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    let request: Value = if verifying { json!({}) } else { serde_json::from_slice(&body).unwrap() };
                     let (receipt, fault, gate, patch) = {
                         let mut state = observed.lock().unwrap();
-                        if planning {
+                        if verifying {
+                            state.observations += 1;
+                            (state.receipt.clone(), None, state.verify_gate.take(), None)
+                        } else if planning {
                             state.plans.push(request.clone());
                             (state.receipt.clone(), None, state.plan_gate.take(), state.plan_patch.take())
                         } else {
@@ -167,7 +189,11 @@ impl Peer {
                         let _ = gate.started.send(());
                         let _ = gate.release.await;
                     }
-                    let mut body = if planning {
+                    let mut body = if verifying {
+                        let mut response = description.clone();
+                        response["receipt"] = json!(receipt);
+                        response
+                    } else if planning {
                         let text = request["input"].as_str().unwrap();
                         let mut offset = 0;
                         let spans: Vec<_> = text.split_inclusive('\n').map(|part| {
@@ -216,10 +242,30 @@ impl Peer {
         Self {
             path,
             provider_id: fixture.profile.runtime_binding.provider_id.clone(),
+            registry,
             state,
             server,
             _directory: directory,
         }
+    }
+
+    /// Resolve only this synthetic peer through its protected local registration.
+    pub fn catalog(&self) -> ProviderCatalog {
+        ProviderCatalog::new(self.registry.clone(), vec![self.connection()]).unwrap()
+    }
+    /// Count live verification separately from planning/inference.
+    pub fn observations(&self) -> usize {
+        self.state.lock().unwrap().observations
+    }
+    /// Hold model observation to test profile changes before client admission.
+    pub fn hold_next_verification(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (started, receive) = oneshot::channel();
+        let (release, wait) = oneshot::channel();
+        self.state.lock().unwrap().verify_gate = Some(Gate {
+            started,
+            release: wait,
+        });
+        (receive, release)
     }
 
     /// Supply transport settings without overriding any database-selected model fields.

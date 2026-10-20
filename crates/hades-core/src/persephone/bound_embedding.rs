@@ -1,7 +1,7 @@
 //! Explicit profile-bound transport for #225, not yet used by production callers.
 //!
-//! A trusted provider resolver must supply the endpoint and an observed receipt
-//! issued after verified loading. This client enforces that receipt over the
+//! The provider_registry factory supplies the endpoint and an observed receipt
+//! issued after verified loading. This low-level client enforces that receipt over the
 //! wire; it cannot establish the provider's honesty or authorize database writes.
 
 use super::passage_plan::{PassagePlan, validate_source};

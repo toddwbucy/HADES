@@ -31,7 +31,10 @@ or evidence that this model is preferable to another model.
   the actual IDs reaching the model, including prefix/special-token policy.
   One additional token rejects the entire mixed batch before any forward pass.
   Wrong artifact, space, and load receipts also fail before inference.
-- A private verified HTTP server supplies real vectors to the Rust bound client.
+- Rust reads the protected registration itself and obtains the live description
+  from a private verified HTTP server. This independent observation must match
+  the qualified manifest/receipt before constructing the initializing profile.
+  Document admission resolves the same registration and observation again.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
   bindings, and retrieves all six expected answers from stored vectors.
 - After those retrieval checks, the fixed Unicode text in
@@ -173,6 +176,7 @@ criteria did not change; the failed v1 report is retained with the run evidence.
 The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
 long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
-paths, code/late-chunk capabilities, trusted provider discovery, recoverable
-provisioning, legacy policy, and frontend creation remain separate work.
+paths, code/late-chunk capabilities, recoverable provisioning, legacy policy,
+and frontend creation remain separate work. Registered local provider discovery
+is now part of the qualification flow.
 Public pairing remains gated.

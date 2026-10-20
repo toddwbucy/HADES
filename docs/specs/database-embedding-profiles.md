@@ -461,6 +461,13 @@ opt-in fixed retrieval/tokenizer/reload suite and the real provider HTTP-to-Rust
 document round trip on a disposable database. It records runtime-specific evidence
 without activating public pairing or claiming a general quality benchmark.
 
+[Registered provider discovery](registered-provider-discovery.md) now connects
+protected registrations and an explicit installation allowlist to actual HTTP
+observations. Document admission resolves its saved provider ID through that
+factory and rechecks the database profile after loading. Callers no longer supply
+an endpoint or observed receipt to the document path. Recoverable provisioning
+and public entry-point enforcement remain pending before frontend activation.
+
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
    Jina verification. Add isolated database creation/profile persistence and one

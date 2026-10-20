@@ -130,7 +130,8 @@ The opt-in [real-model qualification protocol](verified-jina-qualification.md)
 now covers fixed retrieval/tokenizer checks, performance observations, reloads,
 and the actual HTTP/Rust/disposable-database flow. Internal profile persistence and
 guarded document ingest/query commits and conventional token-aware planning are
-implemented. General quality evaluation, late/code capabilities, trusted provider
-discovery, public entry-point enforcement, legacy policy, and frontend creation
-remain pending. Database pairing stays disabled until the applicable public entry
-points enforce it together.
+implemented. [Registered provider discovery](registered-provider-discovery.md)
+now reads protected registrations and checks the live HTTP description in Rust.
+General quality evaluation, late/code capabilities, public entry-point enforcement,
+legacy policy, and frontend creation remain pending. Database pairing stays
+disabled until the applicable public entry points enforce it together.
