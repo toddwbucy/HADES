@@ -132,6 +132,29 @@ Triton C-header macro redefinition warning; neither altered registered assets.
 It emitted no tokenizer regex warning. These results qualify this recorded
 runtime, not the separate Transformers 4.57.6 environment or legacy vector space.
 
+## ThinkPad token-planning result: 2026-10-20
+
+The [token-planning report](../evidence/jina-token-planning-thinkpad-2026-10-20.json)
+passed on clean implementation commit `8dc3de2b6aadc52d52d70bbac26c0272c0bc80d1`,
+using the same registered artifacts, runtime, and embedding space as above.
+The original six retrieval answers ranked first in both provider and stored-vector
+checks. The additional fixed Unicode source produced:
+
+| Observation | Result |
+| --- | --- |
+| Original source | 12,384 UTF-8 bytes; 2,402 prompt-inclusive tokens |
+| Saved policy / effective serving ceiling | 500 body tokens, at most 50 overlap tokens / 2,048 input tokens |
+| Persisted passages | 6; five with 500 body / 502 input tokens, one with 150 / 152 |
+| Actual overlaps | 0 for the first passage, then 50 tokens each |
+| Independent recount | All 6 persisted body/input/overlap counts match |
+| Long-document planning, embedding, commit, and full search scan | 2.52 s |
+
+The full plan and original source SHA-256 are retained in the report. The source
+bytes, including combining accents, survived unchanged. These measurements
+qualify this conventional planning path; they do not establish semantic chunk
+quality or late-chunk behavior. Private database/provider cleanup completed,
+GPU usage returned to its initial 495 MiB, and installed services were unchanged.
+
 ## Scope of the result
 
 Qualification applies to the recorded artifacts, runtime, numerical contract,

@@ -108,3 +108,7 @@ The [real-Jina protocol](verified-jina-qualification.md) adds the fixed
 checks. It persists multiple passages, searches all stored chunks, and independently
 recounts every persisted body/input/overlap using the same actual serving load.
 The evidence records the original source digest, full plan, and recount result.
+
+The [ThinkPad qualification](verified-jina-qualification.md#thinkpad-token-planning-result-2026-10-20)
+passed with a 2,402-token Unicode source, six stored passages, and exact agreement
+for every independently recounted token count.
