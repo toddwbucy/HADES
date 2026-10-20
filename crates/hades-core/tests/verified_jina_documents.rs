@@ -4,8 +4,11 @@
 
 use hades_core::{
     db::{ArangoPool, crud},
-    embedding_profile::{ArtifactManifest, EmbeddingProfile, ProviderReceipt, store::ProfileStore},
-    persephone::{bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint},
+    embedding_profile::{ChunkPolicy, store::ProfileStore},
+    persephone::{
+        bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint,
+        provider_registry::ProviderCatalog,
+    },
     pipeline::profiled_documents::{DocumentInput, ProfiledDocuments},
     test_support::{Fixtures, with_temp_db},
 };
@@ -32,44 +35,47 @@ fn context() -> Value {
 
 /// Initialize a ready synthetic corpus using the actual observed model and representation.
 async fn install(pool: &ArangoPool, context: &Value) -> ProfiledDocuments {
-    let descriptor = &context["description"];
-    let manifest =
-        ArtifactManifest::from_json(&serde_json::to_vec(&context["manifest"]).unwrap()).unwrap();
-    let passage_tokens = 500.min(
-        descriptor["capabilities"]["max_input_tokens"]
-            .as_u64()
-            .unwrap(),
-    );
-    let profile = EmbeddingProfile::from_json(&serde_json::to_vec(&json!({
-        "format":"hades-embedding-profile-v1", "revision":1, "state":"initializing",
-        "generation":"jina-qualification-corpus-v1", "model":descriptor["model"],
-        "capabilities":descriptor["capabilities"], "runtime_binding":{"provider_id":context["provider_id"]},
-        "workloads":{"code":null,"documents":{"space":descriptor["space"],"specialized_code":false,
-            "chunking":{"mode":"conventional",
-                "passage_tokens":passage_tokens,
-                "overlap_tokens":50.min(passage_tokens / 4)}}}
-    })).unwrap(), &manifest).unwrap();
+    let catalog = ProviderCatalog::new(
+        PathBuf::from(context["registry"].as_str().unwrap()),
+        vec![ProviderConnection {
+            provider_id: context["provider_id"].as_str().unwrap().into(),
+            endpoint: EmbeddingEndpoint::Unix(PathBuf::from(context["socket"].as_str().unwrap())),
+            timeout: Duration::from_secs(120),
+            max_response_bytes: 8 * 1024 * 1024,
+        }],
+    )
+    .unwrap();
+    let observed = catalog
+        .verify(context["provider_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    // The independent Rust registry/HTTP observation must agree with the Python qualification.
+    assert_eq!(json!(observed.description()), context["description"]);
+    assert_eq!(json!(observed.manifest()), context["manifest"]);
+    let passage_tokens = 500.min(observed.description().capabilities.max_input_tokens);
+    let profile = observed
+        .document_profile(
+            "jina-qualification-corpus-v1".into(),
+            ChunkPolicy::Conventional {
+                passage_tokens,
+                overlap_tokens: 50.min(passage_tokens / 4),
+            },
+        )
+        .unwrap();
     let store = ProfileStore::new(pool.clone()).unwrap();
-    let initial = store.initialize(profile, manifest).await.unwrap();
+    let initial = store
+        .initialize(profile, observed.manifest().clone())
+        .await
+        .unwrap();
     for collection in ["documents", "chunks", "embeddings"] {
         crud::create_collection(pool, collection, Some(2))
             .await
             .unwrap();
     }
     store.mark_ready(&initial).await.unwrap();
-    let receipt: ProviderReceipt = serde_json::from_value(descriptor["receipt"].clone()).unwrap();
-    ProfiledDocuments::connect(
-        pool.clone(),
-        ProviderConnection {
-            provider_id: context["provider_id"].as_str().unwrap().into(),
-            endpoint: EmbeddingEndpoint::Unix(PathBuf::from(context["socket"].as_str().unwrap())),
-            timeout: Duration::from_secs(120),
-            max_response_bytes: 8 * 1024 * 1024,
-        },
-        &receipt,
-    )
-    .await
-    .unwrap()
+    ProfiledDocuments::connect(pool.clone(), &catalog)
+        .await
+        .unwrap()
 }
 
 /// Prove real vectors survive the wire, storage checks, and asymmetric query ranking.
@@ -139,6 +145,7 @@ async fn registered_jina_document_roundtrip() {
         assert_eq!(documents.search("Unicode café", 1, total as u64).await.unwrap().scanned, total as u64);
         let report = json!({"passed":true,"profile_revision":2,"documents":inputs.len(),
             "dimension":2048,"receipt":context["description"]["receipt"],
+            "protected_registration_and_live_description_checked":true,
             "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed,
             "planning":{"plan":plan,"source_bytes":long_text.len(),"seconds":started.elapsed().as_secs_f64()}});
         let path = std::env::var("HADES_VERIFIED_JINA_REPORT").expect("explicit new evidence file");

@@ -161,7 +161,8 @@ def main(argv=None):
         qualify(provider, cases, evidence=report["provider"])
         report["stage"] = "database"
         print("Running verified HTTP -> Rust -> disposable database round trip...", flush=True)
-        context = {"provider_id": args.provider, "description": report["provider"]["description"],
+        context = {"provider_id": args.provider, "registry": str(args.registry.absolute()),
+                   "description": report["provider"]["description"],
                    "manifest": report["manifest"], "cases": cases, "suite_sha256": digest,
                    "planning_text": (REPO / "services/tests/fixtures/jina_passage_planning.txt").read_text(encoding="utf-8")}
         server_args = ["--docker"] if args.docker else ["--arangod", str(args.arangod.absolute())]

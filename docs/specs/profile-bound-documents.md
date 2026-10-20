@@ -8,12 +8,15 @@ installation continue to use their existing paths.
 
 ## Admission and preparation
 
-A trusted caller supplies the explicit database pool, registered provider
-connection, and observed provider receipt. `connect` loads the authoritative
-profile from the writer endpoint and derives separate passage/query clients.
+A trusted caller supplies an explicit database pool and installation-owned
+[provider catalog](registered-provider-discovery.md). `connect` loads the
+profile from the writer endpoint, resolves its registered provider ID, checks
+that service's actual HTTP observation, and derives separate passage/query
+clients. It rechecks the complete profile snapshot after provider verification.
 Documents must be enabled, chunking must be conventional, and the distance must
 be cosine. The three document collections must already exist. This operation
-does not provision a database or establish provider trust.
+does not provision a database. Provider trust comes from protected registration
+and the configured private service; caller-supplied receipts are not accepted.
 
 `prepare(DocumentInput, replace)` accepts already-extracted text and a stable
 source identifier. The bound provider plans conventional passages with its actual
@@ -107,8 +110,8 @@ python3 scripts/test_isolated_database.py --arangod /path/to/arangod \
 Tests use temporary databases and private HTTP peers with synthetic two- and
 three-dimensional vectors. They cover complete ingestion/search, asymmetric
 tasks, replacement conflicts and rollback, provider failures across batches,
-mid-planning/inference profile drift, rejected plans before inference, stored token
-evidence corruption, compatible reloads, cross-database isolation,
+mid-verification/planning/inference profile drift, rejected plans before inference,
+stored token evidence corruption, compatible reloads, cross-database isolation,
 incompatible stored provenance, scan limits, disabled/unsupported policy,
 unknown-record preservation, and inference cancellation.
 

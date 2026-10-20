@@ -303,6 +303,37 @@ async fn drift_during_inference_refuses_commit_and_query_results() {
     .await;
 }
 
+/// A slow provider load cannot admit a database policy that changed during observation.
+#[tokio::test]
+async fn profile_drift_during_provider_verification_refuses_admission() {
+    with_temp_db("bound_verify_drift", Fixtures::Empty, |pool| async move {
+        let fixture = Fixture::new(2);
+        fixture.install(&pool).await;
+        let peer = Peer::new(&fixture);
+        let catalog = peer.catalog();
+        let (started, release) = peer.hold_next_verification();
+        let reading = pool.clone();
+        let pending =
+            tokio::spawn(async move { ProfiledDocuments::connect(reading, &catalog).await });
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .unwrap()
+            .unwrap();
+        touch_profile(&pool).await;
+        release.send(()).unwrap();
+        assert!(pending.await.unwrap().is_err());
+        assert_eq!(peer.observations(), 1);
+        assert!(peer.plans().is_empty() && peer.requests().is_empty());
+        assert!(
+            records(&pool).await["documents"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    })
+    .await;
+}
+
 /// Retain old passage observations while requiring a fresh client after provider reload.
 #[tokio::test]
 async fn a_verified_reload_can_read_compatible_old_vectors() {
@@ -594,11 +625,12 @@ async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
             fixture.install(&pool).await;
             let peer = Peer::new(&fixture);
             assert!(
-                ProfiledDocuments::connect(pool.clone(), peer.connection(), &fixture.receipt)
+                ProfiledDocuments::connect(pool.clone(), &peer.catalog())
                     .await
                     .is_err()
             );
             assert!(peer.requests().is_empty());
+            assert_eq!(peer.observations(), 0);
         })
         .await;
     }

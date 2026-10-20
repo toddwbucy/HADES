@@ -31,7 +31,10 @@ or evidence that this model is preferable to another model.
   the actual IDs reaching the model, including prefix/special-token policy.
   One additional token rejects the entire mixed batch before any forward pass.
   Wrong artifact, space, and load receipts also fail before inference.
-- A private verified HTTP server supplies real vectors to the Rust bound client.
+- Rust reads the protected registration itself and obtains the live description
+  from a private verified HTTP server. This independent observation must match
+  the qualified manifest/receipt before constructing the initializing profile.
+  Document admission resolves the same registration and observation again.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
   bindings, and retrieves all six expected answers from stored vectors.
 - After those retrieval checks, the fixed Unicode text in
@@ -155,6 +158,30 @@ qualify this conventional planning path; they do not establish semantic chunk
 quality or late-chunk behavior. Private database/provider cleanup completed,
 GPU usage returned to its initial 495 MiB, and installed services were unchanged.
 
+## ThinkPad registered-discovery result: 2026-10-20
+
+The [registered-discovery report](../evidence/jina-provider-discovery-thinkpad-2026-10-20.json)
+passed on clean implementation commit `885c4dd4d6fc7a9c0d4c25eb8dfcaed645a1b344`,
+using the same registered artifacts, runtime, and embedding space. Rust resolved
+`qualification-jina` through the explicit installation catalog, read the protected
+registration, and obtained the actual HTTP description independently. That
+observation agreed with Python's qualification before profile initialization;
+document admission repeated the registration and live-description checks.
+
+| Observation | Result |
+| --- | --- |
+| Independent registration / live-description agreement | Passed before initialization and admission |
+| Provider retrieval / stored-vector retrieval | 6/6 expected first in each |
+| Loaded adapter tensors / task input boundaries | 1,518 checked; 2,048 accepted and 2,049 refused before inference |
+| Long Unicode document | Same 12,384 source bytes and 6 persisted passages |
+| Independent body/input/overlap recount | All 6 match |
+| Long-document planning, embedding, commit, and full search scan | 2.00 s |
+
+The complete receipt, manifest, runtime, plan, and timings are retained in the
+report. The private database stopped cleanly, serving snapshots were removed,
+and GPU usage returned to 495 MiB. Installed services were unchanged. This is
+evidence for the internal registered-provider flow; public setup remains gated.
+
 ## Scope of the result
 
 Qualification applies to the recorded artifacts, runtime, numerical contract,
@@ -173,6 +200,7 @@ criteria did not change; the failed v1 report is retained with the run evidence.
 The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
 long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
-paths, code/late-chunk capabilities, trusted provider discovery, recoverable
-provisioning, legacy policy, and frontend creation remain separate work.
+paths, code/late-chunk capabilities, recoverable provisioning, legacy policy,
+and frontend creation remain separate work. Registered local provider discovery
+is now part of the qualification flow.
 Public pairing remains gated.

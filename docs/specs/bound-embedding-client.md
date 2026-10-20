@@ -17,10 +17,12 @@ profile and enabled workload, compares artifact and behavior-space identities,
 and requires the resolved provider ID to match the profile. Construction is lazy:
 it neither probes the endpoint nor loads a model.
 
-The caller must obtain the connection and observed receipt from a trusted
-provider resolver. Supplying matching strings does not establish artifact
-provenance or authenticate an endpoint. Registry lookup, credential resolution,
-and provider discovery are not implemented by this factory.
+Application code uses the [registered provider catalog](registered-provider-discovery.md)
+to obtain an opaque `VerifiedProvider`, then its `client(...)` factory. That path
+checks protected registration, the configured private Unix endpoint, and actual
+HTTP observation before calling this low-level constructor. Supplying matching
+strings directly to the low-level constructor does not establish trust. Remote
+provider authentication and credential resolution remain separate work.
 
 The model, vector width, task, profile revision, corpus generation, and expected
 receipt come from the binding. Operational input supplies only provider ID,
