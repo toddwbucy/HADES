@@ -472,6 +472,7 @@ fn original_archive_is_separate_from_the_parsed_markdown_and_is_lossless() {
     );
 }
 
+/// Cancel after an acknowledged write while the importer is held before commit.
 #[tokio::test]
 async fn cancelling_an_import_after_node_writes_publishes_nothing_and_retry_succeeds() {
     use crate::test_support::{Fixtures, with_temp_db};
@@ -479,40 +480,59 @@ async fn cancelling_an_import_after_node_writes_publishes_nothing_and_retry_succ
         let plan = |source: &str| Plan::from_bytes(source.as_bytes(), "md", "theory").unwrap();
         let base = plan(SAMPLE);
         super::import(&pool, &base, true).await.unwrap();
-        let extra = (0..500).map(|i| format!(
-            "## Section {i}\n<!-- node: state-notes/section-{i} | keywords: buffer, glossary -->\nSource content.\n\n"
-        )).collect::<String>();
-        let large = plan(&SAMPLE.replace("'0.10'", "'0.11'").replace("## Glossary", &(extra + "## Glossary")));
+        let updated = plan(&SAMPLE.replace("'0.10'", "'0.11'"));
         let cloned = pool.clone();
-        let task_plan = large.clone();
-        let task = tokio::spawn(async move { super::import(&cloned, &task_plan, false).await });
-        // Observe the root inside the active transaction. This proves actual
-        // node writes occurred before cancellation, without publishing them.
-        let root_path = format!("document/theory_nodes/{}", large.nodes()[0]["_key"].as_str().unwrap());
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let list = pool.writer().get("transaction").await.unwrap();
-                for tx in list["transactions"].as_array().unwrap() {
-                    let scoped = pool.writer().in_transaction(tx["id"].as_str().unwrap()).unwrap();
-                    if scoped.get(&root_path).await.is_ok() { return; }
-                }
-                assert!(!task.is_finished(), "import finished before cancellation was exercised");
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
-        }).await.unwrap();
-        task.abort();assert!(task.await.unwrap_err().is_cancelled());
+        let task_plan = updated.clone();
+        let (written, wait_written) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            super::store::import_until_node_write(&cloned, &task_plan, written).await
+        });
+        // Inspect this import's real uncommitted node while its callback is
+        // paused. Polling transaction inventory allowed commit to race abort().
+        let scoped = tokio::time::timeout(std::time::Duration::from_secs(10), wait_written)
+            .await
+            .unwrap()
+            .unwrap();
+        let root_path = format!(
+            "document/theory_nodes/{}",
+            updated.nodes()[0]["_key"].as_str().unwrap()
+        );
+        assert_eq!(
+            scoped.get(&root_path).await.unwrap()["source_version"],
+            "0.11"
+        );
+        assert!(!task.is_finished());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
         // Taking the exclusive lock again waits for the independent abort owner.
-        crate::db::transaction::run(&pool, vec!["theory_nodes".into()], move |client|async move {
-            assert!(client.get(&root_path).await.unwrap_err().is_not_found());Ok(())
-        }).await.unwrap();
-        assert_eq!(stored_count(&pool, "theory_nodes").await, base.nodes().len() as u64);
-        assert_eq!(stored_count(&pool, "theory_edges").await, base.edges().len() as u64);
+        crate::db::transaction::run(
+            &pool,
+            vec!["theory_nodes".into()],
+            move |client| async move {
+                assert!(client.get(&root_path).await.unwrap_err().is_not_found());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_count(&pool, "theory_nodes").await,
+            base.nodes().len() as u64
+        );
+        assert_eq!(
+            stored_count(&pool, "theory_edges").await,
+            base.edges().len() as u64
+        );
         assert_eq!(stored_count(&pool, "theory_imports").await, 1);
-        let recovered = super::import(&pool, &large, false).await.unwrap();
-        assert_eq!(recovered["inserted_nodes"], large.nodes().len());
-        assert_eq!(recovered["inserted_edges"], large.edges().len());
-        assert_eq!(super::import(&pool, &large, false).await.unwrap()["unchanged"], true);
-    }).await;
+        let recovered = super::import(&pool, &updated, false).await.unwrap();
+        assert_eq!(recovered["inserted_nodes"], updated.nodes().len());
+        assert_eq!(recovered["inserted_edges"], updated.edges().len());
+        assert_eq!(
+            super::import(&pool, &updated, false).await.unwrap()["unchanged"],
+            true
+        );
+    })
+    .await;
 }
 
 async fn stored_count(pool: &crate::db::ArangoPool, collection: &str) -> u64 {

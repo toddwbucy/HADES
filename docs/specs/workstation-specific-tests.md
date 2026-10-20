@@ -76,6 +76,14 @@ fails when prerequisites are missing, and assert meaningful stored state after
 failure/retry. CI green is evidence only for the gates listed above, not live
 inference, production reboot behavior, backup restoration, or retrieval quality.
 
+## Embedding profile persistence
+
+The `embedding_profile_store` database contract covers the internal
+[profile persistence and prepared-write guard](persisted-embedding-profiles.md):
+immutable identity records, atomic readiness publication, stale/cross-database
+refusal, metadata validation, and transaction rollback/cancellation. Select it
+with `--contract embedding_profile_store`; it is also in the default CI matrix.
+
 ## Codex reading contracts
 
 The isolated database matrix includes `reading_chat`: durable request deduplication,

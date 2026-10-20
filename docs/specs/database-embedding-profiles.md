@@ -444,6 +444,12 @@ adds the producing side for an explicit conventional retrieval contract; real-mo
 qualification, other capabilities, persistence, and public entry-point enforcement
 are still required.
 
+The [persistence slice](persisted-embedding-profiles.md) adds internal new-database
+profile/manifest storage, immutable revisions, an atomic readiness pointer, and
+a transaction-scoped prepared-write guard. It has no production callers.
+Provisioning ownership/recovery, schema/provider readiness checks, portable job
+pins, synthetic end-to-end ingestion/query, and public enforcement remain pending.
+
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
    Jina verification. Add isolated database creation/profile persistence and one
@@ -467,8 +473,10 @@ are still required.
    model-change action. Otherwise retain the documented offline path and keep
    that action unavailable; track the automated workflow separately.
 
-Each PR should be a draft and pause for review before the next dependent change.
-This audit PR stops at the plan. #203's GPU selector repair is independent.
+Per the owner's updated review workflow, open PRs ready for automated review,
+monitor feedback and CI, and address findings before the next dependent change.
+The repository owner performs merges. This audit PR stops at the plan.
+#203's GPU selector repair is independent.
 #167's evaluation baseline should be ready before choosing a smaller-model
 default; #3 is a candidate investigation, not a required backend.
 
