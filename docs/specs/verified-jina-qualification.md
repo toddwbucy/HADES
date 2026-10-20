@@ -158,6 +158,30 @@ qualify this conventional planning path; they do not establish semantic chunk
 quality or late-chunk behavior. Private database/provider cleanup completed,
 GPU usage returned to its initial 495 MiB, and installed services were unchanged.
 
+## ThinkPad registered-discovery result: 2026-10-20
+
+The [registered-discovery report](../evidence/jina-provider-discovery-thinkpad-2026-10-20.json)
+passed on clean implementation commit `885c4dd4d6fc7a9c0d4c25eb8dfcaed645a1b344`,
+using the same registered artifacts, runtime, and embedding space. Rust resolved
+`qualification-jina` through the explicit installation catalog, read the protected
+registration, and obtained the actual HTTP description independently. That
+observation agreed with Python's qualification before profile initialization;
+document admission repeated the registration and live-description checks.
+
+| Observation | Result |
+| --- | --- |
+| Independent registration / live-description agreement | Passed before initialization and admission |
+| Provider retrieval / stored-vector retrieval | 6/6 expected first in each |
+| Loaded adapter tensors / task input boundaries | 1,518 checked; 2,048 accepted and 2,049 refused before inference |
+| Long Unicode document | Same 12,384 source bytes and 6 persisted passages |
+| Independent body/input/overlap recount | All 6 match |
+| Long-document planning, embedding, commit, and full search scan | 2.00 s |
+
+The complete receipt, manifest, runtime, plan, and timings are retained in the
+report. The private database stopped cleanly, serving snapshots were removed,
+and GPU usage returned to 495 MiB. Installed services were unchanged. This is
+evidence for the internal registered-provider flow; public setup remains gated.
+
 ## Scope of the result
 
 Qualification applies to the recorded artifacts, runtime, numerical contract,
