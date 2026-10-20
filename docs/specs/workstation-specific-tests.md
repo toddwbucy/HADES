@@ -91,6 +91,13 @@ databases. It checks provider/profile drift, stored provenance, atomic replaceme
 scan budgets, and database isolation. Select it with `--contract profiled_documents`;
 the default CI matrix includes it. No real model or installed service is used.
 
+The opt-in [real Jina qualification](verified-jina-qualification.md) uses an
+approved local registration, fixed smoke cases, private verified HTTP, and the
+ignored `verified_jina_documents` test. Its owner selects `--verified-jina` plus
+a new `--verified-jina-report` on the same strict runner. It is separate from the
+default matrix and cannot turn absent real-model/GPU prerequisites into passing
+qualification evidence.
+
 ## Codex reading contracts
 
 The isolated database matrix includes `reading_chat`: durable request deduplication,

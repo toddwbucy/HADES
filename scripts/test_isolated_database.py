@@ -99,6 +99,10 @@ def main():
                            help="run the authored-graph MCP roundtrip on the private server")
     benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
                            help="run one database contract on the same strict private server")
+    benchmark.add_argument("--verified-jina", type=Path,
+                           help="run the opt-in real provider contract using this qualification context")
+    parser.add_argument("--verified-jina-report", type=Path,
+                        help="new report file for the real provider contract")
     benchmark.add_argument("--graphable-import", action="store_true",
                            help="run the mechanical importer CLI on the private server")
     parser.add_argument("--graphable-source", type=Path,
@@ -126,6 +130,15 @@ def main():
         parser.error("arangod must name an existing binary")
     if args.training_alignment_python and not args.training_alignment_python.is_file():
         parser.error("training alignment requires an existing Python interpreter")
+    if bool(args.verified_jina) != bool(args.verified_jina_report):
+        parser.error("--verified-jina and --verified-jina-report are required together")
+    if args.verified_jina and not args.verified_jina.is_file():
+        parser.error("verified Jina context must name an existing file")
+    if args.verified_jina_report and (
+        not args.verified_jina_report.parent.is_dir()
+        or args.verified_jina_report.exists() or args.verified_jina_report.is_symlink()
+    ):
+        parser.error("verified Jina report must be a new file in an existing directory")
 
     if (args.graphable_source or args.graphable_archive) and not args.graphable_import:
         parser.error("graphable source/archive require --graphable-import")
@@ -249,6 +262,12 @@ def main():
             else:
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
+            if args.verified_jina:
+                env["HADES_VERIFIED_JINA_CONTEXT"] = str(args.verified_jina.absolute())
+                env["HADES_VERIFIED_JINA_REPORT"] = str(args.verified_jina_report.absolute())
+                command("verified-jina", ["-p", "hades-core", "--test", "verified_jina_documents"],
+                        ignored=True)
+                return
             if args.graphable_import:
                 if args.graphable_source:
                     env["HADES_GRAPHABLE_SOURCE"] = str(args.graphable_source.absolute())
