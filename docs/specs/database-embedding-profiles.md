@@ -473,8 +473,10 @@ pins, synthetic end-to-end ingestion/query, and public enforcement remain pendin
    model-change action. Otherwise retain the documented offline path and keep
    that action unavailable; track the automated workflow separately.
 
-Each PR should be a draft and pause for review before the next dependent change.
-This audit PR stops at the plan. #203's GPU selector repair is independent.
+Per the owner's updated review workflow, open PRs ready for automated review,
+monitor feedback and CI, and address findings before the next dependent change.
+The repository owner performs merges. This audit PR stops at the plan.
+#203's GPU selector repair is independent.
 #167's evaluation baseline should be ready before choosing a smaller-model
 default; #3 is a candidate investigation, not a required backend.
 

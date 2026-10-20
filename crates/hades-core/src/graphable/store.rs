@@ -8,6 +8,34 @@ use serde_json::{Value, json};
 /// is opt-in. Empty schema can survive a failed attempt, but content is atomic.
 /// There is deliberately no force/overwrite option.
 pub async fn import(pool: &ArangoPool, plan: &Plan, create_graph: bool) -> Result<Value> {
+    import_inner(
+        pool,
+        plan,
+        create_graph,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+/// Exercise the normal importer, pausing after its first acknowledged node batch.
+/// This checkpoint is invocation-local and absent from production builds.
+#[cfg(test)]
+pub(super) async fn import_until_node_write(
+    pool: &ArangoPool,
+    plan: &Plan,
+    written: tokio::sync::oneshot::Sender<ArangoClient>,
+) -> Result<Value> {
+    import_inner(pool, plan, false, Some(written)).await
+}
+
+/// Prepare collections and retain one transaction owner for the complete import.
+async fn import_inner(
+    pool: &ArangoPool,
+    plan: &Plan,
+    create_graph: bool,
+    #[cfg(test)] written: Option<tokio::sync::oneshot::Sender<ArangoClient>>,
+) -> Result<Value> {
     if create_graph {
         let graphs = handlers::db_graph_list(pool).await?;
         if !graphs["graphs"]
@@ -47,7 +75,18 @@ pub async fn import(pool: &ArangoPool, plan: &Plan, create_graph: bool) -> Resul
     transaction::run(
         pool,
         vec![nodes.clone(), edges.clone(), imports.clone()],
-        move |client| write_plan(client, plan, database, nodes, edges, imports),
+        move |client| {
+            write_plan(
+                client,
+                plan,
+                database,
+                nodes,
+                edges,
+                imports,
+                #[cfg(test)]
+                written,
+            )
+        },
     )
     .await
     .map_err(Into::into)
@@ -60,6 +99,7 @@ async fn write_plan(
     nodes: String,
     edges: String,
     imports: String,
+    #[cfg(test)] mut written: Option<tokio::sync::oneshot::Sender<ArangoClient>>,
 ) -> std::result::Result<Value, ArangoError> {
     // Guard legacy/unmanaged rows too: an absent manifest does not grant
     // permission to import a conflicting source revision into a used graph.
@@ -127,6 +167,15 @@ async fn write_plan(
                 return Err(ArangoError::Request(format!(
                     "import batch failed: {response}"
                 )));
+            }
+            #[cfg(test)]
+            if collection == &nodes
+                && let Some(written) = written.take()
+            {
+                // Keep the transaction before commit until cancellation drops
+                // this future. No sleep, global hook, or unrelated transaction scan.
+                let _ = written.send(client.clone());
+                std::future::pending::<()>().await;
             }
         }
     }
