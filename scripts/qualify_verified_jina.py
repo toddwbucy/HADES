@@ -172,7 +172,9 @@ def main(argv=None):
             try:
                 provider.unload()
             except Exception as error:
-                report.update(passed=False, stage="cleanup")
+                if report["passed"]:
+                    report["stage"] = "cleanup"
+                report["passed"] = False
                 report["cleanup_error"] = {"type": type(error).__name__, "message": str(error)[:2048]}
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         (output / "report.json").write_text(

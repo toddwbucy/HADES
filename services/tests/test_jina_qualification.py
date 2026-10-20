@@ -163,8 +163,9 @@ def test_cli_refuses_gpu_fallback_and_preserves_existing_evidence(tmp_path, monk
         os.umask(previous_umask)
 
 
-def test_cli_cleanup_failure_cannot_leave_a_success_report(tmp_path, registry, provider, monkeypatch):
-    """Retain failed cleanup evidence even when both qualification stages reported success."""
+@pytest.mark.parametrize("failed_stage", [None, "provider", "database"])
+def test_cli_cleanup_failure_preserves_original_failure(tmp_path, registry, provider, monkeypatch, failed_stage):
+    """Retain cleanup evidence without erasing an earlier failed stage or reporting success."""
     import embedding.qualification as protocol
     import embedding.verified_jina as verified
     spec = importlib.util.spec_from_file_location("qualification_cli", ROOT / "scripts/qualify_verified_jina.py")
@@ -177,10 +178,14 @@ def test_cli_cleanup_failure_cannot_leave_a_success_report(tmp_path, registry, p
 
     def succeeded(_provider, _cases, *, evidence):
         """Substitute only the slow gates; this test exercises CLI cleanup and reporting."""
+        if failed_stage == "provider":
+            raise ValueError("injected provider failure")
         evidence["description"] = {}
 
     async def database(*_args):
         """Report a successful DB gate without starting external resources."""
+        if failed_stage == "database":
+            raise ValueError("injected database failure")
         return {"passed": True}
 
     def failed_unload():
@@ -200,8 +205,13 @@ def test_cli_cleanup_failure_cannot_leave_a_success_report(tmp_path, registry, p
                 "--output-dir", str(output), "--arangod", "/bin/true",
             ])
         report = json.loads((output / "report.json").read_text())
-        assert code == 1 and report["passed"] is False and report["stage"] == "cleanup"
-        assert report["database"]["passed"] is True
+        assert code == 1 and report["passed"] is False
+        assert report["stage"] == (failed_stage or "cleanup")
+        if failed_stage is None:
+            assert report["database"]["passed"] is True
+            assert "error" not in report
+        else:
+            assert report["error"]["message"] == f"injected {failed_stage} failure"
         assert report["cleanup_error"]["message"] == "injected cleanup failure"
     finally:
         os.umask(previous_umask)
