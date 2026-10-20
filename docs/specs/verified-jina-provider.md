@@ -44,7 +44,9 @@ The adapter uses this standard tokenizer directly, not the model's processor.
 The full artifact MD5 still covers all registered model/code/adapter dependencies.
 
 The provider advertises conventional text retrieval only. Images, specialized
-code, late chunking, and offset-based operations are unavailable. This is a new
+code, late chunking, and general token-offset mappings are unavailable. Conventional
+passage planning returns source-byte spans with exact token counts; it does not
+advertise the `tokenizer_offsets` capability needed for late chunking. This is a new
 declared embedding space: the legacy high-level encoder uses implicit defaults,
 including bfloat16 autocasting, and historical vectors must not be adopted as
 compatible. Late/code behavior needs its own implementation and qualification
@@ -58,8 +60,8 @@ state. A reload gets a fresh serving generation even when artifact and space
 identities match. Device relocation and a different serving token budget do not
 change the space when the effective numerical contract is unchanged.
 
-Every embedding operation requires an exact expected receipt. Admission never
-silently loads or rebinds after unload. One lifecycle lock covers admission,
+Every embedding or planning operation requires an exact expected receipt.
+Admission never silently loads or rebinds after unload. One lifecycle lock covers admission,
 tokenization, all forward passes, the final artifact/behavior checks, and unload.
 Drift discards the complete operation and invalidates the observed load.
 The response contains the provider's actual checked receipt, not an unchecked
@@ -88,6 +90,10 @@ continues to construct its current backend.
   Unknown fields, duplicate JSON keys, coercions, and unsupported capabilities
   fail validation. A successful response includes `receipt` in the shape
   required by the bound client.
+- `POST /v1/passages` accepts one source string and the saved conventional token
+  policy. It returns a receipt-bound complete plan with measured body/input/overlap
+  counts and original UTF-8 offsets. [Planning limits and semantics](profile-token-planning.md)
+  apply; it performs no model inference.
 - Changed/unavailable identity returns HTTP 409 (`PE_RECEIPT_MISMATCH`). Oversized
   inputs return structured token counts with HTTP 400. Requests are capped at
   8 MiB, 128 inputs, and 262,144 total tokens; the per-input serving ceiling also
@@ -123,8 +129,8 @@ weights were registered, copied, loaded, or used for inference in that slice.
 The opt-in [real-model qualification protocol](verified-jina-qualification.md)
 now covers fixed retrieval/tokenizer checks, performance observations, reloads,
 and the actual HTTP/Rust/disposable-database flow. Internal profile persistence and
-guarded preplanned document ingest/query commits are implemented. General quality
-evaluation, token-aware planning, late/code capabilities, trusted provider
+guarded document ingest/query commits and conventional token-aware planning are
+implemented. General quality evaluation, late/code capabilities, trusted provider
 discovery, public entry-point enforcement, legacy policy, and frontend creation
 remain pending. Database pairing stays disabled until the applicable public entry
 points enforce it together.

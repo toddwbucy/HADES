@@ -50,6 +50,7 @@ pub(super) async fn previous_revision(
     key: &str,
     replace: bool,
     expected: &BoundEmbeddingRequest,
+    snapshot: &ProfileSnapshot,
 ) -> Result<Option<String>, ArangoError> {
     let existing = document(client, key).await?;
     if let Some(row) = existing {
@@ -57,7 +58,7 @@ pub(super) async fn previous_revision(
             replace,
             "source already exists; replacement must be explicit",
         )?;
-        validate_document(&row, key, expected)?;
+        validate_document(&row, key, expected, snapshot)?;
         return Ok(Some(revision(&row)?.into()));
     }
     Ok(None)
@@ -94,7 +95,7 @@ pub(super) async fn write(
         "source changed after preparation; prepare it again",
     )?;
     if let Some(row) = &existing {
-        validate_document(row, key, &prepared.binding)?;
+        validate_document(row, key, &prepared.binding, &prepared.snapshot)?;
     }
     // These bounded reads also detect stray/foreign children of a supposedly new source.
     let chunks = children(&client, "chunks", key).await?;
@@ -122,7 +123,14 @@ pub(super) async fn write(
                 .find(|c| c["_key"] == embedding["chunk_key"])
                 .ok_or_else(|| invalid("existing vector has no matching chunk"))?;
             allowed_fields(chunk, CHUNK_FIELDS)?;
-            validate_triplet(embedding, chunk, row, &prepared.binding, normalization)?;
+            validate_triplet(
+                embedding,
+                chunk,
+                row,
+                &prepared.binding,
+                normalization,
+                &prepared.snapshot,
+            )?;
             let index = embedding["chunk_index"].as_u64().unwrap() as usize;
             let span = &row["passage_plan"]["spans"][index];
             ensure(
@@ -215,6 +223,7 @@ pub(super) async fn search(
     normalization: Normalization,
     top_k: usize,
     max_rows: u64,
+    snapshot: ProfileSnapshot,
 ) -> Result<(Vec<Value>, u64), ArangoError> {
     let mut top = TopK::new(vector, expected.model.clone(), "parent_key", top_k)?;
     let mut after = String::new();
@@ -235,7 +244,7 @@ pub(super) async fn search(
                     chunk: KEEP(c, "_key", "format", "parent_key", "chunk_key",
                         "chunk_index", "source_sha256", "embedding_binding", "span"),
                     document: KEEP(d, "_key", "format", "source_sha256",
-                        "embedding_binding", "chunk_count")
+                        "embedding_binding", "chunk_count", "passage_plan")
                 }
         "#,
             json!({"after":after}),
@@ -258,6 +267,7 @@ pub(super) async fn search(
                 &row["document"],
                 &expected,
                 normalization,
+                &snapshot,
             )?;
             let key = row["vector"]["_key"].as_str().unwrap();
             ensure(
@@ -297,8 +307,34 @@ fn validate_triplet(
     document: &Value,
     expected: &BoundEmbeddingRequest,
     normalization: Normalization,
+    snapshot: &ProfileSnapshot,
 ) -> Result<(), ArangoError> {
     binding(vector, expected)?;
+    let span: TokenPassage = serde_json::from_value(chunk["span"].clone())
+        .map_err(|_| invalid("invalid stored token passage"))?;
+    let policy = &snapshot
+        .profile()
+        .workloads
+        .documents
+        .as_ref()
+        .expect("admitted documents")
+        .chunking;
+    let ChunkPolicy::Conventional {
+        passage_tokens,
+        overlap_tokens,
+    } = policy
+    else {
+        return Err(invalid("stored passage requires conventional policy"));
+    };
+    ensure(
+        span.start_byte < span.end_byte
+            && span.end_byte <= MAX_TEXT_BYTES
+            && span.body_tokens <= *passage_tokens
+            && span.overlap_tokens <= *overlap_tokens
+            && span.input_tokens > 0
+            && span.input_tokens <= snapshot.profile().capabilities.max_input_tokens,
+        "stored passage violates token policy",
+    )?;
     ensure(
         chunk["format"] == FORMAT
             && document["format"] == FORMAT
@@ -314,6 +350,24 @@ fn validate_triplet(
         .as_u64()
         .filter(|i| *i < count)
         .ok_or_else(|| invalid("invalid chunk ordinal"))?;
+    let plan: PassagePlan = serde_json::from_value(document["passage_plan"].clone())
+        .map_err(|_| invalid("invalid stored token passage plan"))?;
+    let stored: BoundEmbeddingRequest = serde_json::from_value(vector["embedding_binding"].clone())
+        .map_err(|_| invalid("invalid stored embedding binding"))?;
+    plan.validate_metadata(
+        document["source_sha256"].as_str().unwrap_or(""),
+        &stored,
+        policy,
+        snapshot.profile().capabilities.max_input_tokens,
+    )
+    .map_err(|_| invalid("stored passage plan changes identity or token policy"))?;
+    ensure(
+        plan.spans.len() as u64 == count
+            && plan.spans.get(index as usize) == Some(&span)
+            && span.input_tokens <= plan.max_input_tokens
+            && (index != 0 || (span.start_byte == 0 && span.overlap_tokens == 0)),
+        "stored chunk disagrees with source passage plan",
+    )?;
     let parent = document["_key"]
         .as_str()
         .filter(|key| valid_key(key, "bd"))
@@ -349,6 +403,7 @@ fn validate_document(
     row: &Value,
     key: &str,
     expected: &BoundEmbeddingRequest,
+    snapshot: &ProfileSnapshot,
 ) -> Result<(), ArangoError> {
     allowed_fields(row, DOCUMENT_FIELDS)?;
     binding(row, expected)?;
@@ -364,24 +419,32 @@ fn validate_document(
             && row["source_sha256"] == hash(text.as_bytes()),
         "stored source identity is invalid",
     )?;
+    let plan: PassagePlan = serde_json::from_value(row["passage_plan"].clone())
+        .map_err(|_| invalid("invalid stored token passage plan"))?;
+    let stored: BoundEmbeddingRequest = serde_json::from_value(row["embedding_binding"].clone())
+        .map_err(|_| invalid("invalid stored embedding binding"))?;
+    let profile = snapshot.profile();
+    plan.validate(
+        text,
+        &stored,
+        &profile
+            .workloads
+            .documents
+            .as_ref()
+            .expect("admitted documents")
+            .chunking,
+        profile.capabilities.max_input_tokens,
+    )
+    .map_err(|_| invalid("stored passage plan violates source identity or token policy"))?;
     ensure(
-        row["passage_plan"]["format"] == "hades-supplied-byte-spans-v1"
-            && row["passage_plan"]
-                .as_object()
-                .is_some_and(|o| o.len() == 2),
-        "unsupported source passage plan",
-    )?;
-    let passages: Vec<PassageSpan> = serde_json::from_value(row["passage_plan"]["spans"].clone())
-        .map_err(|_| invalid("invalid stored passage plan"))?;
-    ensure(
-        row["chunk_count"].as_u64() == Some(passages.len() as u64),
+        row["chunk_count"].as_u64() == Some(plan.spans.len() as u64),
         "stored source chunk count disagrees with plan",
     )?;
     validate_input(&DocumentInput {
         source_id: source_id.into(),
         text: text.into(),
-        passages,
-    })?;
+    })
+    .map_err(|_| invalid("invalid stored extraction metadata"))?;
     revision(row)?;
     Ok(())
 }

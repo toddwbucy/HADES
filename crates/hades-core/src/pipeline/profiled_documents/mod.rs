@@ -1,13 +1,13 @@
 //! Internal document admission -> verified embedding -> atomic storage -> retrieval.
 //!
 //! No public command uses this path yet. A trusted caller supplies extracted text
-//! and preplanned UTF-8 byte spans; tokenizer-exact chunk planning, provider
+//! while the pinned provider plans token-checked UTF-8 byte spans. Provider
 //! discovery, provisioning, and all-entry-point enforcement remain prerequisites
 //! for activation. Only conventional document text and cosine ranking are supported.
 
 mod storage;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -18,30 +18,21 @@ use crate::{
         ProviderReceipt, WorkloadKind,
         store::{ProfileSnapshot, ProfileStore},
     },
-    persephone::bound_embedding::{BoundEmbeddingClient, ProviderConnection},
+    persephone::{
+        bound_embedding::{BoundEmbeddingClient, ProviderConnection},
+        passage_plan::{MAX_PASSAGES, MAX_TEXT_BYTES, PassagePlan, TokenPassage, validate_source},
+    },
     pipeline::PipelineError,
 };
 
-const FORMAT: &str = "hades-bound-document-v1";
-const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_PASSAGES: usize = 128;
-const MAX_PASSAGE_BYTES: usize = 4 * 1024 * 1024;
+const FORMAT: &str = "hades-bound-document-v2";
 const MAX_PREPARED_BYTES: usize = 16 * 1024 * 1024;
 const COLLECTIONS: [&str; 3] = ["documents", "chunks", "embeddings"];
 
-/// A passage in the supplied extraction's UTF-8 bytes, with an exclusive end.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PassageSpan {
-    pub start_byte: usize,
-    pub end_byte: usize,
-}
-
-/// Already extracted and planned text. No filesystem, URL, or extractor is invoked.
+/// Already extracted text. The verified provider supplies every passage boundary.
 pub struct DocumentInput {
     pub source_id: String,
     pub text: String,
-    pub passages: Vec<PassageSpan>,
 }
 
 /// Private prepared rows cannot be replaced with arbitrary vectors by the caller.
@@ -155,7 +146,7 @@ impl ProfiledDocuments {
         })
     }
 
-    /// Admit and embed a complete preplanned extraction without database writes.
+    /// Plan and embed the complete extraction under the stored conventional policy.
     /// Replacement is explicit and pins the previous metadata revision before inference.
     /// Provider overflow is returned unchanged; no truncation or fallback is attempted.
     pub async fn prepare(
@@ -163,19 +154,37 @@ impl ProfiledDocuments {
         input: DocumentInput,
         replace: bool,
     ) -> Result<PreparedDocument, PipelineError> {
-        let texts = validate_input(&input)?;
+        validate_input(&input)?;
         self.current().await?;
         let key = digest_key("bd", &json!([input.source_id]));
-        let previous_revision =
-            storage::previous_revision(self.pool.writer(), &key, replace, self.passage.binding())
-                .await?;
+        let previous_revision = storage::previous_revision(
+            self.pool.writer(),
+            &key,
+            replace,
+            self.passage.binding(),
+            &self.snapshot,
+        )
+        .await?;
+        let planned = self.passage.plan_passages(&input.text).await?;
+        ensure(
+            planned.binding == *self.passage.binding(),
+            "planned provider binding changed",
+        )?;
+        // Detect policy changes during planning before spending any inference.
+        self.current().await?;
+        let plan = planned.output;
+        let texts: Vec<String> = plan
+            .spans
+            .iter()
+            .map(|span| input.text[span.start_byte..span.end_byte].to_owned())
+            .collect();
         let result = self.passage.embed(&texts, Some(16)).await?;
         ensure(
             result.binding == *self.passage.binding(),
             "prepared provider binding changed",
         )?;
         ensure(
-            result.output.embeddings.len() == input.passages.len(),
+            result.output.embeddings.len() == plan.spans.len(),
             "provider returned an incomplete document",
         )?;
         let source_hash = hash(input.text.as_bytes());
@@ -183,13 +192,13 @@ impl ProfiledDocuments {
         let document = json!({
             "_key":key, "format":FORMAT, "source_id":input.source_id,
             "source_sha256":source_hash, "full_text":input.text,
-            "chunk_count":input.passages.len(), "embedding_binding":binding,
-            "passage_plan":{"format":"hades-supplied-byte-spans-v1","spans":input.passages}
+            "chunk_count":plan.spans.len(), "embedding_binding":binding,
+            "passage_plan":plan
         });
         let mut chunks = Vec::new();
         let mut embeddings = Vec::new();
-        for (index, ((span, text), vector)) in input
-            .passages
+        for (index, ((span, text), vector)) in plan
+            .spans
             .iter()
             .zip(texts)
             .zip(result.output.embeddings)
@@ -282,13 +291,22 @@ impl ProfiledDocuments {
         validate_vector(&vector, result.binding.dimension, self.normalization)?;
         let passage = self.passage.binding().clone();
         let normalization = self.normalization;
+        let snapshot = self.snapshot.clone();
         let (items, scanned) = self
             .store
             .guarded_write(
                 &self.snapshot,
                 COLLECTIONS.iter().map(|c| (*c).into()).collect(),
                 move |client| {
-                    storage::search(client, passage, vector, normalization, top_k, max_rows)
+                    storage::search(
+                        client,
+                        passage,
+                        vector,
+                        normalization,
+                        top_k,
+                        max_rows,
+                        snapshot,
+                    )
                 },
             )
             .await?;
@@ -309,59 +327,16 @@ impl ProfiledDocuments {
     }
 }
 
-/// Validate complete, ordered source coverage without reinterpreting byte offsets.
-fn validate_input(input: &DocumentInput) -> Result<Vec<String>, ArangoError> {
+/// Reject malformed extraction metadata before contacting either external service.
+fn validate_input(input: &DocumentInput) -> Result<(), PipelineError> {
     ensure(
         !input.source_id.trim().is_empty()
             && input.source_id.len() <= 4096
             && !input.source_id.chars().any(char::is_control),
         "invalid source identifier",
     )?;
-    ensure(
-        !input.text.trim().is_empty() && input.text.len() <= MAX_TEXT_BYTES,
-        "document text must be nonempty and at most 2 MiB",
-    )?;
-    ensure(
-        !input.passages.is_empty() && input.passages.len() <= MAX_PASSAGES,
-        "document requires 1..=128 preplanned passages",
-    )?;
-    let mut previous = None::<&PassageSpan>;
-    let mut texts = Vec::new();
-    let mut passage_bytes = 0;
-    for span in &input.passages {
-        ensure(
-            span.start_byte < span.end_byte
-                && span.end_byte <= input.text.len()
-                && input.text.is_char_boundary(span.start_byte)
-                && input.text.is_char_boundary(span.end_byte),
-            "invalid UTF-8 passage boundary",
-        )?;
-        ensure(
-            match previous {
-                None => span.start_byte == 0,
-                Some(p) => {
-                    span.start_byte > p.start_byte
-                        && span.start_byte <= p.end_byte
-                        && span.end_byte > p.end_byte
-                }
-            },
-            "passages must cover source bytes in order without gaps or duplicate spans",
-        )?;
-        let text = &input.text[span.start_byte..span.end_byte];
-        ensure(!text.trim().is_empty(), "passage contains no text")?;
-        passage_bytes += text.len();
-        ensure(
-            passage_bytes <= MAX_PASSAGE_BYTES,
-            "overlapping passages exceed 4 MiB",
-        )?;
-        texts.push(text.into());
-        previous = Some(span);
-    }
-    ensure(
-        previous.is_some_and(|p| p.end_byte == input.text.len()),
-        "passages do not cover the complete source",
-    )?;
-    Ok(texts)
+    validate_source(&input.text)?;
+    Ok(())
 }
 
 /// Reject zero/nonfinite vectors and check the declared normalization before storage/scoring.
@@ -410,83 +385,5 @@ fn ensure(condition: bool, message: &str) -> Result<(), ArangoError> {
         Ok(())
     } else {
         Err(invalid(message))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Refuse oversized sources and excessive fan-out before cloning passage bodies.
-    #[test]
-    fn bounds_source_size_and_passage_count_before_inference() {
-        let mut input = DocumentInput {
-            source_id: "source".into(),
-            text: "x".repeat(MAX_TEXT_BYTES + 1),
-            passages: vec![PassageSpan {
-                start_byte: 0,
-                end_byte: MAX_TEXT_BYTES + 1,
-            }],
-        };
-        assert!(
-            validate_input(&input)
-                .unwrap_err()
-                .to_string()
-                .contains("2 MiB")
-        );
-        input.text = "x".repeat(MAX_PASSAGES + 1);
-        input.passages = (0..=MAX_PASSAGES)
-            .map(|start_byte| PassageSpan {
-                start_byte,
-                end_byte: start_byte + 1,
-            })
-            .collect();
-        assert!(
-            validate_input(&input)
-                .unwrap_err()
-                .to_string()
-                .contains("128")
-        );
-    }
-
-    /// Bound aggregate overlap even when each individual span fits the source limit.
-    #[test]
-    fn overlapping_spans_cannot_amplify_memory_beyond_admission_budget() {
-        let input = DocumentInput {
-            source_id: "source".into(),
-            text: "x".repeat(MAX_TEXT_BYTES),
-            passages: (0..3)
-                .map(|i| PassageSpan {
-                    start_byte: i,
-                    end_byte: MAX_TEXT_BYTES - 2 + i,
-                })
-                .collect(),
-        };
-        assert!(
-            validate_input(&input)
-                .unwrap_err()
-                .to_string()
-                .contains("4 MiB")
-        );
-    }
-
-    /// Accept overlapping byte spans without converting Unicode offsets to character counts.
-    #[test]
-    fn valid_overlap_preserves_exact_unicode_source_bytes() {
-        let input = DocumentInput {
-            source_id: "source".into(),
-            text: "éabc東京".into(),
-            passages: vec![
-                PassageSpan {
-                    start_byte: 0,
-                    end_byte: 5,
-                },
-                PassageSpan {
-                    start_byte: 2,
-                    end_byte: 11,
-                },
-            ],
-        };
-        assert_eq!(validate_input(&input).unwrap(), ["éabc", "abc東京"]);
     }
 }

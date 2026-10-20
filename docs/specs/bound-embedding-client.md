@@ -31,8 +31,8 @@ object does not retarget existing clients.
 
 ## Receipt wire contract
 
-Every `POST /v1/embeddings` request made by the bound client includes
-`expected_receipt`, with exactly this shape:
+Every `POST /v1/embeddings` and `POST /v1/passages` request made by the bound
+client includes `expected_receipt`, with exactly this shape:
 
 ```json
 {
@@ -77,10 +77,13 @@ before sending the first request.
 Results carry the captured `BoundEmbeddingRequest` alongside vectors. This is
 not permission to write to a database. The orchestrator must retain database
 identity and recheck profile revision, corpus generation, and job ownership
-before committing. This client does not tokenize, enforce token budgets, choose
-chunk boundaries, or manage caches. The verified provider now implements a
-conventional Jina behavior space and receipt production. Complete workload
-policies, profile persistence, and enforcement at every public entry point remain
+before committing. `plan_passages(text)` sends the saved conventional policy to
+the trusted provider and validates the typed response's source coverage, identity,
+and token limits before returning it. It uses the same receipt as embedding;
+query/late roles cannot call this method. See [token-aware planning](profile-token-planning.md).
+The client does not implement a tokenizer or manage caches. The verified provider
+implements a conventional Jina behavior space and receipt production. Complete
+workload policies and enforcement at every public entry point remain
 prerequisites for enabling database pairing. Existing clients retain their
 previous wire behavior.
 
@@ -97,4 +100,5 @@ cargo test --locked -p hades-core --test bound_embedding_contract \
 CI includes the new target in its service-free contract gate. Tests cover explicit
 profile resolution, asymmetric tasks, same-width incompatible spaces, malformed
 and duplicate identity fields, batch/reload rejection, OOM retry pins, late-mode
-policy, independent bindings/clones, response limits, and provider refusal.
+policy, independent bindings/clones, response limits, provider refusal, strict
+plans, Unicode coverage, overlap policy, and allocation limits.

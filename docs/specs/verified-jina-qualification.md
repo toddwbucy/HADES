@@ -34,6 +34,12 @@ or evidence that this model is preferable to another model.
 - A private verified HTTP server supplies real vectors to the Rust bound client.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
   bindings, and retrieves all six expected answers from stored vectors.
+- After those retrieval checks, the fixed Unicode text in
+  `services/tests/fixtures/jina_passage_planning.txt` must produce multiple
+  conventional passages with overlap. The source bytes survive storage; every
+  stored body/input/overlap count is independently checked with the same live
+  tokenizer. Search validates all persisted chunks. The report retains the plan,
+  source SHA-256, whole-input token count, and recount result.
 
 `report.json` records success/failure, the failing stage and partial observations,
 exact suite SHA-256, implementation commit/dirty status, manifest, runtime versions,
@@ -141,7 +147,9 @@ gate to verify declared NFC independently, rejects other normalization policies,
 and still requires exact whitespace preservation. The cases and numerical/ranking
 criteria did not change; the failed v1 report is retained with the run evidence.
 
-The database test uses one explicit passage per small document. Token-aware
-planning, all public CLI/MCP/job paths, code/late-chunk capabilities, trusted
-provider discovery, recoverable provisioning, legacy policy, and frontend
-creation remain separate work. Public pairing remains gated.
+The original result above used one explicit passage per small document. The
+current protocol adds [token-aware planning](profile-token-planning.md) and a
+long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
+paths, code/late-chunk capabilities, trusted provider discovery, recoverable
+provisioning, legacy policy, and frontend creation remain separate work.
+Public pairing remains gated.

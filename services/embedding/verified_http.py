@@ -15,6 +15,7 @@ from .identity import ProviderReceipt, _unique_object
 from .jina_v4 import BackendOutOfMemoryError, InputTooLargeError
 from .snapshot import ArtifactChangedError
 from .verified_jina import BehaviorChangedError, ReceiptMismatchError, VerifiedJinaProvider
+from .passage_plan import PlanningError
 
 logger = logging.getLogger(__name__)
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
@@ -32,7 +33,20 @@ class VerifiedRequest(BaseModel):
     batch_size: int | None = Field(default=None, ge=1)
 
 
-async def _read_request(request: Request):
+class PassageRequest(BaseModel):
+    """A bounded conventional policy and source, with no caller-supplied spans."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str
+    input: str
+    task: Literal["retrieval.passage"]
+    expected_receipt: dict
+    passage_tokens: int = Field(ge=1, le=0xffffffff)
+    overlap_tokens: int = Field(ge=0, le=0xffffffff)
+    max_input_tokens: int = Field(ge=1, le=0xffffffff)
+
+
+async def _read_request(request: Request, request_type=VerifiedRequest):
     """Bound streamed JSON and preserve duplicate-key rejection before validation."""
     body = bytearray()
     async for chunk in request.stream():
@@ -41,7 +55,7 @@ async def _read_request(request: Request):
         body.extend(chunk)
     try:
         value = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object)
-        parsed = VerifiedRequest.model_validate(value)
+        parsed = request_type.model_validate(value)
         expected = ProviderReceipt.from_dict(parsed.expected_receipt)
     except (ValueError, ValidationError, RecursionError) as exc:
         raise PEError(422, "PE_INVALID_REQUEST",
@@ -86,6 +100,8 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
                           input_index=exc.index) from exc
         except BackendOutOfMemoryError as exc:
             raise PEError(503, "PE_BACKEND_OOM", "Embedding backend exhausted memory") from exc
+        except PlanningError as exc:
+            raise PEError(400, "PE_PASSAGE_PLAN_LIMIT", str(exc)) from exc
         except PEError:
             raise
         except ValueError as exc:
@@ -108,6 +124,17 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
         # one input per forward pass, keeping tokenization/pooling explicit.
         result = await run(lambda: provider.embed(model=parsed.model, texts=texts,
                                                   task=parsed.task, expected=expected))
+        return JSONResponse(result)
+
+    @app.post("/v1/passages")
+    async def passages(request: Request):
+        """Return complete token-checked byte spans without running model inference."""
+        parsed, expected = await _read_request(request, PassageRequest)
+        result = await run(lambda: provider.plan(
+            model=parsed.model, text=parsed.input, task=parsed.task, expected=expected,
+            passage_tokens=parsed.passage_tokens, overlap_tokens=parsed.overlap_tokens,
+            max_input_tokens=parsed.max_input_tokens,
+        ))
         return JSONResponse(result)
 
     return app

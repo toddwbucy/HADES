@@ -18,6 +18,7 @@ from .identity import ArtifactManifest, ProviderReceipt, embedding_space_id
 from .jina_v4 import EMBEDDING_DIM, MAX_TOKENS, InputTooLargeError, JinaV4Embedder
 from .registry import RegisteredModel
 from .snapshot import ArtifactChangedError
+from .passage_plan import plan_passages
 
 PROMPTS = {"retrieval.passage": "Passage: ", "retrieval.query": "Query: "}
 TOKENIZER_FILES = frozenset({"config.json", "tokenizer_config.json", "tokenizer.json",
@@ -263,3 +264,27 @@ class VerifiedJinaProvider:
             return {"object": "list", "model": self._registration.model_id, "data": rows,
                     "receipt": dict(observed["receipt"]),
                     "usage": {"prompt_tokens": total_tokens, "total_tokens": total_tokens}}
+
+    def plan(self, *, model, text, task, expected, passage_tokens, overlap_tokens, max_input_tokens):
+        """Plan conventional source passages under the same checked load used for inference."""
+        if model != self._registration.model_id or task != "retrieval.passage":
+            raise ValueError("planning requires the registered model's passage task")
+        if not isinstance(expected, ProviderReceipt):
+            raise ValueError("an expected provider receipt is required")
+        if (type(max_input_tokens) is not int or type(passage_tokens) is not int
+                or not 0 < passage_tokens <= max_input_tokens <= 0xffffffff):
+            raise ValueError("passage policy must fit the declared profile ceiling")
+        with self._operation(expected) as observed:
+            def count(value, rendered):
+                """Use the actual serving tokenizer and explicit prompt/special-token policy."""
+                encoded = self._backend._tokenizer(
+                    (PROMPTS[task] if rendered else "") + value,
+                    add_special_tokens=rendered, padding=False, truncation=False,
+                    split_special_tokens=False, return_attention_mask=False,
+                    return_token_type_ids=False, verbose=False,
+                )
+                return len(encoded["input_ids"])
+
+            result = plan_passages(text, passage_tokens=passage_tokens, overlap_tokens=overlap_tokens,
+                                   max_input_tokens=min(max_input_tokens, self._max_input_tokens), count=count)
+            return dict(result, model=self.model_name, task=task, receipt=dict(observed["receipt"]))

@@ -6,7 +6,7 @@ use hades_core::{
     db::{ArangoPool, crud},
     embedding_profile::{ArtifactManifest, EmbeddingProfile, ProviderReceipt, store::ProfileStore},
     persephone::{bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint},
-    pipeline::profiled_documents::{DocumentInput, PassageSpan, ProfiledDocuments},
+    pipeline::profiled_documents::{DocumentInput, ProfiledDocuments},
     test_support::{Fixtures, with_temp_db},
 };
 use serde_json::{Value, json};
@@ -35,14 +35,19 @@ async fn install(pool: &ArangoPool, context: &Value) -> ProfiledDocuments {
     let descriptor = &context["description"];
     let manifest =
         ArtifactManifest::from_json(&serde_json::to_vec(&context["manifest"]).unwrap()).unwrap();
+    let passage_tokens = 500.min(
+        descriptor["capabilities"]["max_input_tokens"]
+            .as_u64()
+            .unwrap(),
+    );
     let profile = EmbeddingProfile::from_json(&serde_json::to_vec(&json!({
         "format":"hades-embedding-profile-v1", "revision":1, "state":"initializing",
         "generation":"jina-qualification-corpus-v1", "model":descriptor["model"],
         "capabilities":descriptor["capabilities"], "runtime_binding":{"provider_id":context["provider_id"]},
         "workloads":{"code":null,"documents":{"space":descriptor["space"],"specialized_code":false,
             "chunking":{"mode":"conventional",
-                "passage_tokens":500.min(descriptor["capabilities"]["max_input_tokens"].as_u64().unwrap()),
-                "overlap_tokens":0}}}
+                "passage_tokens":passage_tokens,
+                "overlap_tokens":50.min(passage_tokens / 4)}}}
     })).unwrap(), &manifest).unwrap();
     let store = ProfileStore::new(pool.clone()).unwrap();
     let initial = store.initialize(profile, manifest).await.unwrap();
@@ -84,7 +89,6 @@ async fn registered_jina_document_roundtrip() {
             let text = input["text"].as_str().unwrap();
             let prepared = documents.prepare(DocumentInput {
                 source_id:source.into(), text:text.into(),
-                passages:vec![PassageSpan{start_byte:0,end_byte:text.len()}],
             }, false).await.unwrap();
             let receipt = documents.commit(prepared).await.unwrap();
             assert_eq!(receipt.binding.dimension, 2048);
@@ -112,9 +116,31 @@ async fn registered_jina_document_roundtrip() {
             observed.push(json!({"query":query["id"],"expected":query["expected_document"],
                 "rank":1,"score":result.items[0]["score"],"seconds":started.elapsed().as_secs_f64()}));
         }
+        // Keep retrieval ranking unchanged: add the independent long fixture only afterward.
+        let long_text = context["planning_text"].as_str().unwrap();
+        let started = Instant::now();
+        let prepared = documents.prepare(DocumentInput {
+            source_id:"unicode-token-planning".into(), text:long_text.into(),
+        }, false).await.unwrap();
+        let receipt = documents.commit(prepared).await.unwrap();
+        let stored = crud::get_document(&pool, "documents", &receipt.document_key).await.unwrap();
+        assert_eq!(stored["full_text"], long_text);
+        assert_eq!(stored["embedding_binding"], json!(receipt.binding));
+        let plan = &stored["passage_plan"];
+        assert!(plan["spans"].as_array().unwrap().len() > 1);
+        assert_eq!(plan["source_sha256"], stored["source_sha256"]);
+        for collection in ["chunks", "embeddings"] {
+            let count = pool.writer().get(&format!("collection/{collection}/count")).await.unwrap();
+            assert_eq!(count["count"].as_u64().unwrap(),
+                inputs.len() as u64 + plan["spans"].as_array().unwrap().len() as u64);
+        }
+        // Search validates every persisted triplet, including all long-document chunks.
+        let total = inputs.len() + plan["spans"].as_array().unwrap().len();
+        assert_eq!(documents.search("Unicode café", 1, total as u64).await.unwrap().scanned, total as u64);
         let report = json!({"passed":true,"profile_revision":2,"documents":inputs.len(),
             "dimension":2048,"receipt":context["description"]["receipt"],
-            "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed});
+            "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed,
+            "planning":{"plan":plan,"source_bytes":long_text.len(),"seconds":started.elapsed().as_secs_f64()}});
         let path = std::env::var("HADES_VERIFIED_JINA_REPORT").expect("explicit new evidence file");
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
         file.write_all(&serde_json::to_vec_pretty(&report).unwrap()).unwrap();

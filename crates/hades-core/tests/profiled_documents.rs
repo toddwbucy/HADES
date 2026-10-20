@@ -5,7 +5,7 @@
 use hades_core::{
     db::{ArangoPool, crud, query},
     embedding_profile::{ChunkPolicy, Distance, store::COLLECTION},
-    pipeline::profiled_documents::{DocumentInput, PassageSpan, ProfiledDocuments},
+    pipeline::profiled_documents::{DocumentInput, ProfiledDocuments},
     test_support::{Fixtures, with_temp_db},
 };
 use serde_json::{Value, json};
@@ -15,22 +15,18 @@ use std::{sync::Arc, time::Duration};
 mod provider;
 use provider::{Fault, Fixture, Peer};
 
-/// Construct adjacent byte spans while retaining exact passage text and Unicode widths.
+/// Supply extraction text only; the private peer plans conservative newline passages.
 fn input(id: &str, passages: &[&str]) -> DocumentInput {
     let mut text = String::new();
-    let mut spans = Vec::new();
     for passage in passages {
-        let start = text.len();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
         text.push_str(passage);
-        spans.push(PassageSpan {
-            start_byte: start,
-            end_byte: text.len(),
-        });
     }
     DocumentInput {
         source_id: id.into(),
         text,
-        passages: spans,
     }
 }
 
@@ -83,6 +79,14 @@ async fn roundtrip_records_identity_and_uses_asymmetric_tasks() {
         assert_eq!(rows["documents"].as_array().unwrap().len(), 1);
         assert_eq!(rows["documents"][0]["source_id"], source);
         assert_eq!(rows["documents"][0]["full_text"], "apple café\nbanana 東京");
+        let plan = &rows["documents"][0]["passage_plan"];
+        assert_eq!(plan["format"], "hades-token-passages-v1");
+        assert_eq!(plan["source_sha256"], rows["documents"][0]["source_sha256"]);
+        assert_eq!(plan["receipt"], json!(fixture.receipt));
+        assert_eq!(plan["spans"][0]["end_byte"], "apple café\n".len());
+        assert_eq!(peer.plans().len(), 1);
+        assert_eq!(peer.plans()[0]["passage_tokens"], 500);
+        assert_eq!(peer.plans()[0]["overlap_tokens"], 100);
         for collection in ["chunks", "embeddings"] {
             assert_eq!(rows[collection].as_array().unwrap().len(), 2);
             for row in rows[collection].as_array().unwrap() {
@@ -434,6 +438,58 @@ async fn incompatible_or_orphan_vectors_refuse_the_whole_search() {
     .await;
 }
 
+/// Verify stored token evidence agrees across source/chunk rows before any ranking escapes.
+#[tokio::test]
+async fn stored_plan_corruption_and_unproven_v1_rows_refuse_search() {
+    with_temp_db("bound_plan_rows", Fixtures::Empty, |pool| async move {
+        let fixture = Fixture::new(2);
+        fixture.install(&pool).await;
+        let peer = Peer::new(&fixture);
+        let documents = fixture.connect(&pool, &peer).await;
+        insert(&documents, "source", &["apple", "banana"]).await;
+        let rows = records(&pool).await;
+        for (collection, pointer, value) in [
+            ("documents", "/format", json!("hades-bound-document-v1")),
+            (
+                "documents",
+                "/passage_plan/format",
+                json!("hades-supplied-byte-spans-v1"),
+            ),
+            (
+                "documents",
+                "/passage_plan/source_sha256",
+                json!("0".repeat(64)),
+            ),
+            ("documents", "/passage_plan/overlap_tokens", json!(99)),
+            (
+                "documents",
+                "/passage_plan/receipt/serving_generation",
+                json!("different-load"),
+            ),
+            ("documents", "/passage_plan/max_input_tokens", json!(1)),
+            ("documents", "/passage_plan/spans/0/body_tokens", json!(1)),
+            ("chunks", "/span/body_tokens", json!(1)),
+            ("chunks", "/span/start_byte", json!(1)),
+        ] {
+            let original = &rows[collection][0];
+            let path = format!(
+                "document/{collection}/{}",
+                original["_key"].as_str().unwrap()
+            );
+            let mut wrong = original.clone();
+            *wrong.pointer_mut(pointer).unwrap() = value;
+            pool.writer().put(&path, &wrong).await.unwrap();
+            assert!(
+                documents.search("apple", 1, 10).await.is_err(),
+                "{collection}{pointer}"
+            );
+            pool.writer().put(&path, original).await.unwrap();
+        }
+        assert!(documents.search("apple", 1, 10).await.is_ok());
+    })
+    .await;
+}
+
 /// Cross multiple scan pages and distinguish a complete result from a truncated ranking.
 #[tokio::test]
 async fn scan_limits_discard_partial_rankings_and_pages_remain_complete() {
@@ -464,7 +520,7 @@ async fn scan_limits_discard_partial_rankings_and_pages_remain_complete() {
     .await;
 }
 
-/// Reject malformed source coverage and disabled or unsupported policy before external work.
+/// Reject malformed sources and disabled or unsupported policy before external work.
 #[tokio::test]
 async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
     with_temp_db("bound_admission", Fixtures::Empty, |pool| async move {
@@ -472,29 +528,25 @@ async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
         fixture.install(&pool).await;
         let peer = Peer::new(&fixture);
         let documents = fixture.connect(&pool, &peer).await;
-        for (text, spans) in [
-            ("é apple", vec![(0, 1), (1, 8)]),
-            ("apple", vec![(1, 5)]),
-            ("apple", vec![(0, 2), (3, 5)]),
-            ("apple", vec![(0, 3)]),
-            ("apple", vec![(0, 3), (0, 5)]),
-            ("apple", vec![(0, 5), (1, 3)]),
-            ("apple ", vec![(0, 5), (5, 6)]),
-            ("", vec![]),
+        for text in [
+            "".to_owned(),
+            " \n\t".to_owned(),
+            "x".repeat(2 * 1024 * 1024 + 1),
         ] {
-            let bad = DocumentInput {
-                source_id: "source".into(),
-                text: text.into(),
-                passages: spans
-                    .into_iter()
-                    .map(|(start_byte, end_byte)| PassageSpan {
-                        start_byte,
-                        end_byte,
-                    })
-                    .collect(),
-            };
-            assert!(documents.prepare(bad, false).await.is_err());
+            assert!(
+                documents
+                    .prepare(
+                        DocumentInput {
+                            source_id: "source".into(),
+                            text
+                        },
+                        false
+                    )
+                    .await
+                    .is_err()
+            );
         }
+        assert!(peer.plans().is_empty());
         assert!(
             documents
                 .prepare(input("bad\nid", &["apple"]), false)
@@ -550,6 +602,70 @@ async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
         })
         .await;
     }
+}
+
+/// Incompatible or malformed plans cannot trigger inference or replace existing data.
+#[tokio::test]
+async fn rejected_token_plans_preserve_old_documents_before_inference() {
+    with_temp_db("bound_plan_refusal", Fixtures::Empty, |pool| async move {
+        let fixture = Fixture::new(2);
+        fixture.install(&pool).await;
+        let peer = Peer::new(&fixture);
+        let documents = fixture.connect(&pool, &peer).await;
+        insert(&documents, "source", &["apple"]).await;
+        let before = records(&pool).await;
+        let good = json!({"start_byte":0,"end_byte":8,"body_tokens":7,"input_tokens":10,"overlap_tokens":0});
+        let mut patches = vec![
+            json!({"format":"unknown"}), json!({"model":"other"}), json!({"task":"retrieval.query"}),
+            json!({"source_sha256":"0".repeat(64)}), json!({"passage_tokens":499}),
+            json!({"overlap_tokens":49}), json!({"max_input_tokens":0}),
+            json!({"max_input_tokens":2049}), json!({"spans":[]}), json!({"unknown":true}),
+            json!({"spans":vec![good.clone();129]}),
+        ];
+        for (key,value) in [("start_byte",json!(1)),("end_byte",json!(1)),("end_byte",json!(9)),
+            ("end_byte",json!(7)),("body_tokens",json!(501)),("input_tokens",json!(2049)),
+            ("input_tokens",json!(0)),("overlap_tokens",json!(1)),("body_tokens",json!(true))] {
+            let mut span = good.clone(); span[key] = value;
+            patches.push(json!({"spans":[span]}));
+        }
+        let mut receipt = json!(fixture.receipt);
+        receipt["serving_generation"] = json!("other-load");
+        patches.push(json!({"receipt":receipt}));
+        for patch in patches {
+            peer.patch_next_plan(patch);
+            assert!(documents.prepare(input("source", &["é apple"]), true).await.is_err());
+            assert_eq!(peer.requests().len(), 1);
+            assert_eq!(records(&pool).await, before);
+        }
+    }).await;
+}
+
+/// A policy revision during tokenization must fail before spending model inference.
+#[tokio::test]
+async fn policy_drift_during_planning_stops_before_embedding() {
+    with_temp_db("bound_plan_drift", Fixtures::Empty, |pool| async move {
+        let fixture = Fixture::new(2);
+        fixture.install(&pool).await;
+        let peer = Peer::new(&fixture);
+        let documents = Arc::new(fixture.connect(&pool, &peer).await);
+        let (entered, release) = peer.hold_next_plan();
+        let job = {
+            let documents = documents.clone();
+            tokio::spawn(async move { documents.prepare(input("source", &["apple"]), false).await })
+        };
+        entered.await.unwrap();
+        touch_profile(&pool).await;
+        release.send(()).unwrap();
+        assert!(job.await.unwrap().is_err());
+        assert!(peer.requests().is_empty());
+        assert!(
+            records(&pool).await["documents"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    })
+    .await;
 }
 
 /// Refuse overwrites that would erase additional authored fields or unmanaged children.

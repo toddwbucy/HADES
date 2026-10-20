@@ -819,9 +819,20 @@ impl EmbeddingClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, EmbeddingError> {
+        self.request_typed(method, path, body).await
+    }
+
+    /// Parse typed internal responses directly from bounded wire bytes so duplicate
+    /// fields cannot disappear through an intermediate JSON Value.
+    pub(super) async fn request_typed<T: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, EmbeddingError> {
         let uri = self.build_uri(path)?;
 
-        let pinned = if method == Method::POST && path == "/embeddings" {
+        let pinned = if method == Method::POST && matches!(path, "/embeddings" | "/passages") {
             self.expected_receipt.as_ref()
         } else {
             None
