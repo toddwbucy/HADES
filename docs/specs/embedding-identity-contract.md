@@ -84,10 +84,10 @@ It supplies artifact provenance internally; behavior-space receipts and database
 enforcement remain separate integration work.
 
 The [bound client](bound-embedding-client.md) implements the explicit client
-factory and consuming side of receipt transport. The next dependent changes
-must connect the checked loader to resolved behavior spaces and provider-side
-receipt enforcement, isolated
-database/profile persistence, and a synthetic ingest/query path. Before
+factory and consuming side of receipt transport. The [verified Jina provider](verified-jina-provider.md)
+now connects the checked loader to an explicit conventional text space and
+provider-side receipt enforcement. The next dependent changes must add isolated
+database/profile persistence and a synthetic ingest/query path. Before
 activating database pairing, all applicable public entry points must enforce it,
 including background jobs and generation checks before commit. Profile CAS,
 provisioning recovery, cache isolation, legacy handling, and frontend creation

@@ -439,7 +439,10 @@ The following slice adds [local registration and checked Jina loading](registere
 full provider receipts and database enforcement are still pending. The next
 [bound-client slice](bound-embedding-client.md) implements the explicit Rust
 factory and client-side receipt checks using a synthetic provider; it does not
-enable database pairing or complete stage 1.
+enable database pairing or complete stage 1. The [verified Jina provider](verified-jina-provider.md)
+adds the producing side for an explicit conventional retrieval contract; real-model
+qualification, other capabilities, persistence, and public entry-point enforcement
+are still required.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
