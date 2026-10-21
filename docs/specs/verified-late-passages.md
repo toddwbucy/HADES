@@ -81,3 +81,12 @@ all windows and passage token coordinates. Reload must invalidate the old receip
 Reports retain implementation identity, suite digest, runtime, artifact manifest,
 receipts and failure stage. No database, model download, or installed service is
 involved. This is a fixed smoke qualification, not a general retrieval benchmark.
+
+The [ThinkPad run on 2026-10-21](../evidence/jina-late-thinkpad-2026-10-21.json)
+passed against clean implementation `d0b63f9`: all six expected documents ranked
+first; the 12,384-byte Unicode source yielded 11 passages over four windows, with
+every token range independently checked. Peak allocated GPU memory was 8.27 GiB.
+The separate [initial preflight failure](../evidence/jina-late-thinkpad-2026-10-21-preflight.json)
+records a qualification-runner CUDA initialization mistake corrected before the
+successful run. These results qualify provider/transport behavior, not database
+late-document storage or extraction quality.
