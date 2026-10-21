@@ -2,8 +2,9 @@
 
 Status: shared CLI/service/MCP search integration for
 [#225](https://github.com/toddwbucy/HADES/issues/225). Database creation in the
-frontend remains gated. Profile-aware extraction, ingestion jobs, broader
-workloads, and migration are still pending.
+frontend remains gated. [Foreground file ingestion](profiled-file-ingestion.md)
+now shares the verified document path; ingestion jobs, broader workloads and
+migration are still pending.
 
 ## Database authority
 
@@ -48,7 +49,8 @@ and responses. Registration and socket ownership checks occur on resolution.
 See [registered discovery](registered-provider-discovery.md) for those rules.
 
 Routes survive the existing bounded, sealed configuration handoff. This does
-not implement portable job/profile pins or authorize profile-bound ingestion.
+not implement portable job/profile pins. Foreground file ingestion uses these
+same explicit routes and its own guarded document admission.
 No installed configuration or service is automatically changed.
 
 ## Shared search behavior
@@ -95,7 +97,8 @@ artifact provenance or complete the planned legacy migration policy.
 Managed or initializing databases reject these older paths before external
 services or writes:
 
-- Direct document ingestion, unified mixed-tree ingestion, and direct code ingest.
+- Legacy core document ingestion, code phases of mixed-tree ingestion and direct
+  code ingest. Foreground document files now use the verified profile-aware path.
 - Background ingestion admission, before job collection/record creation or child
   startup. A child also encounters the direct CLI guards.
 - Legacy vector-index creation, structural training/loading/update/export and
@@ -104,7 +107,7 @@ services or writes:
 The core legacy document pipeline checks admission too. Source reads, stored
 structural-vector inspection, and nonsemantic smell inspection stay available.
 None of these refusals removes or edits a saved profile or existing corpus.
-Profile-aware extraction, portable job pins, supported code/late-chunking flows,
+Portable job pins, supported code/late-chunking flows,
 index derivation, backup/reconciliation tooling, public setup authorization, and
 frontend activation remain follow-up work. Do not remove metadata to bypass a
 refusal or label historical vectors with today's model.

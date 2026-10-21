@@ -6,7 +6,7 @@ use hades_core::{
     config::{HadesConfig, RegisteredProviderConfig, RegisteredProvidersConfig},
     db::{ArangoClient, ArangoPool, crud},
     embedding_profile::{ChunkPolicy, store::ProfileStore},
-    pipeline::profiled_documents::{DocumentInput, ProfiledDocuments},
+    pipeline::profiled_documents::{ProfiledDocuments, files::FileInput},
     service::{ConnectionPolicy, handle_request},
     test_support::{Fixtures, with_temp_db},
     workspace_setup::{SetupReceipt, SetupRequest, SetupStatus, WorkspaceSetup},
@@ -18,6 +18,10 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+
+#[allow(dead_code)]
+#[path = "common/profiled_extractor.rs"]
+mod extraction;
 
 /// Resolve only the explicitly supplied private qualification context.
 fn context() -> Value {
@@ -134,20 +138,29 @@ async fn registered_jina_document_roundtrip() {
         let queries = context["cases"]["queries"].as_array().unwrap();
         assert!(!inputs.is_empty() && !queries.is_empty());
         let mut keys = std::collections::BTreeMap::new();
+        // Isolate file transport from extraction quality. Actual Jina inference
+        // receives fixed corpus text through the production file-ingestion path.
+        let source_directory = tempfile::tempdir().unwrap();
+        let extractor = extraction::Extractor::new();
+        let extraction_client = extractor.client().await;
         let started = Instant::now();
         for input in inputs {
             let source = input["id"].as_str().unwrap();
             let text = input["text"].as_str().unwrap();
-            let prepared = documents.prepare(DocumentInput {
-                source_id:source.into(), text:text.into(),
-            }, false).await.unwrap();
-            let receipt = documents.commit(prepared).await.unwrap();
+            let path = source_directory.path().join(format!("{}.txt", keys.len()));
+            std::fs::write(&path, text).unwrap();
+            let receipt = documents.ingest_file(FileInput {
+                path, root:None, id:Some(source.into()), source_git:None,
+                metadata:json!({"qualification_case":source}),
+            }, &extraction_client, false).await.unwrap();
             assert_eq!(receipt.binding.dimension, 2048);
             assert_eq!(receipt.binding.task, "retrieval.passage");
             assert_eq!(json!(receipt.binding.expected), context["description"]["receipt"]);
             let stored = crud::get_document(&pool, "documents", &receipt.document_key).await.unwrap();
             assert_eq!(stored["full_text"], text);
             assert_eq!(stored["embedding_binding"], json!(receipt.binding));
+            assert_eq!(stored["file_ingestion"]["content_bytes"], text.len());
+            assert_eq!(stored["file_ingestion"]["metadata"]["qualification_case"], source);
             keys.insert(source.to_owned(), receipt.document_key);
         }
         let ingest_seconds = started.elapsed().as_secs_f64();
@@ -173,10 +186,12 @@ async fn registered_jina_document_roundtrip() {
         // Keep retrieval ranking unchanged: add the independent long fixture only afterward.
         let long_text = context["planning_text"].as_str().unwrap();
         let started = Instant::now();
-        let prepared = documents.prepare(DocumentInput {
-            source_id:"unicode-token-planning".into(), text:long_text.into(),
-        }, false).await.unwrap();
-        let receipt = documents.commit(prepared).await.unwrap();
+        let path = source_directory.path().join("unicode-token-planning.txt");
+        std::fs::write(&path, long_text).unwrap();
+        let receipt = documents.ingest_file(FileInput {
+            path, root:None, id:Some("unicode-token-planning".into()), source_git:None,
+            metadata:json!({"qualification_case":"unicode-token-planning"}),
+        }, &extraction_client, false).await.unwrap();
         let stored = crud::get_document(&pool, "documents", &receipt.document_key).await.unwrap();
         assert_eq!(stored["full_text"], long_text);
         assert_eq!(stored["embedding_binding"], json!(receipt.binding));
@@ -196,6 +211,8 @@ async fn registered_jina_document_roundtrip() {
             "protected_registration_and_live_description_checked":true,
             "recoverable_setup_and_identical_retry_checked":true,"setup":setup_receipt,
             "public_search_and_source_text_checked":true,
+            "file_ingestion_and_snapshot_provenance_checked":true,
+            "extractor_implementation":"private text passthrough fixture; not a Docling quality qualification",
             "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed,
             "planning":{"plan":plan,"source_bytes":long_text.len(),"seconds":started.elapsed().as_secs_f64()}});
         let path = std::env::var("HADES_VERIFIED_JINA_REPORT").expect("explicit new evidence file");

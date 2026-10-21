@@ -110,5 +110,5 @@ initialization and document admission. Its observation must agree with the Pytho
 qualification, including the receipt and manifest. The
 [recoverable setup coordinator](recoverable-workspace-setup.md) now verifies
 providers before database creation and again before readiness publication.
-Public search now enforces the saved profile; profile-aware ingestion/jobs and
-frontend creation remain subsequent work.
+Public search and [foreground file ingestion](profiled-file-ingestion.md) now
+enforce the saved profile. Job pins and frontend creation remain subsequent work.

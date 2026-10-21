@@ -1,9 +1,10 @@
 //! Internal document admission -> verified embedding -> atomic storage -> retrieval.
 //!
-//! Shared document search uses this path; ingestion remains internal. A trusted
-//! caller supplies extracted text while the provider plans token-checked spans.
+//! Shared search and foreground file ingestion use this path. A trusted caller
+//! may also supply extracted text while the provider plans token-checked spans.
 //! Only conventional document text and cosine ranking are supported.
 
+pub mod files;
 mod storage;
 
 use serde::Serialize;
@@ -171,21 +172,40 @@ impl ProfiledDocuments {
         validate_input(&input)?;
         self.current().await?;
         let key = digest_key("bd", &json!([input.source_id]));
-        let previous_revision = storage::previous_revision(
+        let admission = storage::admit_source(
             self.pool.writer(),
             &key,
             replace,
             self.passage.binding(),
             &self.snapshot,
+            None,
         )
         .await?;
+        self.prepare_admitted(input, admission.revision, None, ())
+            .await
+    }
+
+    /// Preserve admission from before extraction through planning and inference.
+    async fn prepare_admitted<R: Clone + Send + 'static>(
+        &self,
+        input: DocumentInput,
+        previous_revision: Option<String>,
+        ingestion: Option<files::FileProvenance>,
+        retention: R,
+    ) -> Result<PreparedDocument, PipelineError> {
+        validate_input(&input)?;
+        if let Some(ingestion) = &ingestion {
+            ingestion.validate(&input.source_id)?;
+        }
+        self.current_retaining(retention.clone()).await?;
+        let key = digest_key("bd", &json!([input.source_id]));
         let planned = self.passage.plan_passages(&input.text).await?;
         ensure(
             planned.binding == *self.passage.binding(),
             "planned provider binding changed",
         )?;
         // Detect policy changes during planning before spending any inference.
-        self.current().await?;
+        self.current_retaining(retention).await?;
         let plan = planned.output;
         let texts: Vec<String> = plan
             .spans
@@ -203,12 +223,15 @@ impl ProfiledDocuments {
         )?;
         let source_hash = hash(input.text.as_bytes());
         let binding = result.binding;
-        let document = json!({
+        let mut document = json!({
             "_key":key, "format":FORMAT, "source_id":input.source_id,
             "source_sha256":source_hash, "full_text":input.text,
             "chunk_count":plan.spans.len(), "embedding_binding":binding,
             "passage_plan":plan
         });
+        if let Some(ingestion) = ingestion {
+            document["file_ingestion"] = json!(ingestion);
+        }
         let mut chunks = Vec::new();
         let mut embeddings = Vec::new();
         for (index, ((span, text), vector)) in plan
@@ -258,6 +281,15 @@ impl ProfiledDocuments {
         &self,
         prepared: PreparedDocument,
     ) -> Result<DocumentReceipt, PipelineError> {
+        self.commit_retaining(prepared, ()).await
+    }
+
+    /// Keep bounded file-ingestion admission until transaction cleanup finishes.
+    async fn commit_retaining<R: Clone + Send + 'static>(
+        &self,
+        prepared: PreparedDocument,
+        retention: R,
+    ) -> Result<DocumentReceipt, PipelineError> {
         ensure(
             prepared.snapshot == self.snapshot && prepared.binding == *self.passage.binding(),
             "prepared document belongs to a different database or provider binding",
@@ -268,9 +300,10 @@ impl ProfiledDocuments {
             binding: prepared.binding.clone(),
         };
         self.store
-            .guarded_write(
+            .guarded_write_retaining(
                 &self.snapshot,
                 COLLECTIONS.iter().map(|c| (*c).into()).collect(),
+                retention,
                 move |client| storage::write(client, prepared),
             )
             .await?;
@@ -347,8 +380,16 @@ impl ProfiledDocuments {
 
     /// Detect stale policy before external work; commit/search recheck under locks.
     async fn current(&self) -> Result<(), PipelineError> {
+        self.current_retaining(()).await
+    }
+
+    /// Snapshot reads retain caller admission through their own transaction cleanup.
+    async fn current_retaining<R: Clone + Send + 'static>(
+        &self,
+        retention: R,
+    ) -> Result<(), PipelineError> {
         ensure(
-            self.store.load().await? == self.snapshot,
+            self.store.load_retaining(retention).await? == self.snapshot,
             "stale database profile; resolve a fresh document binding",
         )?;
         Ok(())
