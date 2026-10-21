@@ -107,14 +107,67 @@ pub async fn run_unified(
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
+    let db = ArangoPool::from_config(config)?;
     if let Some(binding) = &config.ingest_binding {
-        binding.check(&ArangoPool::from_config(config)?).await?;
+        binding.check(&db).await?;
     }
     let source_git = provenance.resolve(&root).await?;
     let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
     let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
+    let tree_pin =
+        hades_core::embedding_profile::admission::document_tree_pin(&db, !found.code.is_empty())
+            .await?;
+    match (&config.ingest_binding, &tree_pin) {
+        (Some(hades_core::ingest_jobs::Binding::Profiled(expected)), actual)
+            if actual.as_ref() != Some(expected.as_ref()) =>
+        {
+            bail!(
+                "ingestion job profile changed during tree admission; start a new job after review"
+            );
+        }
+        (Some(hades_core::ingest_jobs::Binding::Legacy), Some(_)) => {
+            bail!("legacy ingestion job cannot adopt a model-bound workspace; start a new job");
+        }
+        _ => {}
+    }
+    let mut tree_config = config.clone();
+    if let Some(pin) = &tree_pin {
+        profiled::validate_tree_options(
+            config,
+            metadata_json,
+            concurrency,
+            collection,
+            task,
+            allow_degraded_enrichment,
+        )?;
+        // Foreground routing gets the same drift protection as a sealed worker.
+        tree_config.ingest_binding = Some(hades_core::ingest_jobs::Binding::Profiled(Box::new(
+            pin.clone(),
+        )));
+    } else {
+        // A foreground tree may not adopt a newly installed profile between phases either.
+        tree_config.ingest_binding = Some(hades_core::ingest_jobs::Binding::Legacy);
+    }
+    let config = &tree_config;
+    let disabled_code = if tree_pin.is_some() {
+        // Match unrouted reporting: Unix paths need not be valid UTF-8, and
+        // serializing a raw PathBuf would fail after permitted documents commit.
+        found
+            .code
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
     // Freeze all repository observations before either phase can write (#186).
-    let inputs: Vec<_> = found.code.iter().chain(&found.documents).cloned().collect();
+    let inputs: Vec<_> = found
+        .code
+        .iter()
+        .filter(|_| tree_pin.is_none())
+        .chain(&found.documents)
+        .cloned()
+        .collect();
     provenance.prepare(&inputs).await;
     let source_git = if inputs.is_empty() {
         source_git
@@ -133,7 +186,7 @@ pub async fn run_unified(
     // Code first. The two phases write disjoint collections, so the order is
     // only about which failure an operator sees first, and losing the code
     // graph's edges is the more serious of the two.
-    let mut code = if found.code.is_empty() {
+    let mut code = if tree_pin.is_some() || found.code.is_empty() {
         None
     } else {
         Some(
@@ -153,6 +206,13 @@ pub async fn run_unified(
             .await?,
         )
     };
+
+    // A tree with only disabled/unrouted inputs must still have valid admission.
+    if inputs.is_empty()
+        && let Some(binding) = &config.ingest_binding
+    {
+        binding.check(&db).await?;
+    }
 
     // A setup failure in the document phase must not take the code phase's
     // summary with it. `?` here discarded minutes of completed analyzer work,
@@ -195,7 +255,7 @@ pub async fn run_unified(
     let doc_failure = documents.as_ref().and_then(|o| o.failure.as_ref());
     let success = code_failure.is_none() && doc_failure.is_none() && document_setup_error.is_none();
 
-    let result_data = json!({
+    let mut result_data = json!({
         "enrichment_degraded": failed_request_count > 0,
         "failed_request_count": failed_request_count,
         "failed_requests_truncated": failed_request_count > failed_requests.len() as u64,
@@ -208,6 +268,7 @@ pub async fn run_unified(
             "unrouted": found.unrouted.len(),
         },
         "code": code.as_ref().map(|o| o.data.clone()),
+        "disabled_by_profile": {"code": disabled_code},
         "documents": documents.as_ref().map(|o| o.data.clone()),
         // Listed, not counted only: a file nothing claims is the hole this
         // command exists to close, so it has to be nameable from stdout.
@@ -215,6 +276,10 @@ pub async fn run_unified(
         "document_phase_error": document_setup_error,
         "duration_ms": cmd_start.elapsed().as_millis(),
     });
+    if let Some(pin) = tree_pin {
+        result_data["profile_pin"] = json!(pin);
+        result_data["embedding_profile_state"] = json!("ready");
+    }
 
     output::print_output_with_success("ingest", result_data, &OutputFormat::Json, success);
 

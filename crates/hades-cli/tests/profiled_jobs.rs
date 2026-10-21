@@ -227,6 +227,8 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
                 let directory = root.path().join("documents");
                 std::fs::create_dir(&directory).unwrap();
                 std::fs::write(directory.join("second.md"), "banana 東京").unwrap();
+                std::fs::write(directory.join("module.py"), "print('disabled')").unwrap();
+                std::fs::write(directory.join("unknown.ts"), "unrouted source").unwrap();
                 for path in [&file, &directory] {
                     let started = daemon.start_job(path, false).await;
                     assert_eq!(started["success"], true, "{started}");
@@ -239,9 +241,28 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
                     assert_eq!(row["status"], "completed", "{row}");
                     assert_eq!(&row["profile_pin"], pin);
                     assert_eq!(row["result"]["success"], true);
+                    if path.is_dir() {
+                        assert_eq!(row["result"]["data"]["profile_pin"], *pin);
+                        assert_eq!(
+                            row["result"]["data"]["disabled_by_profile"]["code"],
+                            json!([directory.join("module.py")])
+                        );
+                        assert_eq!(
+                            row["result"]["data"]["unrouted"],
+                            json!([{"path":directory.join("unknown.ts"),"reason":"no handler for extension"}])
+                        );
+                        assert!(row["result"]["data"]["code"].is_null());
+                    }
                 }
                 assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
                 assert_eq!(extractor.requests().len(), 2);
+                assert!(
+                    crud::list_collections(&pool, false)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .all(|collection| !collection.name.starts_with("codebase_"))
+                );
                 let result = request(
                     &daemon.socket,
                     "db.query",

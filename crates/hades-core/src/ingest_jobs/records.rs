@@ -94,7 +94,7 @@ async fn start_with(
             && crate::ingest_routing::route_for(&resolved) != crate::ingest_routing::Route::Document
         {
             return Err(service(
-                "model-bound jobs require document files or documents-only directories; code is disabled_by_profile",
+                "model-bound jobs require document files or directories; named code files are disabled_by_profile",
             ));
         }
         if !(1..=4).contains(&config.batch_processing.concurrency) {

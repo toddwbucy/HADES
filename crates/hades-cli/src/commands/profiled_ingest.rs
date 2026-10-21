@@ -5,6 +5,64 @@ use hades_core::{
     pipeline::profiled_documents::{ProfiledDocuments, files::FileInput},
 };
 
+/// Check the same profile-controlled options even when a tree has no enabled files.
+pub(super) fn validate_tree_options(
+    config: &HadesConfig,
+    metadata_json: Option<&str>,
+    concurrency: Option<usize>,
+    collection: Option<&str>,
+    task: Option<&str>,
+    allow_degraded_enrichment: bool,
+) -> Result<()> {
+    if allow_degraded_enrichment {
+        bail!("model-bound document ingestion does not support degraded code enrichment");
+    }
+    let profile = match collection {
+        Some(name) => CollectionProfile::get(name)
+            .with_context(|| format!("unknown collection profile: {name}"))?,
+        None => CollectionProfile::default_profile(),
+    };
+    let metadata = metadata_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .context("--metadata must be valid JSON")?
+        .unwrap_or_else(|| json!({}));
+    validate_options(config, profile, &metadata, &[], task, concurrency)?;
+    Ok(())
+}
+
+/// Reject runtime overrides of saved embedding policy before loading any services.
+fn validate_options(
+    config: &HadesConfig,
+    profile: &CollectionProfile,
+    metadata: &Value,
+    claims: &[String],
+    task: Option<&str>,
+    concurrency: Option<usize>,
+) -> Result<usize> {
+    if task.is_some() || !claims.is_empty() {
+        bail!(
+            "model-bound document ingestion does not accept --task or --claims; its embedding task comes from the saved profile"
+        );
+    }
+    if (profile.metadata, profile.chunks, profile.embeddings)
+        != ("documents", "chunks", "embeddings")
+    {
+        bail!("model-bound ingestion currently supports the documents collection profile only");
+    }
+    let concurrency = concurrency.unwrap_or(config.batch_processing.concurrency);
+    if !(1..=4).contains(&concurrency) {
+        bail!("model-bound document ingestion requires concurrency 1..=4");
+    }
+    if !metadata.is_object() {
+        bail!("--metadata must be a JSON object");
+    }
+    if serde_json::to_vec(metadata)?.len() > 64 * 1024 {
+        bail!("--metadata must fit within 64 KiB");
+    }
+    Ok(concurrency)
+}
+
 /// Reject unpinned options before provider/extractor startup and avoid legacy checkpoints.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
@@ -30,16 +88,8 @@ pub(super) async fn run(
             "model-bound ingestion cannot use --batch, --resume or --reset until checkpoints carry profile pins; pass explicit files without these flags"
         );
     }
-    if task.is_some() || !claims.is_empty() {
-        bail!(
-            "model-bound document ingestion does not accept --task or --claims; its embedding task comes from the saved profile"
-        );
-    }
-    if (profile.metadata, profile.chunks, profile.embeddings)
-        != ("documents", "chunks", "embeddings")
-    {
-        bail!("model-bound ingestion currently supports the documents collection profile only");
-    }
+    let metadata = metadata.unwrap_or_else(|| json!({}));
+    let concurrency = validate_options(config, profile, &metadata, claims, task, concurrency)?;
     for path in &inputs {
         if route_for(path) != Route::Document {
             bail!(
@@ -47,14 +97,6 @@ pub(super) async fn run(
                 path.display()
             );
         }
-    }
-    let concurrency = concurrency.unwrap_or(config.batch_processing.concurrency);
-    if !(1..=4).contains(&concurrency) {
-        bail!("model-bound document ingestion requires concurrency 1..=4");
-    }
-    let metadata = metadata.unwrap_or_else(|| json!({}));
-    if serde_json::to_vec(&metadata)?.len() > 64 * 1024 {
-        bail!("--metadata must fit within 64 KiB");
     }
     let routes = config.registered_providers.as_ref().context(
         "model-bound or initializing workspace requires registered_providers for document ingestion",

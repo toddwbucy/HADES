@@ -4,7 +4,7 @@ use hades_core::{
     db::{ArangoPool, query},
     test_support::{Fixtures, with_temp_db},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::Path;
 use tokio::process::Command;
 
@@ -64,6 +64,16 @@ async fn sources(pool: &ArangoPool) -> Vec<Value> {
     .await
     .unwrap()
     .results
+}
+
+/// Include every collection so a skipped code phase cannot quietly initialize its schema.
+async fn collection_names(pool: &ArangoPool) -> std::collections::BTreeSet<String> {
+    hades_core::db::crud::list_collections(pool, false)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.name)
+        .collect()
 }
 
 /// The CLI preserves saved model policy, returns binding evidence, and never consumes a legacy checkpoint.
@@ -239,6 +249,258 @@ async fn document_only_tree_preserves_relative_identities() {
         },
     )
     .await;
+}
+
+/// A documents-only profile consumes prose from a mixed tree and names every disabled code file.
+#[tokio::test]
+async fn mixed_trees_report_disabled_code_without_starting_its_pipeline() {
+    for late in [false, true] {
+        with_temp_db(
+            "cli_profiled_mixed_tree",
+            Fixtures::Empty,
+            move |pool| async move {
+                let fixture = if late {
+                    Fixture::late()
+                } else {
+                    Fixture::new(2)
+                };
+                fixture.install(&pool).await;
+                let peer = Peer::new(&fixture);
+                let extractor = Extractor::new();
+                let root = tempfile::tempdir().unwrap();
+                let config = config(root.path(), &pool, &peer, &extractor);
+                let tree = root.path().join("corpus");
+                std::fs::create_dir_all(tree.join("nested")).unwrap();
+                for (path, source) in [
+                    ("README.md", "apple example: `print('apple')`"),
+                    ("nested/README.md", "banana 東京"),
+                    ("module.py", "print('disabled Python')"),
+                    ("nested/lib.rs", "fn main() {}"),
+                    (
+                        "script",
+                        "#!/usr/bin/env python3\nprint('disabled script')\n",
+                    ),
+                    ("data.custom", "explicit parser-free code input"),
+                    ("unknown.ts", "unrouted TypeScript input"),
+                ] {
+                    std::fs::write(tree.join(path), source).unwrap();
+                }
+                let before = collection_names(&pool).await;
+                let output = command(
+                    &pool,
+                    &config,
+                    &["ingest", tree.to_str().unwrap(), "--unparsed-ext", "custom"],
+                )
+                .output()
+                .await
+                .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+                let data = &result["data"];
+                assert_eq!(data["routed"], json!({"code":4,"documents":2,"unrouted":1}));
+                assert!(data["code"].is_null());
+                assert_eq!(data["documents"]["completed"], 2);
+                assert_eq!(data["documents"]["embedding_profile_state"], "ready");
+                assert_eq!(
+                    data["disabled_by_profile"]["code"],
+                    json!([
+                        tree.join("data.custom"),
+                        tree.join("module.py"),
+                        tree.join("nested/lib.rs"),
+                        tree.join("script")
+                    ])
+                );
+                assert_eq!(
+                    data["unrouted"],
+                    json!([{
+                        "path":tree.join("unknown.ts"), "reason":"no handler for extension"
+                    }])
+                );
+                assert_eq!(extractor.requests().len(), 2);
+                let saved = sources(&pool).await;
+                assert_eq!(saved.len(), 2);
+                assert!(
+                    saved
+                        .iter()
+                        .any(|row| row["full_text"] == "apple example: `print('apple')`")
+                );
+                assert_eq!(collection_names(&pool).await, before);
+                // A document failure still reports disabled paths and the other document's result.
+                extractor.respond(Err(tonic::Status::unavailable("fixture extraction failed")));
+                let output = command(
+                    &pool,
+                    &config,
+                    &[
+                        "ingest",
+                        tree.to_str().unwrap(),
+                        "--unparsed-ext",
+                        "custom",
+                        "--force",
+                    ],
+                )
+                .output()
+                .await
+                .unwrap();
+                assert!(!output.status.success());
+                let partial: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(partial["success"], false);
+                assert_eq!(partial["data"]["documents"]["completed"], 1);
+                assert_eq!(partial["data"]["documents"]["failed"], 1);
+                assert_eq!(
+                    partial["data"]["disabled_by_profile"],
+                    data["disabled_by_profile"]
+                );
+                assert_eq!(sources(&pool).await.len(), 2);
+                assert_eq!(collection_names(&pool).await, before);
+            },
+        )
+        .await;
+    }
+}
+
+/// Even a no-op tree needs a ready profile and valid options, but no provider or extractor.
+#[tokio::test]
+async fn disabled_only_and_empty_trees_validate_admission_without_services() {
+    with_temp_db(
+        "cli_profiled_empty_tree",
+        Fixtures::Empty,
+        |pool| async move {
+            let fixture = Fixture::new(2);
+            fixture.install(&pool).await;
+            let peer = Peer::new(&fixture);
+            let extractor = Extractor::new();
+            let root = tempfile::tempdir().unwrap();
+            let config = config(root.path(), &pool, &peer, &extractor);
+            let empty = root.path().join("empty");
+            let code = root.path().join("code");
+            std::fs::create_dir(&empty).unwrap();
+            std::fs::create_dir(&code).unwrap();
+            std::fs::write(code.join("module.py"), "print('disabled')").unwrap();
+            use std::os::unix::ffi::OsStringExt;
+            let unusual = code.join(std::ffi::OsString::from_vec(b"bad\xff.py".to_vec()));
+            std::fs::write(&unusual, "print('also disabled')").unwrap();
+            let before = collection_names(&pool).await;
+            for path in [&empty, &code] {
+                let output = command(&pool, &config, &["ingest", path.to_str().unwrap()])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(result["success"], true);
+                assert_eq!(result["data"]["embedding_profile_state"], "ready");
+                assert!(result["data"]["documents"].is_null());
+                assert!(result["data"]["code"].is_null());
+                assert_eq!(
+                    result["data"]["disabled_by_profile"]["code"],
+                    if path == &code {
+                        json!([
+                            unusual.display().to_string(),
+                            code.join("module.py").display().to_string()
+                        ])
+                    } else {
+                        json!([])
+                    }
+                );
+                for extra in [
+                    vec!["--task", "retrieval.passage"],
+                    vec!["--allow-degraded-enrichment"],
+                    vec!["--concurrency", "5"],
+                    vec!["--collection", "code"],
+                    vec!["--metadata", "[]"],
+                ] {
+                    let mut args = vec!["ingest", path.to_str().unwrap()];
+                    args.extend(extra);
+                    let output = command(&pool, &config, &args).output().await.unwrap();
+                    assert!(!output.status.success(), "{args:?}");
+                }
+            }
+            // Removing the ready pointer cannot turn an empty tree into a successful no-op.
+            pool.writer()
+                .delete("document/hades_workspace/embedding_profile")
+                .await
+                .unwrap();
+            for path in [&empty, &code] {
+                let output = command(&pool, &config, &["ingest", path.to_str().unwrap()])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(!output.status.success());
+            }
+            assert_eq!(peer.observations(), 0);
+            assert!(extractor.requests().is_empty());
+            assert!(sources(&pool).await.is_empty());
+            assert_eq!(collection_names(&pool).await, before);
+        },
+    )
+    .await;
+}
+
+/// An enabled code workload is unsupported, never mislabeled as disabled and skipped.
+#[tokio::test]
+async fn enabled_code_and_initializing_profiles_refuse_trees_before_services() {
+    for state in ["enabled-code", "documents-disabled", "initializing"] {
+        with_temp_db(
+            "cli_profiled_tree_policy",
+            Fixtures::Empty,
+            move |pool| async move {
+                let mut fixture = Fixture::new(2);
+                if state == "enabled-code" {
+                    fixture.profile.workloads.code = fixture.profile.workloads.documents.clone();
+                    fixture.install(&pool).await;
+                } else if state == "documents-disabled" {
+                    fixture.profile.workloads.code = fixture.profile.workloads.documents.take();
+                    fixture.install(&pool).await;
+                } else {
+                    hades_core::embedding_profile::store::ProfileStore::new(pool.clone())
+                        .unwrap()
+                        .initialize(fixture.profile.clone(), fixture.manifest.clone())
+                        .await
+                        .unwrap();
+                }
+                let peer = Peer::new(&fixture);
+                let extractor = Extractor::new();
+                let root = tempfile::tempdir().unwrap();
+                let config = config(root.path(), &pool, &peer, &extractor);
+                let tree = root.path().join("corpus");
+                std::fs::create_dir(&tree).unwrap();
+                std::fs::write(tree.join("README.md"), "apple").unwrap();
+                if state != "documents-disabled" {
+                    std::fs::write(tree.join("module.py"), "print('banana')").unwrap();
+                }
+                let before = collection_names(&pool).await;
+                let output = command(&pool, &config, &["ingest", tree.to_str().unwrap()])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(!output.status.success());
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    error.contains(match state {
+                        "enabled-code" => "enabled code workload cannot be skipped",
+                        "documents-disabled" => "documents are disabled_by_profile",
+                        _ => "not ready",
+                    }),
+                    "{error}"
+                );
+                assert_eq!(peer.observations(), 0);
+                assert!(extractor.requests().is_empty());
+                assert_eq!(collection_names(&pool).await, before);
+                if state != "initializing" {
+                    assert!(sources(&pool).await.is_empty());
+                }
+            },
+        )
+        .await;
+    }
 }
 
 /// An extraction failure is a failed item and nonzero process exit; another source may succeed.

@@ -52,6 +52,34 @@ pub async fn require_legacy(pool: &ArangoPool, operation: &str) -> Result<(), Ar
     Ok(())
 }
 
+/// Admit a document tree using a ready profile before any pipeline starts.
+/// A returned pin permits skipping code only because that workload is disabled;
+/// enabled code still requires the future profile-aware code pipeline.
+pub async fn document_tree_pin(
+    pool: &ArangoPool,
+    has_code: bool,
+) -> Result<Option<super::store::ProfilePin>, ArangoError> {
+    if !is_managed(pool).await? {
+        return Ok(None);
+    }
+    let snapshot = super::store::ProfileStore::new(pool.clone())?
+        .load()
+        .await?;
+    let pin = snapshot.job_pin()?;
+    let workloads = &snapshot.profile().workloads;
+    if has_code && workloads.code.is_some() {
+        return Err(ArangoError::Request(
+            "model-bound code ingestion is not yet supported; an enabled code workload cannot be skipped as disabled_by_profile".into(),
+        ));
+    }
+    if workloads.documents.is_none() {
+        return Err(ArangoError::Request(
+            "documents are disabled_by_profile; this ingestion path requires an enabled document workload".into(),
+        ));
+    }
+    Ok(Some(pin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
