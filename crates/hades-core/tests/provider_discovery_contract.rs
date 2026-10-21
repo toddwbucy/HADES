@@ -232,7 +232,8 @@ async fn verified_observation_builds_profiles_and_pins_role_clients() {
                 "new".into(),
                 ChunkPolicy::Late {
                     context_cap_tokens: 1000,
-                    minimum_window_overlap_tokens: 100
+                    minimum_window_overlap_tokens: 100,
+                    passages: None,
                 }
             )
             .is_err()
@@ -612,6 +613,7 @@ async fn saved_policy_is_checked_against_actual_capabilities_without_changing_it
                 profile.workloads.documents.as_mut().unwrap().chunking = ChunkPolicy::Late {
                     context_cap_tokens: 1000,
                     minimum_window_overlap_tokens: 100,
+                    passages: None,
                 };
             }
             "specialized" => {

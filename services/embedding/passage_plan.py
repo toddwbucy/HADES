@@ -21,7 +21,8 @@ class PlanningError(ValueError):
     """No complete plan can be returned under the explicit policy/work limits."""
 
 
-def plan_passages(text, *, passage_tokens, overlap_tokens, max_input_tokens, count):
+def plan_passages(text, *, passage_tokens, overlap_tokens, max_input_tokens, count,
+                  minimum_overlap_tokens=0):
     """Return complete UTF-8 spans and independently counted body/input/overlap sizes.
 
     count(text, rendered) uses the serving tokenizer; rendered=True includes the
@@ -30,8 +31,9 @@ def plan_passages(text, *, passage_tokens, overlap_tokens, max_input_tokens, cou
     if (not isinstance(text, str) or not text.strip()
             or len(text.encode("utf-8")) > MAX_TEXT_BYTES):
         raise PlanningError("passage planning requires nonblank text of at most 2 MiB")
-    if (any(type(v) is not int for v in (passage_tokens, overlap_tokens, max_input_tokens))
+    if (any(type(v) is not int for v in (passage_tokens, overlap_tokens, max_input_tokens, minimum_overlap_tokens))
             or not 0 <= overlap_tokens < passage_tokens <= 0xffffffff
+            or not 0 <= minimum_overlap_tokens <= overlap_tokens
             or not 1 <= max_input_tokens <= 0xffffffff):
         raise PlanningError("invalid conventional token policy")
     offsets = array("I", [0])
@@ -122,6 +124,8 @@ def plan_passages(text, *, passage_tokens, overlap_tokens, max_input_tokens, cou
         overlap = measured(start, covered) if start < covered else 0
         if overlap > overlap_tokens:
             raise PlanningError("chosen overlap exceeds token policy")
+        if spans and overlap < minimum_overlap_tokens:
+            raise PlanningError("cannot retain the minimum window overlap within the serving budget")
         total_bytes += offsets[end] - offsets[start]
         if total_bytes > MAX_PASSAGE_BYTES:
             raise PlanningError("overlapping passages exceed 4 MiB")

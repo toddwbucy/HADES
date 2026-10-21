@@ -16,5 +16,6 @@
 pub mod bound_embedding;
 pub mod embedding;
 pub mod extraction;
+pub mod late_passage_plan;
 pub mod passage_plan;
 pub mod provider_registry;

@@ -190,7 +190,18 @@ pub enum ChunkPolicy {
     Late {
         context_cap_tokens: u32,
         minimum_window_overlap_tokens: u32,
+        /// Explicit document passages; absent for legacy caller-supplied/AST boundaries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passages: Option<PassagePolicy>,
     },
+}
+
+/// Retrieval passage sizes are independent of their larger encoding windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassagePolicy {
+    pub passage_tokens: u32,
+    pub overlap_tokens: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,11 +340,20 @@ impl EmbeddingProfile {
                 ChunkPolicy::Late {
                     context_cap_tokens,
                     minimum_window_overlap_tokens,
+                    passages,
                 } => {
                     require(
                         self.capabilities.late_chunking && self.capabilities.tokenizer_offsets,
                         "late chunking requires late-chunk and tokenizer-offset capabilities",
                     )?;
+                    if let Some(passages) = passages {
+                        require(
+                            passages.passage_tokens > 0
+                                && passages.passage_tokens <= context_cap_tokens
+                                && passages.overlap_tokens < passages.passage_tokens,
+                            "late passage policy must fit its context and exceed passage overlap",
+                        )?;
+                    }
                     (context_cap_tokens, minimum_window_overlap_tokens)
                 }
             };
