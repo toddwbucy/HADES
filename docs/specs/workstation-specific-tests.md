@@ -91,6 +91,12 @@ databases. It checks provider/profile drift, stored provenance, atomic replaceme
 scan budgets, and database isolation. Select it with `--contract profiled_documents`;
 the default CI matrix includes it. No real model or installed service is used.
 
+The `workspace_setup` contract covers [recoverable setup](recoverable-workspace-setup.md):
+durable reservations, ownership markers, interrupted/uncertain writes, exact
+retry, concurrent attempts, and refusal of existing or changed databases.
+Select it with `--contract workspace_setup`; the default CI matrix includes it.
+Ledger filesystem contracts run in the service-free `workspace_setup` unit tests.
+
 The opt-in [real Jina qualification](verified-jina-qualification.md) uses an
 approved local registration, fixed smoke cases, private verified HTTP, and the
 ignored `verified_jina_documents` test. Its owner selects `--verified-jina` plus

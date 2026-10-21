@@ -11,6 +11,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::db::{ArangoClient, ArangoError, ArangoPool, transaction};
+use crate::workspace_setup::database::{self as setup, Ownership};
 
 use super::{
     ArtifactManifest, EmbeddingProfile, MAX_MANIFEST_BYTES, MAX_PROFILE_BYTES, Md5Digest,
@@ -169,20 +170,96 @@ impl ProfileStore {
         transaction::run(
             &self.pool,
             vec![COLLECTION.into()],
+            move |client| async move { write_initial(&client, profile, manifest).await },
+        )
+        .await
+    }
+
+    /// Resume a proven setup operation in its empty or atomically initialized metadata collection.
+    /// Ownership is minted by the durable coordinator; arbitrary existing databases cannot use this path.
+    pub(crate) async fn initialize_for_setup(
+        &self,
+        profile: EmbeddingProfile,
+        manifest: ArtifactManifest,
+        ownership: Ownership,
+    ) -> Result<ProfileSnapshot, ArangoError> {
+        profile.validate(&manifest).map_err(invalid)?;
+        ensure(
+            profile.revision == 1 && profile.state == ProfileState::Initializing,
+            "initial profile must be initializing revision one",
+        )?;
+        let manifest = ArtifactManifest::from_json(&manifest.canonical_bytes().map_err(invalid)?)
+            .map_err(invalid)?;
+        transaction::run(
+            &self.pool,
+            vec![COLLECTION.into(), setup::MARKERS.into()],
             move |client| async move {
-                let generation = Generation::from_profile(&profile)?;
-                let pointer = Pointer {
-                    revision: profile.revision,
-                    generation: profile.generation.clone(),
-                    manifest_md5: profile.model.manifest_md5.clone(),
-                };
-                insert(&client, &manifest_key(&pointer), &manifest).await?;
-                insert(&client, &generation_key(&pointer), &generation).await?;
-                insert(&client, &profile_key(&pointer), &profile).await?;
-                insert(&client, POINTER_KEY, &pointer).await?;
-                load_locked(&client).await
+                ownership
+                    .check(&client)
+                    .await
+                    .map_err(setup::storage_error)?;
+                for name in setup::inventory(&client)
+                    .await
+                    .map_err(setup::storage_error)?
+                {
+                    if setup::DATA.contains(&name.as_str()) {
+                        ensure(
+                            setup::count(&client, &name)
+                                .await
+                                .map_err(setup::storage_error)?
+                                == 0,
+                            "initializing workspace contains data",
+                        )?;
+                    }
+                }
+                let count = setup::count(&client, COLLECTION)
+                    .await
+                    .map_err(setup::storage_error)?;
+                if count == 0 {
+                    return write_initial(&client, profile, manifest).await;
+                }
+                let stored = load_locked(&client).await?;
+                ensure(
+                    count == 4 && stored.profile() == &profile && stored.manifest() == &manifest,
+                    "setup metadata differs from the exact initializing request",
+                )?;
+                Ok(stored)
             },
         )
+        .await
+    }
+
+    /// Publish readiness with ownership, empty schema, and profile checks under the same locks.
+    pub(crate) async fn mark_ready_for_setup(
+        &self,
+        expected: &ProfileSnapshot,
+        ownership: Ownership,
+    ) -> Result<ProfileSnapshot, ArangoError> {
+        ensure(
+            expected.profile().state == ProfileState::Initializing
+                && expected.profile().revision == 1,
+            "expected initializing revision one",
+        )?;
+        let expected = expected.clone();
+        let mut collections = vec![COLLECTION.into(), setup::MARKERS.into()];
+        collections.extend(setup::DATA.iter().map(|name| (*name).into()));
+        transaction::run(&self.pool, collections, move |client| async move {
+            ownership
+                .check(&client)
+                .await
+                .map_err(setup::storage_error)?;
+            setup::schema(&client, false, true)
+                .await
+                .map_err(setup::storage_error)?;
+            ensure(
+                setup::count(&client, COLLECTION)
+                    .await
+                    .map_err(setup::storage_error)?
+                    == 4,
+                "unexpected setup metadata before readiness",
+            )?;
+            publish_ready(&client, &expected).await
+        })
         .await
     }
 
@@ -212,26 +289,7 @@ impl ProfileStore {
         transaction::run(
             &self.pool,
             vec![COLLECTION.into()],
-            move |client| async move {
-                check_locked(&client, &expected).await?;
-                let mut profile = expected.profile().clone();
-                profile.revision = 2;
-                profile.state = ProfileState::Ready;
-                profile.validate(expected.manifest()).map_err(invalid)?;
-                let mut pointer = expected.pointer.payload.clone();
-                pointer.revision = 2;
-                insert(&client, &profile_key(&pointer), &profile).await?;
-                client
-                    .put(
-                        &format!("document/{COLLECTION}/{POINTER_KEY}?ignoreRevs=false"),
-                        &json!({
-                            "_key": POINTER_KEY, "_rev": expected.pointer.rev,
-                            "format": RECORD_FORMAT, "payload": pointer
-                        }),
-                    )
-                    .await?;
-                load_locked(&client).await
-            },
+            move |client| async move { publish_ready(&client, &expected).await },
         )
         .await
     }
@@ -282,6 +340,43 @@ impl ProfileStore {
         })
         .await
     }
+}
+
+/// Insert all initial immutable records and the active pointer in one transaction.
+async fn write_initial(
+    client: &ArangoClient,
+    profile: EmbeddingProfile,
+    manifest: ArtifactManifest,
+) -> Result<ProfileSnapshot, ArangoError> {
+    let generation = Generation::from_profile(&profile)?;
+    let pointer = Pointer {
+        revision: profile.revision,
+        generation: profile.generation.clone(),
+        manifest_md5: profile.model.manifest_md5.clone(),
+    };
+    insert(client, &manifest_key(&pointer), &manifest).await?;
+    insert(client, &generation_key(&pointer), &generation).await?;
+    insert(client, &profile_key(&pointer), &profile).await?;
+    insert(client, POINTER_KEY, &pointer).await?;
+    load_locked(client).await
+}
+
+/// Publish only an exact initializing snapshot; retain revision one and replace the pointer with CAS.
+async fn publish_ready(
+    client: &ArangoClient,
+    expected: &ProfileSnapshot,
+) -> Result<ProfileSnapshot, ArangoError> {
+    check_locked(client, expected).await?;
+    let mut profile = expected.profile().clone();
+    profile.revision = 2;
+    profile.state = ProfileState::Ready;
+    profile.validate(expected.manifest()).map_err(invalid)?;
+    let mut pointer = expected.pointer.payload.clone();
+    pointer.revision = 2;
+    insert(client, &profile_key(&pointer), &profile).await?;
+    client.put(&format!("document/{COLLECTION}/{POINTER_KEY}?ignoreRevs=false"),
+        &json!({"_key":POINTER_KEY,"_rev":expected.pointer.rev,"format":RECORD_FORMAT,"payload":pointer})).await?;
+    load_locked(client).await
 }
 
 /// Require exact content and revision pins, including immutable record revisions.

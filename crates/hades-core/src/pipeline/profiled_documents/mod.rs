@@ -1,8 +1,8 @@
 //! Internal document admission -> verified embedding -> atomic storage -> retrieval.
 //!
 //! No public command uses this path yet. A trusted caller supplies extracted text
-//! while the registered provider plans token-checked UTF-8 byte spans. Recoverable
-//! provisioning and all-entry-point enforcement remain prerequisites
+//! while the registered provider plans token-checked UTF-8 byte spans. Public
+//! admission and all-entry-point enforcement remain prerequisites
 //! for activation. Only conventional document text and cosine ranking are supported.
 
 mod storage;

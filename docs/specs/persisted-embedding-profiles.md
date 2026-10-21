@@ -41,8 +41,11 @@ its manifest before writing. It refuses any existing user collection, then creat
 inserts the manifest, generation, profile, and active pointer.
 
 This empty-database check is an additional refusal rule, **not proof of ownership**
-or protection against unrelated administrative collection creation. The future
-durable setup ledger must establish ownership before calling this operation.
+or protection against unrelated administrative collection creation. The
+[durable setup coordinator](recoverable-workspace-setup.md) now establishes
+ownership and uses a separate internal recovery method, which checks its marker
+under the same metadata transaction. The standalone initializer retains its
+strict empty-database behavior.
 Existing corpora are not automatically assigned the currently configured model.
 
 After independently verifying the required schema and trusted provider, the
@@ -86,8 +89,10 @@ Repeated/stale readiness requests fail rather than silently succeeding.
 
 A lost commit acknowledgement is an unknown outcome. The owning provisioning
 operation must reload and reconcile durable metadata against its operation ledger;
-it must not reset a database or equate a matching name with ownership. The ledger,
-safe resume, public setup workflow, and portable job pins remain future slices.
+it must not reset a database or equate a matching name with ownership. The
+[setup coordinator](recoverable-workspace-setup.md) now implements the local
+ledger and safe resume for conventional document databases. The public setup
+workflow, recovery tooling, and portable job pins remain subsequent work.
 Raw administrative writes can still corrupt records: validation detects them,
 but this collection is not an authorization boundary.
 

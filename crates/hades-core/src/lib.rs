@@ -22,6 +22,7 @@ pub mod source_git;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod training;
+pub mod workspace_setup;
 
 pub use config::HadesConfig;
 
