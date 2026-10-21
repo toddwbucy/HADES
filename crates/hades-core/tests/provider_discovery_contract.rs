@@ -32,6 +32,9 @@ mod registration_fixture;
 #[path = "provider_discovery/workloads.rs"]
 mod workloads;
 
+#[path = "provider_discovery/limits.rs"]
+mod limits;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     root: PathBuf,
@@ -599,7 +602,7 @@ async fn saved_policy_is_checked_against_actual_capabilities_without_changing_it
     assert_eq!(
         observed
             .description()
-            .workload(WorkloadKind::Documents)
+            .advertised_workload(WorkloadKind::Documents)
             .unwrap()
             .capabilities
             .max_input_tokens,

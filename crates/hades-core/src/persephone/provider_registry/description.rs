@@ -3,7 +3,8 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::embedding_profile::{
-    Capabilities, EmbeddingSpace, ModelIdentity, ProviderReceipt, WorkloadKind,
+    Capabilities, ChunkPolicy, ContractError, EmbeddingSpace, ModelIdentity, ProviderReceipt,
+    Workload, WorkloadKind, require,
 };
 
 /// The original unversioned description retains its single text-space observation.
@@ -62,10 +63,10 @@ impl ProviderDescription {
         }
     }
 
-    /// V2 omissions stay unavailable, even if another workload has an identical space.
-    /// V1 exposes its single text observation under Documents; the catalog also permits
-    /// explicitly enabled ordinary-text code policies that match that exact space.
-    pub fn workload(&self, kind: WorkloadKind) -> Option<WorkloadObservation<'_>> {
+    /// Inspect the actual wire declaration, independently of any database policy.
+    /// The original single-space format has one Documents observation; use workload()
+    /// to resolve its compatibility with an explicit ordinary-text code policy.
+    pub fn advertised_workload(&self, kind: WorkloadKind) -> Option<WorkloadObservation<'_>> {
         match self {
             Self::Single {
                 capabilities,
@@ -90,6 +91,43 @@ impl ProviderDescription {
                 })
             }
         }
+    }
+
+    /// Resolve and check an enabled policy using the same compatibility rules as client binding.
+    /// V2 omissions never fall back; original text observations may serve ordinary-text code
+    /// only when its saved space and required capabilities match exactly.
+    pub fn workload(
+        &self,
+        kind: WorkloadKind,
+        policy: &Workload,
+    ) -> Result<WorkloadObservation<'_>, ContractError> {
+        let advertised_kind = match (self, kind, policy.specialized_code) {
+            (Self::Single { .. }, WorkloadKind::Code, false) => WorkloadKind::Documents,
+            _ => kind,
+        };
+        let observed = self.advertised_workload(advertised_kind).ok_or_else(|| {
+            ContractError(format!("provider does not advertise the {kind:?} workload"))
+        })?;
+        require(
+            &policy.space == observed.space,
+            "provider embedding behavior differs from the saved workload",
+        )?;
+        let capabilities = observed.capabilities;
+        require(
+            capabilities.text
+                && capabilities.tasks.contains(&policy.space.passage.task)
+                && capabilities.tasks.contains(&policy.space.query.task)
+                && (!policy.specialized_code
+                    || (kind == WorkloadKind::Code && capabilities.specialized_code)),
+            "provider no longer supports an enabled workload",
+        )?;
+        if matches!(policy.chunking, ChunkPolicy::Late { .. }) {
+            require(
+                capabilities.late_chunking && capabilities.tokenizer_offsets,
+                "provider no longer supports the saved late-chunk policy",
+            )?;
+        }
+        Ok(observed)
     }
 }
 

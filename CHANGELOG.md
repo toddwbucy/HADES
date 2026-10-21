@@ -20,11 +20,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 ### Added
 
 - Add explicit document/code provider observations for model-bound workspaces,
-  with separate capability checks and correctly selected embedding receipts from
-  one registered model load. Preserve existing document providers and explicit
-  ordinary-text code profiles on the original single-space protocol, and reject
-  cross-workload receipts; verified code ingestion remains gated pending its
-  provider and graph-storage integration (#225).
+  with separate capability checks, observed planning limits, and correctly selected
+  embedding receipts from one registered model load. Preserve existing document
+  providers and explicit ordinary-text code profiles on the original single-space
+  protocol. Reject cross-workload receipts; verified code ingestion remains gated
+  pending its provider and graph-storage integration (#225).
 
 - Add human passage corrections to guided reading, with save/cancel, revision
   history, before/after changes, and append-only restoration. Preserve original

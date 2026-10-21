@@ -103,7 +103,12 @@ intent, change task/prompt/representation, or authorize specialized code; a
 specialized code observation requires V2. Managed code ingestion remains gated.
 
 Rust callers inspect `description().model()` and
-`description().workload(WorkloadKind::Documents)` or `WorkloadKind::Code`.
+`description().advertised_workload(kind)` for the explicit wire declaration.
+To check a saved workload, use `description().workload(kind, policy)`, passing
+`profile.workloads.enabled(kind)?`. This is the same compatibility-aware lookup
+used by client binding, including original-format ordinary-text code support,
+exact space matching, and required capabilities. A disabled saved workload or
+missing compatible observation produces a profile `ContractError`.
 Serialization preserves the observed wire format. This is a consumer contract
 with synthetic mixed/code-provider coverage; a real verified Jina code producer,
 its qualification, and code graph persistence are subsequent #225 work.
@@ -116,9 +121,28 @@ workload against its own observation. Same dimensions are insufficient. Changed
 tokenizer dependencies, spaces, tasks, or required late/code capabilities refuse
 admission. Binding a document client also checks any enabled code workload.
 
+This all-or-nothing verification is intentional: the current admission unit is
+the complete database profile, with one readiness state and generation. A
+document query must not silently treat a missing or incompatible enabled code
+adapter as disabled. Thus a missing V2 code observation blocks both document
+and code embedding operations on a code-enabled profile; an original-format
+provider can satisfy ordinary-text code but cannot satisfy specialized code.
+Non-embedding reads retain their existing admission paths. Verification does
+not rewrite intent, change readiness, or fall back to legacy embedding. Partial
+availability would require an explicit per-workload admission/recovery contract.
+
 A smaller live token ceiling is an operational change, not an embedding-space
-change. It does not rewrite the saved profile: conventional planning still uses
-the smaller of saved and live ceilings, and inference refuses overflow.
+change. Each client snapshots both the saved global ceiling and the selected
+workload's observed ceiling. Planning requests retain the saved policy fields:
+the provider's tokenizer plans within the smaller saved/live ceiling, additionally
+bounded by the saved context cap for late windows. Rust independently rejects a
+conventional or late plan exceeding the selected observation, and checks again
+before embedding a caller-supplied late plan. Clones retain that limit with their
+receipt. For example, an 8192-token saved ceiling with document/code live ceilings
+of 8192/512 admits code plans of at most 512 tokens without lowering the document
+limit or rewriting the profile. A larger provider cannot raise saved limits.
+Direct query or caller-supplied text inference still requires provider-side
+token counting and overflow refusal; Rust does not infer counts from characters.
 
 `VerifiedProvider::document_profile(generation, chunking)` creates initializing
 revision one with explicit document intent and observed model metadata. Code
@@ -155,8 +179,13 @@ databases. They cover read-only inspection, unsafe paths/permissions, concurrent
 registration, strict wire parsing, resource limits, compatibility, reloads,
 database isolation, and policy drift during verification. Workload cases cover
 mixed and code-only observations, code as ordinary text, capability isolation,
-cross-workload receipt rejection, coherent load generations, and unchanged
-document provenance through the original and V2 formats.
+separate live ceilings for conventional/late plans, reused late-plan rejection
+before inference, consistent public lookup and binding errors, cross-workload
+receipt rejection, coherent load generations, and unchanged document provenance
+through the original and V2 formats. Observation validation checks common model
+and tokenizer declarations once and each workload directly, using shared profile
+validation primitives. Public profile and binding boundaries still revalidate
+caller-owned data; there is no unchecked binding path or mutable-profile cache.
 
 [Real-Jina qualification](verified-jina-qualification.md) now makes Rust read the
 actual protected registration and observe `/v1/verify` independently before profile

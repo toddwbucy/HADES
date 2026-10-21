@@ -76,7 +76,7 @@ async fn install(pool: &ArangoPool, context: &Value) -> (ProfiledDocuments, Setu
     let passage_tokens = 500.min(
         observed
             .description()
-            .workload(WorkloadKind::Documents)
+            .advertised_workload(WorkloadKind::Documents)
             .unwrap()
             .capabilities
             .max_input_tokens,

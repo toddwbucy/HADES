@@ -1,11 +1,11 @@
 //! Independent workload observations at the registered provider boundary.
 
-use super::{Fixture, Peer, Reply};
+use super::{EmbeddingError, Fixture, Peer, Reply};
 use hades_core::embedding_profile::{ChunkPolicy, EmbeddingRole, EmbeddingSpace, WorkloadKind};
 use serde_json::{Value, json};
 
 /// Same artifact and dimension, deliberately different numerical tasks and spaces.
-fn mixed() -> Fixture {
+pub(super) fn mixed() -> Fixture {
     let mut fixture = Fixture::new();
     let documents = json!({
         "capabilities":fixture.description["capabilities"],
@@ -113,6 +113,10 @@ async fn mixed_workloads_bind_their_own_tasks_dimensions_and_receipts() {
             fixture.profile.workloads.documents.as_ref().unwrap().space
         );
         for (index, (kind, name, role, task, dimension)) in roles.into_iter().enumerate() {
+            let resolved = observed
+                .description()
+                .workload(kind, fixture.profile.workloads.enabled(kind).unwrap())
+                .unwrap();
             let client = observed
                 .client(&fixture.profile, &fixture.manifest, kind, role)
                 .await
@@ -121,6 +125,7 @@ async fn mixed_workloads_bind_their_own_tasks_dimensions_and_receipts() {
             assert_eq!(result.binding.dimension, dimension);
             assert_eq!(result.output.embeddings[0].len(), dimension as usize);
             assert_eq!(result.binding.task, task);
+            assert_eq!(&result.binding.expected, resolved.receipt);
             assert_eq!(
                 json!(result.binding.expected),
                 fixture.description["workloads"][name]["receipt"]
@@ -168,7 +173,7 @@ async fn code_only_observation_does_not_require_or_create_document_intent() {
     assert!(
         observed
             .description()
-            .workload(WorkloadKind::Documents)
+            .advertised_workload(WorkloadKind::Documents)
             .is_none()
     );
     observed
@@ -210,6 +215,18 @@ async fn legacy_observation_preserves_explicit_ordinary_text_code_with_the_same_
         )
         .await
         .unwrap();
+    let resolved = observed
+        .description()
+        .workload(
+            WorkloadKind::Code,
+            fixture
+                .profile
+                .workloads
+                .enabled(WorkloadKind::Code)
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(&client.binding().expected, resolved.receipt);
     let result = client
         .embed(&["ordinary text code".into()], None)
         .await
@@ -250,6 +267,7 @@ async fn legacy_observation_preserves_explicit_ordinary_text_code_with_the_same_
         .err()
         .unwrap();
     assert!(error.to_string().contains("disabled_by_profile"));
+    assert!(matches!(error, EmbeddingError::Contract(_)));
     assert_eq!(peer.requests().len(), 2);
 }
 
@@ -291,6 +309,7 @@ async fn legacy_code_compatibility_cannot_change_space_or_enable_unsupported_cap
             .err()
             .unwrap();
         assert!(error.to_string().contains(expected), "{mode}: {error}");
+        assert!(matches!(error, EmbeddingError::Contract(_)));
         assert_eq!(peer.requests().len(), 1);
     }
 }
@@ -336,6 +355,7 @@ async fn ordinary_text_code_requires_explicit_observation_and_database_intent() 
         .err()
         .unwrap();
     assert!(error.to_string().contains("disabled_by_profile"));
+    assert!(matches!(error, EmbeddingError::Contract(_)));
     assert_eq!(peer.requests().len(), 2);
     // V2 explicitly declares workloads: matching document space cannot replace an omitted code entry.
     fixture.description["workloads"]["code"] = Value::Null;
@@ -351,6 +371,7 @@ async fn ordinary_text_code_requires_explicit_observation_and_database_intent() 
             .to_string()
             .contains("does not advertise the Code workload")
     );
+    assert!(matches!(error, EmbeddingError::Contract(_)));
     assert_eq!(peer.requests().len(), 1);
 }
 
@@ -418,6 +439,21 @@ async fn capabilities_are_checked_per_workload_even_when_binding_the_other_one()
             .err()
             .unwrap();
         assert!(error.to_string().contains(expected), "{mode}: {error}");
+        let lookup_error = observed
+            .description()
+            .workload(
+                WorkloadKind::Code,
+                fixture
+                    .profile
+                    .workloads
+                    .enabled(WorkloadKind::Code)
+                    .unwrap(),
+            )
+            .unwrap_err();
+        assert!(
+            lookup_error.to_string().contains(expected),
+            "{mode}: {lookup_error}"
+        );
         let error = catalog
             .verify_profile(&fixture.profile, &fixture.manifest)
             .await
@@ -539,6 +575,15 @@ async fn malformed_or_incoherent_workload_observations_are_refused_in_full() {
             json!(["missing.json"]),
             "tokenizer asset is absent",
         ),
+        ("/model/tokenizer_files", json!([]), "manifest"),
+        (
+            "/model/tokenizer_files",
+            json!([
+                fixture.profile.model.tokenizer_files[0],
+                fixture.profile.model.tokenizer_files[0]
+            ]),
+            "duplicate",
+        ),
         (
             "/workloads/code/receipt/artifact_md5",
             json!("0".repeat(32)),
@@ -578,6 +623,16 @@ async fn malformed_or_incoherent_workload_observations_are_refused_in_full() {
             "/workloads/code/capabilities/tasks",
             json!(["code", "code"]),
             "duplicate supported task",
+        ),
+        (
+            "/workloads/code/capabilities/tasks",
+            json!(["code", "bad\nlabel"]),
+            "labels",
+        ),
+        (
+            "/workloads/code/space/representation/dimension",
+            json!(0),
+            "dimension",
         ),
     ] {
         let mut wrong = fixture.description.clone();

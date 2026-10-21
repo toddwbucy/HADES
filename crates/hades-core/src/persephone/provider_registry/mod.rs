@@ -28,9 +28,9 @@ use super::{
     embedding::{EmbeddingEndpoint, EmbeddingError},
 };
 use crate::embedding_profile::{
-    ArtifactManifest, ChunkPolicy, EmbeddingProfile, EmbeddingRole, MAX_PROFILE_BYTES,
-    ModelIdentity, ProfileFormat, ProfileState, RuntimeBinding, Workload, WorkloadKind, Workloads,
-    require,
+    ArtifactManifest, ChunkPolicy, ContractError, EmbeddingProfile, EmbeddingRole,
+    MAX_PROFILE_BYTES, ModelIdentity, ProfileFormat, ProfileState, RuntimeBinding, Workload,
+    WorkloadKind, Workloads, require,
 };
 use registration::Registered;
 
@@ -213,31 +213,16 @@ impl VerifiedProvider {
         generation: String,
         chunking: ChunkPolicy,
     ) -> Result<EmbeddingProfile, EmbeddingError> {
-        self.observed_profile(WorkloadKind::Documents, generation, chunking)
-    }
-
-    /// Reuse profile validation separately for every advertised space and capability set.
-    fn observed_profile(
-        &self,
-        kind: WorkloadKind,
-        generation: String,
-        chunking: ChunkPolicy,
-    ) -> Result<EmbeddingProfile, EmbeddingError> {
-        let observed = self.workload(kind)?;
+        let observed = self
+            .description
+            .advertised_workload(WorkloadKind::Documents)
+            .ok_or_else(|| {
+                ContractError("provider does not advertise the Documents workload".into())
+            })?;
         let workload = Workload {
             space: observed.space.clone(),
             chunking,
-            specialized_code: kind == WorkloadKind::Code && observed.capabilities.specialized_code,
-        };
-        let workloads = match kind {
-            WorkloadKind::Documents => Workloads {
-                documents: Some(workload),
-                code: None,
-            },
-            WorkloadKind::Code => Workloads {
-                documents: None,
-                code: Some(workload),
-            },
+            specialized_code: false,
         };
         let profile = EmbeddingProfile {
             format: ProfileFormat::V1,
@@ -246,7 +231,10 @@ impl VerifiedProvider {
             generation,
             model: self.description.model().clone(),
             capabilities: observed.capabilities.clone(),
-            workloads,
+            workloads: Workloads {
+                documents: Some(workload),
+                code: None,
+            },
             runtime_binding: RuntimeBinding {
                 provider_id: self.provider_id().into(),
             },
@@ -255,35 +243,13 @@ impl VerifiedProvider {
         Ok(profile)
     }
 
-    /// Read an explicit observation; single-space policy compatibility is handled separately.
-    fn workload(&self, kind: WorkloadKind) -> Result<WorkloadObservation<'_>, EmbeddingError> {
-        self.description.workload(kind).ok_or_else(|| {
-            EmbeddingError::InvalidResponse(format!(
-                "provider does not advertise the {kind:?} workload"
-            ))
-        })
-    }
-
-    /// Preserve explicit ordinary-text code profiles on the original single-space protocol.
-    /// The caller still checks the exact saved space; V2 omissions never imply support.
-    fn workload_for_policy(
-        &self,
-        kind: WorkloadKind,
-        policy: &Workload,
-    ) -> Result<WorkloadObservation<'_>, EmbeddingError> {
-        match (&self.description, kind, policy.specialized_code) {
-            (ProviderDescription::Single { .. }, WorkloadKind::Code, false) => {
-                self.workload(WorkloadKind::Documents)
-            }
-            _ => self.workload(kind),
-        }
-    }
-
     /// One observation describes a coherent load; validate even workloads this caller does not use.
     fn validate_description(&self) -> Result<(), EmbeddingError> {
+        let model = self.description.model();
+        let tokenizer_md5 = model.validate(self.manifest())?;
         let mut generation = None;
         for kind in [WorkloadKind::Documents, WorkloadKind::Code] {
-            let Some(observed) = self.description.workload(kind) else {
+            let Some(observed) = self.description.advertised_workload(kind) else {
                 continue;
             };
             observed.receipt.validate()?;
@@ -299,14 +265,10 @@ impl VerifiedProvider {
                 )?;
             }
             generation = Some(&observed.receipt.serving_generation);
-            self.observed_profile(
-                kind,
-                "provider-observation".into(),
-                ChunkPolicy::Conventional {
-                    passage_tokens: 1,
-                    overlap_tokens: 0,
-                },
-            )?;
+            observed.capabilities.validate()?;
+            observed
+                .space
+                .validate_for(model, &tokenizer_md5, observed.capabilities)?;
         }
         require(
             generation.is_some(),
@@ -324,18 +286,16 @@ impl VerifiedProvider {
         role: EmbeddingRole,
     ) -> Result<BoundEmbeddingClient, EmbeddingError> {
         self.check_profile(profile, manifest)?;
-        let policy = match kind {
-            WorkloadKind::Documents => profile.workloads.documents.as_ref(),
-            WorkloadKind::Code => profile.workloads.code.as_ref(),
-        }
-        .ok_or_else(|| EmbeddingError::InvalidResponse("workload is disabled_by_profile".into()))?;
+        let policy = profile.workloads.enabled(kind)?;
+        let observed = self.description.workload(kind, policy)?;
         BoundEmbeddingClient::connect(
             profile,
             manifest,
             kind,
             role,
             self.connection.clone(),
-            self.workload_for_policy(kind, policy)?.receipt,
+            observed.receipt,
+            observed.capabilities.max_input_tokens,
         )
         .await
     }
@@ -360,30 +320,11 @@ impl VerifiedProvider {
             saved == actual,
             "provider tokenizer dependencies differ from the saved profile",
         )?;
-        for (kind, workload) in [
-            (WorkloadKind::Documents, &profile.workloads.documents),
-            (WorkloadKind::Code, &profile.workloads.code),
-        ] {
-            let Some(workload) = workload else { continue };
-            let observed = self.workload_for_policy(kind, workload)?;
-            let capabilities = observed.capabilities;
-            require(
-                &workload.space == observed.space,
-                "provider embedding behavior differs from the saved workload",
-            )?;
-            require(
-                capabilities.text
-                    && capabilities.tasks.contains(&workload.space.passage.task)
-                    && capabilities.tasks.contains(&workload.space.query.task)
-                    && (!workload.specialized_code || capabilities.specialized_code),
-                "provider no longer supports an enabled workload",
-            )?;
-            if matches!(workload.chunking, ChunkPolicy::Late { .. }) {
-                require(
-                    capabilities.late_chunking && capabilities.tokenizer_offsets,
-                    "provider no longer supports the saved late-chunk policy",
-                )?;
-            }
+        for kind in [WorkloadKind::Documents, WorkloadKind::Code] {
+            let Some(workload) = profile.workloads.get(kind) else {
+                continue;
+            };
+            self.description.workload(kind, workload)?;
         }
         Ok(())
     }
