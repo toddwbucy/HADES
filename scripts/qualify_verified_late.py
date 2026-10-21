@@ -136,6 +136,7 @@ def main(argv=None):
         warnings.filterwarnings("error", message="Found missing adapter keys.*")
         report["stage"] = "provider"
         if args.device.startswith("cuda:"):
+            torch.cuda.synchronize(args.device)
             torch.cuda.reset_peak_memory_stats(args.device)
             report["runtime"]["gpu"] = torch.cuda.get_device_name(args.device)
         report["description"] = provider.describe()
