@@ -185,6 +185,30 @@ report. The private database stopped cleanly, serving snapshots were removed,
 and GPU usage returned to 495 MiB. Installed services were unchanged. This is
 evidence for the internal registered-provider flow; public setup remains gated.
 
+## ThinkPad recoverable-setup result: 2026-10-21 UTC
+
+The [recoverable-setup report](../evidence/jina-recoverable-setup-thinkpad-2026-10-21.json)
+passed on clean implementation commit `d8ce9c668101b5411ccd8b1c9c23724cb1253324`,
+using the same registered artifacts, runtime, and embedding space. The setup
+coordinator created the harness-owned disposable database, persisted its ownership
+marker and profile, and verified the provider before readiness. Repeating the
+identical request returned the same complete receipt and preserved the exact
+database profile snapshot.
+
+| Observation | Result |
+| --- | --- |
+| Setup / identical retry | Ready revision two; same receipt and unchanged profile snapshot |
+| Provider retrieval / stored-vector retrieval | 6/6 expected first in each |
+| Long Unicode document | Same 12,384 source bytes and 6 persisted passages |
+| Independent body/input/overlap recount | All 6 match |
+| Long-document planning, embedding, commit, and full search scan | 2.02 s |
+
+The report retains the setup receipt, request digest, model receipt, manifest,
+runtime and complete passage plan. The private database stopped cleanly, serving
+snapshots were removed, and GPU usage returned to 495 MiB. Installed services
+were unchanged. Failure/retry behavior is separately exercised by the disposable
+fault-injection contracts; this run qualifies successful setup with the real model.
+
 ## Scope of the result
 
 Qualification applies to the recorded artifacts, runtime, numerical contract,
