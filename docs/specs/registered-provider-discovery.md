@@ -5,8 +5,8 @@ protected local registrations to actual provider observations and database-bound
 clients. `ProfiledDocuments::connect(pool, &catalog)` now resolves the saved
 provider ID itself. Its caller cannot inject an endpoint or observed receipt.
 [Public search admission](profiled-search-admission.md) now supplies this catalog
-from explicit installation configuration. Profile-aware ingestion/jobs and
-frontend setup remain pending.
+from explicit installation configuration. [Foreground file ingestion](profiled-file-ingestion.md)
+uses the same catalog. Job pins and frontend setup remain pending.
 
 ## Installation-owned catalog
 
