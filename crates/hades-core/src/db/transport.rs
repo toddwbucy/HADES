@@ -63,6 +63,26 @@ impl std::fmt::Debug for ArangoClient {
 }
 
 impl ArangoClient {
+    /// Select a validated database on the same explicit administrative connection.
+    /// Provisioning never rediscovers endpoints or copies credentials into receipts.
+    pub(crate) fn for_database(&self, name: &str) -> Result<Self, ArangoError> {
+        if self.transaction_id.is_some()
+            || name.is_empty()
+            || name.len() > 64
+            || !name.as_bytes()[0].is_ascii_alphabetic()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        {
+            return Err(ArangoError::Request(
+                "invalid provisioning database selection".into(),
+            ));
+        }
+        let mut client = self.clone();
+        client.database = name.into();
+        Ok(client)
+    }
+
     pub(crate) fn in_transaction(&self, id: &str) -> Result<Self, ArangoError> {
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
             return Err(ArangoError::Request(

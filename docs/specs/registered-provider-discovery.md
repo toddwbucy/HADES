@@ -105,5 +105,7 @@ database isolation, and policy drift during verification.
 [Real-Jina qualification](verified-jina-qualification.md) now makes Rust read the
 actual protected registration and observe `/v1/verify` independently before profile
 initialization and document admission. Its observation must agree with the Python
-qualification, including the receipt and manifest. Recoverable provisioning,
-public entry-point enforcement, and frontend creation remain subsequent work.
+qualification, including the receipt and manifest. The
+[recoverable setup coordinator](recoverable-workspace-setup.md) now verifies
+providers before database creation and again before readiness publication.
+Public entry-point enforcement and frontend creation remain subsequent work.

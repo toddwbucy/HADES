@@ -3,7 +3,7 @@
 #![cfg(unix)]
 
 use hades_core::{
-    db::{ArangoPool, crud},
+    db::{ArangoClient, ArangoPool, crud},
     embedding_profile::{ChunkPolicy, store::ProfileStore},
     persephone::{
         bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint,
@@ -11,10 +11,12 @@ use hades_core::{
     },
     pipeline::profiled_documents::{DocumentInput, ProfiledDocuments},
     test_support::{Fixtures, with_temp_db},
+    workspace_setup::{SetupReceipt, SetupRequest, SetupStatus, WorkspaceSetup},
 };
 use serde_json::{Value, json};
 use std::{
     io::Write,
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -34,7 +36,7 @@ fn context() -> Value {
 }
 
 /// Initialize a ready synthetic corpus using the actual observed model and representation.
-async fn install(pool: &ArangoPool, context: &Value) -> ProfiledDocuments {
+async fn install(pool: &ArangoPool, context: &Value) -> (ProfiledDocuments, SetupReceipt) {
     let catalog = ProviderCatalog::new(
         PathBuf::from(context["registry"].as_str().unwrap()),
         vec![ProviderConnection {
@@ -62,20 +64,45 @@ async fn install(pool: &ArangoPool, context: &Value) -> ProfiledDocuments {
             },
         )
         .unwrap();
-    let store = ProfileStore::new(pool.clone()).unwrap();
-    let initial = store
-        .initialize(profile, observed.manifest().clone())
+    // with_temp_db owns this exact name and cleanup. Let the coordinator create it afresh.
+    let admin = ArangoClient::with_socket(
+        pool.writer().socket_path().unwrap().into(),
+        "_system",
+        &std::env::var("HADES_TEST_USER").unwrap_or_else(|_| "root".into()),
+        &std::env::var("ARANGO_PASSWORD").unwrap(),
+    );
+    admin
+        .delete(&format!("database/{}", pool.database()))
         .await
         .unwrap();
-    for collection in ["documents", "chunks", "embeddings"] {
-        crud::create_collection(pool, collection, Some(2))
+    let ledger = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(ledger.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let setup = WorkspaceSetup::new(
+        ledger.path().into(),
+        "jina-qualification".into(),
+        "qualification-owner".into(),
+        admin,
+        catalog.clone(),
+    )
+    .unwrap();
+    let request = SetupRequest {
+        operation_id: "jina-qualification-setup".into(),
+        database: pool.database().into(),
+        profile,
+        manifest: observed.manifest().clone(),
+    };
+    let receipt = setup.run(request.clone()).await.unwrap();
+    assert_eq!(receipt.status, SetupStatus::Ready);
+    let store = ProfileStore::new(pool.clone()).unwrap();
+    let snapshot = store.load().await.unwrap();
+    assert_eq!(setup.run(request).await.unwrap(), receipt);
+    assert_eq!(store.load().await.unwrap(), snapshot);
+    (
+        ProfiledDocuments::connect(pool.clone(), &catalog)
             .await
-            .unwrap();
-    }
-    store.mark_ready(&initial).await.unwrap();
-    ProfiledDocuments::connect(pool.clone(), &catalog)
-        .await
-        .unwrap()
+            .unwrap(),
+        receipt,
+    )
 }
 
 /// Prove real vectors survive the wire, storage checks, and asymmetric query ranking.
@@ -84,7 +111,7 @@ async fn install(pool: &ArangoPool, context: &Value) -> ProfiledDocuments {
 async fn registered_jina_document_roundtrip() {
     let context = context();
     with_temp_db("real_verified_jina", Fixtures::Empty, move |pool| async move {
-        let documents = install(&pool, &context).await;
+        let (documents, setup_receipt) = install(&pool, &context).await;
         let inputs = context["cases"]["documents"].as_array().unwrap();
         let queries = context["cases"]["queries"].as_array().unwrap();
         assert!(!inputs.is_empty() && !queries.is_empty());
@@ -146,6 +173,7 @@ async fn registered_jina_document_roundtrip() {
         let report = json!({"passed":true,"profile_revision":2,"documents":inputs.len(),
             "dimension":2048,"receipt":context["description"]["receipt"],
             "protected_registration_and_live_description_checked":true,
+            "recoverable_setup_and_identical_retry_checked":true,"setup":setup_receipt,
             "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed,
             "planning":{"plan":plan,"source_bytes":long_text.len(),"seconds":started.elapsed().as_secs_f64()}});
         let path = std::env::var("HADES_VERIFIED_JINA_REPORT").expect("explicit new evidence file");

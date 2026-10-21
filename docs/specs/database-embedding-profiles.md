@@ -453,8 +453,9 @@ Disposable databases and private synthetic providers cover the end-to-end flow,
 including different dimensions and provider reloads.
 [Token-aware planning](profile-token-planning.md) now uses the verified serving
 tokenizer, retains counted source spans, and removes the caller-supplied-span path.
-Provisioning ownership/recovery, schema/provider readiness
-checks, portable job pins, and public enforcement remain pending.
+The subsequent internal setup coordinator supplies ownership/recovery and
+schema/provider readiness checks. Portable job pins and public enforcement remain
+pending.
 
 The [real-Jina qualification protocol](verified-jina-qualification.md) adds an
 opt-in fixed retrieval/tokenizer/reload suite and the real provider HTTP-to-Rust
@@ -465,8 +466,15 @@ without activating public pairing or claiming a general quality benchmark.
 protected registrations and an explicit installation allowlist to actual HTTP
 observations. Document admission resolves its saved provider ID through that
 factory and rechecks the database profile after loading. Callers no longer supply
-an endpoint or observed receipt to the document path. Recoverable provisioning
-and public entry-point enforcement remain pending before frontend activation.
+an endpoint or observed receipt to the document path. Public entry-point
+enforcement remains pending before frontend activation.
+
+[Recoverable workspace setup](recoverable-workspace-setup.md) now composes the
+internal conventional document flow with a durable installation ledger, explicit
+database ownership markers, guarded readiness publication, and identical-request
+recovery. Lost create acknowledgements require reconciliation; existing databases
+are never adopted or reset. Public enforcement, broader schema/workload support,
+backup/reconciliation tooling, and frontend activation remain pending.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and

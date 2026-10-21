@@ -35,6 +35,9 @@ or evidence that this model is preferable to another model.
   from a private verified HTTP server. This independent observation must match
   the qualified manifest/receipt before constructing the initializing profile.
   Document admission resolves the same registration and observation again.
+  The internal setup coordinator creates the disposable database with its durable
+  ledger and ownership marker, checks the provider before readiness, and proves
+  an identical setup retry preserves the profile snapshot.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
   bindings, and retrieves all six expected answers from stored vectors.
 - After those retrieval checks, the fixed Unicode text in
@@ -200,7 +203,8 @@ criteria did not change; the failed v1 report is retained with the run evidence.
 The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
 long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
-paths, code/late-chunk capabilities, recoverable provisioning, legacy policy,
-and frontend creation remain separate work. Registered local provider discovery
-is now part of the qualification flow.
+paths, code/late-chunk capabilities, legacy policy, and frontend creation remain
+separate work. Registered local provider discovery and internal recoverable
+document setup are now part of the qualification flow; public setup authorization
+and administrative reconciliation/backup tooling remain pending.
 Public pairing remains gated.

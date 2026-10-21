@@ -14,7 +14,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db", "embedding_profile_store", "profiled_documents"]
+                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db", "embedding_profile_store", "profiled_documents", "workspace_setup"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
