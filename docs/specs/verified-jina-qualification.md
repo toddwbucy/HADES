@@ -29,6 +29,19 @@ detail reads by parent while retaining only one complete source at a time.
 All six public retrieval/source-text checks and the long-source tokenizer gates
 still passed. The original measurement is retained above.
 
+## ThinkPad file-ingestion result: 2026-10-21 UTC
+
+The [foreground file-ingestion run](../evidence/jina-file-ingestion-thinkpad-2026-10-21.json)
+passed on clean implementation `9929668ae0b31dc48f12f80f0da136d6df6edb8a` on
+2026-10-21 UTC. All eight fixed sources entered through bounded file snapshots
+and private gRPC extraction before actual verified Jina planning/inference.
+All six expected answers ranked first through public search, and source text and
+namespaced file metadata were preserved. The long Unicode source retained all
+12,384 bytes and six passages with independent tokenizer recounts; its full
+file-ingest/search check took 2.418 seconds. Model artifacts, runtime and space
+matched the previous qualification. The extractor was a text-passthrough test
+fixture; this is embedding/storage integration evidence, not Docling quality evidence.
+
 ## Fixed protocol and evidence
 
 `services/tests/fixtures/jina_qualification.json` defines eight short documents,

@@ -109,6 +109,8 @@ The documented native `--arangod` alternative is supported. Both targets run in
 default isolated CI. The fixed real-Jina qualification also uses file ingestion
 with a private text-passthrough extractor; it qualifies embedding/storage
 integration, not Docling extraction quality.
+The [ThinkPad qualification](../evidence/jina-file-ingestion-thinkpad-2026-10-21.json)
+passed all six expected retrieval answers and the long Unicode token-recount gates.
 
 Job pins, broader workloads and mixed-tree routing, legacy adoption/migration,
 backup/reconciliation tooling, public setup authorization and frontend activation
