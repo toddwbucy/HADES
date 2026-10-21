@@ -194,11 +194,14 @@ impl WorkspaceSetup {
                 RecoveryReason::MetadataNotVerified,
             ));
         }
-        // Schema initialization can still be missing data collections, but its
-        // metadata was already initialized and must pass all profile checks.
-        if record.receipt.step != SetupStep::Schema
-            && database::schema(&client, false, !ready).await.is_err()
-        {
+        // Schema initialization can still be missing data collections. Existing
+        // collections must pass the same property, index and empty-data checks as retry.
+        let schema = if record.receipt.step == SetupStep::Schema {
+            database::partial_schema(&client).await
+        } else {
+            database::schema(&client, false, !ready).await
+        };
+        if schema.is_err() {
             return Ok(report.conclude(
                 RecoveryAction::InspectRequired,
                 RecoveryReason::SchemaNotVerified,

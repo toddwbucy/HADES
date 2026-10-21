@@ -211,6 +211,22 @@ pub(crate) async fn collection(
     )
 }
 
+/// Require metadata and validate existing empty data collections without creating missing ones.
+pub(super) async fn partial_schema(client: &ArangoClient) -> Result<(), SetupError> {
+    let names = inventory(client).await?;
+    collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
+    for name in DATA {
+        if names.iter().any(|existing| existing == name) {
+            collection(client, name, false).await?;
+            verify(
+                count(client, name).await? == 0,
+                "initializing workspace contains data; setup cannot adopt it",
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// The exact-scan document path needs primary keys, not an unqualified ANN vector index.
 pub(crate) async fn schema(
     client: &ArangoClient,

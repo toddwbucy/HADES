@@ -59,8 +59,12 @@ or an unverified check must not be rendered as ready. A report never clears a
 `needs_reconciliation` hold or publishes readiness itself.
 
 At the schema checkpoint, missing document/chunk/vector collections can still
-be completed by retry. The already-initialized profile and manifest must match
-the original request; damaged, missing or replaced metadata requires inspection.
+be completed by retry. Existing data collections must be empty synchronous
+document collections with only their primary index. The metadata collection
+must also retain its expected properties and indexes. Incompatible or non-empty
+collections require inspection; diagnostics never repair them or create missing
+collections. The already-initialized profile and manifest must match the original
+request; damaged, missing or replaced metadata requires inspection.
 
 ## Restore and migration boundary
 

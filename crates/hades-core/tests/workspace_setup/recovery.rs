@@ -32,6 +32,150 @@ async fn metadata_rows(pool: &ArangoPool) -> Vec<serde_json::Value> {
     .results
 }
 
+/// Capture collection definitions and counts to detect diagnostic repair or creation.
+async fn schema_state(pool: &ArangoPool) -> BTreeMap<String, serde_json::Value> {
+    let inventory = pool
+        .writer()
+        .get("collection?excludeSystem=true")
+        .await
+        .unwrap();
+    let mut state = BTreeMap::new();
+    for entry in inventory["result"].as_array().unwrap() {
+        let name = entry["name"].as_str().unwrap();
+        let properties = pool
+            .writer()
+            .get(&format!("collection/{name}/properties"))
+            .await
+            .unwrap();
+        let indexes = pool
+            .writer()
+            .get(&format!("index?collection={name}"))
+            .await
+            .unwrap();
+        let count = crud::count_collection(pool, name).await.unwrap();
+        state.insert(
+            name.into(),
+            json!({"properties":properties,"indexes":indexes,"count":count}),
+        );
+    }
+    state
+}
+
+/// Missing collections can resume, but every existing collection must retain setup's exact schema.
+#[tokio::test]
+async fn schema_checkpoint_refuses_incompatible_collections_without_repair_or_hold() {
+    for name in ["documents", "chunks", "embeddings", "hades_workspace"] {
+        for defect in ["nonempty", "durability", "indexes"] {
+            // Workspace metadata legitimately has four records; only data collections must be empty.
+            if name == "hades_workspace" && defect == "nonempty" {
+                continue;
+            }
+            with_temp_db(
+                "setup_partial_schema",
+                Fixtures::Empty,
+                move |pool| async move {
+                    remove_fixture_database(&pool).await;
+                    let fixture = Fixture::new(2);
+                    let peer = Peer::new(&fixture);
+                    let root = ledger();
+                    let interrupted = if name == "hades_workspace" {
+                        "documents"
+                    } else {
+                        name
+                    };
+                    let proxy = Proxy::new(
+                        pool.writer(),
+                        rule("POST", "collection", Some(interrupted), 1),
+                    );
+                    let service = setup(root.path(), proxy.admin.clone(), &peer);
+                    let request = request(&pool, &fixture);
+                    assert!(service.run(request.clone()).await.is_err());
+                    assert_eq!(proxy.hits.load(Ordering::SeqCst), 1);
+                    let receipt = service
+                        .inspect(&request.operation_id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(receipt.step, SetupStep::Schema);
+                    assert_eq!(receipt.status, SetupStatus::Failed);
+                    let bytes = ledger_bytes(root.path());
+                    let metadata = metadata_rows(&pool).await;
+                    let observations = peer.observations();
+                    let partial = schema_state(&pool).await;
+                    let retry = service.diagnose(&request.operation_id).await.unwrap();
+                    assert_eq!(retry.action, RecoveryAction::RetryIdenticalRequest);
+                    assert_eq!(retry.reason, RecoveryReason::InitializationIncomplete);
+                    assert_eq!(schema_state(&pool).await, partial);
+
+                    match defect {
+                        "nonempty" => {
+                            crud::insert_document(
+                                &pool,
+                                name,
+                                &json!({"_key":"preserve","text":"independent source"}),
+                            )
+                            .await
+                            .unwrap();
+                        }
+                        "durability" => {
+                            pool.writer()
+                                .put(
+                                    &format!("collection/{name}/properties"),
+                                    &json!({"waitForSync":false}),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        "indexes" => {
+                            pool.writer()
+                                .post(
+                                    &format!("index?collection={name}"),
+                                    &json!({"type":"persistent","fields":["text"],"unique":false}),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    let authored = if defect == "nonempty" {
+                        Some(crud::get_document(&pool, name, "preserve").await.unwrap())
+                    } else {
+                        None
+                    };
+                    let damaged = schema_state(&pool).await;
+                    let report = service.diagnose(&request.operation_id).await.unwrap();
+                    assert_eq!(
+                        report.action,
+                        RecoveryAction::InspectRequired,
+                        "{name}/{defect}"
+                    );
+                    assert_eq!(
+                        report.reason,
+                        RecoveryReason::SchemaNotVerified,
+                        "{name}/{defect}"
+                    );
+                    assert_eq!(report.receipt, Some(receipt.clone()));
+                    assert_eq!(
+                        service.inspect(&request.operation_id).await.unwrap(),
+                        Some(receipt)
+                    );
+                    assert_eq!(ledger_bytes(root.path()), bytes);
+                    assert_eq!(metadata_rows(&pool).await, metadata);
+                    assert_eq!(schema_state(&pool).await, damaged);
+                    assert_eq!(peer.observations(), observations);
+                    if let Some(authored) = authored {
+                        assert_eq!(
+                            crud::get_document(&pool, name, "preserve").await.unwrap(),
+                            authored
+                        );
+                    }
+                },
+            )
+            .await;
+        }
+    }
+}
+
 /// Missing data collections are retryable only while the initialized profile matches durable intent.
 #[tokio::test]
 async fn schema_checkpoint_requires_intact_matching_metadata_without_changing_it() {
