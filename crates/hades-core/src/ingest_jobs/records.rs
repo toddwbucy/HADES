@@ -77,6 +77,9 @@ async fn start_with(
     }
     let provenance = crate::source_git::Batch::default();
     let source_git = provenance.resolve(&resolved).await.map_err(service)?;
+    crate::embedding_profile::admission::require_legacy(pool, "background ingestion")
+        .await
+        .map_err(service)?;
     let reservation = super::reserve(&resolved).map_err(service)?;
     if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict

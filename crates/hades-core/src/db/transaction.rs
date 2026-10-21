@@ -47,6 +47,23 @@ where
     F: FnOnce(ArangoClient) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ArangoError>> + Send + 'static,
 {
+    run_retaining(pool, collections, read_collections, (), operation).await
+}
+
+/// Keep an admission reservation alive through creation, cancellation and abort.
+pub(crate) async fn run_retaining<T, F, Fut, R>(
+    pool: &ArangoPool,
+    collections: Vec<String>,
+    read_collections: Vec<String>,
+    retention: R,
+    operation: F,
+) -> Result<T, ArangoError>
+where
+    T: Send + 'static,
+    F: FnOnce(ArangoClient) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ArangoError>> + Send + 'static,
+    R: Send + 'static,
+{
     if collections.is_empty() {
         return Err(ArangoError::Request(
             "transaction requires collections".into(),
@@ -55,6 +72,7 @@ where
     let client = pool.writer().clone();
     let (mut sender, receiver) = oneshot::channel();
     tokio::spawn(async move {
+        let _retention = retention;
         let created = client
             .post(
                 "transaction/begin",
@@ -116,5 +134,59 @@ async fn abort(client: &ArangoClient, id: &str) {
             ?result,
             "transaction abort not acknowledged; server expiry remains fallback"
         ),
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    use crate::cursor_mock::{Mock, Reply};
+    use std::sync::Arc;
+    use tokio::sync::{Notify, Semaphore};
+
+    #[tokio::test]
+    async fn cancellation_keeps_admission_until_creation_and_abort_finish() {
+        let created = Arc::new(Notify::new());
+        let aborted = Arc::new(Notify::new());
+        let capacity = Arc::new(Semaphore::new(1));
+        let permit = capacity.clone().acquire_owned().await.unwrap();
+        let mut mock = Mock::new(vec![
+            Reply::blocked(
+                json!({"result":{"id":"123","status":"running"}}),
+                created.clone(),
+            ),
+            Reply::blocked(
+                json!({"result":{"id":"123","status":"aborted"}}),
+                aborted.clone(),
+            ),
+        ])
+        .await;
+        let pool = mock.pool.clone();
+        let caller = tokio::spawn(async move {
+            run_retaining(
+                &pool,
+                vec!["fixture".into()],
+                Vec::new(),
+                permit,
+                |_| async {
+                    panic!("cancelled transaction must not invoke its callback");
+                    #[allow(unreachable_code)]
+                    Ok::<_, ArangoError>(())
+                },
+            )
+            .await
+        });
+        mock.event("POST transaction/begin").await;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert!(capacity.try_acquire().is_err());
+        created.notify_one();
+        mock.event("DELETE transaction/123").await;
+        assert!(capacity.try_acquire().is_err());
+        aborted.notify_one();
+        let _permit = tokio::time::timeout(Duration::from_secs(1), capacity.acquire())
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

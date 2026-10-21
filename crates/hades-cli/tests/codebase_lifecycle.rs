@@ -1659,17 +1659,21 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
     .unwrap();
     assert_eq!(ready.info().await.unwrap().max_seq_length, Some(8192));
     let dir = tempfile::tempdir().unwrap();
-    // Trap every database request on a private listener: invalid policy must
-    // fail before touching even this mock, and can never discover a live server.
+    // Only profile-presence reads may precede the legacy provider preflight.
+    // Invalid policy must still fail before any data/collection operation.
     let db_socket = dir.path().join("database.sock");
     let listener = tokio::net::UnixListener::bind(&db_socket).unwrap();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
-    let app = Router::new().fallback(move || {
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
         let calls = observed.clone();
         async move {
             calls.fetch_add(1, Ordering::SeqCst);
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            assert_eq!(request.method(), "GET");
+            assert!(matches!(request.uri().path(),
+                "/_db/hades_test_preflight/_api/collection/hades_workspace/properties" |
+                "/_db/hades_test_preflight/_api/collection/hades_setup/properties"));
+            (axum::http::StatusCode::NOT_FOUND, Json(json!({"error":true,"code":404,"errorNum":1203,"errorMessage":"collection not found"})))
         }
     });
     let database = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -1698,8 +1702,8 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
     let _ = database.await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        0,
-        "invalid policy must precede database access"
+        2,
+        "only profile-presence probes may precede invalid legacy policy"
     );
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);

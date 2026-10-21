@@ -279,7 +279,51 @@ pub(super) async fn search(
             scanned += 1;
         }
     }
-    Ok((top.into_items(), scanned))
+    // Fetch source text while the same profile/data locks still protect ranking.
+    // Per-hit bounds avoid materializing every source during the complete scan.
+    let mut items = Vec::new();
+    let mut bytes = 2_usize; // JSON array brackets
+    for mut item in top.into_items() {
+        let response = aql(
+            &client,
+            "RETURN {chunk: DOCUMENT('chunks', @chunk), document: DOCUMENT('documents', @parent)}",
+            json!({"chunk":item["chunk_key"], "parent":item["parent_key"]}),
+            2,
+            MAX_PREPARED_BYTES,
+        )
+        .await?;
+        let rows = query::completed_rows(&response)?;
+        ensure(rows.len() == 1, "missing ranked source detail")?;
+        let chunk = &rows[0]["chunk"];
+        let document = &rows[0]["document"];
+        let key = item["parent_key"].as_str().unwrap();
+        validate_document(document, key, &expected, &snapshot)?;
+        let span: TokenPassage = serde_json::from_value(chunk["span"].clone())
+            .map_err(|_| invalid("invalid ranked source span"))?;
+        let text = document["full_text"]
+            .as_str()
+            .unwrap()
+            .get(span.start_byte..span.end_byte)
+            .ok_or_else(|| invalid("ranked source span is outside its UTF-8 text"))?;
+        ensure(
+            chunk["_key"] == item["chunk_key"]
+                && chunk["parent_key"] == item["parent_key"]
+                && chunk["text"].as_str() == Some(text),
+            "ranked passage disagrees with source text",
+        )?;
+        item["text"] = json!(text);
+        item["source_id"] = document["source_id"].clone();
+        item["chunk_index"] = chunk["chunk_index"].clone();
+        item["total_chunks"] = document["chunk_count"].clone();
+        item["span"] = chunk["span"].clone();
+        bytes += serde_json::to_vec(&item)?.len() + usize::from(!items.is_empty());
+        ensure(
+            bytes <= 1024 * 1024,
+            "search result byte budget exceeded; request fewer results",
+        )?;
+        items.push(item);
+    }
+    Ok((items, scanned))
 }
 
 /// Compare persisted identity before touching vector values. Serving load IDs

@@ -201,6 +201,25 @@ impl Pipeline {
         let batch_start = Instant::now();
         let mut results = Vec::with_capacity(documents.len());
 
+        if let Err(error) =
+            crate::embedding_profile::admission::require_legacy(&self.db, "document ingestion")
+                .await
+        {
+            return PipelineSummary::from_results(
+                documents
+                    .iter()
+                    .map(|(_, id)| DocumentResult {
+                        doc_key: keys::normalize_document_key(id),
+                        success: false,
+                        chunk_count: 0,
+                        duration_ms: 0,
+                        error: Some(error.to_string()),
+                    })
+                    .collect(),
+                batch_start.elapsed().as_millis() as u64,
+            );
+        }
+
         // -- Phase 1: Extract all documents --------------------------------
         info!(count = documents.len(), "phase 1: extracting documents");
         // (doc_key, extract_result, extraction_duration_ms)
@@ -300,6 +319,7 @@ impl Pipeline {
         doc_key: &str,
         chunker: &(dyn ChunkingStrategy + Send + Sync),
     ) -> Result<usize, PipelineError> {
+        crate::embedding_profile::admission::require_legacy(&self.db, "document ingestion").await?;
         // 1. Extract
         let extract_result = self
             .extractor

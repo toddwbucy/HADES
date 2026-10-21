@@ -3,13 +3,11 @@
 #![cfg(unix)]
 
 use hades_core::{
+    config::{HadesConfig, RegisteredProviderConfig, RegisteredProvidersConfig},
     db::{ArangoClient, ArangoPool, crud},
     embedding_profile::{ChunkPolicy, store::ProfileStore},
-    persephone::{
-        bound_embedding::ProviderConnection, embedding::EmbeddingEndpoint,
-        provider_registry::ProviderCatalog,
-    },
     pipeline::profiled_documents::{DocumentInput, ProfiledDocuments},
+    service::{ConnectionPolicy, handle_request},
     test_support::{Fixtures, with_temp_db},
     workspace_setup::{SetupReceipt, SetupRequest, SetupStatus, WorkspaceSetup},
 };
@@ -35,18 +33,35 @@ fn context() -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// Initialize a ready synthetic corpus using the actual observed model and representation.
-async fn install(pool: &ArangoPool, context: &Value) -> (ProfiledDocuments, SetupReceipt) {
-    let catalog = ProviderCatalog::new(
-        PathBuf::from(context["registry"].as_str().unwrap()),
-        vec![ProviderConnection {
-            provider_id: context["provider_id"].as_str().unwrap().into(),
-            endpoint: EmbeddingEndpoint::Unix(PathBuf::from(context["socket"].as_str().unwrap())),
-            timeout: Duration::from_secs(120),
+fn providers(context: &Value) -> RegisteredProvidersConfig {
+    RegisteredProvidersConfig {
+        registry_root: context["registry"].as_str().unwrap().into(),
+        providers: vec![RegisteredProviderConfig {
+            id: context["provider_id"].as_str().unwrap().into(),
+            socket: context["socket"].as_str().unwrap().into(),
+            timeout_seconds: 120,
             max_response_bytes: 8 * 1024 * 1024,
         }],
+    }
+}
+
+async fn public_search(pool: &ArangoPool, config: &HadesConfig, text: &str) -> Value {
+    let response = handle_request(
+        pool,
+        config,
+        ConnectionPolicy::agent_only(),
+        &serde_json::to_vec(&json!({"command":"db.query","params":{"text":text,"limit":1}}))
+            .unwrap(),
+        Duration::from_secs(120),
     )
-    .unwrap();
+    .await;
+    assert!(response.success, "{response:?}");
+    response.data.unwrap()
+}
+
+/// Initialize a ready synthetic corpus using the actual observed model and representation.
+async fn install(pool: &ArangoPool, context: &Value) -> (ProfiledDocuments, SetupReceipt) {
+    let catalog = providers(context).catalog().unwrap();
     let observed = catalog
         .verify(context["provider_id"].as_str().unwrap())
         .await
@@ -112,6 +127,9 @@ async fn registered_jina_document_roundtrip() {
     let context = context();
     with_temp_db("real_verified_jina", Fixtures::Empty, move |pool| async move {
         let (documents, setup_receipt) = install(&pool, &context).await;
+        let mut config = HadesConfig::with_database(pool.database());
+        config.registered_providers = Some(providers(&context));
+        config.embedding.service.socket = "/absent/legacy-provider.sock".into();
         let inputs = context["cases"]["documents"].as_array().unwrap();
         let queries = context["cases"]["queries"].as_array().unwrap();
         assert!(!inputs.is_empty() && !queries.is_empty());
@@ -140,14 +158,17 @@ async fn registered_jina_document_roundtrip() {
         let mut observed = Vec::new();
         for query in queries {
             let started = Instant::now();
-            let result = documents.search(query["text"].as_str().unwrap(), 1, inputs.len() as u64).await.unwrap();
-            assert_eq!(result.scanned, inputs.len() as u64);
-            assert_eq!(result.binding.task, "retrieval.query");
-            assert_eq!(result.items.len(), 1);
-            assert_eq!(result.items[0]["parent_key"],
+            let result = public_search(&pool, &config, query["text"].as_str().unwrap()).await;
+            assert_eq!(result["scanned"], inputs.len());
+            assert_eq!(result["embedding_profile_state"], "ready");
+            assert_eq!(result["embedding_binding"]["task"], "retrieval.query");
+            assert_eq!(result["results"].as_array().unwrap().len(), 1);
+            assert_eq!(result["results"][0]["parent_key"],
                 keys[query["expected_document"].as_str().unwrap()]);
+            let expected = inputs.iter().find(|input| input["id"] == query["expected_document"]).unwrap();
+            assert_eq!(result["results"][0]["text"], expected["text"]);
             observed.push(json!({"query":query["id"],"expected":query["expected_document"],
-                "rank":1,"score":result.items[0]["score"],"seconds":started.elapsed().as_secs_f64()}));
+                "rank":1,"score":result["results"][0]["score"],"seconds":started.elapsed().as_secs_f64()}));
         }
         // Keep retrieval ranking unchanged: add the independent long fixture only afterward.
         let long_text = context["planning_text"].as_str().unwrap();
@@ -169,11 +190,12 @@ async fn registered_jina_document_roundtrip() {
         }
         // Search validates every persisted triplet, including all long-document chunks.
         let total = inputs.len() + plan["spans"].as_array().unwrap().len();
-        assert_eq!(documents.search("Unicode café", 1, total as u64).await.unwrap().scanned, total as u64);
+        assert_eq!(public_search(&pool, &config, "Unicode café").await["scanned"], total);
         let report = json!({"passed":true,"profile_revision":2,"documents":inputs.len(),
             "dimension":2048,"receipt":context["description"]["receipt"],
             "protected_registration_and_live_description_checked":true,
             "recoverable_setup_and_identical_retry_checked":true,"setup":setup_receipt,
+            "public_search_and_source_text_checked":true,
             "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed,
             "planning":{"plan":plan,"source_bytes":long_text.len(),"seconds":started.elapsed().as_secs_f64()}});
         let path = std::env::var("HADES_VERIFIED_JINA_REPORT").expect("explicit new evidence file");

@@ -476,6 +476,14 @@ recovery. Lost create acknowledgements require reconciliation; existing database
 are never adopted or reset. Public enforcement, broader schema/workload support,
 backup/reconciliation tooling, and frontend activation remain pending.
 
+[Public search and admission](profiled-search-admission.md) now resolve ready
+document profiles through explicit installation provider routes in the shared
+CLI/service/MCP query handler. Legacy ingestion, jobs, vector indexes, and
+structural operations refuse managed/initializing databases. Nonvector reads
+remain available. Existing legacy semantic searches are labeled unverified;
+profile-aware extraction/job pins and the full legacy migration policy remain
+pending before public setup and frontend activation.
+
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
    Jina verification. Add isolated database creation/profile persistence and one

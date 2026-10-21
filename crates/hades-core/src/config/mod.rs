@@ -7,9 +7,11 @@
 //!   3. YAML config file (`hades.yaml`)
 //!   4. Compiled-in defaults
 
+mod providers;
 pub mod snapshot;
 mod types;
 
+pub use providers::{RegisteredProviderConfig, RegisteredProvidersConfig};
 pub use types::*;
 
 use std::env;

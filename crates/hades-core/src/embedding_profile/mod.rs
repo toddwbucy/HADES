@@ -2,9 +2,10 @@
 //!
 //! These types do not register providers, verify a running model, or activate
 //! database pairing. Callers must establish trusted artifact provenance and a
-//! verified immutable serving snapshot before using a receipt. Production
-//! entry points remain unchanged until enforcement is implemented together.
+//! verified immutable serving snapshot before using a receipt. Shared search
+//! resolves saved profiles; legacy vector admission refuses managed databases.
 
+pub mod admission;
 mod contract;
 mod manifest;
 pub mod store;

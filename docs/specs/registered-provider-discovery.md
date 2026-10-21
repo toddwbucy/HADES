@@ -4,7 +4,9 @@ This internal [#225](https://github.com/toddwbucy/HADES/issues/225) slice connec
 protected local registrations to actual provider observations and database-bound
 clients. `ProfiledDocuments::connect(pool, &catalog)` now resolves the saved
 provider ID itself. Its caller cannot inject an endpoint or observed receipt.
-Public CLI/MCP/jobs, installation startup, and frontend setup remain unchanged.
+[Public search admission](profiled-search-admission.md) now supplies this catalog
+from explicit installation configuration. Profile-aware ingestion/jobs and
+frontend setup remain pending.
 
 ## Installation-owned catalog
 

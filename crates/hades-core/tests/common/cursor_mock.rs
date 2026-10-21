@@ -48,6 +48,17 @@ impl Mock {
         Self::with_backend(replies, None).await
     }
     pub(super) async fn with_backend(replies: Vec<Reply>, backend: Option<ArangoClient>) -> Self {
+        Self::with_policy(replies, backend, true).await
+    }
+    #[allow(dead_code)] // Admission tests opt in; cursor-only targets retain the legacy fixture.
+    pub(super) async fn with_policy_responses(replies: Vec<Reply>) -> Self {
+        Self::with_policy(replies, None, false).await
+    }
+    async fn with_policy(
+        replies: Vec<Reply>,
+        backend: Option<ArangoClient>,
+        legacy_policy: bool,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cursor.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -87,7 +98,13 @@ impl Mock {
                             let method = parts.next().unwrap();
                             let path = parts.next().unwrap().strip_prefix("/_db/fixture/_api/").unwrap();
                             let mut body = if length == 0 { Value::Null } else { serde_json::from_slice(&bytes[header_end+4..header_end+4+length]).unwrap() };
-                            let reply = if method == "DELETE" {
+                            // Legacy-only fixture: answer profile presence probes explicitly,
+                            // without consuming cursor/transaction fault replies or events.
+                            let policy_probe = legacy_policy && method == "GET" && matches!(path,
+                                "collection/hades_workspace/properties" | "collection/hades_setup/properties");
+                            let reply = if policy_probe {
+                                Reply { status: 404, body: json!({"error":true,"code":404,"errorNum":1203,"errorMessage":"collection not found"}), gate:None }
+                            } else if method == "DELETE" {
                                 if let Some(backend) = &backend { backend.delete(path).await.unwrap(); }
                                 let reply = replies.lock().unwrap().pop_front()
                                     .unwrap_or_else(|| Reply::page(json!({"error":false,"code":202})));
@@ -102,7 +119,7 @@ impl Mock {
                                 if path == "cursor" && reply.body.get("id").is_some() { live.store(true, Ordering::SeqCst); }
                                 reply
                             };
-                            events.send((format!("{method} {path}"), body)).unwrap();
+                            if !policy_probe { events.send((format!("{method} {path}"), body)).unwrap(); }
                             if let Some(gate) = reply.gate { gate.notified().await; }
                             let body = reply.body.to_string();
                             let wire = format!("HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.status, body.len(), body);

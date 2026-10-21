@@ -39,7 +39,10 @@ or evidence that this model is preferable to another model.
   ledger and ownership marker, checks the provider before readiness, and proves
   an identical setup retry preserves the profile snapshot.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
-  bindings, and retrieves all six expected answers from stored vectors.
+  bindings, and retrieves all six expected answers from stored vectors through
+  the shared public `db.query` service handler using explicit provider routes.
+  The legacy endpoint is deliberately unavailable. Returned source text must
+  equal the expected fixture, and the response must carry a ready profile binding.
 - After those retrieval checks, the fixed Unicode text in
   `services/tests/fixtures/jina_passage_planning.txt` must produce multiple
   conventional passages with overlap. The source bytes survive storage; every

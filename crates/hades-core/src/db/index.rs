@@ -107,6 +107,8 @@ pub async fn create_vector_index(
     n_probe: u32,
     metric: VectorMetric,
 ) -> Result<IndexInfo, ArangoError> {
+    crate::embedding_profile::admission::require_legacy(pool, "legacy vector index creation")
+        .await?;
     let n_lists = match n_lists {
         Some(n) => n,
         None => {

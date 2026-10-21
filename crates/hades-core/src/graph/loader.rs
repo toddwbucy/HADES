@@ -80,6 +80,7 @@ pub async fn load(
     pool: &ArangoPool,
     schema: &RuntimeSchema,
 ) -> Result<LoadResult, GraphLoaderError> {
+    crate::embedding_profile::admission::require_legacy(pool, "structural graph loading").await?;
     // ------------------------------------------------------------------
     // Phase 1: Edge loading — discover nodes, accumulate raw edges
     // ------------------------------------------------------------------
