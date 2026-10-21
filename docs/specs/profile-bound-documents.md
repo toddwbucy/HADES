@@ -3,8 +3,9 @@
 Status: internal Rust integration for [#225](https://github.com/toddwbucy/HADES/issues/225).
 `pipeline::profiled_documents::ProfiledDocuments` connects the persisted profile,
 verified embedding client, atomic document storage, and exact cosine retrieval.
-It has no CLI, MCP, job, or frontend callers. Production ingestion and the running
-installation continue to use their existing paths.
+The [shared CLI/service/MCP search handler](profiled-search-admission.md) now uses
+this path for managed databases. Ingestion remains internal; public setup and
+frontend activation are still gated.
 
 ## Admission and preparation
 
@@ -84,6 +85,12 @@ Responses are bounded to 4 MiB per search page, with a five-second AQL runtime,
 32 MiB server query-memory budget, and the transaction owner's 60-second deadline.
 The initial exclusive scan favors correctness; it is not a concurrent or indexed
 production search design.
+
+Selected hits now include source text, source ID, ordinal, and counted span.
+Detail reads remain inside the same transaction, validate source hashes and
+exact passage text, and cap aggregate hit JSON at 1 MiB (16 MiB per detail
+response). Public search retains its shared reservation through transaction
+creation, cancellation, and abort.
 
 A freshly verified provider load may query vectors from an older load only when
 the artifact, space, profile revision, corpus generation, provider, model, task,

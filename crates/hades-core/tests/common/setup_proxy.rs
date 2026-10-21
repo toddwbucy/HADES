@@ -35,6 +35,8 @@ pub struct Proxy {
     pub entered: Arc<Notify>,
     pub release: Arc<Notify>,
     pub hits: Arc<AtomicUsize>,
+    #[allow(dead_code)] // Used by request-count contracts; fault-only callers inspect hits.
+    pub matched: Arc<AtomicUsize>,
     broken: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
     _directory: tempfile::TempDir,
@@ -57,6 +59,7 @@ impl Proxy {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let hits = Arc::new(AtomicUsize::new(0));
+        let matched = Arc::new(AtomicUsize::new(0));
         let broken = Arc::new(AtomicBool::new(false));
         let state = (
             Arc::new(Mutex::new((Some(rule), 0))),
@@ -64,6 +67,7 @@ impl Proxy {
             release.clone(),
             hits.clone(),
             broken.clone(),
+            matched.clone(),
         );
         let task = tokio::spawn(async move {
             let mut peers = tokio::task::JoinSet::new();
@@ -104,6 +108,7 @@ impl Proxy {
                                             Err(_)=>return broken_response(&state.4,"proxy rule lock poisoned"),
                                         };
                                         if locked.0.as_ref().is_some_and(|r| r.method == method.as_str() && api.starts_with(r.path) && r.name.is_none_or(|n| body["name"] == n)) {
+                                            state.5.fetch_add(1,Ordering::SeqCst);
                                             locked.1 += 1;
                                             if locked.1 == locked.0.as_ref().unwrap().nth { locked.0.take() } else { None }
                                         } else { None }
@@ -152,6 +157,7 @@ impl Proxy {
             entered,
             release,
             hits,
+            matched,
             broken,
             task,
             _directory: directory,

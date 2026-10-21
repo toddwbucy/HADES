@@ -200,6 +200,7 @@ pub async fn run_phase(
 
     // Connect to services.
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    hades_core::embedding_profile::admission::require_legacy(&db, "code ingestion").await?;
 
     // Embedding is optional — ingest proceeds without vectors if the service is unavailable.
     let embedder = match EmbeddingClient::connect_at(&config.embedding.service.socket).await {

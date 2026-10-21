@@ -46,6 +46,8 @@ files are never read as operation records. They are not automatically cleaned up
 One nonblocking `.lock` lease serializes all setup in this ledger, including
 different database names. Contention returns a busy error for explicit retry.
 Filesystem work uses the blocking pool and retains the lease through cancellation.
+The final owner explicitly unlocks it, so a descriptor briefly inherited by a
+subprocess before exec cannot keep a completed operation busy.
 The lease spans model and database work. All provisioning for this installation
 must use this ledger; a second independent ledger is not a coordination mechanism.
 Raw administrative DDL and software controlling the service account remain

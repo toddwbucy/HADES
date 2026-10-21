@@ -68,6 +68,8 @@ pub async fn run(
     // ── Source database (read-only) ──────────────────────────────────
     let source_pool =
         ArangoPool::from_config(config).context("failed to connect to source ArangoDB")?;
+    hades_core::embedding_profile::admission::require_legacy(&source_pool, "structural training")
+        .await?;
 
     info!(db = %source_pool.database(), "connected to source database");
 
@@ -85,6 +87,13 @@ pub async fn run(
     // Validate and connect to the export database before training so
     // misconfiguration fails fast rather than after a long training run.
     let export_pool = resolve_export_pool(config, export_to, no_export, &source_pool)?;
+    if let Some(pool) = &export_pool {
+        hades_core::embedding_profile::admission::require_legacy(
+            pool,
+            "structural embedding export",
+        )
+        .await?;
+    }
 
     // ── Connect to training service ──────────────────────────────────
     // Check service availability before the expensive graph-load step

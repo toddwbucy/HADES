@@ -6,6 +6,29 @@ already approved local Jina v4 registration. Ordinary CI uses synthetic weights.
 The real run needs an explicit ML environment, device, registration, and disposable
 database. It does not activate database pairing or change installed services.
 
+## Public-search evidence on the ThinkPad
+
+The [2026-10-21 UTC public-search run](../evidence/jina-public-search-thinkpad-2026-10-21.json)
+passed on clean implementation `60616ac77b17cab07ef02b53b6c832db94420a4e`,
+using the existing approved Jina registration on the RTX PRO 5000 laptop GPU.
+The shared `db.query` handler resolved explicit provider routes with the legacy
+endpoint deliberately unavailable. All six expected answers ranked first, every
+returned passage matched its fixture text, and each response carried the ready
+profile's verified query binding. No corpus or installed service was changed.
+
+The same run retained setup/retry checks, eight stored retrieval documents,
+and the fixed 12,384-byte Unicode source: 2,402 whole-input tokens, six passages,
+and six successful independent token recounts. The long-source ingest/search
+check took 2.956 seconds. The report records provider/runtime identities and
+per-query timings; concurrent workstation tests and these small fixtures do not
+establish production throughput or a model-quality comparison.
+
+The [post-review run](../evidence/jina-public-search-reviewed-thinkpad-2026-10-21.json)
+also passed on clean `1791df30d017c934891729846e7d30a63be17109` after grouping
+detail reads by parent while retaining only one complete source at a time.
+All six public retrieval/source-text checks and the long-source tokenizer gates
+still passed. The original measurement is retained above.
+
 ## Fixed protocol and evidence
 
 `services/tests/fixtures/jina_qualification.json` defines eight short documents,
@@ -39,7 +62,10 @@ or evidence that this model is preferable to another model.
   ledger and ownership marker, checks the provider before readiness, and proves
   an identical setup retry preserves the profile snapshot.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
-  bindings, and retrieves all six expected answers from stored vectors.
+  bindings, and retrieves all six expected answers from stored vectors through
+  the shared public `db.query` service handler using explicit provider routes.
+  The legacy endpoint is deliberately unavailable. Returned source text must
+  equal the expected fixture, and the response must carry a ready profile binding.
 - After those retrieval checks, the fixed Unicode text in
   `services/tests/fixtures/jina_passage_planning.txt` must produce multiple
   conventional passages with overlap. The source bytes survive storage; every
@@ -226,7 +252,8 @@ criteria did not change; the failed v1 report is retained with the run evidence.
 
 The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
-long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
+long Unicode fixture; its evidence is recorded separately. Public `db.query`
+search is now qualified through the shared handler. Profile-aware ingestion/job
 paths, code/late-chunk capabilities, legacy policy, and frontend creation remain
 separate work. Registered local provider discovery and internal recoverable
 document setup are now part of the qualification flow; public setup authorization

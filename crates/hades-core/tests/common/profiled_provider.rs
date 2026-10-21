@@ -251,7 +251,23 @@ impl Peer {
 
     /// Resolve only this synthetic peer through its protected local registration.
     pub fn catalog(&self) -> ProviderCatalog {
-        ProviderCatalog::new(self.registry.clone(), vec![self.connection()]).unwrap()
+        self.configuration().catalog().unwrap()
+    }
+    /// Explicit host configuration for shared CLI/service admission tests.
+    pub fn configuration(&self) -> hades_core::config::RegisteredProvidersConfig {
+        let connection = self.connection();
+        let EmbeddingEndpoint::Unix(socket) = connection.endpoint else {
+            unreachable!()
+        };
+        hades_core::config::RegisteredProvidersConfig {
+            registry_root: self.registry.clone(),
+            providers: vec![hades_core::config::RegisteredProviderConfig {
+                id: connection.provider_id,
+                socket,
+                timeout_seconds: connection.timeout.as_secs(),
+                max_response_bytes: connection.max_response_bytes,
+            }],
+        }
     }
     /// Count live verification separately from planning/inference.
     pub fn observations(&self) -> usize {

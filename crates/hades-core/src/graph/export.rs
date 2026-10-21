@@ -268,6 +268,9 @@ async fn export_grouped_embeddings(
     }
     let num_nodes: usize = groups.values().map(Vec::len).sum();
 
+    crate::embedding_profile::admission::require_legacy(pool, "structural embedding export")
+        .await?;
+
     let mut total_exported: usize = 0;
     let mut by_collection: HashMap<String, usize> = HashMap::new();
 

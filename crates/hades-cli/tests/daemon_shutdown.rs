@@ -141,6 +141,20 @@ fn signals_drain_pending_ingest_reservations_before_daemon_exit() {
             let fixture = if pending_ingest {
                 let database = database.try_clone().unwrap();
                 Some(std::thread::spawn(move || {
+                    // This legacy-only peer must explicitly establish absence
+                    // before the job owner can reserve and write its record.
+                    for collection in ["hades_workspace", "hades_setup"] {
+                        let mut connection = accept(&database);
+                        assert_eq!(
+                            request(&mut connection),
+                            format!(
+                                "GET /_db/fixture/_api/collection/{collection}/properties HTTP/1.1"
+                            )
+                        );
+                        let body = br#"{"error":true,"code":404,"errorNum":1203,"errorMessage":"collection not found"}"#;
+                        write!(connection, "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                        connection.write_all(body).unwrap();
+                    }
                     let mut connection = accept(&database);
                     assert_eq!(
                         request(&mut connection),

@@ -2621,6 +2621,9 @@ mod handlers {
         limit: u32,
     ) -> Result<serde_json::Value, HandlerError> {
         let (col, key) = parse_node_id(node_id)?;
+        crate::embedding_profile::admission::require_legacy(pool, "structural similarity search")
+            .await
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
 
         // Fetch target embedding.
         let emb_aql = "FOR d IN @@col FILTER d._key == @key RETURN d.structural_embedding";
@@ -5538,6 +5541,47 @@ mod handlers {
         // variable before dispatching, which is the only surface it belongs to.
         let (profile_name, profile) = resolve_query_profile(collection, None)?;
 
+        // The selected database chooses its model. Missing/corrupt profile
+        // metadata and unavailable verification never fall back to global Jina.
+        if crate::embedding_profile::admission::is_managed(pool)
+            .await
+            .map_err(|source| HandlerError::Query {
+                context: "cannot determine database embedding policy".into(),
+                source,
+            })?
+        {
+            if profile.metadata != "documents" || hybrid || structural {
+                return Err(HandlerError::InvalidParameter {
+                    name: "collection/hybrid/structural".into(),
+                    reason: "model-bound search currently supports conventional documents and exact cosine ranking only; code, hybrid and structural search are unavailable".into(),
+                });
+            }
+            let catalog = config.registered_providers.as_ref()
+                .ok_or_else(|| HandlerError::ServiceError(
+                    "model-bound search requires registered_providers in installation configuration; the legacy embedding endpoint is not a verified provider".into()))?
+                .catalog().map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+            let documents =
+                crate::pipeline::profiled_documents::ProfiledDocuments::connect_retaining(
+                    pool.clone(),
+                    &catalog,
+                    admission.clone(),
+                )
+                .await
+                .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+            let result = documents
+                .search_retaining(text, limit as usize, MAX_SCANNED_EMBEDDINGS, admission)
+                .await
+                .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+            return Ok(json!({
+                "query": text, "collection": profile_name,
+                "model": result.binding.model, "dimension": result.binding.dimension,
+                "result_count": result.items.len(), "results": result.items,
+                "scanned": result.scanned, "embedding_profile_state": "ready",
+                "embedding_binding": result.binding,
+                "structural_applied": false, "structural_reason": "not_requested",
+            }));
+        }
+
         // 2. Embed the query text with the adapter this profile's corpus was
         //    embedded with. The adapters do not share a vector space, so a
         //    mismatch is not a small loss: searching a `code` corpus with
@@ -5699,6 +5743,7 @@ mod handlers {
             "collection": profile_name,
             "model": embed_result.model,
             "dimension": embed_result.dimension,
+            "embedding_profile_state": "legacy_unverified",
             "result_count": results.len(),
             "results": results,
             "structural_applied": structural_reason.is_none(),
@@ -6542,6 +6587,10 @@ mod handlers {
         path: &str,
     ) -> Result<Value, HandlerError> {
         use crate::persephone::embedding::EmbeddingClient;
+
+        crate::embedding_profile::admission::require_legacy(pool, "semantic smell report")
+            .await
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
 
         // Run check and verify.
         let check_result = smell_check(pool, path, true).await?;

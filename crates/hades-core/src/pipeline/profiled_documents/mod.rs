@@ -1,9 +1,8 @@
 //! Internal document admission -> verified embedding -> atomic storage -> retrieval.
 //!
-//! No public command uses this path yet. A trusted caller supplies extracted text
-//! while the registered provider plans token-checked UTF-8 byte spans. Public
-//! admission and all-entry-point enforcement remain prerequisites
-//! for activation. Only conventional document text and cosine ranking are supported.
+//! Shared document search uses this path; ingestion remains internal. A trusted
+//! caller supplies extracted text while the provider plans token-checked spans.
+//! Only conventional document text and cosine ranking are supported.
 
 mod storage;
 
@@ -88,8 +87,16 @@ impl ProfiledDocuments {
         pool: ArangoPool,
         catalog: &ProviderCatalog,
     ) -> Result<Self, PipelineError> {
+        Self::connect_retaining(pool, catalog, ()).await
+    }
+
+    pub(crate) async fn connect_retaining<R: Clone + Send + 'static>(
+        pool: ArangoPool,
+        catalog: &ProviderCatalog,
+        retention: R,
+    ) -> Result<Self, PipelineError> {
         let store = ProfileStore::new(pool.clone())?;
-        let snapshot = store.load().await?;
+        let snapshot = store.load_retaining(retention.clone()).await?;
         let profile = snapshot.profile();
         ensure(
             profile.state == ProfileState::Ready,
@@ -140,7 +147,7 @@ impl ProfiledDocuments {
             )
             .await?;
         ensure(
-            store.load().await? == snapshot,
+            store.load_retaining(retention).await? == snapshot,
             "workspace profile changed during provider verification",
         )?;
         Ok(Self {
@@ -279,6 +286,16 @@ impl ProfiledDocuments {
         top_k: usize,
         max_rows: u64,
     ) -> Result<SearchResult, PipelineError> {
+        self.search_retaining(text, top_k, max_rows, ()).await
+    }
+
+    pub(crate) async fn search_retaining<R: Clone + Send + 'static>(
+        &self,
+        text: &str,
+        top_k: usize,
+        max_rows: u64,
+        retention: R,
+    ) -> Result<SearchResult, PipelineError> {
         ensure(
             !text.trim().is_empty() && text.len() <= 64 * 1024,
             "query must contain 1..=65536 UTF-8 bytes",
@@ -287,7 +304,10 @@ impl ProfiledDocuments {
             (1..=1000).contains(&top_k) && (1..=100_000).contains(&max_rows),
             "search limits must be top_k 1..=1000 and max_rows 1..=100000",
         )?;
-        self.current().await?;
+        ensure(
+            self.store.load_retaining(retention.clone()).await? == self.snapshot,
+            "stale database profile; resolve a fresh document binding",
+        )?;
         let result = self.query.embed(&[text.into()], Some(1)).await?;
         let vector = result
             .output
@@ -301,9 +321,10 @@ impl ProfiledDocuments {
         let snapshot = self.snapshot.clone();
         let (items, scanned) = self
             .store
-            .guarded_write(
+            .guarded_write_retaining(
                 &self.snapshot,
                 COLLECTIONS.iter().map(|c| (*c).into()).collect(),
+                retention,
                 move |client| {
                     storage::search(
                         client,

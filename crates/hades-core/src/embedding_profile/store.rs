@@ -1,6 +1,6 @@
 //! Internal persistence primitives for new, exclusively owned workspaces.
 //!
-//! No CLI, service, or frontend calls these yet. The provisioning owner must
+//! Shared search reads this store. The internal provisioning owner must
 //! establish database ownership and schema/provider readiness; storage alone
 //! cannot do that. Existing corpora cannot be adopted through initialization.
 
@@ -266,9 +266,20 @@ impl ProfileStore {
     /// Resolve one coherent metadata snapshot. Missing, unknown, or inconsistent
     /// records fail closed; no legacy model or process configuration is substituted.
     pub async fn load(&self) -> Result<ProfileSnapshot, ArangoError> {
-        transaction::run(&self.pool, vec![COLLECTION.into()], |client| async move {
-            load_locked(&client).await
-        })
+        self.load_retaining(()).await
+    }
+
+    pub(crate) async fn load_retaining<R: Send + 'static>(
+        &self,
+        retention: R,
+    ) -> Result<ProfileSnapshot, ArangoError> {
+        transaction::run_retaining(
+            &self.pool,
+            vec![COLLECTION.into()],
+            Vec::new(),
+            retention,
+            |client| async move { load_locked(&client).await },
+        )
         .await
     }
 
@@ -305,13 +316,30 @@ impl ProfileStore {
     pub async fn guarded_write<T, F, Fut>(
         &self,
         expected: &ProfileSnapshot,
-        mut collections: Vec<String>,
+        collections: Vec<String>,
         operation: F,
     ) -> Result<T, ArangoError>
     where
         T: Send + 'static,
         F: FnOnce(ArangoClient) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, ArangoError>> + Send + 'static,
+    {
+        self.guarded_write_retaining(expected, collections, (), operation)
+            .await
+    }
+
+    pub(crate) async fn guarded_write_retaining<T, F, Fut, R>(
+        &self,
+        expected: &ProfileSnapshot,
+        mut collections: Vec<String>,
+        retention: R,
+        operation: F,
+    ) -> Result<T, ArangoError>
+    where
+        T: Send + 'static,
+        F: FnOnce(ArangoClient) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, ArangoError>> + Send + 'static,
+        R: Send + 'static,
     {
         ensure(
             expected.profile().state == ProfileState::Ready,
@@ -331,13 +359,19 @@ impl ProfileStore {
         collections.sort();
         collections.dedup();
         let expected = expected.clone();
-        transaction::run(&self.pool, collections, move |client| async move {
-            check_locked(&client, &expected).await?;
-            let result = operation(client.clone()).await?;
-            // Also reject accidental metadata mutation by the trusted callback.
-            check_locked(&client, &expected).await?;
-            Ok(result)
-        })
+        transaction::run_retaining(
+            &self.pool,
+            collections,
+            Vec::new(),
+            retention,
+            move |client| async move {
+                check_locked(&client, &expected).await?;
+                let result = operation(client.clone()).await?;
+                // Also reject accidental metadata mutation by the trusted callback.
+                check_locked(&client, &expected).await?;
+                Ok(result)
+            },
+        )
         .await
     }
 }

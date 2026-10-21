@@ -97,6 +97,12 @@ retry, concurrent attempts, and refusal of existing or changed databases.
 Select it with `--contract workspace_setup`; the default CI matrix includes it.
 Ledger filesystem contracts run in the service-free `workspace_setup` unit tests.
 
+The `profiled_search` contract checks the public search handler and runs the
+`profiled_admission` CLI target against disposable databases. It covers model
+isolation, source text, profile/provider drift and refusals before legacy vector
+work; use `--contract profiled_search`. Both targets run in the default CI matrix.
+See [public search admission](profiled-search-admission.md).
+
 The opt-in [real Jina qualification](verified-jina-qualification.md) uses an
 approved local registration, fixed smoke cases, private verified HTTP, and the
 ignored `verified_jina_documents` test. Its owner selects `--verified-jina` plus

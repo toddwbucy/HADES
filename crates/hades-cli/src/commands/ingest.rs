@@ -360,12 +360,13 @@ pub async fn run_phase(
     let file_paths: Vec<PathBuf> = inputs.to_vec();
 
     // -- Connect to services ---------------------------------------------------
+    let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    hades_core::embedding_profile::admission::require_legacy(&db, "document ingestion").await?;
     let embedder = EmbeddingClient::connect_at(&config.embedding.service.socket)
         .await
         .context("failed to connect to embedding service")?;
 
     config.chunking.prechunk.from_backend(&embedder).await?;
-    let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
     ensure_document_collections(&db, profile).await?;
 
     let extractor = ExtractionClient::connect_at(&config.extraction.service.socket)

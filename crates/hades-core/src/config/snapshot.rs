@@ -187,6 +187,15 @@ mod tests {
         config.gpu.cuda_visible_devices = Some("fixture-mask".into());
         config.batch_processing.concurrency = 3;
         config.analyzers.rust_analyzer = Some("/private/fixture/analyzer".into());
+        config.registered_providers = Some(super::super::RegisteredProvidersConfig {
+            registry_root: "/private/fixture/registry".into(),
+            providers: vec![super::super::RegisteredProviderConfig {
+                id: "local-jina".into(),
+                socket: "/private/fixture/provider.sock".into(),
+                timeout_seconds: 120,
+                max_response_bytes: 8 * 1024 * 1024,
+            }],
+        });
         config
     }
     #[test]

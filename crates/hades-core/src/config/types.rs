@@ -23,6 +23,9 @@ pub struct HadesConfig {
     pub chunking: crate::chunking::prechunk::ChunkingPolicy,
     pub database: DatabaseConfig,
     pub embedding: EmbeddingConfig,
+    /// Explicit installation allowlist for database-bound models. No legacy fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registered_providers: Option<super::RegisteredProvidersConfig>,
     /// Document extraction service (docling). `#[serde(default)]` because every
     /// hades.yaml written before this key existed omits it.
     #[serde(default)]
