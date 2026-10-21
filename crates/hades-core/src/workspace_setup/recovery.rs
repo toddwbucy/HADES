@@ -135,9 +135,17 @@ impl WorkspaceSetup {
         }
         let ownership = database::Ownership::new(&record, &self.scope)?;
         if ownership.check(&client).await.is_err() {
-            // Even at the marker checkpoint we cannot infer ownership from an
-            // empty-looking database: an explicit retry may install its marker,
-            // but this diagnostic does not certify that absent marker.
+            // The acknowledged incarnation can still be at the exact empty
+            // marker checkpoint. Inspect the same strict pending schema that
+            // normal retry accepts; never infer ownership from a name alone.
+            if record.receipt.step == SetupStep::Marker
+                && database::marker_pending(&client).await.unwrap_or(false)
+            {
+                return Ok(report.conclude(
+                    RecoveryAction::RetryIdenticalRequest,
+                    RecoveryReason::InitializationIncomplete,
+                ));
+            }
             return Ok(report.conclude(
                 RecoveryAction::InspectRequired,
                 RecoveryReason::OwnershipNotVerified,

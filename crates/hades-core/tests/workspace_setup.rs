@@ -305,13 +305,11 @@ async fn lost_initialization_responses_resume_only_owned_steps() {
                 setup.inspect(&request.operation_id).await.unwrap(),
                 Some(failed)
             );
-            if tag != "marker_collection" {
-                assert_eq!(
-                    diagnostic.action,
-                    hades_core::workspace_setup::RecoveryAction::RetryIdenticalRequest,
-                    "{tag}: {diagnostic:?}"
-                );
-            }
+            assert_eq!(
+                diagnostic.action,
+                hades_core::workspace_setup::RecoveryAction::RetryIdenticalRequest,
+                "{tag}: {diagnostic:?}"
+            );
             let store = ProfileStore::new(pool.clone()).unwrap();
             let before = store.load().await.ok();
             assert_eq!(

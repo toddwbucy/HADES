@@ -17,6 +17,59 @@ fn ledger_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 #[tokio::test]
+async fn pending_marker_retry_never_adopts_foreign_contents() {
+    with_temp_db("setup_pending_marker", Fixtures::Empty, |pool| async move {
+        remove_fixture_database(&pool).await;
+        let fixture = Fixture::new(2);
+        let peer = Peer::new(&fixture);
+        let root = ledger();
+        let proxy = Proxy::new(
+            pool.writer(),
+            rule("POST", "collection", Some("hades_setup"), 1),
+        );
+        let service = setup(root.path(), proxy.admin.clone(), &peer);
+        let request = request(&pool, &fixture);
+        assert!(service.run(request.clone()).await.is_err());
+        let bytes = ledger_bytes(root.path());
+        let retry = service.diagnose(&request.operation_id).await.unwrap();
+        assert_eq!(retry.action, RecoveryAction::RetryIdenticalRequest);
+        assert_eq!(retry.database_id_matches, Some(true));
+        assert!(
+            !retry.ownership_verified,
+            "the absent marker is not a verified marker"
+        );
+        crud::create_collection(&pool, "authored", Some(2))
+            .await
+            .unwrap();
+        let authored = crud::insert_document(
+            &pool,
+            "authored",
+            &json!({"_key":"preserve","text":"independent source"}),
+        )
+        .await
+        .unwrap();
+        let report = service.diagnose(&request.operation_id).await.unwrap();
+        assert_eq!(report.action, RecoveryAction::InspectRequired);
+        assert_eq!(report.reason, RecoveryReason::OwnershipNotVerified);
+        assert_eq!(ledger_bytes(root.path()), bytes);
+        assert_eq!(
+            crud::get_document(&pool, "authored", "preserve")
+                .await
+                .unwrap()["_rev"],
+            authored["_rev"]
+        );
+        assert_eq!(
+            pool.writer()
+                .get("collection/hades_setup/count")
+                .await
+                .unwrap()["count"],
+            0
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn ready_diagnostics_preserve_records_and_do_not_load_providers() {
     with_temp_db("setup_diagnose", Fixtures::Empty, |pool| async move {
         remove_fixture_database(&pool).await;
