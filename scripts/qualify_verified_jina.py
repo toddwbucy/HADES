@@ -77,8 +77,12 @@ async def database_roundtrip(provider, context, output, server_args):
             result = json.loads((output / "database.json").read_text())
             if result.get("passed") is not True:
                 raise RuntimeError("database report did not acknowledge success")
-            result["planning"]["tokenizer_recheck"] = check_stored_plan(
-                provider, context["planning_text"], result["planning"]["plan"])
+            if context.get("chunk_policy") == "late":
+                from embedding.late_qualification import recheck
+                result["planning"]["tokenizer_recheck"] = recheck(provider, context["planning_text"], result["planning"])
+            else:
+                result["planning"]["tokenizer_recheck"] = check_stored_plan(
+                    provider, context["planning_text"], result["planning"]["plan"])
             return result
         finally:
             if child is not None and child.returncode is None:

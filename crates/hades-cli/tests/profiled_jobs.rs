@@ -206,48 +206,70 @@ async fn inherited(config: &HadesConfig, path: &Path, extra: &[&str]) -> std::pr
 
 #[tokio::test]
 async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() {
-    with_temp_db("cli_profiled_jobs", Fixtures::Empty, |pool| async move {
-        let fixture = Fixture::new(2);
-        fixture.install(&pool).await;
-        let peer = Peer::new(&fixture);
-        let extractor = Extractor::new();
-        let config = config(&pool, &peer, &extractor);
-        let mut daemon = Daemon::start(&config).await;
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("notes.md");
-        std::fs::write(&file, "apple café").unwrap();
-        let directory = root.path().join("documents");
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::write(directory.join("second.md"), "banana 東京").unwrap();
-        for path in [&file, &directory] {
-            let started = daemon.start_job(path, false).await;
-            assert_eq!(started["success"], true, "{started}");
-            let pin = &started["data"]["profile_pin"];
-            assert_eq!(pin["database"], pool.database());
-            assert_eq!(pin["profile_revision"], 2);
-            let row = daemon
-                .terminal(started["data"]["job_id"].as_str().unwrap())
+    for late in [false, true] {
+        with_temp_db(
+            "cli_profiled_jobs",
+            Fixtures::Empty,
+            move |pool| async move {
+                let fixture = if late {
+                    Fixture::late()
+                } else {
+                    Fixture::new(2)
+                };
+                fixture.install(&pool).await;
+                let peer = Peer::new(&fixture);
+                let extractor = Extractor::new();
+                let config = config(&pool, &peer, &extractor);
+                let mut daemon = Daemon::start(&config).await;
+                let root = tempfile::tempdir().unwrap();
+                let file = root.path().join("notes.md");
+                std::fs::write(&file, "apple café\nbanana 東京\napple tail").unwrap();
+                let directory = root.path().join("documents");
+                std::fs::create_dir(&directory).unwrap();
+                std::fs::write(directory.join("second.md"), "banana 東京").unwrap();
+                for path in [&file, &directory] {
+                    let started = daemon.start_job(path, false).await;
+                    assert_eq!(started["success"], true, "{started}");
+                    let pin = &started["data"]["profile_pin"];
+                    assert_eq!(pin["database"], pool.database());
+                    assert_eq!(pin["profile_revision"], 2);
+                    let row = daemon
+                        .terminal(started["data"]["job_id"].as_str().unwrap())
+                        .await;
+                    assert_eq!(row["status"], "completed", "{row}");
+                    assert_eq!(&row["profile_pin"], pin);
+                    assert_eq!(row["result"]["success"], true);
+                }
+                assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
+                assert_eq!(extractor.requests().len(), 2);
+                let result = request(
+                    &daemon.socket,
+                    "db.query",
+                    json!({"text":"banana","limit":1}),
+                )
                 .await;
-            assert_eq!(row["status"], "completed", "{row}");
-            assert_eq!(&row["profile_pin"], pin);
-            assert_eq!(row["result"]["success"], true);
-        }
-        assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
-        assert_eq!(extractor.requests().len(), 2);
-        let refused = daemon.start_job(&file, false).await;
-        let row = daemon
-            .terminal(refused["data"]["job_id"].as_str().unwrap())
-            .await;
-        assert_eq!(row["status"], "failed");
-        let replacement = daemon.start_job(&file, true).await;
-        let row = daemon
-            .terminal(replacement["data"]["job_id"].as_str().unwrap())
-            .await;
-        assert_eq!(row["status"], "completed", "{row}");
-        assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
-        daemon.finish().await;
-    })
-    .await;
+                assert_eq!(result["success"], true, "{result}");
+                assert_eq!(result["data"]["scanned"], 4);
+                assert_eq!(
+                    result["data"]["results"][0].get("late_context").is_some(),
+                    late
+                );
+                let refused = daemon.start_job(&file, false).await;
+                let row = daemon
+                    .terminal(refused["data"]["job_id"].as_str().unwrap())
+                    .await;
+                assert_eq!(row["status"], "failed");
+                let replacement = daemon.start_job(&file, true).await;
+                let row = daemon
+                    .terminal(replacement["data"]["job_id"].as_str().unwrap())
+                    .await;
+                assert_eq!(row["status"], "completed", "{row}");
+                assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
+                daemon.finish().await;
+            },
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

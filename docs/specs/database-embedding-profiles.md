@@ -497,6 +497,12 @@ configuration. Workers reject stale/cross-database pins before extraction;
 existing cleanup and guarded storage remain shared with foreground ingestion.
 Legacy resume checkpoints still cannot authorize managed ingestion.
 
+[Verified late documents](verified-late-passages.md) now add a distinct contextual
+Jina space, explicit passage/window policy, exact tokenizer plans and recorded
+pooling ranges. Managed setup, foreground documents, pinned jobs and public search
+share the same guarded path. Conventional records remain unchanged; contextual
+records require complete versioned provenance and are never adopted by relabeling.
+
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
    Jina verification. Add isolated database creation/profile persistence and one

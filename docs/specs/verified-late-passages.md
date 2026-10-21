@@ -49,11 +49,36 @@ Source text is limited to 2 MiB, each plan to 128 passages and 128 windows, and
 overlap bytes to 4 MiB per plan. Both planning passes share count-call, scanned-byte
 and elapsed-time budgets. Oversized work must be split explicitly.
 
-This slice supplies the verified provider and Rust transport. Managed document
-storage still rejects late policies until its provenance/search integration lands.
-It does not enable production services, code ingestion, a public setup endpoint,
-or a frontend model selector. Use a distinct generation/database for this space;
+Managed setup, foreground files, document jobs and public document search now
+support this explicit late policy through the same profile guard. Setup still
+requires a trusted internal caller. This does not enable production services,
+code ingestion, a public setup endpoint, or a frontend model selector.
+Use a distinct generation/database for this space;
 conventional stored vectors cannot be relabeled as contextual vectors.
+
+## Stored provenance and search
+
+Conventional records retain `hades-bound-document-v2`. Contextual records use
+`hades-bound-document-v3`: the source retains its complete late passage plan and
+ordered `late_token_ranges`; each chunk and vector repeats its matching
+`late_token_range`. All three records retain the same artifact, space, profile,
+generation and serving receipt. File snapshots retain their existing provenance.
+The entire document is prepared before one guarded transaction publishes it.
+Failure in a later context window leaves prior stored records intact.
+
+Search validates all stored context metadata before scoring: complete assignments,
+window/passage budgets, minimum overlap, forward coverage, source extent and token
+range agreement. Selected source text is still hashed and checked against exact
+UTF-8 spans under the same transaction. Hits add `late_context` with the selected
+window, its index and the observed token range, while `span` remains the original
+retrieval passage. Stored token counts are provider observations; storage does
+not independently run the tokenizer.
+
+Replacement validates the old complete source and children before removing any
+records. Missing, foreign or damaged provenance is an error, not automatic repair.
+An identical verified provider reload can query older vectors; a changed space
+or profile cannot. Late policies without explicit `passages` remain unavailable
+to document setup/ingestion. Conventional data receives no automatic migration.
 
 ## Qualification
 
@@ -71,7 +96,8 @@ environment with an explicit device and a new evidence directory:
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 python scripts/qualify_verified_late.py \
   --registry /private/model-registry --provider approved-jina \
-  --device cuda:0 --output-dir /private/new-late-evidence
+  --device cuda:0 --output-dir /private/new-late-evidence \
+  --arangod /private/arangodb/sbin/arangod
 ```
 
 The opt-in suite verifies loaded adapter tensors, then sends eight fixed documents,
@@ -79,8 +105,12 @@ six expected retrieval matches, repeat queries and a long Unicode source through
 the real Rust client and a private Unix HTTP socket. Direct tokenizer calls recount
 all windows and passage token coordinates. Reload must invalidate the old receipt.
 Reports retain implementation identity, suite digest, runtime, artifact manifest,
-receipts and failure stage. No database, model download, or installed service is
-involved. This is a fixed smoke qualification, not a general retrieval benchmark.
+receipts and failure stage. With `--arangod` or `--docker`, the strict isolated
+runner additionally verifies recoverable setup, file snapshots/extraction transport,
+atomic storage and public search, then recounts the persisted long-document plan.
+Without those options it checks provider/transport only. No model download, live
+corpus or installed service is involved. This is a fixed smoke qualification, not
+a general retrieval benchmark; its text passthrough extractor is a test fixture.
 
 The [ThinkPad run on 2026-10-21](../evidence/jina-late-thinkpad-2026-10-21.json)
 passed against clean implementation `d0b63f9`: all six expected documents ranked

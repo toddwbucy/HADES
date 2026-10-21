@@ -1,4 +1,4 @@
-//! Database ownership and the minimal conventional-document schema.
+//! Database ownership and the minimal model-bound document schema.
 //! No graph seeds, vector-index defaults, collection deletion, or legacy adoption.
 use super::{
     SetupError,

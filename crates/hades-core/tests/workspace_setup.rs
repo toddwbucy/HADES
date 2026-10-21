@@ -157,6 +157,39 @@ async fn creation_and_identical_retries_preserve_profile_and_documents() {
 
 /// An existing database is never adopted, emptied, marked, or assigned the current model.
 #[tokio::test]
+async fn contextual_setup_retains_explicit_policy_and_retries_after_ingestion() {
+    with_temp_db("setup_late", Fixtures::Empty, |pool| async move {
+        remove_fixture_database(&pool).await;
+        let fixture = Fixture::late();
+        let peer = Peer::new(&fixture);
+        let root = ledger();
+        let setup = setup(root.path(), admin(&pool), &peer);
+        let request = request(&pool, &fixture);
+        let receipt = setup.run(request.clone()).await.unwrap();
+        assert_eq!(receipt.status, SetupStatus::Ready);
+        let store = ProfileStore::new(pool.clone()).unwrap();
+        let before = store.load().await.unwrap();
+        assert_eq!(before.profile().workloads, fixture.profile.workloads);
+        let documents = fixture.connect(&pool, &peer).await;
+        let prepared = documents
+            .prepare(
+                DocumentInput {
+                    source_id: "late".into(),
+                    text: "apple café\nbanana 東京\napple tail".into(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        documents.commit(prepared).await.unwrap();
+        assert_eq!(documents.search("banana", 1, 10).await.unwrap().scanned, 3);
+        assert_eq!(setup.run(request).await.unwrap(), receipt);
+        assert_eq!(store.load().await.unwrap(), before);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn existing_database_is_preserved_and_requires_reconciliation() {
     with_temp_db("setup_existing", Fixtures::Empty, |pool| async move {
         crud::create_collection(&pool, "authored", Some(2))

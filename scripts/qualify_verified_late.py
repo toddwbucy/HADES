@@ -2,7 +2,7 @@
 """Qualify contextual Jina pooling through Rust HTTP with already approved local assets.
 
 Requires the installed ML environment and both Hugging Face offline flags. Uses
-a private Unix socket; creates no database and activates no installed service.
+a private Unix socket; optional database checks use the strict disposable runner.
 """
 import argparse
 import asyncio
@@ -99,11 +99,16 @@ def main(argv=None):
     parser.add_argument("--provider", required=True)
     parser.add_argument("--device", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    server = parser.add_mutually_exclusive_group()
+    server.add_argument("--arangod", type=Path, help="also qualify file ingestion/setup/search on a private server")
+    server.add_argument("--docker", action="store_true", help="also qualify database flow using the pinned isolated image")
     args = parser.parse_args(argv)
     if any(os.environ.get(name) != "1" for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")):
         parser.error("set HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1 before starting")
     if args.device != "cpu" and not (args.device.startswith("cuda:") and args.device[5:].isdigit()):
         parser.error("device must be cpu or cuda:<ordinal>")
+    if args.arangod and not args.arangod.is_file():
+        parser.error("arangod must name an existing binary")
     os.umask(0o077)
     output = args.output_dir.absolute()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -163,6 +168,12 @@ def main(argv=None):
             report["stale_receipt_refused"] = True
         else:
             raise ValueError("stale receipt was accepted after reload")
+        if args.arangod or args.docker:
+            from qualify_verified_jina import database_roundtrip
+            report["stage"] = "database"
+            context.update(description=current, chunk_policy="late", suite_sha256=digest)
+            server_args = ["--docker"] if args.docker else ["--arangod", str(args.arangod.absolute())]
+            report["database"] = asyncio.run(database_roundtrip(provider, context, output, server_args))
         if args.device.startswith("cuda:"):
             report["runtime"]["peak_allocated_bytes"] = torch.cuda.max_memory_allocated(args.device)
         report.update(passed=True, stage="complete")

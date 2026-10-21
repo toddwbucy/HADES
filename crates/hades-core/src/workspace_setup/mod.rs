@@ -1,4 +1,4 @@
-//! Internal, recoverable creation of conventional document workspaces.
+//! Internal, recoverable creation of model-bound document workspaces.
 //! Installation code supplies authority, ledger, database endpoint and provider catalog.
 //! No CLI/MCP/frontend caller is enabled; existing databases are never adopted.
 
@@ -314,11 +314,17 @@ impl SetupRequest {
                 && self.profile.state == ProfileState::Initializing
                 && self.profile.workloads.code.is_none()
                 && documents.is_some_and(|w| {
-                    matches!(w.chunking, ChunkPolicy::Conventional { .. })
-                        && w.space.representation.distance == Distance::Cosine
+                    matches!(
+                        w.chunking,
+                        ChunkPolicy::Conventional { .. }
+                            | ChunkPolicy::Late {
+                                passages: Some(_),
+                                ..
+                            }
+                    ) && w.space.representation.distance == Distance::Cosine
                         && !w.specialized_code
                 }),
-            "setup requires initializing revision one with conventional cosine documents only",
+            "setup requires initializing revision one with explicit cosine document passage policies only",
         )
     }
     /// Hash typed intent with canonical artifact order, including the selected database and operation.
