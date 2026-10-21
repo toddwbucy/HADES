@@ -51,9 +51,11 @@ writes; its failed job history remains available. Code-capable routing is a
 separate slice.
 
 Managed job history uses a synchronous document collection with its primary
-index. Completed setup retries permit and validate that operational collection,
-preserving its rows. Initializing workspaces cannot acquire job history through
-the managed job path.
+index. If concurrent first jobs race to create it, a failed creator revalidates
+the existing collection without issuing another create; incompatible properties
+or indexes still refuse admission. Completed setup retries permit and validate
+that operational collection, preserving its rows. Initializing workspaces cannot
+acquire job history through the managed job path.
 
 ## Validation
 

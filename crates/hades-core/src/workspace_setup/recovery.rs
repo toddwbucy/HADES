@@ -165,10 +165,7 @@ impl WorkspaceSetup {
                 RecoveryReason::SchemaNotVerified,
             ));
         }
-        if matches!(
-            record.receipt.step,
-            SetupStep::Marker | SetupStep::Profile | SetupStep::Schema
-        ) {
+        if matches!(record.receipt.step, SetupStep::Marker | SetupStep::Profile) {
             return Ok(report.conclude(
                 RecoveryAction::RetryIdenticalRequest,
                 RecoveryReason::InitializationIncomplete,
@@ -197,7 +194,11 @@ impl WorkspaceSetup {
                 RecoveryReason::MetadataNotVerified,
             ));
         }
-        if database::schema(&client, false, !ready).await.is_err() {
+        // Schema initialization can still be missing data collections, but its
+        // metadata was already initialized and must pass all profile checks.
+        if record.receipt.step != SetupStep::Schema
+            && database::schema(&client, false, !ready).await.is_err()
+        {
             return Ok(report.conclude(
                 RecoveryAction::InspectRequired,
                 RecoveryReason::SchemaNotVerified,
@@ -212,6 +213,10 @@ impl WorkspaceSetup {
             ));
         }
         Ok(match (record.receipt.step, ready) {
+            (SetupStep::Schema, false) => report.conclude(
+                RecoveryAction::RetryIdenticalRequest,
+                RecoveryReason::InitializationIncomplete,
+            ),
             (SetupStep::Complete, true) => {
                 report.conclude(RecoveryAction::None, RecoveryReason::Ready)
             }

@@ -1,5 +1,6 @@
 //! Diagnostics and restored ledger copies cannot grant ownership of another database incarnation.
 use super::*;
+use hades_core::db::query::{ExecutionTarget, query};
 use hades_core::workspace_setup::{RecoveryAction, RecoveryReason};
 use std::collections::BTreeMap;
 
@@ -14,6 +15,122 @@ fn ledger_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
             )
         })
         .collect()
+}
+
+/// Capture every metadata payload and revision to detect diagnostic writes.
+async fn metadata_rows(pool: &ArangoPool) -> Vec<serde_json::Value> {
+    query(
+        pool,
+        "FOR row IN hades_workspace SORT row._key RETURN row",
+        None,
+        None,
+        false,
+        ExecutionTarget::Writer,
+    )
+    .await
+    .unwrap()
+    .results
+}
+
+/// Missing data collections are retryable only while the initialized profile matches durable intent.
+#[tokio::test]
+async fn schema_checkpoint_requires_intact_matching_metadata_without_changing_it() {
+    for defect in [
+        "malformed",
+        "different_profile",
+        "missing_profile",
+        "extra_record",
+    ] {
+        with_temp_db(
+            "setup_schema_metadata",
+            Fixtures::Empty,
+            move |pool| async move {
+                remove_fixture_database(&pool).await;
+                let fixture = Fixture::new(2);
+                let peer = Peer::new(&fixture);
+                let root = ledger();
+                let mut failure = rule("POST", "collection", Some("documents"), 1);
+                failure.before = true;
+                let proxy = Proxy::new(pool.writer(), failure);
+                let service = setup(root.path(), proxy.admin.clone(), &peer);
+                let request = request(&pool, &fixture);
+                assert!(service.run(request.clone()).await.is_err());
+                assert_eq!(proxy.hits.load(Ordering::SeqCst), 1);
+                let receipt = service
+                    .inspect(&request.operation_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(receipt.step, SetupStep::Schema);
+                let bytes = ledger_bytes(root.path());
+                let observations = peer.observations();
+                let retry = service.diagnose(&request.operation_id).await.unwrap();
+                assert_eq!(retry.action, RecoveryAction::RetryIdenticalRequest);
+                assert_eq!(retry.reason, RecoveryReason::InitializationIncomplete);
+                let store = ProfileStore::new(pool.clone()).unwrap();
+                let saved = store.load().await.unwrap();
+                let profile_path = "document/hades_workspace/profile_1";
+                let mut profile = pool.writer().get(profile_path).await.unwrap();
+                match defect {
+                    "malformed" => {
+                        profile["payload"] = json!("damaged profile");
+                        pool.writer()
+                            .patch(profile_path, &json!({"payload":profile["payload"]}))
+                            .await
+                            .unwrap();
+                        assert!(store.load().await.is_err());
+                    }
+                    "different_profile" => {
+                        profile["payload"]["runtime_binding"]["provider_id"] =
+                            json!("another-provider");
+                        pool.writer()
+                            .patch(profile_path, &json!({"payload":profile["payload"]}))
+                            .await
+                            .unwrap();
+                        let changed = store.load().await.unwrap();
+                        assert_ne!(changed.profile(), saved.profile());
+                    }
+                    "missing_profile" => {
+                        pool.writer().delete(profile_path).await.unwrap();
+                        assert!(store.load().await.is_err());
+                    }
+                    "extra_record" => {
+                        crud::insert_document(
+                            &pool,
+                            "hades_workspace",
+                            &json!({"_key":"unexpected","text":"preserve me"}),
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(store.load().await.unwrap(), saved);
+                    }
+                    _ => unreachable!(),
+                }
+                let contents = metadata_rows(&pool).await;
+                let report = service.diagnose(&request.operation_id).await.unwrap();
+                assert_eq!(report.action, RecoveryAction::InspectRequired, "{defect}");
+                assert_eq!(
+                    report.reason,
+                    RecoveryReason::MetadataNotVerified,
+                    "{defect}"
+                );
+                assert_eq!(report.receipt, Some(receipt));
+                assert_eq!(ledger_bytes(root.path()), bytes);
+                assert_eq!(peer.observations(), observations);
+                assert_eq!(metadata_rows(&pool).await, contents);
+                for name in ["documents", "chunks", "embeddings"] {
+                    assert!(
+                        pool.writer()
+                            .get(&format!("collection/{name}/properties"))
+                            .await
+                            .unwrap_err()
+                            .is_not_found()
+                    );
+                }
+            },
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

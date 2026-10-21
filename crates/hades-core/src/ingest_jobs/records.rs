@@ -115,9 +115,7 @@ async fn start_with(
     };
     let reservation = super::reserve(&resolved).map_err(service)?;
     if profile_pin.is_some() {
-        crate::workspace_setup::database::collection(pool.writer(), COLLECTION, true)
-            .await
-            .map_err(service)?;
+        prepare_profiled_history(pool).await?;
     } else if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict
     {
@@ -180,6 +178,21 @@ async fn start_with(
     receive
         .await
         .map_err(|_| service("ingest startup owner stopped"))?
+}
+
+/// Require synchronous, primary-only job history before admitting a managed worker.
+async fn prepare_profiled_history(pool: &ArangoPool) -> Result<(), HandlerError> {
+    // A concurrent first job may win creation after our missing-collection probe.
+    // Recheck its exact schema without another create or any property changes.
+    if crate::workspace_setup::database::collection(pool.writer(), COLLECTION, true)
+        .await
+        .is_err()
+    {
+        crate::workspace_setup::database::collection(pool.writer(), COLLECTION, false)
+            .await
+            .map_err(service)?;
+    }
+    Ok(())
 }
 
 async fn persist(pool: &ArangoPool, job: &str, update: &Value) -> bool {
@@ -392,6 +405,95 @@ mod tests {
     use crate::cursor_mock::{Mock, Reply};
     use std::sync::Arc;
     use tokio::sync::Notify;
+
+    fn collection_error(status: u16) -> Reply {
+        Reply {
+            status,
+            body: json!({"error":true,"code":status,"errorMessage":"fixture collection error"}),
+            gate: None,
+        }
+    }
+
+    fn history_properties() -> Value {
+        json!({"name":COLLECTION,"type":2,"waitForSync":true,"isSystem":false})
+    }
+
+    fn history_indexes() -> Value {
+        json!({"indexes":[{"type":"primary","unique":true,"fields":["_key"]}]})
+    }
+
+    /// A losing first creator must validate the winner's collection before using it.
+    #[tokio::test]
+    async fn profiled_history_rechecks_schema_after_concurrent_create() {
+        let mut mock = Mock::new(vec![
+            collection_error(404),
+            collection_error(409),
+            Reply::page(history_properties()),
+            Reply::page(history_indexes()),
+        ])
+        .await;
+        prepare_profiled_history(&mock.pool).await.unwrap();
+        mock.event("GET collection/hades_ingest_jobs/properties")
+            .await;
+        assert_eq!(
+            mock.event("POST collection").await,
+            json!({"name":COLLECTION,"type":2,"waitForSync":true})
+        );
+        mock.event("GET collection/hades_ingest_jobs/properties")
+            .await;
+        mock.event("GET index?collection=hades_ingest_jobs").await;
+        assert!(mock.events.try_recv().is_err());
+    }
+
+    /// A failed create cannot admit missing, incompatible or additionally indexed history.
+    #[tokio::test]
+    async fn profiled_history_rejects_missing_or_incompatible_winners() {
+        for defect in [
+            "missing",
+            "name",
+            "type",
+            "waitForSync",
+            "isSystem",
+            "indexes",
+        ] {
+            let mut properties = history_properties();
+            let mut indexes = history_indexes();
+            match defect {
+                "name" => properties["name"] = json!("another_collection"),
+                "type" => properties["type"] = json!(3),
+                "waitForSync" => properties["waitForSync"] = json!(false),
+                "isSystem" => properties["isSystem"] = json!(true),
+                "indexes" => indexes["indexes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"type":"persistent","unique":false,"fields":["status"]})),
+                _ => {}
+            }
+            let mut replies = vec![collection_error(404), collection_error(409)];
+            replies.push(if defect == "missing" {
+                collection_error(404)
+            } else {
+                Reply::page(properties)
+            });
+            if defect == "indexes" {
+                replies.push(Reply::page(indexes));
+            }
+            let mut mock = Mock::new(replies).await;
+            assert!(
+                prepare_profiled_history(&mock.pool).await.is_err(),
+                "{defect}"
+            );
+            mock.event("GET collection/hades_ingest_jobs/properties")
+                .await;
+            mock.event("POST collection").await;
+            mock.event("GET collection/hades_ingest_jobs/properties")
+                .await;
+            if defect == "indexes" {
+                mock.event("GET index?collection=hades_ingest_jobs").await;
+            }
+            assert!(mock.events.try_recv().is_err(), "{defect}");
+        }
+    }
 
     #[tokio::test]
     async fn panicking_pid_confirmation_reaps_before_admission_release() {

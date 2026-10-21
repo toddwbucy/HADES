@@ -58,6 +58,10 @@ verification, incomplete final publication and ready setup. Diagnostic failure
 or an unverified check must not be rendered as ready. A report never clears a
 `needs_reconciliation` hold or publishes readiness itself.
 
+At the schema checkpoint, missing document/chunk/vector collections can still
+be completed by retry. The already-initialized profile and manifest must match
+the original request; damaged, missing or replaced metadata requires inspection.
+
 ## Restore and migration boundary
 
 A ledger copy is valid only for its recorded installation and endpoint. Even at
