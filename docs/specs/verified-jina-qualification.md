@@ -23,6 +23,12 @@ check took 2.956 seconds. The report records provider/runtime identities and
 per-query timings; concurrent workstation tests and these small fixtures do not
 establish production throughput or a model-quality comparison.
 
+The [post-review run](../evidence/jina-public-search-reviewed-thinkpad-2026-10-21.json)
+also passed on clean `1791df30d017c934891729846e7d30a63be17109` after grouping
+detail reads by parent while retaining only one complete source at a time.
+All six public retrieval/source-text checks and the long-source tokenizer gates
+still passed. The original measurement is retained above.
+
 ## Fixed protocol and evidence
 
 `services/tests/fixtures/jina_qualification.json` defines eight short documents,
