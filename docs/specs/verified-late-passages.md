@@ -120,3 +120,11 @@ The separate [initial preflight failure](../evidence/jina-late-thinkpad-2026-10-
 records a qualification-runner CUDA initialization mistake corrected before the
 successful run. These results qualify provider/transport behavior, not database
 late-document storage or extraction quality.
+
+The subsequent [database qualification](../evidence/jina-late-documents-thinkpad-2026-10-21.json)
+passed at clean implementation `419b503`: recoverable setup and identical retry,
+eight real-model file ingestions, all six expected public-search matches at rank
+one, then the same 11-passage/four-window Unicode source persisted and recounted.
+Search validated all 19 stored passage/vector pairs. This run used the strict
+private ArangoDB harness and a text passthrough extractor; it establishes database
+integration, not extraction quality or a broad retrieval benchmark.
