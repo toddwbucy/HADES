@@ -29,6 +29,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[path = "common/registered_provider.rs"]
 mod registration_fixture;
 
+#[path = "provider_discovery/workloads.rs"]
+mod workloads;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     root: PathBuf,
@@ -593,7 +596,15 @@ async fn saved_policy_is_checked_against_actual_capabilities_without_changing_it
         .verify_profile(&fixture.profile, &fixture.manifest)
         .await
         .unwrap();
-    assert_eq!(observed.description().capabilities.max_input_tokens, 128);
+    assert_eq!(
+        observed
+            .description()
+            .workload(WorkloadKind::Documents)
+            .unwrap()
+            .capabilities
+            .max_input_tokens,
+        128
+    );
     assert_eq!(fixture.profile.capabilities.max_input_tokens, 2048);
     observed
         .client(

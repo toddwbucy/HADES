@@ -4,6 +4,11 @@
 
 mod registration;
 pub use registration::RegistrationSummary;
+mod description;
+pub use description::{
+    DescriptionFormat, ObservedWorkload, ObservedWorkloads, ProviderDescription,
+    WorkloadObservation,
+};
 
 use std::{
     collections::BTreeMap,
@@ -17,28 +22,17 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyperlocal::UnixClientExt;
-use serde::{Deserialize, Serialize};
 
 use super::{
     bound_embedding::{BoundEmbeddingClient, ProviderConnection},
     embedding::{EmbeddingEndpoint, EmbeddingError},
 };
 use crate::embedding_profile::{
-    ArtifactManifest, Capabilities, ChunkPolicy, EmbeddingProfile, EmbeddingRole, EmbeddingSpace,
-    MAX_PROFILE_BYTES, ModelIdentity, ProfileFormat, ProfileState, ProviderReceipt, RuntimeBinding,
-    Workload, WorkloadKind, Workloads, require,
+    ArtifactManifest, ChunkPolicy, EmbeddingProfile, EmbeddingRole, MAX_PROFILE_BYTES,
+    ModelIdentity, ProfileFormat, ProfileState, RuntimeBinding, Workload, WorkloadKind, Workloads,
+    require,
 };
 use registration::Registered;
-
-/// Strict portable observation returned by POST /v1/verify, never a trust root itself.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderDescription {
-    pub model: ModelIdentity,
-    pub capabilities: Capabilities,
-    pub space: EmbeddingSpace,
-    pub receipt: ProviderReceipt,
-}
 
 /// An installation-owned allowlist. Construction does not contact providers or load models.
 #[derive(Clone)]
@@ -168,26 +162,13 @@ impl ProviderCatalog {
             registered == after,
             "registration changed during provider verification; retry explicitly",
         )?;
-        registered_model(&registered, &description.model, &registered.value.manifest)?;
-        description.receipt.validate()?;
-        require(
-            description.receipt.artifact_md5 == registered.value.manifest_md5
-                && description.receipt.space_id == description.space.id()?,
-            "provider description and receipt identities disagree",
-        )?;
+        registered_model(&registered, description.model(), &registered.value.manifest)?;
         let observed = VerifiedProvider {
             registration: registered,
             description,
             connection,
         };
-        // Reuse complete profile validation for tokenizer dependencies, tasks, capabilities and widths.
-        observed.document_profile(
-            "provider-observation".into(),
-            ChunkPolicy::Conventional {
-                passage_tokens: 1,
-                overlap_tokens: 0,
-            },
-        )?;
+        observed.validate_description()?;
         Ok(observed)
     }
 }
@@ -232,27 +213,91 @@ impl VerifiedProvider {
         generation: String,
         chunking: ChunkPolicy,
     ) -> Result<EmbeddingProfile, EmbeddingError> {
+        self.observed_profile(WorkloadKind::Documents, generation, chunking)
+    }
+
+    /// Reuse profile validation separately for every advertised space and capability set.
+    fn observed_profile(
+        &self,
+        kind: WorkloadKind,
+        generation: String,
+        chunking: ChunkPolicy,
+    ) -> Result<EmbeddingProfile, EmbeddingError> {
+        let observed = self.workload(kind)?;
+        let workload = Workload {
+            space: observed.space.clone(),
+            chunking,
+            specialized_code: kind == WorkloadKind::Code && observed.capabilities.specialized_code,
+        };
+        let workloads = match kind {
+            WorkloadKind::Documents => Workloads {
+                documents: Some(workload),
+                code: None,
+            },
+            WorkloadKind::Code => Workloads {
+                documents: None,
+                code: Some(workload),
+            },
+        };
         let profile = EmbeddingProfile {
             format: ProfileFormat::V1,
             revision: 1,
             state: ProfileState::Initializing,
             generation,
-            model: self.description.model.clone(),
-            capabilities: self.description.capabilities.clone(),
-            workloads: Workloads {
-                documents: Some(Workload {
-                    space: self.description.space.clone(),
-                    chunking,
-                    specialized_code: false,
-                }),
-                code: None,
-            },
+            model: self.description.model().clone(),
+            capabilities: observed.capabilities.clone(),
+            workloads,
             runtime_binding: RuntimeBinding {
                 provider_id: self.provider_id().into(),
             },
         };
         profile.validate(self.manifest())?;
         Ok(profile)
+    }
+
+    /// A missing code declaration never falls back to the document adapter, or vice versa.
+    fn workload(&self, kind: WorkloadKind) -> Result<WorkloadObservation<'_>, EmbeddingError> {
+        self.description.workload(kind).ok_or_else(|| {
+            EmbeddingError::InvalidResponse(format!(
+                "provider does not advertise the {kind:?} workload"
+            ))
+        })
+    }
+
+    /// One observation describes a coherent load; validate even workloads this caller does not use.
+    fn validate_description(&self) -> Result<(), EmbeddingError> {
+        let mut generation = None;
+        for kind in [WorkloadKind::Documents, WorkloadKind::Code] {
+            let Some(observed) = self.description.workload(kind) else {
+                continue;
+            };
+            observed.receipt.validate()?;
+            require(
+                observed.receipt.artifact_md5 == self.registration.value.manifest_md5
+                    && observed.receipt.space_id == observed.space.id()?,
+                "provider description and receipt identities disagree",
+            )?;
+            if let Some(previous) = generation {
+                require(
+                    previous == &observed.receipt.serving_generation,
+                    "provider workloads describe different serving generations",
+                )?;
+            }
+            generation = Some(&observed.receipt.serving_generation);
+            self.observed_profile(
+                kind,
+                "provider-observation".into(),
+                ChunkPolicy::Conventional {
+                    passage_tokens: 1,
+                    overlap_tokens: 0,
+                },
+            )?;
+        }
+        require(
+            generation.is_some(),
+            "provider must advertise at least one workload",
+        )?;
+        Ok(())
     }
 
     /// Construct a role-bound client with the checked receipt; later reloads never retarget it.
@@ -270,7 +315,7 @@ impl VerifiedProvider {
             kind,
             role,
             self.connection.clone(),
-            &self.description.receipt,
+            self.workload(kind)?.receipt,
         )
         .await
     }
@@ -288,20 +333,22 @@ impl VerifiedProvider {
             "profile selects another provider",
         )?;
         let mut saved = profile.model.tokenizer_files.clone();
-        let mut actual = self.description.model.tokenizer_files.clone();
+        let mut actual = self.description.model().tokenizer_files.clone();
         saved.sort();
         actual.sort();
         require(
             saved == actual,
             "provider tokenizer dependencies differ from the saved profile",
         )?;
-        let capabilities = &self.description.capabilities;
-        for workload in [&profile.workloads.documents, &profile.workloads.code]
-            .into_iter()
-            .flatten()
-        {
+        for (kind, workload) in [
+            (WorkloadKind::Documents, &profile.workloads.documents),
+            (WorkloadKind::Code, &profile.workloads.code),
+        ] {
+            let Some(workload) = workload else { continue };
+            let observed = self.workload(kind)?;
+            let capabilities = observed.capabilities;
             require(
-                workload.space == self.description.space,
+                &workload.space == observed.space,
                 "provider embedding behavior differs from the saved workload",
             )?;
             require(

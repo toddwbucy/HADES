@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add explicit document/code provider observations for model-bound workspaces,
+  with separate capability checks and correctly selected embedding receipts from
+  one registered model load. Preserve existing document providers and reject
+  cross-workload receipts; verified code ingestion remains gated pending its
+  provider and graph-storage integration (#225).
+
 - Add human passage corrections to guided reading, with save/cancel, revision
   history, before/after changes, and append-only restoration. Preserve original
   extraction and accepted evidence, flag references to changed passages, and
