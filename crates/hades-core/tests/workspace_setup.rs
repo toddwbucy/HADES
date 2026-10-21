@@ -16,6 +16,9 @@ mod provider;
 use fault::{Proxy, Rule};
 use provider::{Fixture, Peer};
 
+#[path = "workspace_setup/recovery.rs"]
+mod recovery;
+
 /// An explicit private fixture ledger, never the workstation's installation state.
 fn ledger() -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
@@ -296,6 +299,17 @@ async fn lost_initialization_responses_resume_only_owned_steps() {
             let failed = setup.inspect(&request.operation_id).await.unwrap().unwrap();
             assert_eq!(failed.status, SetupStatus::Failed, "{tag}");
             assert_eq!(failed.step, step, "{tag}");
+            let diagnostic = setup.diagnose(&request.operation_id).await.unwrap();
+            assert_eq!(diagnostic.receipt.as_ref(), Some(&failed));
+            assert_eq!(
+                setup.inspect(&request.operation_id).await.unwrap(),
+                Some(failed)
+            );
+            assert_eq!(
+                diagnostic.action,
+                hades_core::workspace_setup::RecoveryAction::RetryIdenticalRequest,
+                "{tag}: {diagnostic:?}"
+            );
             let store = ProfileStore::new(pool.clone()).unwrap();
             let before = store.load().await.ok();
             assert_eq!(
@@ -335,6 +349,16 @@ async fn lost_create_acknowledgement_never_adopts_the_created_name() {
         let request = request(&pool, &fixture);
         assert!(setup.run(request.clone()).await.is_err());
         assert_eq!(proxy.hits.load(Ordering::SeqCst), 1);
+        let diagnostic = setup.diagnose(&request.operation_id).await.unwrap();
+        assert_eq!(
+            diagnostic.action,
+            hades_core::workspace_setup::RecoveryAction::InspectRequired
+        );
+        assert_eq!(
+            diagnostic.reason,
+            hades_core::workspace_setup::RecoveryReason::CreationUnacknowledged
+        );
+        assert_eq!(diagnostic.database_exists, Some(true));
         assert_eq!(
             setup
                 .inspect(&request.operation_id)

@@ -4,6 +4,9 @@
 
 pub(crate) mod database;
 mod ledger;
+mod recovery;
+
+pub use recovery::{RecoveryAction, RecoveryReason, RecoveryReport};
 
 use crate::{
     db::{ArangoClient, ArangoError, ArangoPool},
