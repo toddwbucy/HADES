@@ -1,0 +1,853 @@
+{
+  "protocol": "hades-verified-late-qualification-v1",
+  "passed": true,
+  "started_at": "2026-10-21T05:26:45.069819+00:00",
+  "stage": "complete",
+  "suite_sha256": "45d3a94d24272e0c3b6063a53271b485dabeb0b336d4ead83ffffd2bfca8b868",
+  "implementation_commit": "419b50390b5bfdbb9ebdb3c8685f02df63586730",
+  "implementation_dirty": false,
+  "manifest": {
+    "files": [
+      {
+        "bytes": 900,
+        "md5": "e3d8a34e76d8605deb9abb0a9898e4cd",
+        "path": "adapters/adapter_config.json"
+      },
+      {
+        "bytes": 359863776,
+        "md5": "a4845feaf4ccffd8bab31a4945782b6b",
+        "path": "adapters/adapter_model.safetensors"
+      },
+      {
+        "bytes": 605,
+        "md5": "b9a7a9cfe915c587f6fa31268b8529b0",
+        "path": "added_tokens.json"
+      },
+      {
+        "bytes": 1049,
+        "md5": "3d8fdf3471faa9db32648cda73421c08",
+        "path": "chat_template.json"
+      },
+      {
+        "bytes": 2751,
+        "md5": "5565fe9bb4494c1a40833279ee637ecf",
+        "path": "config.json"
+      },
+      {
+        "bytes": 274,
+        "md5": "a188f833fecee2e341b2d2ea6594eb90",
+        "path": "config_sentence_transformers.json"
+      },
+      {
+        "bytes": 750,
+        "md5": "6a130c11b70896ab880c206436d2c11b",
+        "path": "configuration_jina_embeddings_v4.py"
+      },
+      {
+        "bytes": 7743,
+        "md5": "0a1885abef9253fb2dfa1211247cb11e",
+        "path": "custom_lora_module.py"
+      },
+      {
+        "bytes": 7550,
+        "md5": "c636cf5449f8fd53013303b481ef94d9",
+        "path": "custom_st.py"
+      },
+      {
+        "bytes": 126,
+        "md5": "009f52f586d87af762b250bded66eec2",
+        "path": "generation_config.json"
+      },
+      {
+        "bytes": 1671853,
+        "md5": "72dacf1de43bc354dc3c521e44ed0b24",
+        "path": "merges.txt"
+      },
+      {
+        "bytes": 4997750728,
+        "md5": "c3569721409e7144c86174ab30c55375",
+        "path": "model-00001-of-00002.safetensors"
+      },
+      {
+        "bytes": 2512111904,
+        "md5": "d9a9efb1c515e5dd0256f841a2f31960",
+        "path": "model-00002-of-00002.safetensors"
+      },
+      {
+        "bytes": 65592,
+        "md5": "d413ef978cca5984d051a9df854ea6cf",
+        "path": "model.safetensors.index.json"
+      },
+      {
+        "bytes": 22602,
+        "md5": "3b7d8ddcfe5055908b8aa1e06ab61e32",
+        "path": "modeling_jina_embeddings_v4.py"
+      },
+      {
+        "bytes": 168,
+        "md5": "43a03d45966f19ceba418ddb86a9c91f",
+        "path": "modules.json"
+      },
+      {
+        "bytes": 726,
+        "md5": "3b6c4b9af0450c1a90d56bde88999fa6",
+        "path": "preprocessor_config.json"
+      },
+      {
+        "bytes": 133535,
+        "md5": "01ea9ade2100957bb89119d6e2e7c97d",
+        "path": "qwen2_5_vl.py"
+      },
+      {
+        "bytes": 613,
+        "md5": "5708ee87a0925280424b5caa0906752f",
+        "path": "special_tokens_map.json"
+      },
+      {
+        "bytes": 11421896,
+        "md5": "aa2988694a177776324112349a8df055",
+        "path": "tokenizer.json"
+      },
+      {
+        "bytes": 7306,
+        "md5": "74c4cd015f8f9fd11ed1c87ed7a5863a",
+        "path": "tokenizer_config.json"
+      },
+      {
+        "bytes": 2776833,
+        "md5": "613b8e4a622c4a2c90e9e1245fc540d6",
+        "path": "vocab.json"
+      }
+    ],
+    "format": "hades-model-manifest-v1"
+  },
+  "runtime": {
+    "device": "cuda:0",
+    "libraries": {
+      "torch": "2.14.1",
+      "transformers": "4.52.4",
+      "tokenizers": "0.21.4",
+      "peft": "0.15.2",
+      "accelerate": "1.15.0",
+      "flash-attn": "absent",
+      "triton": "3.8.0"
+    },
+    "cuda": "13.0",
+    "gpu": "NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU",
+    "peak_allocated_bytes": 8881033728
+  },
+  "description": {
+    "model": {
+      "id": "jinaai/jina-embeddings-v4",
+      "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+      "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+      "tokenizer_files": [
+        "added_tokens.json",
+        "config.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ]
+    },
+    "space": {
+      "format": "hades-embedding-space-v1",
+      "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+      "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+      "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+      "representation": {
+        "dimension": 2048,
+        "output": "dense-f32",
+        "normalize": "l2",
+        "pooling": "query-all-tokens-passage-intersecting-window-tokens-mean-fp32-v1",
+        "distance": "cosine",
+        "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+        "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9:late-passages-v1"
+      },
+      "passage": {
+        "task": "retrieval.passage",
+        "prompt": "Passage: ",
+        "adapter": "retrieval",
+        "special_tokens": "qwen2-add-special-tokens-v1"
+      },
+      "query": {
+        "task": "retrieval.query",
+        "prompt": "Query: ",
+        "adapter": "retrieval",
+        "special_tokens": "qwen2-add-special-tokens-v1"
+      }
+    },
+    "receipt": {
+      "format": "hades-provider-receipt-v1",
+      "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+      "space_id": "77a94ced36a452df54f4ab8c991d3b1d18978b5473fe3173b977479004adcc19",
+      "serving_generation": "6c6e7d77014844209b65b83a2e2b1494"
+    },
+    "capabilities": {
+      "text": true,
+      "image_embedding": false,
+      "specialized_code": false,
+      "late_chunking": true,
+      "tokenizer_offsets": true,
+      "tasks": [
+        "retrieval.passage",
+        "retrieval.query"
+      ],
+      "max_input_tokens": 1024
+    }
+  },
+  "adapter_tensors_verified": 1518,
+  "tokenizer": {
+    "normalization": "NFC",
+    "samples": [
+      {
+        "text": "café é 東京 🚀",
+        "decoded": "café é 東京 🚀",
+        "ids": [
+          924,
+          58858,
+          3958,
+          60596,
+          109,
+          46553,
+          11162,
+          248,
+          222
+        ]
+      },
+      {
+        "text": "  spaces\tand\nnewlines  ",
+        "decoded": "  spaces\tand\nnewlines  ",
+        "ids": [
+          220,
+          12621,
+          52477,
+          198,
+          931,
+          7969,
+          256
+        ]
+      },
+      {
+        "text": "résumé—naïve; 日本語 123.45",
+        "decoded": "résumé—naïve; 日本語 123.45",
+        "ids": [
+          42611,
+          1242,
+          963,
+          2293,
+          3376,
+          37572,
+          586,
+          26,
+          75402,
+          21894,
+          102819,
+          220,
+          16,
+          17,
+          18,
+          13,
+          19,
+          20
+        ]
+      }
+    ]
+  },
+  "rust": {
+    "dimension": 2048,
+    "document_count": 8,
+    "passed": true,
+    "planning": {
+      "plan": {
+        "assignments": [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          2,
+          3,
+          3
+        ],
+        "context_cap_tokens": 1024,
+        "format": "hades-late-passages-v1",
+        "max_input_tokens": 1024,
+        "minimum_window_overlap_tokens": 128,
+        "model": "jinaai/jina-embeddings-v4",
+        "overlap_tokens": 32,
+        "passage_tokens": 256,
+        "passages": [
+          {
+            "body_tokens": 256,
+            "end_byte": 1306,
+            "input_tokens": 258,
+            "overlap_tokens": 0,
+            "start_byte": 0
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 2464,
+            "input_tokens": 259,
+            "overlap_tokens": 32,
+            "start_byte": 1159
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 3622,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 2316
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 4782,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 3463
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 5939,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 4620
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 7098,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 5776
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 8256,
+            "input_tokens": 259,
+            "overlap_tokens": 32,
+            "start_byte": 6934
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 9409,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 8078
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 10566,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 9234
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 11719,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 10389
+          },
+          {
+            "body_tokens": 160,
+            "end_byte": 12384,
+            "input_tokens": 164,
+            "overlap_tokens": 32,
+            "start_byte": 11541
+          }
+        ],
+        "receipt": {
+          "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+          "format": "hades-provider-receipt-v1",
+          "serving_generation": "6c6e7d77014844209b65b83a2e2b1494",
+          "space_id": "77a94ced36a452df54f4ab8c991d3b1d18978b5473fe3173b977479004adcc19"
+        },
+        "source_sha256": "0e1431c47b217a1d4a15a8a93935d580ac24aff02300f8708ae3fbba3bcd8a5d",
+        "task": "retrieval.passage",
+        "windows": [
+          {
+            "body_tokens": 1022,
+            "end_byte": 5269,
+            "input_tokens": 1024,
+            "overlap_tokens": 0,
+            "start_byte": 0
+          },
+          {
+            "body_tokens": 1019,
+            "end_byte": 8531,
+            "input_tokens": 1023,
+            "overlap_tokens": 384,
+            "start_byte": 3272
+          },
+          {
+            "body_tokens": 1020,
+            "end_byte": 11817,
+            "input_tokens": 1024,
+            "overlap_tokens": 384,
+            "start_byte": 6567
+          },
+          {
+            "body_tokens": 491,
+            "end_byte": 12384,
+            "input_tokens": 495,
+            "overlap_tokens": 384,
+            "start_byte": 9825
+          }
+        ]
+      },
+      "token_ranges": [
+        {
+          "token_end": 258,
+          "token_start": 3
+        },
+        {
+          "token_end": 482,
+          "token_start": 226
+        },
+        {
+          "token_end": 706,
+          "token_start": 450
+        },
+        {
+          "token_end": 930,
+          "token_start": 674
+        },
+        {
+          "token_end": 518,
+          "token_start": 262
+        },
+        {
+          "token_end": 743,
+          "token_start": 486
+        },
+        {
+          "token_end": 331,
+          "token_start": 75
+        },
+        {
+          "token_end": 555,
+          "token_start": 299
+        },
+        {
+          "token_end": 779,
+          "token_start": 523
+        },
+        {
+          "token_end": 367,
+          "token_start": 111
+        },
+        {
+          "token_end": 495,
+          "token_start": 335
+        }
+      ]
+    },
+    "profile": {
+      "capabilities": {
+        "image_embedding": false,
+        "late_chunking": true,
+        "max_input_tokens": 1024,
+        "specialized_code": false,
+        "tasks": [
+          "retrieval.passage",
+          "retrieval.query"
+        ],
+        "text": true,
+        "tokenizer_offsets": true
+      },
+      "format": "hades-embedding-profile-v1",
+      "generation": "contextual-qualification-v1",
+      "model": {
+        "id": "jinaai/jina-embeddings-v4",
+        "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+        "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+        "tokenizer_files": [
+          "added_tokens.json",
+          "config.json",
+          "merges.txt",
+          "special_tokens_map.json",
+          "tokenizer.json",
+          "tokenizer_config.json",
+          "vocab.json"
+        ]
+      },
+      "revision": 1,
+      "runtime_binding": {
+        "provider_id": "qualification-jina"
+      },
+      "state": "ready",
+      "workloads": {
+        "code": null,
+        "documents": {
+          "chunking": {
+            "context_cap_tokens": 1024,
+            "minimum_window_overlap_tokens": 128,
+            "mode": "late",
+            "passages": {
+              "overlap_tokens": 32,
+              "passage_tokens": 256
+            }
+          },
+          "space": {
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "format": "hades-embedding-space-v1",
+            "passage": {
+              "adapter": "retrieval",
+              "prompt": "Passage: ",
+              "special_tokens": "qwen2-add-special-tokens-v1",
+              "task": "retrieval.passage"
+            },
+            "query": {
+              "adapter": "retrieval",
+              "prompt": "Query: ",
+              "special_tokens": "qwen2-add-special-tokens-v1",
+              "task": "retrieval.query"
+            },
+            "representation": {
+              "dimension": 2048,
+              "distance": "cosine",
+              "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9:late-passages-v1",
+              "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+              "normalize": "l2",
+              "output": "dense-f32",
+              "pooling": "query-all-tokens-passage-intersecting-window-tokens-mean-fp32-v1"
+            },
+            "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+            "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638"
+          },
+          "specialized_code": false
+        }
+      }
+    },
+    "retrieval": [
+      {
+        "expected": "photosynthesis",
+        "first": "photosynthesis",
+        "query": "plants",
+        "rank": 1,
+        "repeat_cosine": 1.0000000000000002,
+        "score": 0.7608663920009846
+      },
+      {
+        "expected": "database-restore",
+        "first": "database-restore",
+        "query": "restore",
+        "rank": 1,
+        "repeat_cosine": 1.0000000000000002,
+        "score": 0.7683747189609038
+      },
+      {
+        "expected": "rust-ownership",
+        "first": "rust-ownership",
+        "query": "memory",
+        "rank": 1,
+        "repeat_cosine": 1.0000000000000002,
+        "score": 0.7867500192090225
+      },
+      {
+        "expected": "library-hours",
+        "first": "library-hours",
+        "query": "saturday",
+        "rank": 1,
+        "repeat_cosine": 0.9999999999999998,
+        "score": 0.7641723299833464
+      },
+      {
+        "expected": "tokyo-kyoto",
+        "first": "tokyo-kyoto",
+        "query": "train",
+        "rank": 1,
+        "repeat_cosine": 1.0000000000000002,
+        "score": 0.7941535789418193
+      },
+      {
+        "expected": "unicode",
+        "first": "unicode",
+        "query": "encoding",
+        "rank": 1,
+        "repeat_cosine": 1.0000000000000002,
+        "score": 0.8064020550374817
+      }
+    ],
+    "tokenizer_recheck": {
+      "passed": true,
+      "checked_passages": 11,
+      "checked_windows": 4,
+      "source_bytes": 12384
+    }
+  },
+  "rust_seconds": 21.427695625985507,
+  "stale_receipt_refused": true,
+  "database": {
+    "chunk_policy": "late",
+    "dimension": 2048,
+    "documents": 8,
+    "extractor_implementation": "private text passthrough fixture; not a Docling quality qualification",
+    "file_ingestion_and_snapshot_provenance_checked": true,
+    "ingest_seconds": 8.062691772,
+    "passed": true,
+    "planning": {
+      "plan": {
+        "assignments": [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          2,
+          3,
+          3
+        ],
+        "context_cap_tokens": 1024,
+        "format": "hades-late-passages-v1",
+        "max_input_tokens": 1024,
+        "minimum_window_overlap_tokens": 128,
+        "model": "jinaai/jina-embeddings-v4",
+        "overlap_tokens": 32,
+        "passage_tokens": 256,
+        "passages": [
+          {
+            "body_tokens": 256,
+            "end_byte": 1306,
+            "input_tokens": 258,
+            "overlap_tokens": 0,
+            "start_byte": 0
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 2464,
+            "input_tokens": 259,
+            "overlap_tokens": 32,
+            "start_byte": 1159
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 3622,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 2316
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 4782,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 3463
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 5939,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 4620
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 7098,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 5776
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 8256,
+            "input_tokens": 259,
+            "overlap_tokens": 32,
+            "start_byte": 6934
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 9409,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 8078
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 10566,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 9234
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 11719,
+            "input_tokens": 260,
+            "overlap_tokens": 32,
+            "start_byte": 10389
+          },
+          {
+            "body_tokens": 160,
+            "end_byte": 12384,
+            "input_tokens": 164,
+            "overlap_tokens": 32,
+            "start_byte": 11541
+          }
+        ],
+        "receipt": {
+          "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+          "format": "hades-provider-receipt-v1",
+          "serving_generation": "046ce3d0bb604d4a92c19c6c4657f0b0",
+          "space_id": "77a94ced36a452df54f4ab8c991d3b1d18978b5473fe3173b977479004adcc19"
+        },
+        "source_sha256": "0e1431c47b217a1d4a15a8a93935d580ac24aff02300f8708ae3fbba3bcd8a5d",
+        "task": "retrieval.passage",
+        "windows": [
+          {
+            "body_tokens": 1022,
+            "end_byte": 5269,
+            "input_tokens": 1024,
+            "overlap_tokens": 0,
+            "start_byte": 0
+          },
+          {
+            "body_tokens": 1019,
+            "end_byte": 8531,
+            "input_tokens": 1023,
+            "overlap_tokens": 384,
+            "start_byte": 3272
+          },
+          {
+            "body_tokens": 1020,
+            "end_byte": 11817,
+            "input_tokens": 1024,
+            "overlap_tokens": 384,
+            "start_byte": 6567
+          },
+          {
+            "body_tokens": 491,
+            "end_byte": 12384,
+            "input_tokens": 495,
+            "overlap_tokens": 384,
+            "start_byte": 9825
+          }
+        ]
+      },
+      "seconds": 4.396266876,
+      "source_bytes": 12384,
+      "token_ranges": [
+        {
+          "token_end": 258,
+          "token_start": 3
+        },
+        {
+          "token_end": 482,
+          "token_start": 226
+        },
+        {
+          "token_end": 706,
+          "token_start": 450
+        },
+        {
+          "token_end": 930,
+          "token_start": 674
+        },
+        {
+          "token_end": 518,
+          "token_start": 262
+        },
+        {
+          "token_end": 743,
+          "token_start": 486
+        },
+        {
+          "token_end": 331,
+          "token_start": 75
+        },
+        {
+          "token_end": 555,
+          "token_start": 299
+        },
+        {
+          "token_end": 779,
+          "token_start": 523
+        },
+        {
+          "token_end": 367,
+          "token_start": 111
+        },
+        {
+          "token_end": 495,
+          "token_start": 335
+        }
+      ],
+      "tokenizer_recheck": {
+        "passed": true,
+        "checked_passages": 11,
+        "checked_windows": 4,
+        "source_bytes": 12384
+      }
+    },
+    "profile_revision": 2,
+    "protected_registration_and_live_description_checked": true,
+    "public_search_and_source_text_checked": true,
+    "queries": [
+      {
+        "expected": "photosynthesis",
+        "query": "plants",
+        "rank": 1,
+        "score": 0.7608663920009843,
+        "seconds": 0.738120068
+      },
+      {
+        "expected": "database-restore",
+        "query": "restore",
+        "rank": 1,
+        "score": 0.7683747189609037,
+        "seconds": 0.744711517
+      },
+      {
+        "expected": "rust-ownership",
+        "query": "memory",
+        "rank": 1,
+        "score": 0.7867500192090221,
+        "seconds": 0.766753346
+      },
+      {
+        "expected": "library-hours",
+        "query": "saturday",
+        "rank": 1,
+        "score": 0.7641723299833463,
+        "seconds": 0.751193971
+      },
+      {
+        "expected": "tokyo-kyoto",
+        "query": "train",
+        "rank": 1,
+        "score": 0.7941535789418189,
+        "seconds": 0.860618143
+      },
+      {
+        "expected": "unicode",
+        "query": "encoding",
+        "rank": 1,
+        "score": 0.8064020550374817,
+        "seconds": 0.840000429
+      }
+    ],
+    "receipt": {
+      "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+      "format": "hades-provider-receipt-v1",
+      "serving_generation": "046ce3d0bb604d4a92c19c6c4657f0b0",
+      "space_id": "77a94ced36a452df54f4ab8c991d3b1d18978b5473fe3173b977479004adcc19"
+    },
+    "recoverable_setup_and_identical_retry_checked": true,
+    "setup": {
+      "database": "hades_test_real_verified_jina_2011436_0",
+      "diagnostic": null,
+      "operation_id": "jina-qualification-setup",
+      "request_sha256": "a28f9eea5840a9f64364b0fd88bfd59dd166d889ae54667c6bf7d504d4db8f31",
+      "status": "ready",
+      "step": "complete"
+    },
+    "suite_sha256": "45d3a94d24272e0c3b6063a53271b485dabeb0b336d4ead83ffffd2bfca8b868"
+  },
+  "finished_at": "2026-10-21T05:28:04.033069+00:00"
+}

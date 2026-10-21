@@ -6,7 +6,8 @@ clients. `ProfiledDocuments::connect(pool, &catalog)` now resolves the saved
 provider ID itself. Its caller cannot inject an endpoint or observed receipt.
 [Public search admission](profiled-search-admission.md) now supplies this catalog
 from explicit installation configuration. [Foreground file ingestion](profiled-file-ingestion.md)
-uses the same catalog. Job pins and frontend setup remain pending.
+uses the same catalog. [Background document jobs](profiled-ingestion-jobs.md)
+also carry verified profile pins; frontend setup remains pending.
 
 ## Installation-owned catalog
 
@@ -111,4 +112,4 @@ qualification, including the receipt and manifest. The
 [recoverable setup coordinator](recoverable-workspace-setup.md) now verifies
 providers before database creation and again before readiness publication.
 Public search and [foreground file ingestion](profiled-file-ingestion.md) now
-enforce the saved profile. Job pins and frontend creation remain subsequent work.
+enforce the saved profile, as do background document jobs. Frontend creation remains subsequent work.

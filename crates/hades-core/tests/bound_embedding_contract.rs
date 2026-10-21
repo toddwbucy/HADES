@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "bound_embedding_contract/late.rs"]
+mod late;
+
 struct Fixture {
     manifest: ArtifactManifest,
     profile: EmbeddingProfile,
@@ -35,6 +38,7 @@ impl Fixture {
             profile.workloads.documents.as_mut().unwrap().chunking = ChunkPolicy::Late {
                 context_cap_tokens: 1000,
                 minimum_window_overlap_tokens: 100,
+                passages: None,
             };
         }
         Self {
@@ -100,7 +104,9 @@ impl Mock {
                     }
                     let headers = String::from_utf8(headers).unwrap();
                     assert!(headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n")
-                        || headers.starts_with("POST /v1/passages HTTP/1.1\r\n"));
+                        || headers.starts_with("POST /v1/passages HTTP/1.1\r\n")
+                        || headers.starts_with("POST /v1/late-passages HTTP/1.1\r\n")
+                        || headers.starts_with("POST /v1/late-embeddings HTTP/1.1\r\n"));
                     let length: usize = headers.lines().find_map(|line| {
                         line.to_lowercase().strip_prefix("content-length:").map(|n| n.trim().parse().unwrap())
                     }).unwrap();

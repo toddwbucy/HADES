@@ -35,6 +35,25 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// A distinct synthetic contextual space; no numerical model claim is made.
+    pub fn late() -> Self {
+        let mut fixture = Self::new(2);
+        fixture.profile.capabilities.late_chunking = true;
+        fixture.profile.capabilities.tokenizer_offsets = true;
+        let workload = fixture.profile.workloads.documents.as_mut().unwrap();
+        workload.chunking = hades_core::embedding_profile::ChunkPolicy::Late {
+            context_cap_tokens: 1000,
+            minimum_window_overlap_tokens: 1,
+            passages: Some(hades_core::embedding_profile::PassagePolicy {
+                passage_tokens: 500,
+                overlap_tokens: 0,
+            }),
+        };
+        workload.space.representation.pooling = "fixture-contextual-token-mean-v1".into();
+        fixture.receipt.space_id = workload.space.id().unwrap();
+        fixture
+    }
+
     /// Derive a self-consistent model, provider, and space for a synthetic width.
     pub fn new(dimension: u32) -> Self {
         let value: Value =
@@ -160,9 +179,11 @@ impl Peer {
                         assert!(headers.len() < 8192);
                     }
                     let headers = String::from_utf8(headers).unwrap();
-                    let planning = headers.starts_with("POST /v1/passages HTTP/1.1\r\n");
+                    let late_planning = headers.starts_with("POST /v1/late-passages HTTP/1.1\r\n");
+                    let late_embedding = headers.starts_with("POST /v1/late-embeddings HTTP/1.1\r\n");
+                    let planning = late_planning || headers.starts_with("POST /v1/passages HTTP/1.1\r\n");
                     let verifying = headers.starts_with("POST /v1/verify HTTP/1.1\r\n");
-                    assert!(verifying || planning || headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
+                    assert!(verifying || planning || late_embedding || headers.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
                     let length: usize = headers.lines().find_map(|line| {
                         line.to_lowercase().strip_prefix("content-length:")
                             .map(|n| n.trim().parse().unwrap())
@@ -208,10 +229,54 @@ impl Peer {
                             "source_sha256":Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>(),
                             "passage_tokens":request["passage_tokens"],"overlap_tokens":request["overlap_tokens"],
                             "max_input_tokens":request["max_input_tokens"],"spans":spans});
+                        if late_planning {
+                            let mut windows = Vec::new();
+                            let mut previous_end = 0;
+                            for start in 0..spans.len().saturating_sub(1).max(1) {
+                                let left = spans[start]["start_byte"].as_u64().unwrap() as usize;
+                                let right = spans[(start+1).min(spans.len()-1)]["end_byte"].as_u64().unwrap() as usize;
+                                let count = text[left..right].chars().count();
+                                windows.push(json!({"start_byte":left,"end_byte":right,"body_tokens":count,
+                                    "input_tokens":count+3,"overlap_tokens":if previous_end > left {text[left..previous_end].chars().count()} else {0}}));
+                                previous_end = right;
+                            }
+                            let assignments: Vec<_> = spans.iter().map(|span| windows.iter().position(|window|
+                                window["start_byte"].as_u64().unwrap() <= span["start_byte"].as_u64().unwrap()
+                                    && span["end_byte"].as_u64().unwrap() <= window["end_byte"].as_u64().unwrap()).unwrap()).collect();
+                            plan["format"] = json!("hades-late-passages-v1");
+                            plan.as_object_mut().unwrap().remove("spans");
+                            plan["passages"] = json!(spans);
+                            plan["windows"] = json!(windows);
+                            plan["assignments"] = json!(assignments);
+                            plan["context_cap_tokens"] = request["context_cap_tokens"].clone();
+                            plan["max_input_tokens"] = request["context_cap_tokens"].clone();
+                            plan["minimum_window_overlap_tokens"] = request["minimum_window_overlap_tokens"].clone();
+                        }
                         if let Some(patch) = patch {
                             for (key,value) in patch.as_object().unwrap() { plan[key] = value.clone(); }
                         }
                         plan
+                    } else if late_embedding {
+                        let text = request["input"].as_str().unwrap();
+                        let chars: Vec<_> = text.chars().collect();
+                        let data: Vec<_> = request["boundaries"].as_array().unwrap().iter().enumerate().map(|(index, span)| {
+                            let start = span[0].as_u64().unwrap() as usize;
+                            let end = span[1].as_u64().unwrap() as usize;
+                            let value: String = chars[start..end].iter().collect();
+                            let mut vector = vec![0.0; dimension];
+                            vector[usize::from(value.contains("banana"))] = 1.0;
+                            match fault {
+                                Some(Fault::Short) => { vector.pop(); }
+                                Some(Fault::Zero) => vector.fill(0.0),
+                                Some(Fault::NotNormalized) => vector.iter_mut().for_each(|v| *v *= 2.0),
+                                _ => {}
+                            }
+                            json!({"index":index,"embedding":vector,"char_start":start,"char_end":end,
+                                "token_start":start+3,"token_end":end+3})
+                        }).collect();
+                        json!({"format":"hades-late-embedding-v1","model":model,"receipt":receipt,
+                            "source_sha256":Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            "input_tokens":chars.len()+3,"data":data})
                     } else {
                     let data: Vec<_> = request["input"].as_array().unwrap().iter().enumerate()
                         .map(|(index, text)| {

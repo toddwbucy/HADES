@@ -2,8 +2,8 @@
 
 Status: foreground document ingestion for
 [#225](https://github.com/toddwbucy/HADES/issues/225). Public database setup and
-frontend activation remain gated; background ingestion still refuses managed
-databases until jobs carry profile pins through admission, startup and retry.
+frontend activation remain gated. [Background document jobs](profiled-ingestion-jobs.md)
+now carry profile pins through parent admission and worker startup.
 
 ## Entry points and policy
 
@@ -14,7 +14,8 @@ search can retrieve these documents through the existing verified query path.
 The explicit [registered provider routes](profiled-search-admission.md) are
 required. The configured extraction endpoint remains an operational setting.
 
-Admission requires a ready conventional document profile, existing schema and
+Admission requires a ready conventional or explicitly configured
+[late document profile](verified-late-passages.md), existing schema and
 an independently verified registered provider. It resolves the model before
 connecting to extraction and never creates schema as an ingestion side effect.
 Global embedding model/task, chunk sizes, late-chunking settings and the legacy
@@ -112,6 +113,6 @@ integration, not Docling extraction quality.
 The [ThinkPad qualification](../evidence/jina-file-ingestion-thinkpad-2026-10-21.json)
 passed all six expected retrieval answers and the long Unicode token-recount gates.
 
-Job pins, broader workloads and mixed-tree routing, legacy adoption/migration,
+Broader workloads and mixed-tree routing, legacy adoption/migration,
 backup/reconciliation tooling, public setup authorization and frontend activation
 remain follow-up work. No installed services or active corpora are changed.

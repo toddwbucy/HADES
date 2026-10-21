@@ -18,6 +18,9 @@ use super::{
     ProfileState, SpaceId, hex,
 };
 
+mod pin;
+pub use pin::ProfilePin;
+
 /// Separate from graph schema metadata, which can be independently reseeded.
 pub const COLLECTION: &str = "hades_workspace";
 const POINTER_KEY: &str = "embedding_profile";
@@ -54,7 +57,7 @@ impl ProfileSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Scope {
     database: String,
     database_id: String,

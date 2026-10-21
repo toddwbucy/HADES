@@ -14,7 +14,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db", "embedding_profile_store", "profiled_documents", "workspace_setup", "profiled_search", "profiled_files"]
+                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db", "embedding_profile_store", "profiled_documents", "workspace_setup", "profiled_search", "profiled_files", "profiled_jobs"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
@@ -326,6 +326,8 @@ def main():
                     command("profiled-cli", ["-p", "hades-cli", "--test", "profiled_admission"])
                 if args.contract == "profiled_files":
                     command("profiled-ingestion-cli", ["-p", "hades-cli", "--test", "profiled_ingestion"])
+                if args.contract == "profiled_jobs":
+                    command("profiled-jobs-cli", ["-p", "hades-cli", "--test", "profiled_jobs"])
                 return
             missing = dict(env)
             missing.pop("ARANGO_SOCKET")
@@ -336,7 +338,7 @@ def main():
             targets = DATABASE_CONTRACTS
             command("database-contracts", ["-p", "hades-core", *[arg for target in targets for arg in ("--test", target)]])
             command("codebase", ["-p", "hades-cli", "--bin", "hades", "commands::codebase_"])
-            command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle", "--test", "graphable_import", "--test", "profiled_admission", "--test", "profiled_ingestion"])
+            command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle", "--test", "graphable_import", "--test", "profiled_admission", "--test", "profiled_ingestion", "--test", "profiled_jobs"])
         finally:
             stop_group(child)
             if args.docker:

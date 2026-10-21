@@ -1,4 +1,4 @@
-//! Database ownership and the minimal conventional-document schema.
+//! Database ownership and the minimal model-bound document schema.
 //! No graph seeds, vector-index defaults, collection deletion, or legacy adoption.
 use super::{
     SetupError,
@@ -111,6 +111,19 @@ impl Ownership {
     }
 }
 
+/// Recognize only the exact empty schema of an already-acknowledged marker checkpoint.
+pub(super) async fn marker_pending(client: &ArangoClient) -> Result<bool, SetupError> {
+    let names = inventory(client).await?;
+    if names.is_empty() {
+        return Ok(true);
+    }
+    if names.len() != 1 || names[0] != MARKERS {
+        return Ok(false);
+    }
+    collection(client, MARKERS, false).await?;
+    Ok(count(client, MARKERS).await? == 0)
+}
+
 /// Resolve the selected database's identity without enumerating or adopting other databases.
 pub(super) async fn identity(client: &ArangoClient) -> Result<Option<String>, SetupError> {
     let response = match client.get("database/current").await {
@@ -132,6 +145,14 @@ pub(super) async fn identity(client: &ArangoClient) -> Result<Option<String>, Se
 
 /// Refuse unknown user collections without deleting or reseeding anything.
 pub(crate) async fn inventory(client: &ArangoClient) -> Result<Vec<String>, SetupError> {
+    inventory_with_jobs(client, false).await
+}
+
+/// Ready workspaces may have the separately validated ingestion history collection.
+pub(super) async fn inventory_with_jobs(
+    client: &ArangoClient,
+    jobs: bool,
+) -> Result<Vec<String>, SetupError> {
     let value = client.get("collection?excludeSystem=true").await?;
     let entries = value["result"]
         .as_array()
@@ -141,7 +162,8 @@ pub(crate) async fn inventory(client: &ArangoClient) -> Result<Vec<String>, Setu
         let name = entry["name"].as_str().unwrap_or("");
         verify(
             [MARKERS, crate::embedding_profile::store::COLLECTION].contains(&name)
-                || DATA.contains(&name),
+                || DATA.contains(&name)
+                || (jobs && name == crate::ingest_jobs::COLLECTION),
             "workspace contains collections outside the confirmed setup schema",
         )?;
         names.push(name.into());
@@ -189,13 +211,35 @@ pub(crate) async fn collection(
     )
 }
 
+/// Require metadata and validate existing empty data collections without creating missing ones.
+pub(super) async fn partial_schema(client: &ArangoClient) -> Result<(), SetupError> {
+    let names = inventory(client).await?;
+    collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
+    for name in DATA {
+        if names.iter().any(|existing| existing == name) {
+            collection(client, name, false).await?;
+            verify(
+                count(client, name).await? == 0,
+                "initializing workspace contains data; setup cannot adopt it",
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// The exact-scan document path needs primary keys, not an unqualified ANN vector index.
 pub(crate) async fn schema(
     client: &ArangoClient,
     create: bool,
     empty: bool,
 ) -> Result<(), SetupError> {
-    inventory(client).await?;
+    let names = inventory_with_jobs(client, !empty).await?;
+    if names
+        .iter()
+        .any(|name| name == crate::ingest_jobs::COLLECTION)
+    {
+        collection(client, crate::ingest_jobs::COLLECTION, false).await?;
+    }
     collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
     for name in DATA {
         collection(client, name, create).await?;

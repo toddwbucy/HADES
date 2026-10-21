@@ -9,6 +9,33 @@ use tokio_util::sync::CancellationToken;
 pub(crate) mod process;
 pub(crate) mod records;
 
+pub(crate) const COLLECTION: &str = "hades_ingest_jobs";
+
+/// Set only by a sealed child handoff; ordinary YAML cannot select admission.
+#[derive(Debug, Clone)]
+pub enum Binding {
+    Legacy,
+    Profiled(Box<crate::embedding_profile::store::ProfilePin>),
+}
+
+impl Binding {
+    /// Recheck before routing an inherited tree, including an empty tree.
+    pub async fn check(&self, pool: &crate::db::ArangoPool) -> anyhow::Result<()> {
+        match self {
+            Self::Legacy => {
+                crate::embedding_profile::admission::require_legacy(pool, "legacy ingestion job")
+                    .await?
+            }
+            Self::Profiled(pin) => pin.check(
+                &crate::embedding_profile::store::ProfileStore::new(pool.clone())?
+                    .load()
+                    .await?,
+            )?,
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

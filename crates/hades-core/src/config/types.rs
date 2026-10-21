@@ -19,6 +19,9 @@ use tracing::warn;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HadesConfig {
+    /// Process-local job admission, restored only from the sealed configuration envelope.
+    #[serde(skip)]
+    pub ingest_binding: Option<crate::ingest_jobs::Binding>,
     pub reading_chat: crate::reading::chat::ChatConfig,
     pub chunking: crate::chunking::prechunk::ChunkingPolicy,
     pub database: DatabaseConfig,
