@@ -187,22 +187,112 @@ async fn code_only_observation_does_not_require_or_create_document_intent() {
 }
 
 #[tokio::test]
-async fn legacy_observation_never_implicitly_enables_code_as_text() {
+async fn legacy_observation_preserves_explicit_ordinary_text_code_with_the_same_space() {
     let mut fixture = Fixture::new();
     fixture.profile.workloads.code = fixture.profile.workloads.documents.clone();
-    let peer = Peer::new(vec![Reply::json(fixture.description.clone())]);
-    let error = fixture
+    let response = json!({"model":fixture.profile.model.id,"receipt":fixture.description["receipt"],
+        "data":[{"index":0,"embedding":vec![0.5;384]}]});
+    let peer = Peer::new(vec![
+        Reply::json(fixture.description.clone()),
+        Reply::json(response),
+    ]);
+    let observed = fixture
         .catalog(&peer)
         .verify_profile(&fixture.profile, &fixture.manifest)
         .await
+        .unwrap();
+    let client = observed
+        .client(
+            &fixture.profile,
+            &fixture.manifest,
+            WorkloadKind::Code,
+            EmbeddingRole::Query,
+        )
+        .await
+        .unwrap();
+    let result = client
+        .embed(&["ordinary text code".into()], None)
+        .await
+        .unwrap();
+    assert_eq!(result.binding.task, "retrieval.query");
+    assert_eq!(
+        json!(result.binding.expected),
+        fixture.description["receipt"]
+    );
+    let request: Value = serde_json::from_slice(&peer.requests()[1].1).unwrap();
+    assert_eq!(request["task"], "retrieval.query");
+    assert_eq!(request["expected_receipt"], fixture.description["receipt"]);
+    let mut code_only = fixture.profile.clone();
+    code_only.workloads.documents = None;
+    assert_eq!(
+        observed
+            .client(
+                &code_only,
+                &fixture.manifest,
+                WorkloadKind::Code,
+                EmbeddingRole::Query
+            )
+            .await
+            .unwrap()
+            .binding(),
+        client.binding()
+    );
+    let mut disabled = fixture.profile.clone();
+    disabled.workloads.code = None;
+    let error = observed
+        .client(
+            &disabled,
+            &fixture.manifest,
+            WorkloadKind::Code,
+            EmbeddingRole::Query,
+        )
+        .await
         .err()
         .unwrap();
-    assert!(
-        error
-            .to_string()
-            .contains("does not advertise the Code workload")
-    );
-    assert_eq!(peer.requests().len(), 1);
+    assert!(error.to_string().contains("disabled_by_profile"));
+    assert_eq!(peer.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn legacy_code_compatibility_cannot_change_space_or_enable_unsupported_capabilities() {
+    for mode in ["space", "specialized", "late"] {
+        let mut fixture = Fixture::new();
+        fixture.profile.workloads.code = fixture.profile.workloads.documents.clone();
+        let code = fixture.profile.workloads.code.as_mut().unwrap();
+        let expected = match mode {
+            "space" => {
+                code.space.query.prompt = "different code prompt".into();
+                "provider embedding behavior differs"
+            }
+            "specialized" => {
+                fixture.profile.capabilities.specialized_code = true;
+                fixture.description["capabilities"]["specialized_code"] = json!(true);
+                code.specialized_code = true;
+                "does not advertise the Code workload"
+            }
+            "late" => {
+                fixture.profile.capabilities.late_chunking = true;
+                fixture.profile.capabilities.tokenizer_offsets = true;
+                code.chunking = ChunkPolicy::Late {
+                    context_cap_tokens: 1000,
+                    minimum_window_overlap_tokens: 100,
+                    passages: None,
+                };
+                "provider no longer supports the saved late-chunk policy"
+            }
+            _ => unreachable!(),
+        };
+        fixture.profile.validate(&fixture.manifest).unwrap();
+        let peer = Peer::new(vec![Reply::json(fixture.description.clone())]);
+        let error = fixture
+            .catalog(&peer)
+            .verify_profile(&fixture.profile, &fixture.manifest)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains(expected), "{mode}: {error}");
+        assert_eq!(peer.requests().len(), 1);
+    }
 }
 
 #[tokio::test]
@@ -247,6 +337,21 @@ async fn ordinary_text_code_requires_explicit_observation_and_database_intent() 
         .unwrap();
     assert!(error.to_string().contains("disabled_by_profile"));
     assert_eq!(peer.requests().len(), 2);
+    // V2 explicitly declares workloads: matching document space cannot replace an omitted code entry.
+    fixture.description["workloads"]["code"] = Value::Null;
+    let peer = Peer::new(vec![Reply::json(fixture.description.clone())]);
+    let error = fixture
+        .catalog(&peer)
+        .verify_profile(&fixture.profile, &fixture.manifest)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("does not advertise the Code workload")
+    );
+    assert_eq!(peer.requests().len(), 1);
 }
 
 #[tokio::test]

@@ -255,13 +255,28 @@ impl VerifiedProvider {
         Ok(profile)
     }
 
-    /// A missing code declaration never falls back to the document adapter, or vice versa.
+    /// Read an explicit observation; single-space policy compatibility is handled separately.
     fn workload(&self, kind: WorkloadKind) -> Result<WorkloadObservation<'_>, EmbeddingError> {
         self.description.workload(kind).ok_or_else(|| {
             EmbeddingError::InvalidResponse(format!(
                 "provider does not advertise the {kind:?} workload"
             ))
         })
+    }
+
+    /// Preserve explicit ordinary-text code profiles on the original single-space protocol.
+    /// The caller still checks the exact saved space; V2 omissions never imply support.
+    fn workload_for_policy(
+        &self,
+        kind: WorkloadKind,
+        policy: &Workload,
+    ) -> Result<WorkloadObservation<'_>, EmbeddingError> {
+        match (&self.description, kind, policy.specialized_code) {
+            (ProviderDescription::Single { .. }, WorkloadKind::Code, false) => {
+                self.workload(WorkloadKind::Documents)
+            }
+            _ => self.workload(kind),
+        }
     }
 
     /// One observation describes a coherent load; validate even workloads this caller does not use.
@@ -309,13 +324,18 @@ impl VerifiedProvider {
         role: EmbeddingRole,
     ) -> Result<BoundEmbeddingClient, EmbeddingError> {
         self.check_profile(profile, manifest)?;
+        let policy = match kind {
+            WorkloadKind::Documents => profile.workloads.documents.as_ref(),
+            WorkloadKind::Code => profile.workloads.code.as_ref(),
+        }
+        .ok_or_else(|| EmbeddingError::InvalidResponse("workload is disabled_by_profile".into()))?;
         BoundEmbeddingClient::connect(
             profile,
             manifest,
             kind,
             role,
             self.connection.clone(),
-            self.workload(kind)?.receipt,
+            self.workload_for_policy(kind, policy)?.receipt,
         )
         .await
     }
@@ -345,7 +365,7 @@ impl VerifiedProvider {
             (WorkloadKind::Code, &profile.workloads.code),
         ] {
             let Some(workload) = workload else { continue };
-            let observed = self.workload(kind)?;
+            let observed = self.workload_for_policy(kind, workload)?;
             let capabilities = observed.capabilities;
             require(
                 &workload.space == observed.space,

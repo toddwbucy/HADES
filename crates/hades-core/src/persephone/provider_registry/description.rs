@@ -6,7 +6,7 @@ use crate::embedding_profile::{
     Capabilities, EmbeddingSpace, ModelIdentity, ProviderReceipt, WorkloadKind,
 };
 
-/// The original unversioned description remains a documents-only observation.
+/// The original unversioned description retains its single text-space observation.
 /// V2 explicitly advertises each workload; neither form implies database intent.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -62,7 +62,9 @@ impl ProviderDescription {
         }
     }
 
-    /// Missing workloads stay unavailable, even if another workload has an identical space.
+    /// V2 omissions stay unavailable, even if another workload has an identical space.
+    /// V1 exposes its single text observation under Documents; the catalog also permits
+    /// explicitly enabled ordinary-text code policies that match that exact space.
     pub fn workload(&self, kind: WorkloadKind) -> Option<WorkloadObservation<'_>> {
         match self {
             Self::Single {

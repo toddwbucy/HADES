@@ -21,7 +21,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Add explicit document/code provider observations for model-bound workspaces,
   with separate capability checks and correctly selected embedding receipts from
-  one registered model load. Preserve existing document providers and reject
+  one registered model load. Preserve existing document providers and explicit
+  ordinary-text code profiles on the original single-space protocol, and reject
   cross-workload receipts; verified code ingestion remains gated pending its
   provider and graph-storage integration (#225).
 

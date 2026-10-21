@@ -69,7 +69,7 @@ Discovery accepts two strict response shapes from the same empty `POST /v1/verif
 
 | Description | Required root fields | Meaning |
 | --- | --- | --- |
-| Original, unversioned | `model`, `capabilities`, `space`, `receipt` | Documents only; existing verified conventional and contextual Jina providers retain this wire format. |
+| Original, unversioned | `model`, `capabilities`, `space`, `receipt` | One text space; existing verified conventional and contextual Jina providers retain this wire format. |
 | Workload-aware | `format: "hades-provider-description-v2"`, `model`, `workloads` | Explicit document and/or code observations from one loaded, registered model. |
 
 V2 `workloads` permits only `documents` and `code`. Each present observation
@@ -90,12 +90,17 @@ chunking or token-offset support does not authorize late code ingestion; code
 specialization must be supported by the code observation. Different live token
 ceilings remain operational limits and never rewrite the saved profile.
 
-Serving capability does not enable database intent. Code as ordinary text requires
-both an explicit V2 code observation and a saved code workload with
+Serving capability does not enable database intent. Under V2, code as ordinary
+text requires both an explicit code observation and a saved code workload with
 `specialized_code: false`; that observation may reuse the document space and
-receipt. An original document description never implicitly supplies a code
-observation, even when tasks and dimensions match. Production managed code
-ingestion remains gated, so this tightening does not remove an enabled code path.
+receipt. A missing V2 code observation is always unavailable.
+
+The original unversioned format retains compatibility with explicitly enabled
+ordinary-text code profiles that match its exact space and supported chunking
+capabilities. This preserves document-only traversals of profiles with code
+enabled, including trees whose code files are ignored. It cannot enable code
+intent, change task/prompt/representation, or authorize specialized code; a
+specialized code observation requires V2. Managed code ingestion remains gated.
 
 Rust callers inspect `description().model()` and
 `description().workload(WorkloadKind::Documents)` or `WorkloadKind::Code`.
@@ -120,8 +125,9 @@ revision one with explicit document intent and observed model metadata. Code
 remains disabled. This constructs data only; it neither creates a database nor
 marks readiness. It uses only the document observation's capabilities.
 `client(...)` additionally requires a ready profile and captures the selected
-workload's receipt for all planning/inference requests. A response carrying the
-other workload's receipt is refused even when model, dimension, and load match.
+workload's receipt for all planning/inference requests. A response carrying a
+different workload space's receipt is refused even when model, dimension, and
+load match. Ordinary-text code using the exact document space shares its receipt.
 
 Document connection checks saved readiness, supported policy, and required
 collections before provider contact, then checks the complete database snapshot
