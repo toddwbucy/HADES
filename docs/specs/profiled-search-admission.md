@@ -127,3 +127,5 @@ absence/error handling, writer authority, configuration bounds and sealed
 handoff, and reservation lifetime through cancelled transaction cleanup.
 The [real Jina protocol](verified-jina-qualification.md) now runs its fixed
 retrieval cases through the public handler and checks returned source text.
+The [ThinkPad result](../evidence/jina-public-search-thinkpad-2026-10-21.json)
+passed all six retrieval/source-text checks with the approved Jina artifacts.

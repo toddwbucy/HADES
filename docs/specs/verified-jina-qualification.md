@@ -6,6 +6,23 @@ already approved local Jina v4 registration. Ordinary CI uses synthetic weights.
 The real run needs an explicit ML environment, device, registration, and disposable
 database. It does not activate database pairing or change installed services.
 
+## Public-search evidence on the ThinkPad
+
+The [2026-10-21 UTC public-search run](../evidence/jina-public-search-thinkpad-2026-10-21.json)
+passed on clean implementation `60616ac77b17cab07ef02b53b6c832db94420a4e`,
+using the existing approved Jina registration on the RTX PRO 5000 laptop GPU.
+The shared `db.query` handler resolved explicit provider routes with the legacy
+endpoint deliberately unavailable. All six expected answers ranked first, every
+returned passage matched its fixture text, and each response carried the ready
+profile's verified query binding. No corpus or installed service was changed.
+
+The same run retained setup/retry checks, eight stored retrieval documents,
+and the fixed 12,384-byte Unicode source: 2,402 whole-input tokens, six passages,
+and six successful independent token recounts. The long-source ingest/search
+check took 2.956 seconds. The report records provider/runtime identities and
+per-query timings; concurrent workstation tests and these small fixtures do not
+establish production throughput or a model-quality comparison.
+
 ## Fixed protocol and evidence
 
 `services/tests/fixtures/jina_qualification.json` defines eight short documents,
