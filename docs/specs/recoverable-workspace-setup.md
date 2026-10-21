@@ -8,6 +8,12 @@ CLI/MCP/job/frontend caller. It supports conventional and explicitly configured
 code, graph presets, legacy adoption, and model migration remain
 outside this setup schema.
 
+`WorkspaceSetup::diagnose` now reports advisory retry/reconciliation decisions
+from the protected ledger and current database invariants. It changes no operation
+or database records and does not load a provider. See the
+[model-bound backup and recovery contract](../operations/model-bound-recovery.md)
+for report meanings, ledger-copy scope and remaining restore/migration limits.
+
 ## Authority and confirmed intent
 
 Installation code constructs the coordinator with:

@@ -69,6 +69,15 @@ pub(super) struct Lease {
 impl Lease {
     /// Acquire a process-wide lease without blocking an async worker on filesystem sync.
     pub async fn open(root: PathBuf, scope: Scope) -> Result<Self, SetupError> {
+        Self::open_with(root, scope, true).await
+    }
+
+    /// Diagnostics require an initialized ledger and never create its scope or lock files.
+    pub async fn open_existing(root: PathBuf, scope: Scope) -> Result<Self, SetupError> {
+        Self::open_with(root, scope, false).await
+    }
+
+    async fn open_with(root: PathBuf, scope: Scope, create: bool) -> Result<Self, SetupError> {
         blocking(move || {
             absolute(&root)?;
             let mut directory = OpenOptions::new()
@@ -87,7 +96,11 @@ impl Lease {
                 info.is_dir() && owned(&info) && info.mode() & 0o7777 == 0o700,
                 "ledger root must be an existing private 0700 directory owned by this account",
             )?;
-            let lock = child(&directory, ".lock", libc::O_RDWR | libc::O_CREAT)?;
+            let lock = child(
+                &directory,
+                ".lock",
+                libc::O_RDWR | if create { libc::O_CREAT } else { 0 },
+            )?;
             regular(&lock)?;
             // SAFETY: lock owns the live descriptor; Guard releases the acquired lease.
             if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
@@ -103,6 +116,7 @@ impl Lease {
                     "ledger belongs to a different installation or endpoint",
                 )?;
             } else {
+                ensure(create, "setup ledger is not initialized")?;
                 write(&guard, "scope.json", &scope)?;
             }
             Ok(Self { guard })
@@ -177,6 +191,26 @@ impl Lease {
                 )?;
             }
             Ok(saved)
+        })
+        .await
+    }
+
+    /// Check an existing reservation without recreating missing or changed claim files.
+    pub async fn check_claim(&self, record: &Record) -> Result<(), SetupError> {
+        let guard = self.guard.clone();
+        let expected = Claim {
+            format: "hades-setup-claim-v1".into(),
+            owner: record.owner.clone(),
+            operation_id: record.request.operation_id.clone(),
+            request_sha256: record.receipt.request_sha256.clone(),
+            database: record.request.database.clone(),
+        };
+        blocking(move || {
+            let saved: Option<Claim> = read(&guard, &format!("db_{}.json", expected.database))?;
+            ensure(
+                saved.as_ref() == Some(&expected),
+                "setup database reservation is missing or differs",
+            )
         })
         .await
     }
