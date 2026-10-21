@@ -52,6 +52,99 @@ pub async fn require_legacy(pool: &ArangoPool, operation: &str) -> Result<(), Ar
     Ok(())
 }
 
+/// Whether code is enabled by the admitted workspace policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeAdmission {
+    Enabled,
+    Disabled,
+}
+
+/// Keep routing policy explicit rather than deriving it from the presence of a pin.
+pub struct TreeAdmission {
+    pub pin: Option<super::store::ProfilePin>,
+    pub code: CodeAdmission,
+}
+
+/// Admit a document tree before any pipeline starts, including no-op trees.
+/// Managed, enabled code still requires the future profile-aware code pipeline.
+pub async fn document_tree_admission(
+    pool: &ArangoPool,
+    has_code: bool,
+) -> Result<TreeAdmission, ArangoError> {
+    if !is_managed(pool).await? {
+        return Ok(TreeAdmission {
+            pin: None,
+            code: CodeAdmission::Enabled,
+        });
+    }
+    let snapshot = super::store::ProfileStore::new(pool.clone())?
+        .load()
+        .await?;
+    validate_documents(pool, &snapshot).await?;
+    let pin = snapshot.job_pin()?;
+    let workloads = &snapshot.profile().workloads;
+    if has_code && workloads.code.is_some() {
+        return Err(ArangoError::Request(
+            "model-bound code ingestion is not yet supported; an enabled code workload cannot be skipped as disabled_by_profile".into(),
+        ));
+    }
+    Ok(TreeAdmission {
+        pin: Some(pin),
+        code: if workloads.code.is_some() {
+            CodeAdmission::Enabled
+        } else {
+            CodeAdmission::Disabled
+        },
+    })
+}
+
+/// Shared read-only policy/storage checks; no provider or extractor is contacted.
+pub(crate) async fn validate_documents(
+    pool: &ArangoPool,
+    snapshot: &super::store::ProfileSnapshot,
+) -> Result<(), ArangoError> {
+    use super::{ChunkPolicy, Distance, ProfileState};
+    let invalid =
+        |message: &str| ArangoError::Request(format!("profile-bound documents: {message}"));
+    let profile = snapshot.profile();
+    if profile.state != ProfileState::Ready {
+        return Err(invalid("workspace profile is not ready"));
+    }
+    let workload = profile
+        .workloads
+        .documents
+        .as_ref()
+        .ok_or_else(|| invalid("documents are disabled_by_profile"))?;
+    if !matches!(
+        workload.chunking,
+        ChunkPolicy::Conventional { .. }
+            | ChunkPolicy::Late {
+                passages: Some(_),
+                ..
+            }
+    ) {
+        return Err(invalid(
+            "late document chunking requires an explicit passage policy",
+        ));
+    }
+    if workload.space.representation.distance != Distance::Cosine {
+        return Err(invalid("this document path supports cosine distance only"));
+    }
+    // Schema is provisioned separately; ingestion must never repair it as a side effect.
+    let client = pool.writer().clone().with_response_limit(64 * 1024)?;
+    for collection in ["documents", "chunks", "embeddings"] {
+        let properties = client
+            .get(&format!("collection/{collection}/properties"))
+            .await?;
+        if properties["type"].as_u64() != Some(2) {
+            return Err(invalid(
+                "document storage requires three document collections",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

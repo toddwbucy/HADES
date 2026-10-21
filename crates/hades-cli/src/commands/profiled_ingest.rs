@@ -5,6 +5,60 @@ use hades_core::{
     pipeline::profiled_documents::{ProfiledDocuments, files::FileInput},
 };
 
+/// Check the same profile-controlled options even when a tree has no enabled files.
+pub(super) fn validate_tree_options(
+    config: &HadesConfig,
+    options: &DocumentOptions,
+    concurrency: Option<usize>,
+    task: Option<&str>,
+    allow_degraded_enrichment: bool,
+) -> Result<()> {
+    if allow_degraded_enrichment {
+        bail!("model-bound document ingestion does not support degraded code enrichment");
+    }
+    validate_options(
+        config,
+        options.profile,
+        options.metadata.as_ref().unwrap_or(&json!({})),
+        &[],
+        task,
+        concurrency,
+    )?;
+    Ok(())
+}
+
+/// Reject runtime overrides of saved embedding policy before loading any services.
+fn validate_options(
+    config: &HadesConfig,
+    profile: &CollectionProfile,
+    metadata: &Value,
+    claims: &[String],
+    task: Option<&str>,
+    concurrency: Option<usize>,
+) -> Result<usize> {
+    if task.is_some() || !claims.is_empty() {
+        bail!(
+            "model-bound document ingestion does not accept --task or --claims; its embedding task comes from the saved profile"
+        );
+    }
+    if (profile.metadata, profile.chunks, profile.embeddings)
+        != ("documents", "chunks", "embeddings")
+    {
+        bail!("model-bound ingestion currently supports the documents collection profile only");
+    }
+    let concurrency = concurrency.unwrap_or(config.batch_processing.concurrency);
+    if !(1..=4).contains(&concurrency) {
+        bail!("model-bound document ingestion requires concurrency 1..=4");
+    }
+    if !metadata.is_object() {
+        bail!("--metadata must be a JSON object");
+    }
+    if serde_json::to_vec(metadata)?.len() > 64 * 1024 {
+        bail!("--metadata must fit within 64 KiB");
+    }
+    Ok(concurrency)
+}
+
 /// Reject unpinned options before provider/extractor startup and avoid legacy checkpoints.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
@@ -30,16 +84,8 @@ pub(super) async fn run(
             "model-bound ingestion cannot use --batch, --resume or --reset until checkpoints carry profile pins; pass explicit files without these flags"
         );
     }
-    if task.is_some() || !claims.is_empty() {
-        bail!(
-            "model-bound document ingestion does not accept --task or --claims; its embedding task comes from the saved profile"
-        );
-    }
-    if (profile.metadata, profile.chunks, profile.embeddings)
-        != ("documents", "chunks", "embeddings")
-    {
-        bail!("model-bound ingestion currently supports the documents collection profile only");
-    }
+    let metadata = metadata.unwrap_or_else(|| json!({}));
+    let concurrency = validate_options(config, profile, &metadata, claims, task, concurrency)?;
     for path in &inputs {
         if route_for(path) != Route::Document {
             bail!(
@@ -48,27 +94,21 @@ pub(super) async fn run(
             );
         }
     }
-    let concurrency = concurrency.unwrap_or(config.batch_processing.concurrency);
-    if !(1..=4).contains(&concurrency) {
-        bail!("model-bound document ingestion requires concurrency 1..=4");
-    }
-    let metadata = metadata.unwrap_or_else(|| json!({}));
-    if serde_json::to_vec(&metadata)?.len() > 64 * 1024 {
-        bail!("--metadata must fit within 64 KiB");
-    }
     let routes = config.registered_providers.as_ref().context(
         "model-bound or initializing workspace requires registered_providers for document ingestion",
     )?;
     let catalog = routes.catalog()?;
+    let result_pool = db.clone();
     let documents = Arc::new(match &config.ingest_binding {
         Some(hades_core::ingest_jobs::Binding::Profiled(pin)) => {
             ProfiledDocuments::connect_pinned(db, &catalog, pin).await?
         }
         Some(hades_core::ingest_jobs::Binding::Legacy) => {
-            bail!("legacy ingestion job cannot adopt a model-bound workspace; start a new job")
+            bail!("legacy ingestion cannot adopt a model-bound workspace; start a new ingestion")
         }
         None => ProfiledDocuments::connect(db, &catalog).await?,
     });
+    let result_binding = hades_core::ingest_jobs::Binding::Profiled(Box::new(documents.job_pin()?));
     // No extraction connection until database policy and the actual loaded model agree.
     let extractor = ExtractionClient::connect_at(&config.extraction.service.socket).await?;
     provenance.prepare(&inputs).await;
@@ -126,7 +166,15 @@ pub(super) async fn run(
         )
         .await?;
     let mut outcome = batch_outcome(summary, envelope_git, start)?;
-    outcome.data["embedding_profile_state"] = json!("ready");
+    match result_binding.check(&result_pool).await {
+        Ok(()) => outcome.data["embedding_profile_state"] = json!("ready"),
+        Err(error) => {
+            outcome.data["profile_validation_error"] = json!(error.to_string());
+            if outcome.failure.is_none() {
+                outcome.failure = Some(error);
+            }
+        }
+    }
     if let Some(hades_core::ingest_jobs::Binding::Profiled(pin)) = &config.ingest_binding {
         outcome.data["profile_pin"] = json!(pin);
     }

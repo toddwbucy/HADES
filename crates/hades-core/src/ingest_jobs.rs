@@ -11,7 +11,8 @@ pub(crate) mod records;
 
 pub(crate) const COLLECTION: &str = "hades_ingest_jobs";
 
-/// Set only by a sealed child handoff; ordinary YAML cannot select admission.
+/// Process-local admission set by foreground tree routing or a sealed child handoff.
+/// Ordinary YAML cannot select admission; presence does not identify a child worker.
 #[derive(Debug, Clone)]
 pub enum Binding {
     Legacy,
@@ -19,11 +20,11 @@ pub enum Binding {
 }
 
 impl Binding {
-    /// Recheck before routing an inherited tree, including an empty tree.
+    /// Recheck the original admission before another phase or no-op result.
     pub async fn check(&self, pool: &crate::db::ArangoPool) -> anyhow::Result<()> {
         match self {
             Self::Legacy => {
-                crate::embedding_profile::admission::require_legacy(pool, "legacy ingestion job")
+                crate::embedding_profile::admission::require_legacy(pool, "legacy ingestion")
                     .await?
             }
             Self::Profiled(pin) => pin.check(

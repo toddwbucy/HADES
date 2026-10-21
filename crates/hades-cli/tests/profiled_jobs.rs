@@ -227,6 +227,8 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
                 let directory = root.path().join("documents");
                 std::fs::create_dir(&directory).unwrap();
                 std::fs::write(directory.join("second.md"), "banana 東京").unwrap();
+                std::fs::write(directory.join("module.py"), "print('disabled')").unwrap();
+                std::fs::write(directory.join("unknown.ts"), "unrouted source").unwrap();
                 for path in [&file, &directory] {
                     let started = daemon.start_job(path, false).await;
                     assert_eq!(started["success"], true, "{started}");
@@ -239,9 +241,28 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
                     assert_eq!(row["status"], "completed", "{row}");
                     assert_eq!(&row["profile_pin"], pin);
                     assert_eq!(row["result"]["success"], true);
+                    if path.is_dir() {
+                        assert_eq!(row["result"]["data"]["profile_pin"], *pin);
+                        assert_eq!(
+                            row["result"]["data"]["disabled_by_profile"]["code"],
+                            json!([directory.join("module.py")])
+                        );
+                        assert_eq!(
+                            row["result"]["data"]["unrouted"],
+                            json!([{"path":directory.join("unknown.ts"),"reason":"no handler for extension"}])
+                        );
+                        assert!(row["result"]["data"]["code"].is_null());
+                    }
                 }
                 assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
                 assert_eq!(extractor.requests().len(), 2);
+                assert!(
+                    crud::list_collections(&pool, false)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .all(|collection| !collection.name.starts_with("codebase_"))
+                );
                 let result = request(
                     &daemon.socket,
                     "db.query",
@@ -273,6 +294,59 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
 }
 
 #[tokio::test]
+async fn code_enabled_mixed_jobs_refuse_before_provider_or_history_writes() {
+    with_temp_db("cli_job_code_policy", Fixtures::Empty, |pool| async move {
+        let mut fixture = Fixture::new(2);
+        fixture.profile.workloads.code = fixture.profile.workloads.documents.clone();
+        fixture.install(&pool).await;
+        let peer = Peer::new(&fixture);
+        let extractor = Extractor::new();
+        let mut daemon = Daemon::start(&config(&pool, &peer, &extractor)).await;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("notes.md"), "apple").unwrap();
+        let before = crud::list_collections(&pool, false).await.unwrap();
+        for name in ["module.py", "script"] {
+            let path = root.path().join(name);
+            std::fs::write(&path, "#!/usr/bin/env python3\nprint('banana')\n").unwrap();
+            let refused = daemon.start_job(root.path(), false).await;
+            assert_eq!(refused["success"], false, "{refused}");
+            assert!(
+                refused
+                    .to_string()
+                    .contains("enabled code workload cannot be skipped"),
+                "{refused}"
+            );
+            assert!(refused["data"].get("job_id").is_none());
+            std::fs::remove_file(path).unwrap();
+        }
+        assert_eq!(peer.observations(), 0);
+        assert!(extractor.requests().is_empty());
+        assert_eq!(
+            crud::list_collections(&pool, false)
+                .await
+                .unwrap()
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>(),
+            before.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        // Parent and worker must honor identical ignore rules, so ignored code
+        // cannot reject an otherwise supported document-only traversal.
+        std::fs::write(root.path().join("module.py"), "print('ignored')").unwrap();
+        std::fs::write(root.path().join(".hadesignore"), "module.py\n").unwrap();
+        let started = daemon.start_job(root.path(), false).await;
+        assert_eq!(started["success"], true, "{started}");
+        let row = daemon
+            .terminal(started["data"]["job_id"].as_str().unwrap())
+            .await;
+        assert_eq!(row["status"], "completed", "{row}");
+        assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 1);
+        daemon.finish().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn sealed_worker_refuses_stale_unpinned_and_overridden_admission_before_extraction() {
     with_temp_db("cli_job_stale", Fixtures::Empty, |pool| async move {
         let fixture = Fixture::new(2);
@@ -300,9 +374,7 @@ async fn sealed_worker_refuses_stale_unpinned_and_overridden_admission_before_ex
         for input in [&file, root.path()] {
             let stale = inherited(&config, input, &[]).await;
             assert!(!stale.status.success());
-            assert!(
-                String::from_utf8_lossy(&stale.stderr).contains("ingestion job profile changed")
-            );
+            assert!(String::from_utf8_lossy(&stale.stderr).contains("ingestion profile changed"));
         }
         assert_eq!(peer.observations(), before);
         assert!(extractor.requests().is_empty());
@@ -313,7 +385,13 @@ async fn sealed_worker_refuses_stale_unpinned_and_overridden_admission_before_ex
 
 #[tokio::test]
 async fn profile_drift_provider_reload_and_shutdown_do_not_publish_partial_jobs() {
-    for failure in ["profile", "provider", "shutdown"] {
+    for (failure, tree) in [
+        ("profile", false),
+        ("provider", false),
+        ("shutdown", false),
+        ("profile", true),
+        ("removed", true),
+    ] {
         with_temp_db("cli_job_drift", Fixtures::Empty, move |pool| async move {
             let fixture = Fixture::new(2);
             fixture.install(&pool).await;
@@ -324,7 +402,9 @@ async fn profile_drift_provider_reload_and_shutdown_do_not_publish_partial_jobs(
             let file = root.path().join("notes.md");
             std::fs::write(&file, "apple").unwrap();
             let (entered, release) = extractor.hold();
-            let started = daemon.start_job(&file, false).await;
+            let started = daemon
+                .start_job(if tree { root.path() } else { &file }, false)
+                .await;
             assert_eq!(started["success"], true, "{started}");
             tokio::time::timeout(Duration::from_secs(5), entered)
                 .await
@@ -338,7 +418,12 @@ async fn profile_drift_provider_reload_and_shutdown_do_not_publish_partial_jobs(
                     .await
                     .unwrap()
             } else {
-                if failure == "profile" {
+                if failure == "removed" {
+                    pool.writer()
+                        .delete(&format!("document/{COLLECTION}/embedding_profile"))
+                        .await
+                        .unwrap();
+                } else if failure == "profile" {
                     let path = format!("document/{COLLECTION}/embedding_profile");
                     let original = pool.writer().get(&path).await.unwrap();
                     pool.writer()
@@ -357,6 +442,16 @@ async fn profile_drift_provider_reload_and_shutdown_do_not_publish_partial_jobs(
             };
             assert_eq!(row["status"], "failed", "{row}");
             assert_eq!(row["profile_pin"], started["data"]["profile_pin"]);
+            if matches!(failure, "profile" | "removed") {
+                let data = &row["result"]["data"];
+                assert!(data.get("embedding_profile_state").is_none(), "{row}");
+                if tree {
+                    assert!(
+                        data["documents"].get("embedding_profile_state").is_none(),
+                        "{row}"
+                    );
+                }
+            }
             assert!(peer.requests().is_empty());
             for collection in ["documents", "chunks", "embeddings"] {
                 assert_eq!(crud::count_collection(&pool, collection).await.unwrap(), 0);

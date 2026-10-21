@@ -393,6 +393,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Ingest the document portion of mixed trees under documents-only model profiles,
+  reporting skipped code in `disabled_by_profile.code` and retaining `profile_pin`
+  in managed results. Empty or disabled-only trees validate document policy,
+  storage and options before returning a no-op without foreground model services.
+  Refuse unsupported code-enabled background trees before creating job history,
+  and omit readiness claims when profile revalidation fails (#225).
+
 - Expand H.A.D.E.S. as Human Augmented Data Exploration System in the README and
   workspace branding. Record human-led highlighting, source-contextual IS/IS-NOT
   boundaries, and reviewed connection proposals as the guided-reading direction.

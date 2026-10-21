@@ -30,7 +30,7 @@ impl ProfileSnapshot {
     pub fn job_pin(&self) -> Result<ProfilePin, ArangoError> {
         ensure(
             self.profile().state == ProfileState::Ready,
-            "job profile is not ready",
+            "ingestion profile is not ready",
         )?;
         let pin = ProfilePin {
             format: FORMAT.into(),
@@ -86,7 +86,7 @@ impl ProfilePin {
         self.validate()?;
         ensure(
             *self == snapshot.job_pin()?,
-            "ingestion job profile changed: database, revision, artifact, space or generation differs from admission; start a new job after review",
+            "ingestion profile changed: database, revision, artifact, space or generation differs from admission; start a new ingestion after review",
         )
     }
 }

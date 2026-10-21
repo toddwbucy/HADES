@@ -17,8 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     db::{ArangoError, ArangoPool},
     embedding_profile::{
-        BoundEmbeddingRequest, ChunkPolicy, Distance, EmbeddingRole, Normalization, ProfileState,
-        WorkloadKind,
+        BoundEmbeddingRequest, ChunkPolicy, EmbeddingRole, Normalization, WorkloadKind,
         store::{ProfilePin, ProfileSnapshot, ProfileStore},
     },
     persephone::{
@@ -128,44 +127,13 @@ impl ProfiledDocuments {
             pin.check(&snapshot)?;
         }
         let profile = snapshot.profile();
-        ensure(
-            profile.state == ProfileState::Ready,
-            "workspace profile is not ready",
-        )?;
+        crate::embedding_profile::admission::validate_documents(&pool, &snapshot).await?;
         let workload = profile
             .workloads
             .documents
             .as_ref()
             .ok_or_else(|| invalid("documents are disabled_by_profile"))?;
-        ensure(
-            matches!(
-                workload.chunking,
-                ChunkPolicy::Conventional { .. }
-                    | ChunkPolicy::Late {
-                        passages: Some(_),
-                        ..
-                    }
-            ),
-            "late document chunking requires an explicit passage policy",
-        )?;
-        ensure(
-            workload.space.representation.distance == Distance::Cosine,
-            "this document path supports cosine distance only",
-        )?;
         let normalization = workload.space.representation.normalize;
-        // Schema is a provisioning responsibility; never create collections as a query side effect.
-        for collection in COLLECTIONS {
-            let properties = pool
-                .writer()
-                .clone()
-                .with_response_limit(64 * 1024)?
-                .get(&format!("collection/{collection}/properties"))
-                .await?;
-            ensure(
-                properties["type"].as_u64() == Some(2),
-                "document storage requires three document collections",
-            )?;
-        }
         let observed = catalog.verify_profile(profile, snapshot.manifest()).await?;
         let passage = observed
             .client(

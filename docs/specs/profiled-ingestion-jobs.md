@@ -2,8 +2,8 @@
 
 Status: document jobs for [#225](https://github.com/toddwbucy/HADES/issues/225).
 `ingest.start`, through the shared daemon/MCP handler, can ingest named document
-files and documents-only directories into ready managed databases. It uses the
-same [file pipeline](profiled-file-ingestion.md) as foreground ingestion.
+files and the enabled document portion of directories into ready managed databases.
+It uses the same [file pipeline](profiled-file-ingestion.md) as foreground ingestion.
 Conventional and explicitly configured [late document policies](verified-late-passages.md)
 retain the same pinned worker and atomic storage guarantees.
 Public database setup and frontend activation remain separate work.
@@ -46,9 +46,20 @@ unowned historical job. Legacy `--batch`/`--resume` checkpoints remain unavailab
 for managed databases.
 
 Named code files and degraded code-enrichment overrides are refused at admission.
-A mixed directory fails in the worker's code admission before analyzers or corpus
-writes; its failed job history remains available. Code-capable routing is a
-separate slice.
+A documents-only profile skips the code portion of a mixed directory before any
+analyzer starts. The final result lists those paths in `disabled_by_profile.code`,
+preserves `unrouted` files and carries the same `profile_pin` as the parent job.
+Trees containing code enabled by the profile are refused until verified code
+ingestion is implemented. Parent admission uses the worker's shared discovery
+rules, including ignore files and shebangs, to reject such trees before contacting
+a provider, creating job history or spawning a worker. The worker repeats admission
+because the source tree or profile may change after the parent's check. Parent
+discovery runs on Tokio's blocking pool so filesystem walks and shebang probes
+do not occupy the async threads shared with other daemon/MCP requests.
+
+The persisted pin records original admission rather than current readiness.
+Profile drift or removal omits `embedding_profile_state: "ready"` from the final
+result and retains the failed outcome and diagnostic alongside that pin.
 
 Managed job history uses a synchronous document collection with its primary
 index. If concurrent first jobs race to create it, a failed creator revalidates
@@ -62,8 +73,8 @@ acquire job history through the managed job path.
 `profiled_jobs` tests strict compact pins, sealed handoff, database isolation and
 changed metadata revisions. The matching CLI target launches real daemons and
 workers against disposable databases/private services, checking file/directory
-success, explicit replacement, stale/unpinned workers, provider/profile drift during
-extraction and shutdown cleanup.
+success, disabled-code reporting in mixed directories, explicit replacement,
+stale/unpinned workers, provider/profile drift during extraction and shutdown cleanup.
 Existing lifecycle and setup contracts cover cleanup and identical setup retry.
 
 ```bash

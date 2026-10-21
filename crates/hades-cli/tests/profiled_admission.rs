@@ -72,7 +72,7 @@ async fn cli_query_uses_saved_provider_despite_conflicting_legacy_settings() {
 }
 
 #[tokio::test]
-async fn direct_mixed_document_code_and_training_commands_stop_before_services_or_writes() {
+async fn missing_provider_and_legacy_commands_stop_before_services_or_writes() {
     with_temp_db(
         "cli_profiled_refusals",
         Fixtures::Empty,
@@ -96,19 +96,30 @@ async fn direct_mixed_document_code_and_training_commands_stop_before_services_o
             // Satisfy the CLI's explicit GPU declaration without reaching a
             // trainer. No graph schema exists, and the update checkpoint is a
             // private missing path, so even a guard regression cannot train.
-            for args in [
-                vec!["ingest", prose.to_str().unwrap()],
-                vec!["ingest", root],
-                vec!["codebase", "ingest", root],
-                vec!["--gpu", "0", "graph-embed", "train"],
-                vec![
-                    "--gpu",
-                    "0",
-                    "graph-embed",
-                    "update",
-                    "--checkpoint-dir",
-                    absent_checkpoint.to_str().unwrap(),
-                ],
+            for (args, expected) in [
+                (
+                    vec!["ingest", prose.to_str().unwrap()],
+                    "requires registered_providers for document ingestion",
+                ),
+                (
+                    vec!["codebase", "ingest", root],
+                    "is unavailable for a model-bound or initializing workspace",
+                ),
+                (
+                    vec!["--gpu", "0", "graph-embed", "train"],
+                    "is unavailable for a model-bound or initializing workspace",
+                ),
+                (
+                    vec![
+                        "--gpu",
+                        "0",
+                        "graph-embed",
+                        "update",
+                        "--checkpoint-dir",
+                        absent_checkpoint.to_str().unwrap(),
+                    ],
+                    "is unavailable for a model-bound or initializing workspace",
+                ),
             ] {
                 let output = command(&pool, &config, &args).output().await.unwrap();
                 assert!(!output.status.success(), "{args:?}");
@@ -117,10 +128,7 @@ async fn direct_mixed_document_code_and_training_commands_stop_before_services_o
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 );
-                assert!(
-                    error.contains("model-bound or initializing"),
-                    "{args:?}: {error}"
-                );
+                assert!(error.contains(expected), "{args:?}: {error}");
             }
             assert_eq!(
                 crud::list_collections(&pool, false)

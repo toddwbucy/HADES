@@ -488,8 +488,13 @@ and frontend activation.
 document path for managed databases. It snapshots bounded input bytes before
 extraction, pins the original source revision, and commits source provenance,
 namespaced metadata, passages and vectors together. Named documents and
-documents-only directories are supported; legacy checkpoints, code/mixed-tree
-ingestion remain gated pending their profile-aware paths.
+documents-only directories are supported; legacy checkpoints and verified code
+ingestion remain gated pending their profile-aware paths. Feature-aware tree
+routing now ingests the document portion of a mixed tree for documents-only
+profiles and explicitly lists code paths as `disabled_by_profile`. Foreground and
+background trees retain a profile pin before running any pipeline; empty trees
+still validate admission. Enabled code workloads remain refused until their
+profile-aware pipeline is available.
 
 [Background document jobs](profiled-ingestion-jobs.md) now verify the parent
 admission, persist a compact profile pin and pass it through the sealed child

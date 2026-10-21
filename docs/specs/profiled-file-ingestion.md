@@ -8,8 +8,8 @@ now carry profile pins through parent admission and worker startup.
 ## Entry points and policy
 
 `hades --db WORKSPACE ingest notes.md` now selects the saved model profile for a
-managed database. Multiple named document files and documents-only directories
-use the same core `ProfiledDocuments::ingest_file` operation. CLI/service/MCP
+managed database. Multiple named document files and documents discovered in
+directories use the same core `ProfiledDocuments::ingest_file` operation. CLI/service/MCP
 search can retrieve these documents through the existing verified query path.
 The explicit [registered provider routes](profiled-search-admission.md) are
 required. The configured extraction endpoint remains an operational setting.
@@ -25,9 +25,31 @@ observation returned by planning/inference, fails that item.
 
 The CLI rejects `--task`, `--claims`, unsupported collection profiles and
 `--concurrency` outside 1–4. Code and unrouted named files are rejected before
-starting the batch. Mixed trees containing code remain refused by their code
-phase before document writes. Code support and feature-aware mixed-tree routing
-are separate work; no code is silently embedded as prose.
+starting the batch. Directory ingestion reads the ready profile before starting
+either pipeline. For a documents-only profile, it ingests documents and reports
+code paths in `disabled_by_profile.code`; it never starts code analyzers or creates
+code collections. This also applies to shebang scripts and files selected by
+`--unparsed-ext`. Unknown extensions remain listed in `unrouted`. Code examples
+inside documents remain ordinary document text.
+
+`routed` counts discovered files, including disabled code; a skipped code phase
+has `code: null`. The tree result includes its `profile_pin`, and the document
+phase must retain that admission. A changed profile is refused, including for a
+background worker. The pin records the original admission.
+`embedding_profile_state: "ready"` is emitted only after successful revalidation,
+and omitted when the document phase cannot start or the profile changes/disappears.
+Failed batches retain partial results and expose `profile_validation_error` if the
+final check fails. Legacy results omit `disabled_by_profile` and `profile_pin`.
+An enabled code workload still requires the future verified
+code pipeline and is rejected before document writes rather than mislabeled as
+disabled. Direct code ingestion remains unavailable for managed databases.
+
+Empty trees or trees with only disabled/unrouted inputs return a successful no-op
+with explicit file lists. They validate the same document policy and storage
+collections as file ingestion, plus options including
+`--task`, metadata, collection, concurrency and degraded-enrichment overrides.
+They do not connect to extraction or an embedding provider in the foreground;
+background admission retains its existing provider verification.
 
 ## Source identity and replacement
 
@@ -41,6 +63,7 @@ normalization. All database keys are SHA-256-derived from these identities.
 ```bash
 hades --db WORKSPACE ingest papers/a.md papers/b.txt --root papers
 hades --db WORKSPACE ingest papers/a.md --root papers --force
+hades --db WORKSPACE ingest repository/
 ```
 
 Existing sources require `--force`, including unchanged files. There is no
@@ -98,8 +121,10 @@ databases retain their existing pipeline and checkpoint behavior.
 `profiled_files` tests snapshots, identity/relocation, metadata, explicit
 replacement, rollback, cancellation, extractor errors, limits, source/profile
 drift, provider reload and malformed provenance. Its strict runner also executes
-`profiled_ingestion`, invoking the real CLI for named files, document-only trees,
-policy refusal, untouched checkpoints and partial failure. Writes use `with_temp_db`.
+`profiled_ingestion`, invoking the real CLI for named files, document-only and mixed
+trees, disabled-only/empty trees, policy refusal, untouched checkpoints and partial
+failure. Conventional and late policies both cover mixed routing. Writes use
+`with_temp_db`.
 
 ```bash
 cargo fetch --locked
@@ -113,6 +138,6 @@ integration, not Docling extraction quality.
 The [ThinkPad qualification](../evidence/jina-file-ingestion-thinkpad-2026-10-21.json)
 passed all six expected retrieval answers and the long Unicode token-recount gates.
 
-Broader workloads and mixed-tree routing, legacy adoption/migration,
+Verified code ingestion and indexes, legacy adoption/migration,
 backup/reconciliation tooling, public setup authorization and frontend activation
 remain follow-up work. No installed services or active corpora are changed.
