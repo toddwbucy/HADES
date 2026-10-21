@@ -672,6 +672,14 @@ async fn proxy_failures_cannot_satisfy_expected_rejections() {
             "fixture",
         );
         let proxy = Proxy::new(&missing, rule("DELETE", "unused", None, 1));
+        assert_eq!(
+            fs::metadata(proxy.admin.socket_path().unwrap().parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
         assert!(matches!(
             proxy.admin.get("version").await,
             Err(hades_core::db::ArangoError::Api { status: 502, .. })

@@ -10,6 +10,7 @@ use hyper::{
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use std::{
+    os::unix::fs::PermissionsExt,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -42,6 +43,7 @@ impl Proxy {
     /// Proxy one test's explicit server; use matching request occurrences to target real DDL/commits.
     pub fn new(backend: &ArangoClient, rule: Rule) -> Self {
         let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let socket = directory.path().join("proxy.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let client = reqwest::Client::builder()
