@@ -51,7 +51,16 @@ struct Claim {
 
 struct Guard {
     root: File,
-    _lock: File,
+    lock: File,
+}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // A child may inherit the open file description before CLOEXEC takes effect.
+        // Release the lease when its final owner/worker finishes, even if that child
+        // has not exec'd yet; merely closing our descriptor could leave it locked.
+        // SAFETY: the final Arc owns this live descriptor and no ledger work remains.
+        unsafe { libc::flock(self.lock.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 pub(super) struct Lease {
     guard: Arc<Guard>,
@@ -80,13 +89,13 @@ impl Lease {
             )?;
             let lock = child(&directory, ".lock", libc::O_RDWR | libc::O_CREAT)?;
             regular(&lock)?;
-            // SAFETY: lock owns the live descriptor; its final drop releases the lease.
+            // SAFETY: lock owns the live descriptor; Guard releases the acquired lease.
             if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
                 return Err(SetupError::Busy);
             }
             let guard = Arc::new(Guard {
                 root: directory,
-                _lock: lock,
+                lock,
             });
             if let Some(saved) = read::<Scope>(&guard, "scope.json")? {
                 ensure(

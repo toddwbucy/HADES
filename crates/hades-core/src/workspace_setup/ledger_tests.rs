@@ -66,6 +66,30 @@ async fn durable_reservations_are_exact_and_process_locked() {
     assert!(Lease::open(root.path().into(), elsewhere).await.is_err());
 }
 
+/// A descriptor inherited before exec cannot extend the lease after its final worker releases it.
+#[tokio::test]
+async fn inherited_descriptors_do_not_extend_a_completed_lease() {
+    let root = directory();
+    let lease = Lease::open(root.path().into(), scope()).await.unwrap();
+    let worker = lease.guard.clone();
+    // dup and fork share an open file description; no actual child or timing race is needed.
+    let inherited = worker.lock.try_clone().unwrap();
+    drop(lease);
+    assert!(matches!(
+        Lease::open(root.path().into(), scope()).await,
+        Err(SetupError::Busy)
+    ));
+    drop(worker);
+    let reopened = Lease::open(root.path().into(), scope()).await.unwrap();
+    drop(inherited);
+    assert!(matches!(
+        Lease::open(root.path().into(), scope()).await,
+        Err(SetupError::Busy)
+    ));
+    drop(reopened);
+    Lease::open(root.path().into(), scope()).await.unwrap();
+}
+
 /// A partial temporary file cannot replace the last fully published operation record.
 #[tokio::test]
 async fn incomplete_temporary_records_are_never_adopted() {
