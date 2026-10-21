@@ -78,7 +78,9 @@ serving observation.
 The complete scan validates every stored vector's provenance before scoring.
 Selected source text is fetched under the same profile/data transaction, checked
 against its source digest and passage span, and limited to 1 MiB of combined
-hits. Detail reads have a 16 MiB response bound. Existing row, page, query-runtime,
+hits. Hits are grouped by parent for detail loading: each source is fetched and
+validated once, at most one complete source is retained, and hits keep their
+original ranking. Detail reads have a 16 MiB response bound. Existing row, page, query-runtime,
 and transaction budgets still apply. Any failed validation or exhausted budget
 discards the entire result. The process shares the existing four-search admission
 budget; transaction owners retain their reservation through cancellation and

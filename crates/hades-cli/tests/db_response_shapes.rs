@@ -33,6 +33,14 @@ async fn run_root_with_vectors(
         let responses = responses.clone();
         async move {
             let method = request.method().as_str();
+            // These response-shape cases use an unbound legacy database. Keep
+            // admission probes separate from the scripted cursor responses.
+            if method == "GET" && matches!(request.uri().path(),
+                "/_db/fixture/_api/collection/hades_workspace/properties" |
+                "/_db/fixture/_api/collection/hades_setup/properties") {
+                return (axum::http::StatusCode::NOT_FOUND,
+                    Json(json!({"error":true,"code":404,"errorNum":1203,"errorMessage":"collection not found"}))).into_response();
+            }
             calls
                 .lock()
                 .unwrap()

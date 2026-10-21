@@ -17,6 +17,10 @@ use std::time::Duration;
 mod provider;
 use provider::{Fixture, Peer};
 
+#[allow(dead_code)]
+#[path = "common/setup_proxy.rs"]
+mod fault;
+
 // These tests share dispatch's four-search process budget, not database state.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -404,5 +408,72 @@ async fn alternating_and_concurrent_databases_resolve_independent_models() {
         )
         .await;
     })
+    .await;
+}
+
+#[tokio::test]
+async fn grouped_source_loading_reads_each_parent_once_and_preserves_ranking() {
+    let _serial = SERIAL.lock().await;
+    with_temp_db(
+        "public_grouped_details",
+        Fixtures::Empty,
+        |pool| async move {
+            let fixture = Fixture::new(2);
+            fixture.install(&pool).await;
+            let peer = Peer::new(&fixture);
+            insert(&pool, &fixture, &peer, "first/source").await;
+            insert(&pool, &fixture, &peer, "second/source").await;
+            // Four ranked chunks share two parents. Reject any third source fetch
+            // through the real private server; chunk reads remain independent.
+            let proxy = fault::Proxy::new(
+                pool.writer(),
+                fault::Rule {
+                    method: "GET",
+                    path: "document/documents/",
+                    name: None,
+                    nth: 3,
+                    before: true,
+                    hold: false,
+                    fail: true,
+                    callback: None,
+                },
+            );
+            let client = hades_core::db::ArangoClient::with_socket(
+                proxy.admin.socket_path().unwrap().into(),
+                pool.database(),
+                "fixture",
+                "fixture",
+            );
+            let routed = ArangoPool::new(client.clone(), client);
+            let response = request(
+                &routed,
+                &config(&routed, &peer),
+                json!({"text":"apple", "limit":4}),
+            )
+            .await;
+            assert!(response.success, "{response:?}");
+            let result = response.data.unwrap();
+            let hits = result["results"].as_array().unwrap();
+            assert_eq!(
+                hits.iter()
+                    .map(|h| h["score"].as_f64().unwrap())
+                    .collect::<Vec<_>>(),
+                [1.0, 1.0, 0.0, 0.0]
+            );
+            for pair in hits.windows(2) {
+                if pair[0]["score"] == pair[1]["score"] {
+                    assert!(
+                        pair[0]["chunk_key"].as_str().unwrap()
+                            < pair[1]["chunk_key"].as_str().unwrap()
+                    );
+                    assert_ne!(pair[0]["parent_key"], pair[1]["parent_key"]);
+                }
+            }
+            assert!(hits[..2].iter().all(|h| h["text"] == "apple café\n"));
+            assert!(hits[2..].iter().all(|h| h["text"] == "banana 東京"));
+            assert_eq!(proxy.hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(proxy.matched.load(std::sync::atomic::Ordering::SeqCst), 2);
+        },
+    )
     .await;
 }

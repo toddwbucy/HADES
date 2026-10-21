@@ -246,7 +246,8 @@ criteria did not change; the failed v1 report is retained with the run evidence.
 
 The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
-long Unicode fixture; its evidence is recorded separately. All public CLI/MCP/job
+long Unicode fixture; its evidence is recorded separately. Public `db.query`
+search is now qualified through the shared handler. Profile-aware ingestion/job
 paths, code/late-chunk capabilities, legacy policy, and frontend creation remain
 separate work. Registered local provider discovery and internal recoverable
 document setup are now part of the qualification flow; public setup authorization

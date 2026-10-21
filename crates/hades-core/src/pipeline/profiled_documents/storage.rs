@@ -279,49 +279,57 @@ pub(super) async fn search(
             scanned += 1;
         }
     }
-    // Fetch source text while the same profile/data locks still protect ranking.
-    // Per-hit bounds avoid materializing every source during the complete scan.
-    let mut items = Vec::new();
-    let mut bytes = 2_usize; // JSON array brackets
-    for mut item in top.into_items() {
-        let response = aql(
-            &client,
-            "RETURN {chunk: DOCUMENT('chunks', @chunk), document: DOCUMENT('documents', @parent)}",
-            json!({"chunk":item["chunk_key"], "parent":item["parent_key"]}),
-            2,
-            MAX_PREPARED_BYTES,
-        )
-        .await?;
-        let rows = query::completed_rows(&response)?;
-        ensure(rows.len() == 1, "missing ranked source detail")?;
-        let chunk = &rows[0]["chunk"];
-        let document = &rows[0]["document"];
-        let key = item["parent_key"].as_str().unwrap();
-        validate_document(document, key, &expected, &snapshot)?;
-        let span: TokenPassage = serde_json::from_value(chunk["span"].clone())
-            .map_err(|_| invalid("invalid ranked source span"))?;
-        let text = document["full_text"]
-            .as_str()
-            .unwrap()
-            .get(span.start_byte..span.end_byte)
-            .ok_or_else(|| invalid("ranked source span is outside its UTF-8 text"))?;
-        ensure(
-            chunk["_key"] == item["chunk_key"]
-                && chunk["parent_key"] == item["parent_key"]
-                && chunk["text"].as_str() == Some(text),
-            "ranked passage disagrees with source text",
-        )?;
-        item["text"] = json!(text);
-        item["source_id"] = document["source_id"].clone();
-        item["chunk_index"] = chunk["chunk_index"].clone();
-        item["total_chunks"] = document["chunk_count"].clone();
-        item["span"] = chunk["span"].clone();
-        bytes += serde_json::to_vec(&item)?.len() + usize::from(!items.is_empty());
-        ensure(
-            bytes <= 1024 * 1024,
-            "search result byte budget exceeded; request fewer results",
-        )?;
-        items.push(item);
+    // Group only hit indices: fetch/hash each parent once, holding at most one
+    // full source at a time. A cache of K two-MiB sources would exceed admission.
+    // Fill the original slots to preserve exact ranking across parent groups.
+    let mut items = top.into_items();
+    let mut parents = std::collections::BTreeMap::<String, Vec<usize>>::new();
+    for (rank, item) in items.iter().enumerate() {
+        parents
+            .entry(item["parent_key"].as_str().unwrap().into())
+            .or_default()
+            .push(rank);
+    }
+    let mut bytes = 2 + items.len().saturating_sub(1); // JSON brackets and commas
+    for (key, ranks) in parents {
+        let document = document(&client, &key)
+            .await?
+            .ok_or_else(|| invalid("missing ranked source detail"))?;
+        validate_document(&document, &key, &expected, &snapshot)?;
+        for rank in ranks {
+            let item = &mut items[rank];
+            let chunk = client
+                .clone()
+                .with_response_limit(MAX_PREPARED_BYTES)?
+                .get(&format!(
+                    "document/chunks/{}",
+                    item["chunk_key"].as_str().unwrap()
+                ))
+                .await?;
+            let span: TokenPassage = serde_json::from_value(chunk["span"].clone())
+                .map_err(|_| invalid("invalid ranked source span"))?;
+            let text = document["full_text"]
+                .as_str()
+                .unwrap()
+                .get(span.start_byte..span.end_byte)
+                .ok_or_else(|| invalid("ranked source span is outside its UTF-8 text"))?;
+            ensure(
+                chunk["_key"] == item["chunk_key"]
+                    && chunk["parent_key"] == item["parent_key"]
+                    && chunk["text"].as_str() == Some(text),
+                "ranked passage disagrees with source text",
+            )?;
+            item["text"] = json!(text);
+            item["source_id"] = document["source_id"].clone();
+            item["chunk_index"] = chunk["chunk_index"].clone();
+            item["total_chunks"] = document["chunk_count"].clone();
+            item["span"] = chunk["span"].clone();
+            bytes += serde_json::to_vec(item)?.len();
+            ensure(
+                bytes <= 1024 * 1024,
+                "search result byte budget exceeded; request fewer results",
+            )?;
+        }
     }
     Ok((items, scanned))
 }
