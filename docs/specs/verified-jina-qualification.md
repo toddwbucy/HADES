@@ -29,6 +29,19 @@ detail reads by parent while retaining only one complete source at a time.
 All six public retrieval/source-text checks and the long-source tokenizer gates
 still passed. The original measurement is retained above.
 
+## ThinkPad file-ingestion result: 2026-10-21 UTC
+
+The [foreground file-ingestion run](../evidence/jina-file-ingestion-thinkpad-2026-10-21.json)
+passed on clean implementation `9929668ae0b31dc48f12f80f0da136d6df6edb8a` on
+2026-10-21 UTC. All eight fixed sources entered through bounded file snapshots
+and private gRPC extraction before actual verified Jina planning/inference.
+All six expected answers ranked first through public search, and source text and
+namespaced file metadata were preserved. The long Unicode source retained all
+12,384 bytes and six passages with independent tokenizer recounts; its full
+file-ingest/search check took 2.418 seconds. Model artifacts, runtime and space
+matched the previous qualification. The extractor was a text-passthrough test
+fixture; this is embedding/storage integration evidence, not Docling quality evidence.
+
 ## Fixed protocol and evidence
 
 `services/tests/fixtures/jina_qualification.json` defines eight short documents,
@@ -62,10 +75,15 @@ or evidence that this model is preferable to another model.
   ledger and ownership marker, checks the provider before readiness, and proves
   an identical setup retry preserves the profile snapshot.
   `with_temp_db` initializes a fresh profile, stores all eight documents and their
-  bindings, and retrieves all six expected answers from stored vectors through
+  bindings through foreground file ingestion, and retrieves all six expected
+  answers from stored vectors through
   the shared public `db.query` service handler using explicit provider routes.
   The legacy endpoint is deliberately unavailable. Returned source text must
   equal the expected fixture, and the response must carry a ready profile binding.
+  A private text-passthrough gRPC extractor receives immutable fixture file bytes.
+  File provenance and namespaced metadata must be committed with the document.
+  This controlled extractor isolates transport/storage behavior; the run does
+  not qualify Docling quality or nontext extraction formats.
 - After those retrieval checks, the fixed Unicode text in
   `services/tests/fixtures/jina_passage_planning.txt` must produce multiple
   conventional passages with overlap. The source bytes survive storage; every
@@ -253,9 +271,9 @@ criteria did not change; the failed v1 report is retained with the run evidence.
 The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
 long Unicode fixture; its evidence is recorded separately. Public `db.query`
-search is now qualified through the shared handler. Profile-aware ingestion/job
-paths, code/late-chunk capabilities, legacy policy, and frontend creation remain
-separate work. Registered local provider discovery and internal recoverable
+search and foreground file ingestion are now qualified through their shared paths.
+Background job pins, code/late-chunk capabilities, legacy policy and frontend
+creation remain separate work. Registered local provider discovery and internal recoverable
 document setup are now part of the qualification flow; public setup authorization
 and administrative reconciliation/backup tooling remain pending.
 Public pairing remains gated.

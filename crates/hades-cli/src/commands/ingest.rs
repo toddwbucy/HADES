@@ -33,6 +33,9 @@ use hades_core::pipeline::{Pipeline, PipelineConfig};
 use super::codebase_ingest::{self, PhaseOutcome};
 use super::output::{self, OutputFormat};
 
+#[path = "profiled_ingest.rs"]
+mod profiled;
+
 /// Code-file extensions for auto-detecting the `code` embedding task.
 const CODE_EXTENSIONS: &[&str] = &[
     "py", "rs", "cu", "cuh", "cpp", "c", "h", "hpp", "js", "ts", "go", "java", "rb", "swift", "kt",
@@ -312,7 +315,7 @@ pub async fn run_phase(
     inputs: Vec<PathBuf>,
     batch: bool,
     metadata_json: Option<&str>,
-    _claims: &[String],
+    claims: &[String],
     collection: Option<&str>,
     force: bool,
     task: Option<&str>,
@@ -361,7 +364,26 @@ pub async fn run_phase(
 
     // -- Connect to services ---------------------------------------------------
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
-    hades_core::embedding_profile::admission::require_legacy(&db, "document ingestion").await?;
+    if hades_core::embedding_profile::admission::is_managed(&db).await? {
+        return profiled::run(
+            config,
+            db,
+            file_paths,
+            profile,
+            extra_metadata,
+            claims,
+            force,
+            task,
+            id,
+            batch,
+            resume,
+            reset,
+            concurrency,
+            root,
+            provenance,
+        )
+        .await;
+    }
     let embedder = EmbeddingClient::connect_at(&config.embedding.service.socket)
         .await
         .context("failed to connect to embedding service")?;
@@ -486,6 +508,15 @@ pub async fn run_phase(
         .map_err(|e| anyhow::anyhow!("batch processing error: {e}"))?;
 
     // -- Output summary --------------------------------------------------------
+    batch_outcome(summary, envelope_git, cmd_start)
+}
+
+/// Keep the foreground batch envelope consistent across legacy and bound ingestion.
+fn batch_outcome(
+    summary: hades_core::batch::BatchSummary,
+    envelope_git: Option<hades_core::source_git::SourceGit>,
+    cmd_start: Instant,
+) -> Result<PhaseOutcome> {
     let duration_ms = cmd_start.elapsed().as_millis() as u64;
 
     let result_values: Vec<Value> = summary

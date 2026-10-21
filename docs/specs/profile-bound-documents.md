@@ -4,8 +4,8 @@ Status: internal Rust integration for [#225](https://github.com/toddwbucy/HADES/
 `pipeline::profiled_documents::ProfiledDocuments` connects the persisted profile,
 verified embedding client, atomic document storage, and exact cosine retrieval.
 The [shared CLI/service/MCP search handler](profiled-search-admission.md) now uses
-this path for managed databases. Ingestion remains internal; public setup and
-frontend activation are still gated.
+this path for managed databases. [Foreground file ingestion](profiled-file-ingestion.md)
+also uses it; public setup and frontend activation are still gated.
 
 ## Admission and preparation
 
@@ -35,8 +35,9 @@ replacement, the old source's metadata revision is pinned first. Planning and
 all embedding batches retain the expected artifact MD5, embedding-space ID, and
 serving-load receipt. Model, width, finite nonzero values, and declared L2
 normalization are validated. Any failure discards the whole preparation, which
-performs no database writes. Extraction integration and late-chunked context
-window planning remain follow-up work.
+performs no database writes. Foreground file ingestion admits a bounded file
+snapshot before extraction and retains that source revision through preparation.
+Late-chunked context window planning remains follow-up work.
 
 ## Records and publication
 
@@ -44,7 +45,7 @@ All three collections use the internal `hades-bound-document-v2` record format:
 
 | Collection | Stored information |
 | --- | --- |
-| `documents` | Original source identifier, full extracted text, source SHA-256, passage plan, chunk count, complete passage binding |
+| `documents` | Original source identifier, full extracted text, source SHA-256, passage plan, chunk count, complete passage binding; optional strictly validated `file_ingestion` provenance |
 | `chunks` | Source and chunk keys, ordinal, source digest, passage text and counted byte span, complete passage binding |
 | `embeddings` | The same source/chunk provenance, model, dimension, vector, complete passage binding |
 
@@ -62,6 +63,9 @@ Both bulk and individual write acknowledgements are checked.
 
 Replacement requires explicit opt-in. Changed sources, orphan/foreign children,
 unknown fields that replacement would discard, and legacy records are refused.
+File-ingestion provenance and namespaced user metadata commit with the source.
+Text-only preparation cannot adopt or remove that provenance. Existing v2 records
+without file provenance remain supported by the text-only internal API.
 The previous internal v1 format had unproven caller-supplied spans; it is not
 automatically adopted as token-checked v2 data.
 Unrelated sources are preserved. Write errors and cancellation before commit

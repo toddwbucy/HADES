@@ -15,6 +15,7 @@ const DOCUMENT_FIELDS: &[&str] = &[
     "chunk_count",
     "embedding_binding",
     "passage_plan",
+    "file_ingestion",
 ];
 const CHUNK_FIELDS: &[&str] = &[
     "_key",
@@ -44,24 +45,55 @@ const VECTOR_FIELDS: &[&str] = &[
     "embedding",
 ];
 
-/// Check an existing source before spending inference, without adopting legacy data.
-pub(super) async fn previous_revision(
+/// Revision and user metadata retained from before extraction or inference.
+pub(super) struct SourceAdmission {
+    pub revision: Option<String>,
+    pub metadata: Value,
+}
+
+/// Check an existing source without adopting legacy data or dropping authored metadata.
+pub(super) async fn admit_source(
     client: &ArangoClient,
     key: &str,
     replace: bool,
     expected: &BoundEmbeddingRequest,
     snapshot: &ProfileSnapshot,
-) -> Result<Option<String>, ArangoError> {
+    file_identity: Option<&files::FileIdentity>,
+) -> Result<SourceAdmission, ArangoError> {
     let existing = document(client, key).await?;
     if let Some(row) = existing {
         ensure(
             replace,
-            "source already exists; replacement must be explicit",
+            "source already exists; replacement must be explicit (use --force for file ingestion)",
         )?;
         validate_document(&row, key, expected, snapshot)?;
-        return Ok(Some(revision(&row)?.into()));
+        match (file_identity, row.get("file_ingestion")) {
+            (None, None) => {}
+            (Some(incoming), Some(saved)) => {
+                let saved: files::FileProvenance = serde_json::from_value(saved.clone())?;
+                ensure(
+                    saved.identity.same_source(incoming),
+                    "source identifier belongs to a different file; choose a distinct --id",
+                )?;
+            }
+            _ => {
+                return Err(invalid(
+                    "replacement cannot adopt or discard file-ingestion provenance",
+                ));
+            }
+        }
+        return Ok(SourceAdmission {
+            revision: Some(revision(&row)?.into()),
+            metadata: row
+                .get("file_ingestion")
+                .map(|p| p["metadata"].clone())
+                .unwrap_or_else(|| json!({})),
+        });
     }
-    Ok(None)
+    Ok(SourceAdmission {
+        revision: None,
+        metadata: json!({}),
+    })
 }
 
 /// A missing document is distinct from a missing collection or database.
@@ -497,6 +529,15 @@ fn validate_document(
         text: text.into(),
     })
     .map_err(|_| invalid("invalid stored extraction metadata"))?;
+    if let Some(value) = row.get("file_ingestion") {
+        let provenance: files::FileProvenance = serde_json::from_value(value.clone())
+            .map_err(|_| invalid("invalid file-ingestion provenance"))?;
+        provenance.validate(source_id)?;
+        ensure(
+            serde_json::to_value(&provenance)? == *value,
+            "invalid or unknown file-ingestion provenance fields",
+        )?;
+    }
     revision(row)?;
     Ok(())
 }

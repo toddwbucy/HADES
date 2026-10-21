@@ -478,11 +478,18 @@ backup/reconciliation tooling, and frontend activation remain pending.
 
 [Public search and admission](profiled-search-admission.md) now resolve ready
 document profiles through explicit installation provider routes in the shared
-CLI/service/MCP query handler. Legacy ingestion, jobs, vector indexes, and
+CLI/service/MCP query handler. Legacy core ingestion, jobs, vector indexes, and
 structural operations refuse managed/initializing databases. Nonvector reads
 remain available. Existing legacy semantic searches are labeled unverified;
-profile-aware extraction/job pins and the full legacy migration policy remain
-pending before public setup and frontend activation.
+job pins and the full legacy migration policy remain pending before public setup
+and frontend activation.
+
+[Foreground file ingestion](profiled-file-ingestion.md) now selects the verified
+document path for managed databases. It snapshots bounded input bytes before
+extraction, pins the original source revision, and commits source provenance,
+namespaced metadata, passages and vectors together. Named documents and
+documents-only directories are supported; legacy checkpoints, code/mixed-tree
+ingestion and background jobs remain gated pending their profile-aware paths.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and

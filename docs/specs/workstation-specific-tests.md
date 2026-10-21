@@ -103,6 +103,12 @@ isolation, source text, profile/provider drift and refusals before legacy vector
 work; use `--contract profiled_search`. Both targets run in the default CI matrix.
 See [public search admission](profiled-search-admission.md).
 
+The `profiled_files` contract checks [foreground file ingestion](profiled-file-ingestion.md)
+and runs the `profiled_ingestion` CLI target. It covers bounded immutable source
+bytes, atomic metadata/replacement, cancellation, provider/profile/source drift,
+policy refusal and partial batch failure. Select it with `--contract profiled_files`;
+both targets also run in the default isolated CI matrix.
+
 The opt-in [real Jina qualification](verified-jina-qualification.md) uses an
 approved local registration, fixed smoke cases, private verified HTTP, and the
 ignored `verified_jina_documents` test. Its owner selects `--verified-jina` plus
