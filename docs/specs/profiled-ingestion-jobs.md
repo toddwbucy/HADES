@@ -4,6 +4,8 @@ Status: document jobs for [#225](https://github.com/toddwbucy/HADES/issues/225).
 `ingest.start`, through the shared daemon/MCP handler, can ingest named document
 files and documents-only directories into ready managed databases. It uses the
 same [file pipeline](profiled-file-ingestion.md) as foreground ingestion.
+Conventional and explicitly configured [late document policies](verified-late-passages.md)
+retain the same pinned worker and atomic storage guarantees.
 Public database setup and frontend activation remain separate work.
 
 ## Admission and worker handoff

@@ -14,7 +14,8 @@ search can retrieve these documents through the existing verified query path.
 The explicit [registered provider routes](profiled-search-admission.md) are
 required. The configured extraction endpoint remains an operational setting.
 
-Admission requires a ready conventional document profile, existing schema and
+Admission requires a ready conventional or explicitly configured
+[late document profile](verified-late-passages.md), existing schema and
 an independently verified registered provider. It resolves the model before
 connecting to extraction and never creates schema as an ingestion side effect.
 Global embedding model/task, chunk sizes, late-chunking settings and the legacy

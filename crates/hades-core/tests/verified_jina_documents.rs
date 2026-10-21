@@ -5,7 +5,7 @@
 use hades_core::{
     config::{HadesConfig, RegisteredProviderConfig, RegisteredProvidersConfig},
     db::{ArangoClient, ArangoPool, crud},
-    embedding_profile::{ChunkPolicy, store::ProfileStore},
+    embedding_profile::{ChunkPolicy, PassagePolicy, store::ProfileStore},
     pipeline::profiled_documents::{ProfiledDocuments, files::FileInput},
     service::{ConnectionPolicy, handle_request},
     test_support::{Fixtures, with_temp_db},
@@ -74,14 +74,23 @@ async fn install(pool: &ArangoPool, context: &Value) -> (ProfiledDocuments, Setu
     assert_eq!(json!(observed.description()), context["description"]);
     assert_eq!(json!(observed.manifest()), context["manifest"]);
     let passage_tokens = 500.min(observed.description().capabilities.max_input_tokens);
+    let policy = if context["chunk_policy"] == "late" {
+        ChunkPolicy::Late {
+            context_cap_tokens: 1024,
+            minimum_window_overlap_tokens: 128,
+            passages: Some(PassagePolicy {
+                passage_tokens: 256,
+                overlap_tokens: 32,
+            }),
+        }
+    } else {
+        ChunkPolicy::Conventional {
+            passage_tokens,
+            overlap_tokens: 50.min(passage_tokens / 4),
+        }
+    };
     let profile = observed
-        .document_profile(
-            "jina-qualification-corpus-v1".into(),
-            ChunkPolicy::Conventional {
-                passage_tokens,
-                overlap_tokens: 50.min(passage_tokens / 4),
-            },
-        )
+        .document_profile("jina-qualification-corpus-v1".into(), policy)
         .unwrap();
     // with_temp_db owns this exact name and cleanup. Let the coordinator create it afresh.
     let admin = ArangoClient::with_socket(
@@ -196,17 +205,18 @@ async fn registered_jina_document_roundtrip() {
         assert_eq!(stored["full_text"], long_text);
         assert_eq!(stored["embedding_binding"], json!(receipt.binding));
         let plan = &stored["passage_plan"];
-        assert!(plan["spans"].as_array().unwrap().len() > 1);
+        let span_field = if context["chunk_policy"] == "late" { "passages" } else { "spans" };
+        assert!(plan[span_field].as_array().unwrap().len() > 1);
         assert_eq!(plan["source_sha256"], stored["source_sha256"]);
         for collection in ["chunks", "embeddings"] {
             let count = pool.writer().get(&format!("collection/{collection}/count")).await.unwrap();
             assert_eq!(count["count"].as_u64().unwrap(),
-                inputs.len() as u64 + plan["spans"].as_array().unwrap().len() as u64);
+                inputs.len() as u64 + plan[span_field].as_array().unwrap().len() as u64);
         }
         // Search validates every persisted triplet, including all long-document chunks.
-        let total = inputs.len() + plan["spans"].as_array().unwrap().len();
+        let total = inputs.len() + plan[span_field].as_array().unwrap().len();
         assert_eq!(public_search(&pool, &config, "Unicode café").await["scanned"], total);
-        let report = json!({"passed":true,"profile_revision":2,"documents":inputs.len(),
+        let mut report = json!({"passed":true,"profile_revision":2,"documents":inputs.len(),
             "dimension":2048,"receipt":context["description"]["receipt"],
             "protected_registration_and_live_description_checked":true,
             "recoverable_setup_and_identical_retry_checked":true,"setup":setup_receipt,
@@ -215,6 +225,12 @@ async fn registered_jina_document_roundtrip() {
             "extractor_implementation":"private text passthrough fixture; not a Docling quality qualification",
             "suite_sha256":context["suite_sha256"],"ingest_seconds":ingest_seconds,"queries":observed,
             "planning":{"plan":plan,"source_bytes":long_text.len(),"seconds":started.elapsed().as_secs_f64()}});
+        if context["chunk_policy"] == "late" {
+            assert_eq!(stored["format"], "hades-bound-document-v3");
+            assert_eq!(stored["late_token_ranges"].as_array().unwrap().len(), receipt.chunks);
+            report["planning"]["token_ranges"] = stored["late_token_ranges"].clone();
+            report["chunk_policy"] = json!("late");
+        }
         let path = std::env::var("HADES_VERIFIED_JINA_REPORT").expect("explicit new evidence file");
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
         file.write_all(&serde_json::to_vec_pretty(&report).unwrap()).unwrap();

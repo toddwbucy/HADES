@@ -16,6 +16,9 @@ mod provider;
 use fault::{Proxy, Rule};
 use provider::{Fixture, Peer};
 
+#[path = "workspace_setup/recovery.rs"]
+mod recovery;
+
 /// An explicit private fixture ledger, never the workstation's installation state.
 fn ledger() -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
@@ -157,6 +160,39 @@ async fn creation_and_identical_retries_preserve_profile_and_documents() {
 
 /// An existing database is never adopted, emptied, marked, or assigned the current model.
 #[tokio::test]
+async fn contextual_setup_retains_explicit_policy_and_retries_after_ingestion() {
+    with_temp_db("setup_late", Fixtures::Empty, |pool| async move {
+        remove_fixture_database(&pool).await;
+        let fixture = Fixture::late();
+        let peer = Peer::new(&fixture);
+        let root = ledger();
+        let setup = setup(root.path(), admin(&pool), &peer);
+        let request = request(&pool, &fixture);
+        let receipt = setup.run(request.clone()).await.unwrap();
+        assert_eq!(receipt.status, SetupStatus::Ready);
+        let store = ProfileStore::new(pool.clone()).unwrap();
+        let before = store.load().await.unwrap();
+        assert_eq!(before.profile().workloads, fixture.profile.workloads);
+        let documents = fixture.connect(&pool, &peer).await;
+        let prepared = documents
+            .prepare(
+                DocumentInput {
+                    source_id: "late".into(),
+                    text: "apple café\nbanana 東京\napple tail".into(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        documents.commit(prepared).await.unwrap();
+        assert_eq!(documents.search("banana", 1, 10).await.unwrap().scanned, 3);
+        assert_eq!(setup.run(request).await.unwrap(), receipt);
+        assert_eq!(store.load().await.unwrap(), before);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn existing_database_is_preserved_and_requires_reconciliation() {
     with_temp_db("setup_existing", Fixtures::Empty, |pool| async move {
         crud::create_collection(&pool, "authored", Some(2))
@@ -263,6 +299,17 @@ async fn lost_initialization_responses_resume_only_owned_steps() {
             let failed = setup.inspect(&request.operation_id).await.unwrap().unwrap();
             assert_eq!(failed.status, SetupStatus::Failed, "{tag}");
             assert_eq!(failed.step, step, "{tag}");
+            let diagnostic = setup.diagnose(&request.operation_id).await.unwrap();
+            assert_eq!(diagnostic.receipt.as_ref(), Some(&failed));
+            assert_eq!(
+                setup.inspect(&request.operation_id).await.unwrap(),
+                Some(failed)
+            );
+            assert_eq!(
+                diagnostic.action,
+                hades_core::workspace_setup::RecoveryAction::RetryIdenticalRequest,
+                "{tag}: {diagnostic:?}"
+            );
             let store = ProfileStore::new(pool.clone()).unwrap();
             let before = store.load().await.ok();
             assert_eq!(
@@ -302,6 +349,16 @@ async fn lost_create_acknowledgement_never_adopts_the_created_name() {
         let request = request(&pool, &fixture);
         assert!(setup.run(request.clone()).await.is_err());
         assert_eq!(proxy.hits.load(Ordering::SeqCst), 1);
+        let diagnostic = setup.diagnose(&request.operation_id).await.unwrap();
+        assert_eq!(
+            diagnostic.action,
+            hades_core::workspace_setup::RecoveryAction::InspectRequired
+        );
+        assert_eq!(
+            diagnostic.reason,
+            hades_core::workspace_setup::RecoveryReason::CreationUnacknowledged
+        );
+        assert_eq!(diagnostic.database_exists, Some(true));
         assert_eq!(
             setup
                 .inspect(&request.operation_id)

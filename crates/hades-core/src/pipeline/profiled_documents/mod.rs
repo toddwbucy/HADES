@@ -2,10 +2,13 @@
 //!
 //! Shared search and foreground file ingestion use this path. A trusted caller
 //! may also supply extracted text while the provider plans token-checked spans.
-//! Only conventional document text and cosine ranking are supported.
+//! Conventional and explicitly configured late document text use cosine ranking.
 
 pub mod files;
+mod plan;
 mod storage;
+
+use plan::DocumentPlan;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -135,8 +138,15 @@ impl ProfiledDocuments {
             .as_ref()
             .ok_or_else(|| invalid("documents are disabled_by_profile"))?;
         ensure(
-            matches!(workload.chunking, ChunkPolicy::Conventional { .. }),
-            "this document path requires conventional chunking",
+            matches!(
+                workload.chunking,
+                ChunkPolicy::Conventional { .. }
+                    | ChunkPolicy::Late {
+                        passages: Some(_),
+                        ..
+                    }
+            ),
+            "late document chunking requires an explicit passage policy",
         )?;
         ensure(
             workload.space.representation.distance == Distance::Cosine,
@@ -187,7 +197,7 @@ impl ProfiledDocuments {
         })
     }
 
-    /// Plan and embed the complete extraction under the stored conventional policy.
+    /// Plan and embed the complete extraction under the stored passage/window policy.
     /// Replacement is explicit and pins the previous metadata revision before inference.
     /// Provider overflow is returned unchanged; no truncation or fallback is attempted.
     pub async fn prepare(
@@ -225,54 +235,77 @@ impl ProfiledDocuments {
         }
         self.current_retaining(retention.clone()).await?;
         let key = digest_key("bd", &json!([input.source_id]));
-        let planned = self.passage.plan_passages(&input.text).await?;
+        let (plan, binding) = match plan::policy(&self.snapshot) {
+            ChunkPolicy::Conventional { .. } => {
+                let planned = self.passage.plan_passages(&input.text).await?;
+                (DocumentPlan::Conventional(planned.output), planned.binding)
+            }
+            ChunkPolicy::Late { .. } => {
+                let planned = self.passage.plan_late_passages(&input.text).await?;
+                (DocumentPlan::Late(planned.output), planned.binding)
+            }
+        };
         ensure(
-            planned.binding == *self.passage.binding(),
+            binding == *self.passage.binding(),
             "planned provider binding changed",
         )?;
         // Detect policy changes during planning before spending any inference.
         self.current_retaining(retention).await?;
-        let plan = planned.output;
         let texts: Vec<String> = plan
-            .spans
+            .spans()
             .iter()
             .map(|span| input.text[span.start_byte..span.end_byte].to_owned())
             .collect();
-        let result = self.passage.embed(&texts, Some(16)).await?;
+        let (vectors, token_ranges) = match &plan {
+            DocumentPlan::Conventional(_) => {
+                let result = self.passage.embed(&texts, Some(16)).await?;
+                ensure(
+                    result.binding == binding,
+                    "prepared provider binding changed",
+                )?;
+                (result.output.embeddings, None)
+            }
+            DocumentPlan::Late(plan) => {
+                let result = self.passage.embed_planned_late(&input.text, plan).await?;
+                ensure(
+                    result.binding == binding,
+                    "prepared provider binding changed",
+                )?;
+                (result.output.embeddings, Some(result.output.token_ranges))
+            }
+        };
         ensure(
-            result.binding == *self.passage.binding(),
-            "prepared provider binding changed",
-        )?;
-        ensure(
-            result.output.embeddings.len() == plan.spans.len(),
+            vectors.len() == plan.spans().len(),
             "provider returned an incomplete document",
         )?;
         let source_hash = hash(input.text.as_bytes());
-        let binding = result.binding;
+        let format = plan::format(plan::policy(&self.snapshot));
         let mut document = json!({
-            "_key":key, "format":FORMAT, "source_id":input.source_id,
+            "_key":key, "format":format, "source_id":input.source_id,
             "source_sha256":source_hash, "full_text":input.text,
-            "chunk_count":plan.spans.len(), "embedding_binding":binding,
+            "chunk_count":plan.spans().len(), "embedding_binding":binding,
             "passage_plan":plan
         });
+        if let Some(ranges) = &token_ranges {
+            document["late_token_ranges"] = json!(ranges);
+        }
         if let Some(ingestion) = ingestion {
             document["file_ingestion"] = json!(ingestion);
         }
         let mut chunks = Vec::new();
         let mut embeddings = Vec::new();
-        for (index, ((span, text), vector)) in plan
-            .spans
-            .iter()
-            .zip(texts)
-            .zip(result.output.embeddings)
-            .enumerate()
+        for (index, ((span, text), vector)) in
+            plan.spans().iter().zip(texts).zip(vectors).enumerate()
         {
             validate_vector(&vector, binding.dimension, self.normalization)?;
             let chunk_key = digest_key("bc", &json!([binding.generation, key, index]));
-            let common = json!({
-                "_key":chunk_key, "format":FORMAT, "parent_key":key, "chunk_key":chunk_key,
+            let mut common = json!({
+                "_key":chunk_key, "format":format, "parent_key":key, "chunk_key":chunk_key,
                 "chunk_index":index, "source_sha256":source_hash, "embedding_binding":binding
             });
+            if let Some(ranges) = &token_ranges {
+                common["late_token_range"] = json!(ranges[index]);
+            }
             let mut chunk = common.clone();
             chunk["text"] = json!(text);
             chunk["span"] = json!(span);
