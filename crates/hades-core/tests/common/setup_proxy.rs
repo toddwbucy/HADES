@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -34,6 +34,7 @@ pub struct Proxy {
     pub entered: Arc<Notify>,
     pub release: Arc<Notify>,
     pub hits: Arc<AtomicUsize>,
+    broken: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
     _directory: tempfile::TempDir,
 }
@@ -54,32 +55,52 @@ impl Proxy {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let hits = Arc::new(AtomicUsize::new(0));
+        let broken = Arc::new(AtomicBool::new(false));
         let state = (
             Arc::new(Mutex::new((Some(rule), 0))),
             entered.clone(),
             release.clone(),
             hits.clone(),
+            broken.clone(),
         );
         let task = tokio::spawn(async move {
             let mut peers = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     incoming = listener.accept() => {
-                        let (stream, _) = incoming.unwrap();
+                        let (stream, _) = match incoming {
+                            Ok(peer) => peer,
+                            Err(_) => { state.4.store(true, Ordering::SeqCst); break; }
+                        };
                         let client=client.clone(); let database=database.clone(); let user=user.clone(); let password=password.clone(); let state=state.clone();
                         peers.spawn(async move {
                             let service = service_fn(move |request: Request<Incoming>| {
                                 let client=client.clone(); let database=database.clone(); let user=user.clone(); let password=password.clone(); let state=state.clone();
                                 async move {
                                     let method=request.method().clone();
-                                    let path=request.uri().path_and_query().unwrap().as_str().to_owned();
-                                    assert!(path.starts_with(&format!("/_db/{database}/_api/")) || path.starts_with("/_db/_system/_api/"));
+                                    let Some(path)=request.uri().path_and_query().map(|p|p.as_str().to_owned()) else {
+                                        return broken_response(&state.4,"missing request path");
+                                    };
+                                    if !(path.starts_with(&format!("/_db/{database}/_api/")) || path.starts_with("/_db/_system/_api/")) {
+                                        return broken_response(&state.4,"request escaped disposable scope");
+                                    }
                                     let api=path.split_once("/_api/").unwrap().1;
                                     let transaction=request.headers().get("x-arango-trx-id").cloned();
-                                    let bytes=request.into_body().collect().await.unwrap().to_bytes();
-                                    let body: Value=serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                                    let bytes=match request.into_body().collect().await {
+                                        Ok(body)=>body.to_bytes(),
+                                        Err(_)=>return broken_response(&state.4,"request body failed"),
+                                    };
+                                    let body: Value=if bytes.is_empty() { Value::Null } else {
+                                        match serde_json::from_slice(&bytes) {
+                                            Ok(value)=>value,
+                                            Err(_)=>return broken_response(&state.4,"request JSON failed"),
+                                        }
+                                    };
                                     let fault = {
-                                        let mut locked=state.0.lock().unwrap();
+                                        let mut locked=match state.0.lock() {
+                                            Ok(state)=>state,
+                                            Err(_)=>return broken_response(&state.4,"proxy rule lock poisoned"),
+                                        };
                                         if locked.0.as_ref().is_some_and(|r| r.method == method.as_str() && api.starts_with(r.path) && r.name.is_none_or(|n| body["name"] == n)) {
                                             locked.1 += 1;
                                             if locked.1 == locked.0.as_ref().unwrap().nth { locked.0.take() } else { None }
@@ -90,13 +111,26 @@ impl Proxy {
                                     if !fault.as_ref().is_some_and(|r| r.before) {
                                         let mut forwarded=client.request(method, format!("http://localhost{path}")).basic_auth(user,Some(password)).header("content-type","application/json").body(bytes);
                                         if let Some(id)=transaction { forwarded=forwarded.header("x-arango-trx-id",id); }
-                                        let actual=forwarded.send().await.unwrap(); status=actual.status().as_u16(); response=actual.text().await.unwrap();
+                                        let actual=match forwarded.send().await {
+                                            Ok(response)=>response,
+                                            Err(_)=>return broken_response(&state.4,"database forwarding failed"),
+                                        };
+                                        status=actual.status().as_u16();
+                                        response=match actual.text().await {
+                                            Ok(body)=>body,
+                                            Err(_)=>return broken_response(&state.4,"database response body failed"),
+                                        };
                                     }
                                     if let Some(mut rule)=fault {
                                         state.3.fetch_add(1,Ordering::SeqCst);
-                                        if let Some(callback)=rule.callback.take() { callback(); }
+                                        if let Some(callback)=rule.callback.take()
+                                            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)).is_err() {
+                                            return broken_response(&state.4,"fixture callback panicked");
+                                        }
                                         state.1.notify_one();
-                                        if rule.hold { tokio::time::timeout(Duration::from_secs(15),state.2.notified()).await.unwrap(); }
+                                        if rule.hold && tokio::time::timeout(Duration::from_secs(15),state.2.notified()).await.is_err() {
+                                            return broken_response(&state.4,"fixture hold timed out");
+                                        }
                                         if rule.fail { status=500; response=json!({"error":true,"errorNum":1,"code":500,"errorMessage":"injected setup fault"}).to_string(); }
                                     }
                                     Ok::<_,std::convert::Infallible>(Response::builder().status(status).body(Full::new(Bytes::from(response))).unwrap())
@@ -105,7 +139,9 @@ impl Proxy {
                             let _=hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream),service).await;
                         });
                     }
-                    Some(result)=peers.join_next() => { result.unwrap(); }
+                    Some(result)=peers.join_next() => {
+                        if result.is_err() { state.4.store(true,Ordering::SeqCst); }
+                    }
                 }
             }
         });
@@ -114,6 +150,7 @@ impl Proxy {
             entered,
             release,
             hits,
+            broken,
             task,
             _directory: directory,
         }
@@ -124,5 +161,26 @@ impl Drop for Proxy {
     fn drop(&mut self) {
         self.release.notify_one();
         self.task.abort();
+        if !std::thread::panicking() {
+            assert!(
+                !self.broken.load(Ordering::SeqCst),
+                "setup proxy failed internally"
+            );
+        }
     }
+}
+
+/// Separate unexpected infrastructure failures from deliberately injected setup refusals.
+fn broken_response(
+    broken: &AtomicBool,
+    reason: &str,
+) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    broken.store(true, Ordering::SeqCst);
+    let mut response = Response::new(Full::new(Bytes::from(
+        json!({"error":true,"errorNum":1,
+        "code":502,"errorMessage":format!("unexpected setup proxy failure: {reason}")})
+        .to_string(),
+    )));
+    *response.status_mut() = http::StatusCode::BAD_GATEWAY;
+    Ok(response)
 }

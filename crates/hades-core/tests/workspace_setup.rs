@@ -659,3 +659,25 @@ async fn profile_change_during_verification_requires_new_admission() {
     })
     .await;
 }
+
+/// A broken proxy fails the owning test even if a caller accepts the request error as expected.
+#[tokio::test]
+async fn proxy_failures_cannot_satisfy_expected_rejections() {
+    with_temp_db("setup_proxy_failure", Fixtures::Empty, |pool| async move {
+        let root = ledger();
+        let missing = ArangoClient::with_socket(
+            root.path().join("absent.sock"),
+            pool.database(),
+            "fixture",
+            "fixture",
+        );
+        let proxy = Proxy::new(&missing, rule("DELETE", "unused", None, 1));
+        assert!(matches!(
+            proxy.admin.get("version").await,
+            Err(hades_core::db::ArangoError::Api { status: 502, .. })
+        ));
+        assert_eq!(proxy.hits.load(Ordering::SeqCst), 0);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(proxy))).is_err());
+    })
+    .await;
+}
