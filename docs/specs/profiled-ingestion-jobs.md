@@ -53,7 +53,9 @@ Trees containing code enabled by the profile are refused until verified code
 ingestion is implemented. Parent admission uses the worker's shared discovery
 rules, including ignore files and shebangs, to reject such trees before contacting
 a provider, creating job history or spawning a worker. The worker repeats admission
-because the source tree or profile may change after the parent's check.
+because the source tree or profile may change after the parent's check. Parent
+discovery runs on Tokio's blocking pool so filesystem walks and shebang probes
+do not occupy the async threads shared with other daemon/MCP requests.
 
 The persisted pin records original admission rather than current readiness.
 Profile drift or removal omits `embedding_profile_state: "ready"` from the final

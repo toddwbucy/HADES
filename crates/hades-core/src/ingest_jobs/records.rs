@@ -105,9 +105,15 @@ async fn start_with(
         // Match the worker's traversal (including ignore files and shebangs)
         // before contacting the provider or creating history for an impossible job.
         let tree_pin = if resolved.is_dir() {
-            let found =
-                crate::ingest_routing::discovery::discover_by_route(&resolved, &Default::default())
-                    .map_err(service)?;
+            let root = resolved.clone();
+            // Walking and shebang probes perform blocking filesystem I/O. Keep
+            // large trees off the runtime shared by daemon and MCP requests.
+            let found = tokio::task::spawn_blocking(move || {
+                crate::ingest_routing::discovery::discover_by_route(&root, &Default::default())
+            })
+            .await
+            .map_err(service)?
+            .map_err(service)?;
             let admission = crate::embedding_profile::admission::document_tree_admission(
                 pool,
                 !found.code.is_empty(),
