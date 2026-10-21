@@ -397,6 +397,7 @@ fn disabled_workloads_unready_profiles_and_unsupported_features_fail() {
     late.workloads.documents.as_mut().unwrap().chunking = ChunkPolicy::Late {
         context_cap_tokens: 2048,
         minimum_window_overlap_tokens: 100,
+        passages: None,
     };
     assert!(late.validate(&manifest).is_err());
     late.capabilities.late_chunking = true;
@@ -411,6 +412,33 @@ fn disabled_workloads_unready_profiles_and_unsupported_features_fail() {
     assert!(code.validate(&manifest).is_err());
     code.capabilities.specialized_code = true;
     code.validate(&manifest).unwrap();
+}
+
+#[test]
+fn late_passage_policy_is_explicit_bounded_and_preserves_older_wire_records() {
+    let (manifest, mut profile, _) = fixture();
+    profile.capabilities.late_chunking = true;
+    profile.capabilities.tokenizer_offsets = true;
+    let old = json!({"mode":"late","context_cap_tokens":1000,"minimum_window_overlap_tokens":100});
+    let policy: ChunkPolicy = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&policy).unwrap(), old);
+    profile.workloads.documents.as_mut().unwrap().chunking = policy;
+    profile.validate(&manifest).unwrap();
+    for (tokens, overlap, valid) in [
+        (256, 32, true),
+        (0, 0, false),
+        (1001, 0, false),
+        (32, 32, false),
+    ] {
+        let mut wire = old.clone();
+        wire["passages"] = json!({"passage_tokens":tokens,"overlap_tokens":overlap});
+        profile.workloads.documents.as_mut().unwrap().chunking =
+            serde_json::from_value(wire).unwrap();
+        assert_eq!(profile.validate(&manifest).is_ok(), valid);
+    }
+    let mut unknown = old;
+    unknown["passages"] = json!({"passage_tokens":256,"overlap_tokens":32,"approximate":true});
+    assert!(serde_json::from_value::<ChunkPolicy>(unknown).is_err());
 }
 
 #[test]

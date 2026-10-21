@@ -46,6 +46,22 @@ class PassageRequest(BaseModel):
     max_input_tokens: int = Field(ge=1, le=0xffffffff)
 
 
+class LatePassageRequest(PassageRequest):
+    """Separate retrieval-passage and encoding-window budgets, with a required minimum overlap."""
+    context_cap_tokens: int = Field(ge=1, le=0xffffffff)
+    minimum_window_overlap_tokens: int = Field(ge=0, le=0xffffffff)
+
+
+class LateEmbeddingRequest(BaseModel):
+    """One explicitly bounded window; byte/character coordinates are never conflated."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str
+    input: str
+    task: Literal["retrieval.passage"]
+    expected_receipt: dict
+    boundaries: list[list[int]] = Field(min_length=1, max_length=128)
+
+
 async def _read_request(request: Request, request_type=VerifiedRequest):
     """Bound streamed JSON and preserve duplicate-key rejection before validation."""
     body = bytearray()
@@ -59,7 +75,7 @@ async def _read_request(request: Request, request_type=VerifiedRequest):
         expected = ProviderReceipt.from_dict(parsed.expected_receipt)
     except (ValueError, ValidationError, RecursionError) as exc:
         raise PEError(422, "PE_INVALID_REQUEST",
-                      "Invalid request; verified provider supports conventional retrieval text and requires an exact receipt") from exc
+                      "Invalid request; verified retrieval requires a supported policy and an exact receipt") from exc
     return parsed, expected
 
 
@@ -136,5 +152,32 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
             max_input_tokens=parsed.max_input_tokens,
         ))
         return JSONResponse(result)
+
+    @app.post("/v1/late-passages")
+    async def late_passages(request: Request):
+        """Plan only when the selected adapter explicitly implements contextual passages."""
+        parsed, expected = await _read_request(request, LatePassageRequest)
+        method = getattr(provider, "plan_late", None)
+        if method is None:
+            raise PEError(400, "PE_UNSUPPORTED_CAPABILITY", "Late passage planning is unavailable")
+        return JSONResponse(await run(lambda: method(
+            model=parsed.model, text=parsed.input, task=parsed.task, expected=expected,
+            passage_tokens=parsed.passage_tokens, overlap_tokens=parsed.overlap_tokens,
+            context_cap_tokens=parsed.context_cap_tokens,
+            minimum_window_overlap_tokens=parsed.minimum_window_overlap_tokens,
+            max_input_tokens=parsed.max_input_tokens,
+        )))
+
+    @app.post("/v1/late-embeddings")
+    async def late_embeddings(request: Request):
+        """Return contextual passage vectors and their observed token/character coordinates."""
+        parsed, expected = await _read_request(request, LateEmbeddingRequest)
+        method = getattr(provider, "embed_late", None)
+        if method is None:
+            raise PEError(400, "PE_UNSUPPORTED_CAPABILITY", "Late passage embedding is unavailable")
+        return JSONResponse(await run(lambda: method(
+            model=parsed.model, text=parsed.input, task=parsed.task,
+            boundaries=parsed.boundaries, expected=expected,
+        )))
 
     return app

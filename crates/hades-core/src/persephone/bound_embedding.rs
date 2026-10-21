@@ -11,8 +11,11 @@ use std::time::Duration;
 
 use crate::embedding_profile::{
     ArtifactManifest, BoundEmbeddingRequest, ChunkPolicy, EmbeddingProfile, EmbeddingRole,
-    ProviderReceipt, WorkloadKind, require,
+    Normalization, ProviderReceipt, WorkloadKind, require,
 };
+
+mod late;
+pub use late::{LateDocumentEmbeddings, LateTokenRange};
 
 use super::embedding::{
     EmbedResult, EmbeddingClient, EmbeddingClientConfig, EmbeddingEndpoint, EmbeddingError,
@@ -46,6 +49,7 @@ pub struct BoundEmbeddingClient {
     chunking: ChunkPolicy,
     role: EmbeddingRole,
     max_input_tokens: u32,
+    normalization: Normalization,
 }
 
 impl BoundEmbeddingClient {
@@ -94,6 +98,7 @@ impl BoundEmbeddingClient {
             chunking: selected.chunking.clone(),
             role,
             max_input_tokens: profile.capabilities.max_input_tokens,
+            normalization: selected.space.representation.normalize,
         })
     }
 

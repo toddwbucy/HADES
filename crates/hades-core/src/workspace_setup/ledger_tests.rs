@@ -34,6 +34,44 @@ fn scope() -> Scope {
 
 /// A reopened ledger retains the exact request, owner and database reservation without rewriting it.
 #[tokio::test]
+async fn diagnostic_lease_requires_existing_metadata_and_preserves_it() {
+    let root = directory();
+    assert!(
+        Lease::open_existing(root.path().into(), scope())
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    let lease = Lease::open(root.path().into(), scope()).await.unwrap();
+    let record = lease.claim(request(), "owner").await.unwrap();
+    let bytes = std::fs::read(root.path().join("op_fixture-op.json")).unwrap();
+    assert!(matches!(
+        Lease::open_existing(root.path().into(), scope()).await,
+        Err(SetupError::Busy)
+    ));
+    drop(lease);
+    let reopened = Lease::open_existing(root.path().into(), scope())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.read("fixture-op").await.unwrap().unwrap().receipt,
+        record.receipt
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("op_fixture-op.json")).unwrap(),
+        bytes
+    );
+    drop(reopened);
+    std::fs::remove_file(root.path().join("scope.json")).unwrap();
+    assert!(
+        Lease::open_existing(root.path().into(), scope())
+            .await
+            .is_err()
+    );
+    assert!(!root.path().join("scope.json").exists());
+}
+
+#[tokio::test]
 async fn durable_reservations_are_exact_and_process_locked() {
     let root = directory();
     let lease = Lease::open(root.path().into(), scope()).await.unwrap();

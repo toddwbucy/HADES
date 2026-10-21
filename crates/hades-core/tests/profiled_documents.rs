@@ -15,6 +15,9 @@ use std::{sync::Arc, time::Duration};
 mod provider;
 use provider::{Fault, Fixture, Peer};
 
+#[path = "profiled_documents/late.rs"]
+mod late;
+
 /// Supply extraction text only; the private peer plans conservative newline passages.
 fn input(id: &str, passages: &[&str]) -> DocumentInput {
     let mut text = String::new();
@@ -611,6 +614,7 @@ async fn invalid_plans_and_unsupported_policy_never_contact_the_provider() {
                         .chunking = ChunkPolicy::Late {
                         context_cap_tokens: 1000,
                         minimum_window_overlap_tokens: 100,
+                        passages: None,
                     };
                 }
                 "dot" => {

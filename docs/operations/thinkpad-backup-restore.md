@@ -5,6 +5,11 @@ commit `15e2c9565a9c051ca8a2b17c625cc6005b3aa0fa`. It covers the local
 `Conveyance_KG` workspace. Adapt paths from the
 [service configuration](../installation-thinkpad-services.md).
 
+For workspaces created with a saved embedding profile, also follow the
+[model-bound recovery contract](model-bound-recovery.md). This older workstation
+rehearsal does not cover setup ledgers, provider registrations or ownership
+reconciliation after restoring a managed database.
+
 ## Backup scope
 
 Preserve a logical database dump including system collections: `_graphs` carries

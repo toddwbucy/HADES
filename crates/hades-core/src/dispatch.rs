@@ -5553,7 +5553,7 @@ mod handlers {
             if profile.metadata != "documents" || hybrid || structural {
                 return Err(HandlerError::InvalidParameter {
                     name: "collection/hybrid/structural".into(),
-                    reason: "model-bound search currently supports conventional documents and exact cosine ranking only; code, hybrid and structural search are unavailable".into(),
+                    reason: "model-bound search currently supports document passages and exact cosine ranking only; code, hybrid and structural search are unavailable".into(),
                 });
             }
             let catalog = config.registered_providers.as_ref()

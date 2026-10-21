@@ -1,4 +1,4 @@
-//! Database ownership and the minimal conventional-document schema.
+//! Database ownership and the minimal model-bound document schema.
 //! No graph seeds, vector-index defaults, collection deletion, or legacy adoption.
 use super::{
     SetupError,
@@ -109,6 +109,19 @@ impl Ownership {
             .await?;
         self.check(client).await
     }
+}
+
+/// Recognize only the exact empty schema of an already-acknowledged marker checkpoint.
+pub(super) async fn marker_pending(client: &ArangoClient) -> Result<bool, SetupError> {
+    let names = inventory(client).await?;
+    if names.is_empty() {
+        return Ok(true);
+    }
+    if names.len() != 1 || names[0] != MARKERS {
+        return Ok(false);
+    }
+    collection(client, MARKERS, false).await?;
+    Ok(count(client, MARKERS).await? == 0)
 }
 
 /// Resolve the selected database's identity without enumerating or adopting other databases.

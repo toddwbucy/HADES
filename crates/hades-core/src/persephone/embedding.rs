@@ -832,7 +832,11 @@ impl EmbeddingClient {
     ) -> Result<T, EmbeddingError> {
         let uri = self.build_uri(path)?;
 
-        let pinned = if method == Method::POST && matches!(path, "/embeddings" | "/passages") {
+        let pinned = if method == Method::POST
+            && matches!(
+                path,
+                "/embeddings" | "/passages" | "/late-passages" | "/late-embeddings"
+            ) {
             self.expected_receipt.as_ref()
         } else {
             None

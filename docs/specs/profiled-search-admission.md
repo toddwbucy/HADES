@@ -63,7 +63,8 @@ no database/provider cache that can leak one database's model into another.
 An identical verified reload is compatible with stored vectors; a reload during
 a request or profile change during inference invalidates that request.
 
-Only conventional document profiles with cosine distance are currently supported.
+Conventional and explicitly configured [late document profiles](verified-late-passages.md)
+with cosine distance are supported.
 Code collection selection, hybrid/structural ranking, and cross-encoder reranking
 are rejected. Disabled documents, unsupported chunking, and incomplete schema
 fail before inference. Raw source/graph reads and notes remain available without
@@ -76,6 +77,10 @@ includes `parent_key`, `chunk_key`, `text`, `source_id`, `chunk_index`,
 `total_chunks`, `span`, and cosine `score`. The binding carries the profile
 revision, corpus generation, provider, model, dimension, artifact MD5, space, and
 serving observation.
+
+Late hits also include `late_context` with the encoding window, window index and
+observed token range. Search refuses missing or inconsistent contextual provenance
+before scoring; it never treats conventional vectors as late-chunked vectors.
 
 The complete scan validates every stored vector's provenance before scoring.
 Selected source text is fetched under the same profile/data transaction, checked
