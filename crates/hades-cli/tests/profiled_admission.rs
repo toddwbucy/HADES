@@ -92,12 +92,23 @@ async fn direct_mixed_document_code_and_training_commands_stop_before_services_o
                 .map(|c| c.name.clone())
                 .collect::<Vec<_>>();
             let root = directory.path().to_str().unwrap();
+            let absent_checkpoint = directory.path().join("absent-checkpoint");
+            // Satisfy the CLI's explicit GPU declaration without reaching a
+            // trainer. No graph schema exists, and the update checkpoint is a
+            // private missing path, so even a guard regression cannot train.
             for args in [
                 vec!["ingest", prose.to_str().unwrap()],
                 vec!["ingest", root],
                 vec!["codebase", "ingest", root],
-                vec!["graph-embed", "train"],
-                vec!["graph-embed", "update"],
+                vec!["--gpu", "0", "graph-embed", "train"],
+                vec![
+                    "--gpu",
+                    "0",
+                    "graph-embed",
+                    "update",
+                    "--checkpoint-dir",
+                    absent_checkpoint.to_str().unwrap(),
+                ],
             ] {
                 let output = command(&pool, &config, &args).output().await.unwrap();
                 assert!(!output.status.success(), "{args:?}");
