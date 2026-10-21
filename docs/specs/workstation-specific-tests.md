@@ -109,6 +109,11 @@ bytes, atomic metadata/replacement, cancellation, provider/profile/source drift,
 policy refusal and partial batch failure. Select it with `--contract profiled_files`;
 both targets also run in the default isolated CI matrix.
 
+The `profiled_jobs` contract checks [background job pins](profiled-ingestion-jobs.md)
+and runs the matching CLI target. It covers database/profile isolation, sealed
+handoff, real daemon workers, explicit replacement and profile drift during
+extraction. Both targets also run in the default isolated CI matrix.
+
 The opt-in [real Jina qualification](verified-jina-qualification.md) uses an
 approved local registration, fixed smoke cases, private verified HTTP, and the
 ignored `verified_jina_documents` test. Its owner selects `--verified-jina` plus

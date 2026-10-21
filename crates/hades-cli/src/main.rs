@@ -351,6 +351,13 @@ fn main() -> anyhow::Result<()> {
             "resolved configuration is only accepted for ingestion"
         );
         let (config, snapshot) = config::snapshot::load_ingest(fd)?;
+        anyhow::ensure!(
+            cli.database
+                .as_deref()
+                .is_none_or(|database| Some(database) == config.database.name.as_deref())
+                && cli.gpu.is_none(),
+            "inherited ingestion configuration does not accept database or GPU overrides"
+        );
         (
             config,
             std::sync::Arc::new(hades_core::source_git::Batch::from_snapshot(snapshot)),

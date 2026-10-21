@@ -7412,6 +7412,22 @@ mod tests {
         use tokio::sync::Notify;
 
         let roots = tempfile::tempdir().unwrap();
+        let mut mismatched = Mock::new(vec![]).await;
+        let error = handlers::ingest_start(
+            &mismatched.pool,
+            &HadesConfig::with_database("wrong-database"),
+            roots.path().to_str().unwrap(),
+            false,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("configuration and selected database differ")
+        );
+        assert!(mismatched.events.try_recv().is_err());
         let mut tasks = Vec::new();
         let mut mocks = Vec::new();
         for index in 0..2 {
@@ -7423,7 +7439,7 @@ mod tests {
             tasks.push(tokio::spawn(async move {
                 handlers::ingest_start(
                     &pool,
-                    &HadesConfig::with_database(&format!("database-{index}")),
+                    &HadesConfig::with_database(pool.database()),
                     path.to_str().unwrap(),
                     false,
                     false,
@@ -7434,7 +7450,7 @@ mod tests {
             mocks.push(mock);
         }
         let mut rejected = Mock::new(vec![]).await;
-        let config = HadesConfig::with_database("database-three");
+        let config = HadesConfig::with_database(rejected.pool.database());
         let fresh = roots.path().join("fresh");
         std::fs::create_dir(&fresh).unwrap();
         for path in [roots.path().join("tree-0"), fresh.clone()] {

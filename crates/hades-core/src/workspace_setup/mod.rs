@@ -218,7 +218,14 @@ impl WorkspaceSetup {
             checkpoint(lease, record, SetupStep::Profile, SetupStatus::Initializing).await?;
         }
         ownership.check(&client).await?;
-        database::inventory(&client).await?;
+        database::inventory_with_jobs(
+            &client,
+            matches!(
+                record.receipt.step,
+                SetupStep::Publish | SetupStep::Complete
+            ),
+        )
+        .await?;
         let store = ProfileStore::new(pool.clone())?;
         if record.receipt.step == SetupStep::Profile {
             database::collection(&client, crate::embedding_profile::store::COLLECTION, true)

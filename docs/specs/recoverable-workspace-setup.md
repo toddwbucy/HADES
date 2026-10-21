@@ -90,6 +90,10 @@ The minimal schema contains `hades_setup`, `hades_workspace`, `documents`,
 only their primary unique `_key` indexes. It does not create graph schema seeds
 or an unqualified vector index. Retrieval uses the internal exact-scan path.
 Unknown collections, indexes, metadata rows, or preexisting vectors are refused.
+After readiness, [background document jobs](profiled-ingestion-jobs.md) may add
+the synchronous `hades_ingest_jobs` document collection. Identical setup retries
+validate and preserve that operational history; initializing schema checks still
+refuse it.
 
 Final publication locks ownership, profile metadata, and all data collections in
 one stream transaction. It rechecks ownership, empty data collections, schema,

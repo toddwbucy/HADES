@@ -272,8 +272,10 @@ The original result above used one explicit passage per small document. The
 current protocol adds [token-aware planning](profile-token-planning.md) and a
 long Unicode fixture; its evidence is recorded separately. Public `db.query`
 search and foreground file ingestion are now qualified through their shared paths.
-Background job pins, code/late-chunk capabilities, legacy policy and frontend
-creation remain separate work. Registered local provider discovery and internal recoverable
+Background job pins are covered separately by synthetic daemon/worker contracts;
+this real-model protocol still exercises the foreground path. Code/late-chunk
+capabilities, legacy policy and frontend creation remain separate work.
+Registered local provider discovery and internal recoverable
 document setup are now part of the qualification flow; public setup authorization
 and administrative reconciliation/backup tooling remain pending.
 Public pairing remains gated.

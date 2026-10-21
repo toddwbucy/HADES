@@ -2,8 +2,8 @@
 
 Status: foreground document ingestion for
 [#225](https://github.com/toddwbucy/HADES/issues/225). Public database setup and
-frontend activation remain gated; background ingestion still refuses managed
-databases until jobs carry profile pins through admission, startup and retry.
+frontend activation remain gated. [Background document jobs](profiled-ingestion-jobs.md)
+now carry profile pins through parent admission and worker startup.
 
 ## Entry points and policy
 
@@ -112,6 +112,6 @@ integration, not Docling extraction quality.
 The [ThinkPad qualification](../evidence/jina-file-ingestion-thinkpad-2026-10-21.json)
 passed all six expected retrieval answers and the long Unicode token-recount gates.
 
-Job pins, broader workloads and mixed-tree routing, legacy adoption/migration,
+Broader workloads and mixed-tree routing, legacy adoption/migration,
 backup/reconciliation tooling, public setup authorization and frontend activation
 remain follow-up work. No installed services or active corpora are changed.

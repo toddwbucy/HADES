@@ -59,7 +59,16 @@ pub(super) async fn run(
     let routes = config.registered_providers.as_ref().context(
         "model-bound or initializing workspace requires registered_providers for document ingestion",
     )?;
-    let documents = Arc::new(ProfiledDocuments::connect(db, &routes.catalog()?).await?);
+    let catalog = routes.catalog()?;
+    let documents = Arc::new(match &config.ingest_binding {
+        Some(hades_core::ingest_jobs::Binding::Profiled(pin)) => {
+            ProfiledDocuments::connect_pinned(db, &catalog, pin).await?
+        }
+        Some(hades_core::ingest_jobs::Binding::Legacy) => {
+            bail!("legacy ingestion job cannot adopt a model-bound workspace; start a new job")
+        }
+        None => ProfiledDocuments::connect(db, &catalog).await?,
+    });
     // No extraction connection until database policy and the actual loaded model agree.
     let extractor = ExtractionClient::connect_at(&config.extraction.service.socket).await?;
     provenance.prepare(&inputs).await;
@@ -118,5 +127,8 @@ pub(super) async fn run(
         .await?;
     let mut outcome = batch_outcome(summary, envelope_git, start)?;
     outcome.data["embedding_profile_state"] = json!("ready");
+    if let Some(hades_core::ingest_jobs::Binding::Profiled(pin)) = &config.ingest_binding {
+        outcome.data["profile_pin"] = json!(pin);
+    }
     Ok(outcome)
 }

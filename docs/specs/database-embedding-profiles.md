@@ -454,8 +454,8 @@ including different dimensions and provider reloads.
 [Token-aware planning](profile-token-planning.md) now uses the verified serving
 tokenizer, retains counted source spans, and removes the caller-supplied-span path.
 The subsequent internal setup coordinator supplies ownership/recovery and
-schema/provider readiness checks. Portable job pins and public enforcement remain
-pending.
+schema/provider readiness checks. Subsequent integrations below add public
+search, foreground documents and pinned document jobs.
 
 The [real-Jina qualification protocol](verified-jina-qualification.md) adds an
 opt-in fixed retrieval/tokenizer/reload suite and the real provider HTTP-to-Rust
@@ -478,10 +478,10 @@ backup/reconciliation tooling, and frontend activation remain pending.
 
 [Public search and admission](profiled-search-admission.md) now resolve ready
 document profiles through explicit installation provider routes in the shared
-CLI/service/MCP query handler. Legacy core ingestion, jobs, vector indexes, and
+CLI/service/MCP query handler. Legacy core ingestion, unpinned jobs, vector indexes, and
 structural operations refuse managed/initializing databases. Nonvector reads
 remain available. Existing legacy semantic searches are labeled unverified;
-job pins and the full legacy migration policy remain pending before public setup
+the full legacy migration policy remains pending before public setup
 and frontend activation.
 
 [Foreground file ingestion](profiled-file-ingestion.md) now selects the verified
@@ -489,7 +489,13 @@ document path for managed databases. It snapshots bounded input bytes before
 extraction, pins the original source revision, and commits source provenance,
 namespaced metadata, passages and vectors together. Named documents and
 documents-only directories are supported; legacy checkpoints, code/mixed-tree
-ingestion and background jobs remain gated pending their profile-aware paths.
+ingestion remain gated pending their profile-aware paths.
+
+[Background document jobs](profiled-ingestion-jobs.md) now verify the parent
+admission, persist a compact profile pin and pass it through the sealed child
+configuration. Workers reject stale/cross-database pins before extraction;
+existing cleanup and guarded storage remain shared with foreground ingestion.
+Legacy resume checkpoints still cannot authorize managed ingestion.
 
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
@@ -514,9 +520,10 @@ ingestion and background jobs remain gated pending their profile-aware paths.
    model-change action. Otherwise retain the documented offline path and keep
    that action unavailable; track the automated workflow separately.
 
-Per the owner's updated review workflow, open PRs ready for automated review,
-monitor feedback and CI, and address findings before the next dependent change.
-The repository owner performs merges. This audit PR stops at the plan.
+Per the owner's overnight workflow, dependent implementation PRs may be stacked
+and left in draft for morning review. Record each base/dependency and validation;
+keep the stack unmerged. The repository owner performs review activation and merges.
+This audit PR originally stopped at the plan.
 #203's GPU selector repair is independent.
 #167's evaluation baseline should be ready before choosing a smaller-model
 default; #3 is a candidate investigation, not a required backend.

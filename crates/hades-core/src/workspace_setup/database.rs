@@ -132,6 +132,14 @@ pub(super) async fn identity(client: &ArangoClient) -> Result<Option<String>, Se
 
 /// Refuse unknown user collections without deleting or reseeding anything.
 pub(crate) async fn inventory(client: &ArangoClient) -> Result<Vec<String>, SetupError> {
+    inventory_with_jobs(client, false).await
+}
+
+/// Ready workspaces may have the separately validated ingestion history collection.
+pub(super) async fn inventory_with_jobs(
+    client: &ArangoClient,
+    jobs: bool,
+) -> Result<Vec<String>, SetupError> {
     let value = client.get("collection?excludeSystem=true").await?;
     let entries = value["result"]
         .as_array()
@@ -141,7 +149,8 @@ pub(crate) async fn inventory(client: &ArangoClient) -> Result<Vec<String>, Setu
         let name = entry["name"].as_str().unwrap_or("");
         verify(
             [MARKERS, crate::embedding_profile::store::COLLECTION].contains(&name)
-                || DATA.contains(&name),
+                || DATA.contains(&name)
+                || (jobs && name == crate::ingest_jobs::COLLECTION),
             "workspace contains collections outside the confirmed setup schema",
         )?;
         names.push(name.into());
@@ -195,7 +204,13 @@ pub(crate) async fn schema(
     create: bool,
     empty: bool,
 ) -> Result<(), SetupError> {
-    inventory(client).await?;
+    let names = inventory_with_jobs(client, !empty).await?;
+    if names
+        .iter()
+        .any(|name| name == crate::ingest_jobs::COLLECTION)
+    {
+        collection(client, crate::ingest_jobs::COLLECTION, false).await?;
+    }
     collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
     for name in DATA {
         collection(client, name, create).await?;

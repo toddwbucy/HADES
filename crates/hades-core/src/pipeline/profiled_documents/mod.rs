@@ -16,7 +16,7 @@ use crate::{
     embedding_profile::{
         BoundEmbeddingRequest, ChunkPolicy, Distance, EmbeddingRole, Normalization, ProfileState,
         WorkloadKind,
-        store::{ProfileSnapshot, ProfileStore},
+        store::{ProfilePin, ProfileSnapshot, ProfileStore},
     },
     persephone::{
         bound_embedding::BoundEmbeddingClient,
@@ -96,8 +96,34 @@ impl ProfiledDocuments {
         catalog: &ProviderCatalog,
         retention: R,
     ) -> Result<Self, PipelineError> {
+        Self::connect_checked(pool, catalog, None, retention).await
+    }
+
+    /// An inherited job must retain its parent's database/profile admission.
+    pub async fn connect_pinned(
+        pool: ArangoPool,
+        catalog: &ProviderCatalog,
+        pin: &ProfilePin,
+    ) -> Result<Self, PipelineError> {
+        Self::connect_checked(pool, catalog, Some(pin), ()).await
+    }
+
+    /// Compact evidence for a child worker; no host paths or manifest bytes are exposed.
+    pub fn job_pin(&self) -> Result<ProfilePin, PipelineError> {
+        Ok(self.snapshot.job_pin()?)
+    }
+
+    async fn connect_checked<R: Clone + Send + 'static>(
+        pool: ArangoPool,
+        catalog: &ProviderCatalog,
+        pin: Option<&ProfilePin>,
+        retention: R,
+    ) -> Result<Self, PipelineError> {
         let store = ProfileStore::new(pool.clone())?;
         let snapshot = store.load_retaining(retention.clone()).await?;
+        if let Some(pin) = pin {
+            pin.check(&snapshot)?;
+        }
         let profile = snapshot.profile();
         ensure(
             profile.state == ProfileState::Ready,

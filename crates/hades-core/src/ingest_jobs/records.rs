@@ -1,5 +1,5 @@
 //! Persisted phases and detached ownership of ingestion startup/completion.
-use super::{Reservation, process::Process};
+use super::{COLLECTION, Reservation, process::Process};
 use crate::config::HadesConfig;
 use crate::db::{ArangoPool, crud, query};
 use crate::dispatch::HandlerError;
@@ -11,7 +11,6 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-const COLLECTION: &str = "hades_ingest_jobs";
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn service(error: impl std::fmt::Display) -> HandlerError {
@@ -57,6 +56,11 @@ async fn start_with(
     );
     let pool = &bounded_pool;
     let database = config.effective_database().map_err(service)?.to_owned();
+    if database != pool.database() {
+        return Err(service(
+            "ingestion configuration and selected database differ",
+        ));
+    }
     let resolved = std::fs::canonicalize(path).map_err(|e| HandlerError::InvalidParameter {
         name: "path".into(),
         reason: e.to_string(),
@@ -77,11 +81,44 @@ async fn start_with(
     }
     let provenance = crate::source_git::Batch::default();
     let source_git = provenance.resolve(&resolved).await.map_err(service)?;
-    crate::embedding_profile::admission::require_legacy(pool, "background ingestion")
+    let binding = if crate::embedding_profile::admission::is_managed(pool)
         .await
-        .map_err(service)?;
+        .map_err(service)?
+    {
+        if allow_degraded_enrichment {
+            return Err(service(
+                "model-bound document jobs do not support degraded code enrichment",
+            ));
+        }
+        if resolved.is_file()
+            && crate::ingest_routing::route_for(&resolved) != crate::ingest_routing::Route::Document
+        {
+            return Err(service(
+                "model-bound jobs require document files or documents-only directories; code is disabled_by_profile",
+            ));
+        }
+        if !(1..=4).contains(&config.batch_processing.concurrency) {
+            return Err(service(
+                "model-bound document jobs require concurrency 1..=4",
+            ));
+        }
+        let routes = config.registered_providers.as_ref().ok_or_else(|| service("model-bound or initializing workspace requires registered_providers for background ingestion"))?;
+        let documents = crate::pipeline::profiled_documents::ProfiledDocuments::connect(pool.clone(), &routes.catalog().map_err(service)?)
+            .await.map_err(|error| service(format!("background ingestion unavailable for this model-bound or initializing workspace: {error}")))?;
+        super::Binding::Profiled(Box::new(documents.job_pin().map_err(service)?))
+    } else {
+        super::Binding::Legacy
+    };
+    let profile_pin = match &binding {
+        super::Binding::Profiled(pin) => Some(pin.clone()),
+        super::Binding::Legacy => None,
+    };
     let reservation = super::reserve(&resolved).map_err(service)?;
-    if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
+    if profile_pin.is_some() {
+        crate::workspace_setup::database::collection(pool.writer(), COLLECTION, true)
+            .await
+            .map_err(service)?;
+    } else if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict
     {
         return Err(service(format!("cannot prepare ingest records: {error}")));
@@ -107,8 +144,10 @@ async fn start_with(
     }
 
     let job = format!("{:032x}", rand::random::<u128>());
+    let mut child_config = config.clone();
+    child_config.ingest_binding = Some(binding);
     let snapshot = crate::config::snapshot::Snapshot::with_provenance(
-        config,
+        &child_config,
         provenance.snapshot().await.map_err(service)?,
     )
     .map_err(service)?;
@@ -124,13 +163,9 @@ async fn start_with(
     }
     reservation.identify(&database, &job).map_err(service)?;
     let row = json!({"_key":job,"status":"starting","owner_instance":super::instance(),
-        "database":database,"path":resolved,"source_git":source_git,"force":force,"allow_degraded_enrichment":allow_degraded_enrichment,"started_at":chrono::Utc::now().to_rfc3339(),
+        "database":database,"path":resolved,"source_git":source_git,"profile_pin":profile_pin,"force":force,"allow_degraded_enrichment":allow_degraded_enrichment,"started_at":chrono::Utc::now().to_rfc3339(),
         "output_storage":"bounded_job_record","log_path":null,"stderr_path":null});
-    command
-        .arg("--db")
-        .arg(&database)
-        .arg("ingest")
-        .arg(&resolved);
+    command.arg("ingest").arg(&resolved);
     if force {
         command.arg("--force");
     }
@@ -244,7 +279,7 @@ async fn own_start(
             return;
         }
     };
-    let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"source_git":row["source_git"],"pid":pid,"poll":"ingest.status"})));
+    let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"source_git":row["source_git"],"profile_pin":row["profile_pin"],"pid":pid,"poll":"ingest.status"})));
     let update = match child.finish(shutdown).await {
         Ok(output) => outcome(output),
         Err(error) => failed(&error.to_string()),

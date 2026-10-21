@@ -19,6 +19,8 @@ struct Envelope {
     config: HadesConfig,
     #[serde(default)]
     provenance: crate::source_git::Snapshot,
+    #[serde(default)]
+    profile_pin: Option<crate::embedding_profile::store::ProfilePin>,
     // These remain skipped in ordinary configuration YAML.
     password: Option<String>,
     cuda_visible_devices: Option<String>,
@@ -84,7 +86,14 @@ impl Snapshot {
             "cannot restrict ingestion configuration"
         );
         let envelope = Envelope {
-            version: 2,
+            version: 3,
+            profile_pin: match &config.ingest_binding {
+                Some(crate::ingest_jobs::Binding::Profiled(pin)) => {
+                    pin.validate()?;
+                    Some((**pin).clone())
+                }
+                _ => None,
+            },
             provenance,
             config: config.clone(),
             password: config.database.password.clone(),
@@ -164,10 +173,21 @@ pub fn load_ingest(fd: i32) -> Result<(HadesConfig, crate::source_git::Snapshot)
     let envelope: Envelope = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow!("invalid inherited ingestion configuration"))?;
     ensure!(
-        matches!(envelope.version, 1 | 2),
+        matches!(envelope.version, 1..=3),
         "unsupported ingestion configuration version"
     );
     let mut config = envelope.config;
+    ensure!(
+        envelope.version == 3 || envelope.profile_pin.is_none(),
+        "old ingestion handoff cannot carry a profile pin"
+    );
+    config.ingest_binding = Some(match envelope.profile_pin {
+        Some(pin) => {
+            pin.validate()?;
+            crate::ingest_jobs::Binding::Profiled(Box::new(pin))
+        }
+        None => crate::ingest_jobs::Binding::Legacy,
+    });
     config.database.password = envelope.password;
     config.gpu.cuda_visible_devices = envelope.cuda_visible_devices;
     Ok((config, envelope.provenance))

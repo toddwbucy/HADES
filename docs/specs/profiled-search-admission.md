@@ -3,8 +3,8 @@
 Status: shared CLI/service/MCP search integration for
 [#225](https://github.com/toddwbucy/HADES/issues/225). Database creation in the
 frontend remains gated. [Foreground file ingestion](profiled-file-ingestion.md)
-now shares the verified document path; ingestion jobs, broader workloads and
-migration are still pending.
+now shares the verified document path, as do [background document jobs](profiled-ingestion-jobs.md).
+Broader workloads and migration are still pending.
 
 ## Database authority
 
@@ -48,9 +48,9 @@ catalog construction validates absolute paths, unique IDs, and bounded timeouts
 and responses. Registration and socket ownership checks occur on resolution.
 See [registered discovery](registered-provider-discovery.md) for those rules.
 
-Routes survive the existing bounded, sealed configuration handoff. This does
-not implement portable job/profile pins. Foreground file ingestion uses these
-same explicit routes and its own guarded document admission.
+Routes survive the bounded, sealed configuration handoff together with compact
+job/profile pins. Foreground file ingestion and background document workers use
+these same explicit routes and guarded document admission.
 No installed configuration or service is automatically changed.
 
 ## Shared search behavior
@@ -99,15 +99,15 @@ services or writes:
 
 - Legacy core document ingestion, code phases of mixed-tree ingestion and direct
   code ingest. Foreground document files now use the verified profile-aware path.
-- Background ingestion admission, before job collection/record creation or child
-  startup. A child also encounters the direct CLI guards.
+- Unpinned/legacy background workers. New document jobs carry the verified
+  admission through their sealed handoff; unsupported code jobs remain refused.
 - Legacy vector-index creation, structural training/loading/update/export and
   structural similarity, and semantic smell reports.
 
 The core legacy document pipeline checks admission too. Source reads, stored
 structural-vector inspection, and nonsemantic smell inspection stay available.
 None of these refusals removes or edits a saved profile or existing corpus.
-Portable job pins, supported code/late-chunking flows,
+Supported code/late-chunking flows,
 index derivation, backup/reconciliation tooling, public setup authorization, and
 frontend activation remain follow-up work. Do not remove metadata to bypass a
 refusal or label historical vectors with today's model.

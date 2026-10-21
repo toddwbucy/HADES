@@ -102,6 +102,44 @@ async fn creation_and_identical_retries_preserve_profile_and_documents() {
         };
         let prepared = documents.prepare(input, false).await.unwrap();
         documents.commit(prepared).await.unwrap();
+        // Background jobs add operational history only after readiness. An
+        // identical setup retry must preserve and validate that collection.
+        pool.writer()
+            .post(
+                "collection",
+                &json!({"name":"hades_ingest_jobs","type":2,"waitForSync":true}),
+            )
+            .await
+            .unwrap();
+        let history = crud::insert_document(
+            &pool,
+            "hades_ingest_jobs",
+            &json!({"_key":"fixture_job","status":"completed"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(setup.run(request.clone()).await.unwrap(), receipt);
+        assert_eq!(
+            crud::get_document(&pool, "hades_ingest_jobs", "fixture_job")
+                .await
+                .unwrap()["_rev"],
+            history["_rev"]
+        );
+        pool.writer()
+            .put(
+                "collection/hades_ingest_jobs/properties",
+                &json!({"waitForSync":false}),
+            )
+            .await
+            .unwrap();
+        assert!(setup.run(request.clone()).await.is_err());
+        pool.writer()
+            .put(
+                "collection/hades_ingest_jobs/properties",
+                &json!({"waitForSync":true}),
+            )
+            .await
+            .unwrap();
         assert_eq!(setup.run(request.clone()).await.unwrap(), receipt);
         assert_eq!(store.load().await.unwrap(), before);
         assert_eq!(

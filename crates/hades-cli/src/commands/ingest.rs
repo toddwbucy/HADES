@@ -107,6 +107,9 @@ pub async fn run_unified(
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
+    if let Some(binding) = &config.ingest_binding {
+        binding.check(&ArangoPool::from_config(config)?).await?;
+    }
     let source_git = provenance.resolve(&root).await?;
     let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
     let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
@@ -364,6 +367,9 @@ pub async fn run_phase(
 
     // -- Connect to services ---------------------------------------------------
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    if let Some(binding) = &config.ingest_binding {
+        binding.check(&db).await?;
+    }
     if hades_core::embedding_profile::admission::is_managed(&db).await? {
         return profiled::run(
             config,
