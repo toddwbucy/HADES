@@ -232,7 +232,10 @@ async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: boo
     report["data"].clone()
 }
 async fn ingest(pool: &ArangoPool, embedder: &Embedder, root: &Path) -> Value {
-    cli(pool, embedder, &["ingest", root.to_str().unwrap()], true).await
+    let data = cli(pool, embedder, &["ingest", root.to_str().unwrap()], true).await;
+    assert!(data.get("disabled_by_profile").is_none(), "{data}");
+    assert!(data.get("profile_pin").is_none(), "{data}");
+    data
 }
 async fn validate(pool: &ArangoPool, embedder: &Embedder) {
     let result = cli(pool, embedder, &["codebase", "validate"], true).await;

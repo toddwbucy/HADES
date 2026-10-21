@@ -8,26 +8,22 @@ use hades_core::{
 /// Check the same profile-controlled options even when a tree has no enabled files.
 pub(super) fn validate_tree_options(
     config: &HadesConfig,
-    metadata_json: Option<&str>,
+    options: &DocumentOptions,
     concurrency: Option<usize>,
-    collection: Option<&str>,
     task: Option<&str>,
     allow_degraded_enrichment: bool,
 ) -> Result<()> {
     if allow_degraded_enrichment {
         bail!("model-bound document ingestion does not support degraded code enrichment");
     }
-    let profile = match collection {
-        Some(name) => CollectionProfile::get(name)
-            .with_context(|| format!("unknown collection profile: {name}"))?,
-        None => CollectionProfile::default_profile(),
-    };
-    let metadata = metadata_json
-        .map(serde_json::from_str::<Value>)
-        .transpose()
-        .context("--metadata must be valid JSON")?
-        .unwrap_or_else(|| json!({}));
-    validate_options(config, profile, &metadata, &[], task, concurrency)?;
+    validate_options(
+        config,
+        options.profile,
+        options.metadata.as_ref().unwrap_or(&json!({})),
+        &[],
+        task,
+        concurrency,
+    )?;
     Ok(())
 }
 
@@ -102,15 +98,17 @@ pub(super) async fn run(
         "model-bound or initializing workspace requires registered_providers for document ingestion",
     )?;
     let catalog = routes.catalog()?;
+    let result_pool = db.clone();
     let documents = Arc::new(match &config.ingest_binding {
         Some(hades_core::ingest_jobs::Binding::Profiled(pin)) => {
             ProfiledDocuments::connect_pinned(db, &catalog, pin).await?
         }
         Some(hades_core::ingest_jobs::Binding::Legacy) => {
-            bail!("legacy ingestion job cannot adopt a model-bound workspace; start a new job")
+            bail!("legacy ingestion cannot adopt a model-bound workspace; start a new ingestion")
         }
         None => ProfiledDocuments::connect(db, &catalog).await?,
     });
+    let result_binding = hades_core::ingest_jobs::Binding::Profiled(Box::new(documents.job_pin()?));
     // No extraction connection until database policy and the actual loaded model agree.
     let extractor = ExtractionClient::connect_at(&config.extraction.service.socket).await?;
     provenance.prepare(&inputs).await;
@@ -168,7 +166,15 @@ pub(super) async fn run(
         )
         .await?;
     let mut outcome = batch_outcome(summary, envelope_git, start)?;
-    outcome.data["embedding_profile_state"] = json!("ready");
+    match result_binding.check(&result_pool).await {
+        Ok(()) => outcome.data["embedding_profile_state"] = json!("ready"),
+        Err(error) => {
+            outcome.data["profile_validation_error"] = json!(error.to_string());
+            if outcome.failure.is_none() {
+                outcome.failure = Some(error);
+            }
+        }
+    }
     if let Some(hades_core::ingest_jobs::Binding::Profiled(pin)) = &config.ingest_binding {
         outcome.data["profile_pin"] = json!(pin);
     }

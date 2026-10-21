@@ -35,12 +35,18 @@ inside documents remain ordinary document text.
 `routed` counts discovered files, including disabled code; a skipped code phase
 has `code: null`. The tree result includes its `profile_pin`, and the document
 phase must retain that admission. A changed profile is refused, including for a
-background worker. An enabled code workload still requires the future verified
+background worker. The pin records the original admission.
+`embedding_profile_state: "ready"` is emitted only after successful revalidation,
+and omitted when the document phase cannot start or the profile changes/disappears.
+Failed batches retain partial results and expose `profile_validation_error` if the
+final check fails. Legacy results omit `disabled_by_profile` and `profile_pin`.
+An enabled code workload still requires the future verified
 code pipeline and is rejected before document writes rather than mislabeled as
 disabled. Direct code ingestion remains unavailable for managed databases.
 
 Empty trees or trees with only disabled/unrouted inputs return a successful no-op
-with explicit file lists. They still validate the profile and options, including
+with explicit file lists. They validate the same document policy and storage
+collections as file ingestion, plus options including
 `--task`, metadata, collection, concurrency and degraded-enrichment overrides.
 They do not connect to extraction or an embedding provider in the foreground;
 background admission retains its existing provider verification.

@@ -102,9 +102,30 @@ async fn start_with(
                 "model-bound document jobs require concurrency 1..=4",
             ));
         }
+        // Match the worker's traversal (including ignore files and shebangs)
+        // before contacting the provider or creating history for an impossible job.
+        let tree_pin = if resolved.is_dir() {
+            let found =
+                crate::ingest_routing::discovery::discover_by_route(&resolved, &Default::default())
+                    .map_err(service)?;
+            let admission = crate::embedding_profile::admission::document_tree_admission(
+                pool,
+                !found.code.is_empty(),
+            )
+            .await
+            .map_err(|error| service(format!("background ingestion unavailable for this model-bound or initializing workspace: {error}")))?;
+            Some(admission.pin.ok_or_else(|| {
+                service("workspace profile disappeared during background admission")
+            })?)
+        } else {
+            None
+        };
         let routes = config.registered_providers.as_ref().ok_or_else(|| service("model-bound or initializing workspace requires registered_providers for background ingestion"))?;
-        let documents = crate::pipeline::profiled_documents::ProfiledDocuments::connect(pool.clone(), &routes.catalog().map_err(service)?)
-            .await.map_err(|error| service(format!("background ingestion unavailable for this model-bound or initializing workspace: {error}")))?;
+        let catalog = routes.catalog().map_err(service)?;
+        let documents = match tree_pin {
+            Some(pin) => crate::pipeline::profiled_documents::ProfiledDocuments::connect_pinned(pool.clone(), &catalog, &pin).await,
+            None => crate::pipeline::profiled_documents::ProfiledDocuments::connect(pool.clone(), &catalog).await,
+        }.map_err(|error| service(format!("background ingestion unavailable for this model-bound or initializing workspace: {error}")))?;
         super::Binding::Profiled(Box::new(documents.job_pin().map_err(service)?))
     } else {
         super::Binding::Legacy

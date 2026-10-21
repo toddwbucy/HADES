@@ -19,7 +19,8 @@ use tracing::warn;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HadesConfig {
-    /// Process-local job admission, restored only from the sealed configuration envelope.
+    /// Process-local ingestion admission, set by tree routing or a sealed worker envelope.
+    /// Not a worker marker; ordinary configuration cannot populate this guard.
     #[serde(skip)]
     pub ingest_binding: Option<crate::ingest_jobs::Binding>,
     pub reading_chat: crate::reading::chat::ChatConfig,

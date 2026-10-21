@@ -92,7 +92,7 @@ async fn pins_refuse_other_databases_and_changed_records_before_provider_observa
                 .await
                 .err()
                 .unwrap();
-            assert!(error.to_string().contains("ingestion job profile changed"));
+            assert!(error.to_string().contains("ingestion profile changed"));
             assert_eq!(peer.observations(), observations);
             assert!(peer.requests().is_empty());
         })

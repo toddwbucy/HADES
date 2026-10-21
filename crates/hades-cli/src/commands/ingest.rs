@@ -44,6 +44,30 @@ const CODE_EXTENSIONS: &[&str] = &[
 /// Keys that user-provided metadata cannot override.
 const PROTECTED_KEYS: &[&str] = &["_key", "status", "source", "source_git"];
 
+/// Parse once at command entry and retain the same values through tree validation and execution.
+struct DocumentOptions {
+    metadata: Option<Value>,
+    profile: &'static CollectionProfile,
+}
+
+impl DocumentOptions {
+    fn parse(metadata_json: Option<&str>, collection: Option<&str>) -> Result<Self> {
+        let metadata = metadata_json
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .context("--metadata must be valid JSON")?;
+        if metadata.as_ref().is_some_and(|value| !value.is_object()) {
+            bail!("--metadata must be a JSON object");
+        }
+        let profile = match collection {
+            Some(name) => CollectionProfile::get(name)
+                .with_context(|| format!("unknown collection profile: {name}"))?,
+            None => CollectionProfile::default_profile(),
+        };
+        Ok(Self { metadata, profile })
+    }
+}
+
 /// Ingest command failed with partial results.
 ///
 /// Returned instead of calling `process::exit` so callers control the exit code.
@@ -107,36 +131,44 @@ pub async fn run_unified(
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
-    let db = ArangoPool::from_config(config)?;
+    let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
     if let Some(binding) = &config.ingest_binding {
         binding.check(&db).await?;
     }
     let source_git = provenance.resolve(&root).await?;
     let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
     let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
-    let tree_pin =
-        hades_core::embedding_profile::admission::document_tree_pin(&db, !found.code.is_empty())
-            .await?;
+    let admission = hades_core::embedding_profile::admission::document_tree_admission(
+        &db,
+        !found.code.is_empty(),
+    )
+    .await?;
+    let tree_pin = admission.pin;
+    let code_disabled =
+        admission.code == hades_core::embedding_profile::admission::CodeAdmission::Disabled;
     match (&config.ingest_binding, &tree_pin) {
         (Some(hades_core::ingest_jobs::Binding::Profiled(expected)), actual)
             if actual.as_ref() != Some(expected.as_ref()) =>
         {
             bail!(
-                "ingestion job profile changed during tree admission; start a new job after review"
+                "ingestion profile changed during tree admission; start a new ingestion after review"
             );
         }
         (Some(hades_core::ingest_jobs::Binding::Legacy), Some(_)) => {
-            bail!("legacy ingestion job cannot adopt a model-bound workspace; start a new job");
+            bail!("legacy ingestion cannot adopt a model-bound workspace; start a new ingestion");
         }
         _ => {}
     }
+    // Keep legacy document setup failures in the unified result, after its code phase.
+    let options = DocumentOptions::parse(metadata_json, collection);
     let mut tree_config = config.clone();
     if let Some(pin) = &tree_pin {
         profiled::validate_tree_options(
             config,
-            metadata_json,
+            options
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?,
             concurrency,
-            collection,
             task,
             allow_degraded_enrichment,
         )?;
@@ -149,7 +181,7 @@ pub async fn run_unified(
         tree_config.ingest_binding = Some(hades_core::ingest_jobs::Binding::Legacy);
     }
     let config = &tree_config;
-    let disabled_code = if tree_pin.is_some() {
+    let disabled_code = if code_disabled {
         // Match unrouted reporting: Unix paths need not be valid UTF-8, and
         // serializing a raw PathBuf would fail after permitted documents commit.
         found
@@ -164,7 +196,7 @@ pub async fn run_unified(
     let inputs: Vec<_> = found
         .code
         .iter()
-        .filter(|_| tree_pin.is_none())
+        .filter(|_| !code_disabled)
         .chain(&found.documents)
         .cloned()
         .collect();
@@ -186,7 +218,7 @@ pub async fn run_unified(
     // Code first. The two phases write disjoint collections, so the order is
     // only about which failure an operator sees first, and losing the code
     // graph's edges is the more serious of the two.
-    let mut code = if tree_pin.is_some() || found.code.is_empty() {
+    let mut code = if code_disabled || found.code.is_empty() {
         None
     } else {
         Some(
@@ -207,7 +239,8 @@ pub async fn run_unified(
         )
     };
 
-    // A tree with only disabled/unrouted inputs must still have valid admission.
+    // Provenance resolution awaited external work after admission. Recheck a no-op
+    // here because no document phase will perform the usual subsequent pin check.
     if inputs.is_empty()
         && let Some(binding) = &config.ingest_binding
     {
@@ -223,22 +256,24 @@ pub async fn run_unified(
     let documents = if found.documents.is_empty() {
         None
     } else {
-        match run_phase(
-            config,
-            found.documents.clone(),
-            false,
-            metadata_json,
-            &[],
-            collection,
-            force,
-            task,
-            None,
-            false,
-            false,
-            concurrency,
-            Some(root.clone()),
-            provenance.clone(),
-        )
+        match async {
+            run_phase(
+                config,
+                found.documents.clone(),
+                false,
+                options?,
+                &[],
+                force,
+                task,
+                None,
+                false,
+                false,
+                concurrency,
+                Some(root.clone()),
+                provenance.clone(),
+            )
+            .await
+        }
         .await
         {
             Ok(outcome) => Some(outcome),
@@ -268,7 +303,6 @@ pub async fn run_unified(
             "unrouted": found.unrouted.len(),
         },
         "code": code.as_ref().map(|o| o.data.clone()),
-        "disabled_by_profile": {"code": disabled_code},
         "documents": documents.as_ref().map(|o| o.data.clone()),
         // Listed, not counted only: a file nothing claims is the hole this
         // command exists to close, so it has to be nameable from stdout.
@@ -278,7 +312,16 @@ pub async fn run_unified(
     });
     if let Some(pin) = tree_pin {
         result_data["profile_pin"] = json!(pin);
-        result_data["embedding_profile_state"] = json!("ready");
+        result_data["disabled_by_profile"] = json!({"code": disabled_code});
+        // The pin identifies admission, not current readiness. Setup/drift errors
+        // must not advertise a ready profile in the envelope or saved job result.
+        if inputs.is_empty()
+            || documents
+                .as_ref()
+                .is_some_and(|outcome| outcome.data["embedding_profile_state"] == "ready")
+        {
+            result_data["embedding_profile_state"] = json!("ready");
+        }
     }
 
     output::print_output_with_success("ingest", result_data, &OutputFormat::Json, success);
@@ -343,13 +386,13 @@ pub async fn run(
     root: Option<PathBuf>,
     provenance: Arc<hades_core::source_git::Batch>,
 ) -> Result<()> {
+    let options = DocumentOptions::parse(metadata_json, collection)?;
     let mut outcome = run_phase(
         config,
         inputs,
         batch,
-        metadata_json,
+        options,
         claims,
-        collection,
         force,
         task,
         id,
@@ -378,13 +421,12 @@ pub async fn run(
 /// This is the entry point called from `main.rs` when the user runs
 /// `hades ingest ...`.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_phase(
+async fn run_phase(
     config: &HadesConfig,
     inputs: Vec<PathBuf>,
     batch: bool,
-    metadata_json: Option<&str>,
+    options: DocumentOptions,
     claims: &[String],
-    collection: Option<&str>,
     force: bool,
     task: Option<&str>,
     id: Option<&str>,
@@ -405,24 +447,10 @@ pub async fn run_phase(
         bail!("--id can only be used with a single input");
     }
 
-    // Parse custom metadata if provided.
-    let extra_metadata: Option<Value> = match metadata_json {
-        Some(s) => {
-            let val: Value = serde_json::from_str(s).context("--metadata must be valid JSON")?;
-            if !val.is_object() {
-                bail!("--metadata must be a JSON object, got: {}", val);
-            }
-            Some(val)
-        }
-        None => None,
-    };
-
-    // Resolve collection profile.
-    let profile = match collection {
-        Some(name) => CollectionProfile::get(name)
-            .ok_or_else(|| anyhow::anyhow!("unknown collection profile: {name}"))?,
-        None => CollectionProfile::default_profile(),
-    };
+    let DocumentOptions {
+        metadata: extra_metadata,
+        profile,
+    } = options;
 
     // Inputs stay as the caller wrote them at this level: item ids and batch
     // resume keys derive from these strings, and per-document error isolation

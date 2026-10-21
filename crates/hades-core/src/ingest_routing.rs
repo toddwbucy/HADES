@@ -10,6 +10,8 @@
 //! languages: a caller that adds an extension has to say which pipeline claims
 //! it, and a file that matches nothing is reported rather than dropped.
 
+pub mod discovery;
+
 use std::path::Path;
 
 use crate::code::Language;

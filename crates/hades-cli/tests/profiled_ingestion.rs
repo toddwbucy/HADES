@@ -410,17 +410,29 @@ async fn disabled_only_and_empty_trees_validate_admission_without_services() {
                         json!([])
                     }
                 );
-                for extra in [
-                    vec!["--task", "retrieval.passage"],
-                    vec!["--allow-degraded-enrichment"],
-                    vec!["--concurrency", "5"],
-                    vec!["--collection", "code"],
-                    vec!["--metadata", "[]"],
+                for (extra, expected) in [
+                    (
+                        vec!["--task", "retrieval.passage"],
+                        "does not accept --task or --claims",
+                    ),
+                    (
+                        vec!["--allow-degraded-enrichment"],
+                        "does not support degraded code enrichment",
+                    ),
+                    (vec!["--concurrency", "5"], "requires concurrency 1..=4"),
+                    (
+                        vec!["--collection", "codebase"],
+                        "supports the documents collection profile only",
+                    ),
+                    (vec!["--metadata", "[]"], "--metadata must be a JSON object"),
+                    (vec!["--metadata", "{"], "--metadata must be valid JSON"),
                 ] {
                     let mut args = vec!["ingest", path.to_str().unwrap()];
                     args.extend(extra);
                     let output = command(&pool, &config, &args).output().await.unwrap();
                     assert!(!output.status.success(), "{args:?}");
+                    let error = String::from_utf8_lossy(&output.stderr);
+                    assert!(error.contains(expected), "{args:?}: {error}");
                 }
             }
             // Removing the ready pointer cannot turn an empty tree into a successful no-op.
@@ -442,6 +454,129 @@ async fn disabled_only_and_empty_trees_validate_admission_without_services() {
         },
     )
     .await;
+}
+
+/// No-op admission must reject the same database policy/storage as a real document.
+#[tokio::test]
+async fn empty_trees_reject_unsupported_document_policy_and_storage() {
+    for fault in ["edge-collection", "distance", "implicit-late"] {
+        with_temp_db("cli_noop_policy", Fixtures::Empty, move |pool| async move {
+            let mut fixture = if fault == "implicit-late" {
+                Fixture::late()
+            } else {
+                Fixture::new(2)
+            };
+            let workload = fixture.profile.workloads.documents.as_mut().unwrap();
+            if fault == "distance" {
+                workload.space.representation.distance =
+                    hades_core::embedding_profile::Distance::Dot;
+            } else if fault == "implicit-late"
+                && let hades_core::embedding_profile::ChunkPolicy::Late { passages, .. } =
+                    &mut workload.chunking
+            {
+                *passages = None;
+            }
+            fixture.receipt.space_id = workload.space.id().unwrap();
+            fixture.install(&pool).await;
+            if fault == "edge-collection" {
+                pool.writer().delete("collection/chunks").await.unwrap();
+                pool.writer()
+                    .post("collection", &json!({"name":"chunks","type":3}))
+                    .await
+                    .unwrap();
+            }
+            let peer = Peer::new(&fixture);
+            let extractor = Extractor::new();
+            let root = tempfile::tempdir().unwrap();
+            let config = config(root.path(), &pool, &peer, &extractor);
+            let tree = root.path().join("corpus");
+            std::fs::create_dir(&tree).unwrap();
+            let expected = match fault {
+                "edge-collection" => "document storage requires three document collections",
+                "distance" => "supports cosine distance only",
+                _ => "late document chunking requires an explicit passage policy",
+            };
+            for file in [
+                None,
+                Some("module.py"),
+                Some("unknown.ts"),
+                Some("notes.md"),
+            ] {
+                if let Some(file) = file {
+                    std::fs::write(tree.join(file), "apple").unwrap();
+                }
+                let output = command(&pool, &config, &["ingest", tree.to_str().unwrap()])
+                    .output()
+                    .await
+                    .unwrap();
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    !output.status.success(),
+                    "{fault}/{file:?} reported success"
+                );
+                assert!(error.contains(expected), "{fault}/{file:?}: {error}");
+            }
+            assert_eq!(peer.observations(), 0);
+            assert!(extractor.requests().is_empty());
+            assert!(sources(&pool).await.is_empty());
+        })
+        .await;
+    }
+}
+
+/// A pin records historical admission; failed revalidation must not advertise readiness.
+#[tokio::test]
+async fn tree_profile_drift_during_document_startup_does_not_report_ready() {
+    for removed in [false, true] {
+        with_temp_db("cli_tree_drift", Fixtures::Empty, move |pool| async move {
+            let fixture = Fixture::new(2);
+            fixture.install(&pool).await;
+            let peer = Peer::new(&fixture);
+            let extractor = Extractor::new();
+            let root = tempfile::tempdir().unwrap();
+            let config = config(root.path(), &pool, &peer, &extractor);
+            let tree = root.path().join("corpus");
+            std::fs::create_dir(&tree).unwrap();
+            std::fs::write(tree.join("notes.md"), "apple").unwrap();
+            let (entered, release) = peer.hold_next_verification();
+            let child = command(&pool, &config, &["ingest", tree.to_str().unwrap()])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            let path = "document/hades_workspace/embedding_profile";
+            if removed {
+                pool.writer().delete(path).await.unwrap();
+            } else {
+                let original = pool.writer().get(path).await.unwrap();
+                pool.writer()
+                    .patch(path, &json!({"payload":original["payload"]}))
+                    .await
+                    .unwrap();
+            }
+            release.send(()).unwrap();
+            let output = child.wait_with_output().await.unwrap();
+            assert!(!output.status.success());
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["success"], false);
+            assert!(
+                result["data"]["document_phase_error"].is_string(),
+                "{result}"
+            );
+            assert!(
+                result["data"].get("embedding_profile_state").is_none(),
+                "{result}"
+            );
+            assert!(result["data"]["profile_pin"].is_object());
+            assert!(extractor.requests().is_empty());
+            assert!(sources(&pool).await.is_empty());
+        })
+        .await;
+    }
 }
 
 /// An enabled code workload is unsupported, never mislabeled as disabled and skipped.
