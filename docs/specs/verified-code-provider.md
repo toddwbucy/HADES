@@ -93,3 +93,27 @@ tokenization and HTTP logic. Run them with the dependency/protobuf setup in
 [the test matrix](workstation-specific-tests.md); ordinary CI never loads the
 approved large model. Real-model evidence is recorded separately under
 `docs/evidence/` after the implementation and protocol are committed.
+
+## ThinkPad qualification, 2026-10-21
+
+[Committed evidence](../evidence/jina-code-thinkpad-2026-10-21.json) passed on clean
+implementation `2e2a7cd307b4480b6f89f6c3cad14313037831a2`, using the approved local
+artifact MD5 `446160668af00248832ed8cf5d8d4432`. The runtime was Torch 2.14.1,
+Transformers 4.52.4, CUDA 13.0 and the RTX PRO 5000 Blackwell laptop GPU.
+The run occurred October 22 UTC / October 21 in America/Chicago.
+
+| Check | Documents | Code |
+| --- | --- | --- |
+| Predeclared top-one retrieval, Python and Rust | 6/6 | 6/6 |
+| Exact-fit / one-over token boundary | 1024 / 1025 | 512 / 513 |
+| Repeat and reload cosine | approximately 1.0 | approximately 1.0 |
+| Long-source rendered tokens | 2402 | 1619 |
+| Planned, embedded and independently recounted passages | 10 | 7 |
+
+All 1518 registered adapter tensors matched loaded values. Oversized batches and
+all three cross-workload receipt substitutions caused zero forward calls.
+Maximum norm error stayed below `7.5e-8`. The complete run took about 106 seconds;
+the Rust HTTP/recount stage took 24 seconds. Peak allocated CUDA memory during
+the provider checks was 8.88 GB. Cleanup completed successfully. This qualifies
+the declared conventional provider behavior, not code graph persistence,
+contextual code, production activation or general retrieval quality.
