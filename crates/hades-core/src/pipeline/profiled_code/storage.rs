@@ -1,8 +1,8 @@
 //! Every graph write runs under the profile guard and one complete collection lock set.
-use crate::{
-    code::AnalysisTier,
-    db::{ArangoClient, query},
+use crate::pipeline::profiled_storage::{
+    self as records, OwnedCollection, acknowledged, allowed_fields, insert_rows, revision,
 };
+use crate::{code::AnalysisTier, db::ArangoClient};
 
 use super::*;
 
@@ -30,27 +30,7 @@ const FILE_FIELDS: &[&str] = &[
 ];
 
 async fn file(client: &ArangoClient, key: &str) -> Result<Option<Value>, ArangoError> {
-    match client
-        .clone()
-        .with_response_limit(MAX_PREPARED_BYTES)?
-        .get(&format!("document/{}/{key}", CODEBASE.files))
-        .await
-    {
-        Ok(row) => Ok(Some(row)),
-        Err(ArangoError::Api {
-            status: 404,
-            error_num: 1202,
-            ..
-        }) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-fn revision(row: &Value) -> Result<&str, ArangoError> {
-    row["_rev"]
-        .as_str()
-        .filter(|r| !r.is_empty())
-        .ok_or_else(|| invalid("stored file has no revision"))
+    records::document(client, CODEBASE.files, key, MAX_PREPARED_BYTES).await
 }
 
 /// An old load is compatible only after deriving its exact saved binding from the current profile.
@@ -60,15 +40,7 @@ fn validate_file(
     snapshot: &ProfileSnapshot,
     incoming_tier: AnalysisTier,
 ) -> Result<(), ArangoError> {
-    let object = row
-        .as_object()
-        .ok_or_else(|| invalid("invalid stored code file"))?;
-    ensure(
-        object
-            .keys()
-            .all(|field| FILE_FIELDS.contains(&field.as_str())),
-        "stored code file has unknown fields; replacement would discard them",
-    )?;
+    allowed_fields(row, FILE_FIELDS)?;
     ensure(
         row["format"] == FORMAT && row["kind"] == "file" && row["_key"] == key,
         "stored file is not a verified code record; legacy adoption is unavailable",
@@ -196,56 +168,30 @@ fn preserve_symbols(file: &Value, incoming: &[Value]) -> Result<(), ArangoError>
     )
 }
 
-async fn aql(
+async fn children(
     client: &ArangoClient,
-    statement: &str,
-    vars: Value,
-    batch: usize,
-) -> Result<Value, ArangoError> {
-    client.clone().with_response_limit(MAX_PREPARED_BYTES)?.post("cursor", &json!({
-        "query":statement,"bindVars":vars,"batchSize":batch,"ttl":5,"memoryLimit":32*1024*1024,
-        "options":{"maxRuntime":5,"failOnWarning":true}
-    })).await
-}
-
-async fn children(client: &ArangoClient, key: &str) -> Result<Rows, ArangoError> {
+    key: &str,
+) -> Result<(Rows, Vec<OwnedCollection>), ArangoError> {
     let mut rows = Rows::new();
+    let mut owners = Vec::new();
     let mut bytes = 0;
     for (collection, _) in CODEBASE.all_collections() {
         if collection == CODEBASE.files {
             continue;
         }
-        let response = aql(
-            client,
-            "FOR r IN @@collection FILTER r.file_key == @file LIMIT @limit RETURN r",
-            json!({"@collection":collection,"file":key,"limit":MAX_ROWS+1}),
-            MAX_ROWS + 2,
-        )
-        .await?;
-        let found = query::completed_rows(&response)?;
-        ensure(
-            found.len() <= MAX_ROWS,
-            "stored code graph exceeds row limits",
-        )?;
-        bytes += serde_json::to_vec(found)?.len();
+        let owner = OwnedCollection::require(client, collection, "file_key").await?;
+        let found = owner
+            .children(client, key, MAX_ROWS, MAX_PREPARED_BYTES)
+            .await?;
+        bytes += serde_json::to_vec(&found)?.len();
         ensure(
             bytes <= MAX_PREPARED_BYTES,
             "stored code graph exceeds 16 MiB",
         )?;
-        rows.insert(collection.into(), found.clone());
+        rows.insert(collection.into(), found);
+        owners.push(owner);
     }
-    Ok(rows)
-}
-
-fn acknowledged(ack: &Value, row: &Value, collection: &str) -> Result<String, ArangoError> {
-    let key = row["_key"]
-        .as_str()
-        .ok_or_else(|| invalid("missing prepared key"))?;
-    ensure(
-        ack["error"] != true && ack["_key"] == key && ack["_id"] == format!("{collection}/{key}"),
-        "code write was not acknowledged for the requested record",
-    )?;
-    Ok(revision(ack)?.into())
+    Ok((rows, owners))
 }
 
 pub(super) async fn write(
@@ -258,7 +204,7 @@ pub(super) async fn write(
         existing.as_ref().map(revision).transpose()? == prepared.previous_revision.as_deref(),
         "source changed after preparation; prepare it again",
     )?;
-    let old = children(&client, key).await?;
+    let (old, owners) = children(&client, key).await?;
     if let Some(row) = &existing {
         let incoming_tier = prepared.file["analysis_tier"]
             .as_str()
@@ -276,15 +222,8 @@ pub(super) async fn write(
             "new code file has orphan or foreign graph records",
         )?;
     }
-    for collection in old.keys() {
-        let response = aql(
-            &client,
-            "FOR r IN @@collection FILTER r.file_key == @file REMOVE r IN @@collection",
-            json!({"@collection":collection,"file":key}),
-            1,
-        )
-        .await?;
-        query::completed_mutation(&response)?;
+    for owner in owners {
+        owner.remove(&client, key, MAX_PREPARED_BYTES).await?;
     }
     let mode = if existing.is_some() {
         "?overwriteMode=replace"
@@ -306,20 +245,7 @@ pub(super) async fn write(
         if collection == CODEBASE.files {
             continue;
         }
-        for batch in prepared.rows[collection].chunks(32) {
-            let response = client
-                .clone()
-                .with_response_limit(64 * 1024)?
-                .post(&format!("document/{collection}"), &json!(batch))
-                .await?;
-            let results = response
-                .as_array()
-                .filter(|rows| rows.len() == batch.len())
-                .ok_or_else(|| invalid("incomplete code insertion acknowledgment"))?;
-            for (ack, row) in results.iter().zip(batch) {
-                acknowledged(ack, row, collection)?;
-            }
-        }
+        insert_rows(&client, collection, &prepared.rows[collection]).await?;
     }
     Ok(revision)
 }

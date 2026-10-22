@@ -94,9 +94,17 @@ that its remote effect was rolled back.
 
 The minimal schema contains `hades_setup`, `hades_workspace`, `documents`,
 `chunks`, and `embeddings`: document collections with `waitForSync` enabled and
-only their primary unique `_key` indexes. It does not create graph schema seeds
+primary unique `_key` indexes. `chunks` and `embeddings` also require one
+non-unique, non-sparse persistent `parent_key` index for bounded replacement
+lookups. Setup creates these indexes in its owned empty schema and reconciles
+interruption before or after index creation. Read-only diagnosis recognizes
+this partial schema without repairing it. It does not create graph schema seeds
 or an unqualified vector index. Retrieval uses the internal exact-scan path.
 Unknown collections, indexes, metadata rows, or preexisting vectors are refused.
+Ready workspaces missing these owner indexes require explicit index provisioning
+before admission; neither ingestion nor a completed setup retry repairs them.
+Broader code setup remains gated and must provision the seven `file_key` indexes
+required by [code graph storage](profile-bound-code.md).
 After readiness, [background document jobs](profiled-ingestion-jobs.md) may add
 the synchronous `hades_ingest_jobs` document collection. Identical setup retries
 validate and preserve that operational history; initializing schema checks still

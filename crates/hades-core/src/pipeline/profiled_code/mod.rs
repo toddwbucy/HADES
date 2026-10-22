@@ -63,6 +63,7 @@ pub struct CodeReceipt {
     pub revision: String,
     pub chunks: usize,
     pub symbols: usize,
+    /// All persisted edge rows, including generated defines edges and declared relationships.
     pub relationships: usize,
     pub binding: BoundEmbeddingRequest,
 }
@@ -103,6 +104,9 @@ impl ProfiledCode {
                 properties["name"] == name && properties["type"] == kind,
                 "code storage requires its complete document/edge schema",
             )?;
+            if name != CODEBASE.files {
+                crate::db::index::require_owner_index(&client, name, "file_key").await?;
+            }
         }
         let observed = catalog.verify_profile(profile, snapshot.manifest()).await?;
         let passage = observed
@@ -132,13 +136,13 @@ impl ProfiledCode {
         input: CodeInput,
         replace: bool,
     ) -> Result<PreparedCodeFile, PipelineError> {
-        graph::validate_input(&input)?;
+        let resolved = graph::validate_input(&input)?;
         self.current().await?;
-        let key = keys::scoped_file_key(&input.namespace, &input.path);
-        let (mut file, mut rows) = graph::records(&input, &key, self.passage.binding())?;
+        let key = &resolved.file_key;
+        let (mut file, mut rows) = graph::records(&input, &resolved, self.passage.binding());
         let previous_revision = storage::admit(
             self.pool.writer(),
-            &key,
+            key,
             replace,
             &self.snapshot,
             input.analysis.analysis_tier,

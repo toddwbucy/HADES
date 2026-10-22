@@ -33,7 +33,19 @@ pub struct LocalRelationship {
     pub to: LocalEndpoint,
 }
 
-pub(super) fn validate_input(input: &CodeInput) -> Result<(), PipelineError> {
+pub(super) struct ResolvedGraph {
+    pub(super) file_key: String,
+    symbols: Vec<Option<String>>,
+    relationships: Vec<ResolvedRelationship>,
+}
+
+struct ResolvedRelationship {
+    collection: &'static str,
+    from: String,
+    to: String,
+}
+
+pub(super) fn validate_input(input: &CodeInput) -> Result<ResolvedGraph, PipelineError> {
     validate_source(&input.text)?;
     for value in [&input.namespace, &input.path] {
         ensure(
@@ -70,13 +82,19 @@ pub(super) fn validate_input(input: &CodeInput) -> Result<(), PipelineError> {
     let file_key = keys::scoped_file_key(&input.namespace, &input.path);
     let symbols = symbol_ids(input, &file_key)?;
     let mut edges = HashSet::new();
+    let mut relationships = Vec::new();
     for relationship in &input.relationships {
         let from = endpoint(relationship.from, &file_key, &symbols)?;
         let to = endpoint(relationship.to, &file_key, &symbols)?;
         ensure(
-            edges.insert((relationship.kind.collection(), from, to)),
+            edges.insert((relationship.kind.collection(), from.clone(), to.clone())),
             "duplicate code relationship",
         )?;
+        relationships.push(ResolvedRelationship {
+            collection: relationship.kind.collection(),
+            from,
+            to,
+        });
     }
     ensure(
         serde_json::to_vec(&input.analysis)
@@ -85,7 +103,11 @@ pub(super) fn validate_input(input: &CodeInput) -> Result<(), PipelineError> {
             <= 4 * 1024 * 1024,
         "analysis metadata exceeds 4 MiB",
     )?;
-    Ok(())
+    Ok(ResolvedGraph {
+        file_key,
+        symbols,
+        relationships,
+    })
 }
 
 fn symbol_ids(input: &CodeInput, key: &str) -> Result<Vec<Option<String>>, ArangoError> {
@@ -124,12 +146,13 @@ fn endpoint(
 
 pub(super) fn records(
     input: &CodeInput,
-    key: &str,
+    resolved: &ResolvedGraph,
     binding: &BoundEmbeddingRequest,
-) -> Result<(Value, Rows), ArangoError> {
+) -> (Value, Rows) {
+    let key = &resolved.file_key;
     let analysis = &input.analysis;
     let hash = compute_content_hash(&input.text);
-    let symbols = symbol_ids(input, key)?;
+    let symbols = &resolved.symbols;
     let mut rows: Rows = CODEBASE
         .all_collections()
         .iter()
@@ -148,7 +171,7 @@ pub(super) fn records(
         row["_to"] = json!(to);
         row
     };
-    for (symbol, id) in analysis.symbols.iter().zip(&symbols) {
+    for (symbol, id) in analysis.symbols.iter().zip(symbols) {
         let Some(id) = id else {
             continue;
         };
@@ -168,11 +191,11 @@ pub(super) fn records(
             CODEBASE.defines_edges,
         ));
     }
-    for relationship in &input.relationships {
-        let collection = relationship.kind.collection();
+    for relationship in &resolved.relationships {
+        let collection = relationship.collection;
         rows.get_mut(collection).unwrap().push(edge(
-            &endpoint(relationship.from, key, &symbols)?,
-            &endpoint(relationship.to, key, &symbols)?,
+            &relationship.from,
+            &relationship.to,
             collection,
         ));
     }
@@ -180,7 +203,7 @@ pub(super) fn records(
         "full_text":input.text,"content_hash":hash,"embedding_binding":binding,"language":analysis.language.name(),
         "analysis_tier":analysis.analysis_tier,"analyzer":analysis.analyzer,"fallback_reason":analysis.fallback_reason,
         "metrics":analysis.metrics,"symbol_hash":analysis.symbol_hash,"symbol_count":rows[CODEBASE.symbols].len()});
-    Ok((file, rows))
+    (file, rows)
 }
 
 /// Exclude only Arango's own envelope, so additions to an owned record cannot be silently discarded.

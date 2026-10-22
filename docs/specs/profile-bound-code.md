@@ -9,10 +9,15 @@ CLI, MCP, background code ingestion or managed code search.
 ## Admission and preparation
 
 `connect` loads the ready database profile from the writer, requires an enabled
-conventional code workload and the eight existing `CODEBASE` collections, then
+conventional code workload, the eight existing `CODEBASE` collections and a
+non-unique, non-sparse persistent `file_key` index on each of the seven child
+collections, then
 verifies the installation-owned provider catalog. It selects the code workload's
 passage task, receipt, dimension and token policy and rechecks the complete
 database snapshot after provider verification. It creates no schema or collections.
+Provision these indexes with the code schema (including all four edge collections);
+the existing `db::index::ensure_lookup_index` helper supplies their definition.
+Missing or incompatible indexes are refused before provider verification.
 
 `CodeInput` contains the exact namespace/path, source text, `FileAnalysis` and
 file-local relationships. Callers supply neither vectors nor token counts.
@@ -27,6 +32,12 @@ receipt. Every vector must meet the declared width, finite/nonzero and normaliza
 requirements. A failed later batch discards the entire preparation. Preparation
 does not write to the database; its result has private fields and can only be
 committed through its original database/profile/provider admission.
+
+This internal API does not skip unchanged source: explicit replacement still
+plans, embeds and publishes it. Public resync admission must compare the content
+hash, compatible saved model/space/generation binding and requested analysis tier
+and provenance before planning or inference. Matching source bytes alone do not
+establish that the stored graph is current.
 
 Limits are 2 MiB of source text, 128 tokenizer-planned passages, 1024 input symbols,
 4096 explicit relationships, 4 MiB of analyzer metadata and 16 MiB of prepared
@@ -48,6 +59,11 @@ revalidates the profile and source revision, checks the old graph inventory, and
 publishes all records. Individual and bulk acknowledgments must name the expected
 keys and collections. A write failure or cancellation before commit rolls back;
 a lost commit acknowledgment requires reconciliation with durable state.
+Owner reads and deletes force the validated persistent index; a missing index
+cannot silently become a collection scan under the exclusive locks. Shared
+document/code storage helpers enforce bounded queries, revisions and complete
+write acknowledgments. `CodeReceipt.relationships` counts all persisted edge
+rows, including generated `defines` edges: two symbols and one call report three.
 
 Replacement requires explicit opt-in and retains the original source revision
 from before planning. Legacy rows, orphan children, incomplete inventories,
@@ -57,6 +73,10 @@ spellings without rounding large integers. It detects edits; it is not an
 attestation against an administrator changing both records and inventory.
 
 Replacements cannot downgrade analysis or remove/move existing symbol keys.
+Keys include each symbol's starting line, so inserting even one import or comment
+above a symbol changes its key and is refused before planning. Compatible edits
+must retain every existing symbol's qualified name and starting line. The
+line-insertion regression test pins this restriction explicitly.
 This deliberately preserves endpoints used by authored or cross-file references
 until an explicit retirement/remapping operation exists. Existing unrelated rows
 and externally owned relationships remain intact. Compatible fresh provider loads
@@ -75,7 +95,8 @@ python3 scripts/test_isolated_database.py --docker --contract profiled_code
 
 The default isolated CI matrix includes this target. Synthetic providers cover
 two/three-dimensional spaces, asymmetric tasks, code-only and ordinary-text-code
-profiles, exact source spans, replacement conflicts, rollback, profile/provider
+profiles, a mixed document/code load with distinct widths and receipts, exact
+source spans, missing/incorrect owner indexes, replacement conflicts, rollback, profile/provider
 drift, invalid graphs, cross-database admission, corruption, cancellation and
 failed later batches. No installed model or live research database is used.
 

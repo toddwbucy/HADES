@@ -169,6 +169,43 @@ pub async fn ensure_lookup_index(
     Ok(())
 }
 
+/// A complete owner lookup must include every row and allow multiple children per owner.
+pub(crate) fn is_owner_index(index: &Value, field: &str) -> bool {
+    index["type"] == "persistent"
+        && index["fields"] == serde_json::json!([field])
+        && index["unique"] == false
+        && index["sparse"] == false
+        && index["name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty() && name.len() <= 128)
+}
+
+/// Read-only admission for a forced owner lookup; never create indexes during ingestion.
+pub(crate) async fn require_owner_index(
+    client: &super::ArangoClient,
+    collection: &str,
+    field: &str,
+) -> Result<String, ArangoError> {
+    let response = client
+        .clone()
+        .with_response_limit(64 * 1024)?
+        .get(&format!(
+            "index?collection={}",
+            encode_query_value(collection)
+        ))
+        .await?;
+    response["indexes"]
+        .as_array()
+        .and_then(|indexes| indexes.iter().find(|index| is_owner_index(index, field)))
+        .and_then(|index| index["name"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ArangoError::Request(format!(
+                "managed storage requires a non-unique, non-sparse persistent {field} index on {collection}; provision it before ingestion"
+            ))
+        })
+}
+
 /// Drop an index by its full ID (e.g. `"collection/12345"`).
 #[instrument(skip(pool), fields(db = %pool.database()))]
 pub async fn drop_index(pool: &ArangoPool, index_id: &str) -> Result<(), ArangoError> {

@@ -18,6 +18,9 @@ use serde_json::{Value, json};
 mod provider;
 use provider::{Fault, Fixture, Peer};
 
+#[path = "profiled_code/admission.rs"]
+mod admission;
+
 fn input(path: &str, apple: &str) -> CodeInput {
     let text = format!("fn apple() {{ {apple} }}\nfn banana() {{ apple(); }}\n");
     let analysis = code::analyze(&text, "fixture.rs").unwrap();
@@ -370,6 +373,28 @@ async fn symbol_retirement_and_analysis_downgrades_preserve_existing_endpoints()
             .await
             .unwrap();
         let before = rows(&pool).await;
+        let mut shifted = input("one.rs", "");
+        shifted
+            .text
+            .insert_str(0, "// inserted above every symbol\n");
+        shifted.analysis = code::analyze(&shifted.text, "fixture.rs").unwrap();
+        let plans = peer.plans().len();
+        let requests = peer.requests().len();
+        assert!(
+            code.prepare(shifted, true)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("symbol endpoints")
+        );
+        assert_eq!(
+            peer.plans().len(),
+            plans,
+            "line shifts require reconciliation before planning"
+        );
+        assert_eq!(peer.requests().len(), requests);
+        assert_eq!(rows(&pool).await, before);
         let mut next = input("one.rs", "");
         next.analysis.symbols.pop();
         next.relationships.clear();

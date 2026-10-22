@@ -177,6 +177,15 @@ pub(crate) async fn collection(
     name: &str,
     create: bool,
 ) -> Result<(), SetupError> {
+    collection_state(client, name, create, false).await
+}
+
+async fn collection_state(
+    client: &ArangoClient,
+    name: &str,
+    create: bool,
+    partial: bool,
+) -> Result<(), SetupError> {
     let path = format!("collection/{name}/properties");
     let properties = match client.get(&path).await {
         Ok(value) => value,
@@ -198,17 +207,64 @@ pub(crate) async fn collection(
             && properties["isSystem"] == false,
         "collection differs from the confirmed document schema",
     )?;
-    let indexes = client.get(&format!("index?collection={name}")).await?;
+    let missing_owner = index_inventory(client, name, create || partial).await?;
+    if create && missing_owner {
+        // A retry may resume between collection creation and index creation, but
+        // setup must never mutate an unexpected populated collection to make it fit.
+        verify(
+            count(client, name).await? == 0,
+            "cannot add setup indexes to a populated collection",
+        )?;
+        client
+            .post(
+                &format!("index?collection={name}"),
+                &json!({
+                    "type":"persistent","fields":["parent_key"],"unique":false,"sparse":false
+                }),
+            )
+            .await?;
+        index_inventory(client, name, false).await?;
+    }
+    Ok(())
+}
+
+/// Owner indexes are storage requirements, separate from optional ANN indexes.
+async fn index_inventory(
+    client: &ArangoClient,
+    name: &str,
+    allow_missing: bool,
+) -> Result<bool, SetupError> {
+    let indexes = client
+        .clone()
+        .with_response_limit(64 * 1024)?
+        .get(&format!("index?collection={name}"))
+        .await?;
     let indexes = indexes["indexes"]
         .as_array()
         .ok_or_else(|| SetupError::Reconciliation("invalid index inventory".into()))?;
+    let needs_owner = ["chunks", "embeddings"].contains(&name);
+    let owner_count = indexes
+        .iter()
+        .filter(|index| needs_owner && crate::db::index::is_owner_index(index, "parent_key"))
+        .count();
+    let primary_count = indexes
+        .iter()
+        .filter(|index| {
+            index["type"] == "primary"
+                && index["unique"] == true
+                && index["fields"] == json!(["_key"])
+        })
+        .count();
     verify(
-        indexes.len() == 1
-            && indexes[0]["type"] == "primary"
-            && indexes[0]["unique"] == true
-            && indexes[0]["fields"] == json!(["_key"]),
+        primary_count == 1 && owner_count <= 1 && indexes.len() == 1 + owner_count,
         "unexpected indexes in setup schema",
-    )
+    )?;
+    let missing = needs_owner && owner_count == 0;
+    verify(
+        !missing || allow_missing,
+        "required parent_key index missing from setup schema",
+    )?;
+    Ok(missing)
 }
 
 /// Require metadata and validate existing empty data collections without creating missing ones.
@@ -217,7 +273,7 @@ pub(super) async fn partial_schema(client: &ArangoClient) -> Result<(), SetupErr
     collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
     for name in DATA {
         if names.iter().any(|existing| existing == name) {
-            collection(client, name, false).await?;
+            collection_state(client, name, false, true).await?;
             verify(
                 count(client, name).await? == 0,
                 "initializing workspace contains data; setup cannot adopt it",
@@ -227,7 +283,7 @@ pub(super) async fn partial_schema(client: &ArangoClient) -> Result<(), SetupErr
     Ok(())
 }
 
-/// The exact-scan document path needs primary keys, not an unqualified ANN vector index.
+/// Document replacement needs owner indexes; exact retrieval needs no ANN vector index.
 pub(crate) async fn schema(
     client: &ArangoClient,
     create: bool,
