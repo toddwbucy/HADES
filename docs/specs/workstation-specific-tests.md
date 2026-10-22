@@ -97,6 +97,12 @@ databases. It checks provider/profile drift, stored provenance, atomic replaceme
 scan budgets, and database isolation. Select it with `--contract profiled_documents`;
 the default CI matrix includes it. No real model or installed service is used.
 
+The `profiled_code` contract checks internal [code graph persistence](profile-bound-code.md):
+workload selection, bounded preparation, complete graph publication, replacement
+conflicts/rollback, profile and provider drift, edited-record preservation and
+cross-database refusal. Use `--contract profiled_code`; the default matrix includes it.
+Public code ingestion remains gated pending its integration.
+
 The `workspace_setup` contract covers [recoverable setup](recoverable-workspace-setup.md):
 durable reservations, ownership markers, interrupted/uncertain writes, exact
 retry, concurrent attempts, and refusal of existing or changed databases.

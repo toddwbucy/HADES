@@ -503,9 +503,12 @@ observations, checks every enabled workload, and supports synthetic code-only an
 ordinary-text-code providers without inferring database intent. The opt-in
 [verified Jina code provider](verified-code-provider.md) now implements conventional
 document/code inference with separate receipts, token ceilings, and a fixed
-real-model/Rust qualification protocol. Guarded code graph persistence, code
-pipeline admission, and contextual code remain required before enabling the
-corresponding managed code ingestion paths.
+real-model/Rust qualification protocol. The internal
+[code graph persistence path](profile-bound-code.md) now prepares conventional
+embeddings and atomically publishes one analyzed file's graph under its original
+profile admission. Cross-file enrichment, explicit symbol retirement/remapping,
+public code pipeline/search admission and contextual code remain required before
+enabling the corresponding managed code paths.
 
 Mixed-workload setup must validate each initial chunk/window policy against that
 workload's own observed ceiling. The profile-wide maximum is an outer bound, not

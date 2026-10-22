@@ -19,6 +19,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add internal profile-bound conventional code graph preparation and atomic
+  publication. Pin the selected code workload, retain complete source/graph
+  provenance, and refuse stale, foreign, edited or downgraded replacements.
+  Public code ingestion and symbol retirement remain gated (#225).
+
 - Add an opt-in verified Jina provider for conventional document and specialized
   code embeddings from one registered load. Keep separate workload receipts,
   prompts, adapters, and serving limits; qualify both through fixed retrieval,

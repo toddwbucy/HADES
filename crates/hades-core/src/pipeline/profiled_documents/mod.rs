@@ -8,6 +8,7 @@ pub mod files;
 mod plan;
 mod storage;
 
+use super::profiled_vectors::validate_vector;
 use plan::DocumentPlan;
 
 use serde::Serialize;
@@ -432,28 +433,6 @@ fn validate_input(input: &DocumentInput) -> Result<(), PipelineError> {
         "invalid source identifier",
     )?;
     validate_source(&input.text)?;
-    Ok(())
-}
-
-/// Reject zero/nonfinite vectors and check the declared normalization before storage/scoring.
-fn validate_vector(
-    vector: &[f32],
-    dimension: u32,
-    normalization: Normalization,
-) -> Result<(), ArangoError> {
-    ensure(
-        vector.len() == dimension as usize && vector.iter().all(|v| v.is_finite()),
-        "invalid vector dimension or finite values",
-    )?;
-    let norm: f64 = vector.iter().map(|v| f64::from(*v).powi(2)).sum();
-    ensure(
-        norm.is_finite() && norm > 0.0,
-        "vector has zero or invalid norm",
-    )?;
-    ensure(
-        normalization != Normalization::L2 || (norm.sqrt() - 1.0).abs() <= 0.001,
-        "vector violates the profile's L2 normalization",
-    )?;
     Ok(())
 }
 

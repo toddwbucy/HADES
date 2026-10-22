@@ -35,6 +35,22 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// A separate, asymmetric code space with no document workload.
+    #[allow(dead_code)]
+    pub fn code(dimension: u32) -> Self {
+        let mut fixture = Self::new(dimension);
+        let mut workload = fixture.profile.workloads.documents.take().unwrap();
+        workload.specialized_code = true;
+        workload.space.passage.task = "fixture.code.passage".into();
+        workload.space.query.task = "fixture.code.query".into();
+        fixture.profile.capabilities.specialized_code = true;
+        fixture.profile.capabilities.tasks =
+            vec!["fixture.code.passage".into(), "fixture.code.query".into()];
+        fixture.receipt.space_id = workload.space.id().unwrap();
+        fixture.profile.workloads.code = Some(workload);
+        fixture
+    }
+
     /// A distinct synthetic contextual space; no numerical model claim is made.
     pub fn late() -> Self {
         let mut fixture = Self::new(2);
@@ -77,13 +93,28 @@ impl Fixture {
 
     /// Publish the fixture only inside the caller's freshly allocated test database.
     pub async fn install(&self, pool: &ArangoPool) {
+        self.install_collections(pool, &[("documents", 2), ("chunks", 2), ("embeddings", 2)])
+            .await;
+    }
+
+    /// Install code storage explicitly, preserving document admission fixtures.
+    #[allow(dead_code)]
+    pub async fn install_code(&self, pool: &ArangoPool) {
+        self.install_collections(
+            pool,
+            &hades_core::db::collections::CODEBASE.all_collections(),
+        )
+        .await;
+    }
+
+    async fn install_collections(&self, pool: &ArangoPool, collections: &[(&str, u32)]) {
         let store = ProfileStore::new(pool.clone()).unwrap();
         let initial = store
             .initialize(self.profile.clone(), self.manifest.clone())
             .await
             .unwrap();
-        for collection in ["documents", "chunks", "embeddings"] {
-            crud::create_collection(pool, collection, Some(2))
+        for &(collection, kind) in collections {
+            crud::create_collection(pool, collection, Some(kind))
                 .await
                 .unwrap();
         }
@@ -153,6 +184,22 @@ impl Peer {
         let path = directory.path().join("provider.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let model = fixture.profile.model.id.clone();
+        let workload_key = if fixture.profile.workloads.documents.is_some() {
+            "documents"
+        } else {
+            "code"
+        };
+        let passage_task = fixture
+            .profile
+            .workloads
+            .documents
+            .as_ref()
+            .or(fixture.profile.workloads.code.as_ref())
+            .unwrap()
+            .space
+            .passage
+            .task
+            .clone();
         let description = json!({"model":fixture.profile.model,"capabilities":fixture.profile.capabilities,
             "space":fixture.profile.workloads.documents.as_ref().or(fixture.profile.workloads.code.as_ref()).unwrap().space,
             "receipt":fixture.receipt});
@@ -223,9 +270,11 @@ impl Peer {
                         let mut response = description.clone();
                         response["receipt"] = json!(receipt);
                         if workload_description {
+                            let observation = json!({"capabilities":response["capabilities"],
+                                "space":response["space"],"receipt":response["receipt"]});
                             response = json!({"format":"hades-provider-description-v2", "model":response["model"],
-                                "workloads":{"documents":{"capabilities":response["capabilities"],
-                                    "space":response["space"],"receipt":response["receipt"]},"code":null}});
+                                "workloads":{"documents":null,"code":null}});
+                            response["workloads"][workload_key] = observation;
                         }
                         response
                     } else if planning {
@@ -239,7 +288,7 @@ impl Peer {
                                 "body_tokens":count,"input_tokens":count+3,"overlap_tokens":0})
                         }).collect();
                         let mut plan = json!({"format":"hades-token-passages-v1",
-                            "model":model,"task":"retrieval.passage","receipt":receipt,
+                            "model":model,"task":passage_task,"receipt":receipt,
                             "source_sha256":Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>(),
                             "passage_tokens":request["passage_tokens"],"overlap_tokens":request["overlap_tokens"],
                             "max_input_tokens":request["max_input_tokens"],"spans":spans});
