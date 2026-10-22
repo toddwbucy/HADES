@@ -70,12 +70,12 @@ constructs an explicitly mixed profile in memory, and binds both passage/query
 roles. It checks retrieval and long-source plans through the actual transport;
 Python independently recounts accepted byte slices before shutdown. The recount
 pins the task and receipt from the expected workload's actual observation before
-inspecting counts; Rust output
-cannot select its own verification workload. Rust also asserts the planned task
+inspecting counts; Rust output cannot select its own verification workload.
+Rust also asserts the planned task
 and receipt and sizes each initial chunk policy against that workload's ceiling,
 including unequal cases such as 1024/64 tokens. No database or installed service
-is used. The server, child process and model load are owned
-through failure, timeout and cancellation cleanup.
+is used. The server, child process and model load are owned through failure,
+timeout and cancellation cleanup.
 
 Both workloads run on the same initial load and then share one reload. The full
 adapter checkpoint is compared once per generation, shared across workloads;
@@ -112,6 +112,32 @@ tokenization and HTTP logic. Run them with the dependency/protobuf setup in
 approved large model. Real-model evidence is recorded separately under
 `docs/evidence/` after the implementation and protocol are committed.
 
+## Reviewed protocol v2 qualification, 2026-10-21
+
+[Committed v2 evidence](../evidence/jina-code-v2-thinkpad-2026-10-21.json) passed
+on clean implementation `fe0c6dc34bbc4a7a0882000c7b9b99c0a24aeeb0` after the
+review corrections. It used the same approved artifact, runtime, GPU, fixed
+cases and thresholds as the initial run below. Both workload space IDs stayed
+unchanged. The run occurred October 22 UTC / October 21 in America/Chicago.
+
+| Check | Documents | Code |
+| --- | --- | --- |
+| Predeclared top-one retrieval, Python and Rust | 6/6 | 6/6 |
+| Exact-fit / one-over token boundary | 1024 / 1025 | 512 / 513 |
+| Repeat and reload cosine | approximately 1.0 | approximately 1.0 |
+| Long-source rendered tokens | 2402 | 1619 |
+| Planned, embedded and workload-bound recounted passages | 10 | 7 |
+| Initial observation loaded the model | yes | no |
+
+All 1518 adapter tensors matched on each of two serving generations; both
+workloads shared each verified load. Oversized input and all three cross-workload
+receipt substitutions caused zero forward calls. Maximum norm error stayed
+below `7.5e-8`. The complete run took 78 seconds, including 19 seconds for Rust
+HTTP and recount checks. Peak allocated CUDA memory was 8.88 GB. Cleanup left
+no serving copies and restored GPU memory to its pre-run baseline. This evidence
+qualifies the declared conventional provider behavior; code graph persistence,
+contextual code and production activation still require subsequent work.
+
 ## Initial ThinkPad qualification, 2026-10-21
 
 [Committed evidence](../evidence/jina-code-thinkpad-2026-10-21.json) passed on clean
@@ -122,8 +148,8 @@ The run occurred October 22 UTC / October 21 in America/Chicago.
 
 This v1 report is retained as historical evidence. Review identified that its
 independent recount did not pin the expected workload. Protocol v2 adds that
-check and the shared-load, policy and lifecycle changes described above; its
-qualification evidence must be recorded from a fresh committed implementation.
+check and the shared-load, policy and lifecycle changes described above. The
+fresh committed v2 run above supersedes this report for qualification.
 
 | Check | Documents | Code |
 | --- | --- | --- |
