@@ -13,6 +13,12 @@ Updated for audit [#20](https://github.com/toddwbucy/HADES/issues/20).
 | Profile selection | Persistent enablement, switching, simulated reboot, failure/rollback | Mock systemctl/curl only |
 | Optional workstation probes | `clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`, CUDA-specific Python case | Explicit analyzer/CUDA prerequisites; not evidence supplied by CPU CI |
 
+The opt-in [Jina code qualification](verified-code-provider.md) uses approved
+offline model assets and a private HTTP server to check actual document/code
+adapters through Rust. `verified_jina_workloads` is ignored in ordinary CI;
+CPU provider/qualification regressions run in `services/tests`. This check creates
+no database and does not activate managed code ingestion.
+
 The CLI lifecycle uses a private deterministic embedding HTTP fixture. It covers
 real storage, late-chunk response mapping, query retrieval, content and symbol-line
 changes, file moves, drift/retirement, graph validation, deletion, and a failed

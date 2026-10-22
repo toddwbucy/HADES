@@ -132,6 +132,8 @@ and the actual HTTP/Rust/disposable-database flow. Internal profile persistence 
 guarded document ingest/query commits and conventional token-aware planning are
 implemented. [Registered provider discovery](registered-provider-discovery.md)
 now reads protected registrations and checks the live HTTP description in Rust.
-General quality evaluation, late/code capabilities, public entry-point enforcement,
-legacy policy, and frontend creation remain pending. Database pairing stays
-disabled until the applicable public entry points enforce it together.
+[Verified contextual documents](verified-late-passages.md) and the separate
+[conventional code producer](verified-code-provider.md) extend the original
+document-only adapter. Managed document setup, ingestion, jobs and public search
+now enforce pairing. General quality evaluation, guarded code ingestion, legacy
+migration policy and frontend creation remain pending.

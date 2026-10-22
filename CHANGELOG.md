@@ -19,6 +19,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add an opt-in verified Jina provider for conventional document and specialized
+  code embeddings from one registered load. Keep separate workload receipts,
+  prompts, adapters, and serving limits; qualify both through fixed retrieval,
+  tokenizer, reload, and Rust HTTP checks. Existing document/contextual providers
+  retain their contracts; managed code ingestion remains gated (#225).
+
 - Add explicit document/code provider observations for model-bound workspaces,
   with separate capability checks, observed planning limits, and correctly selected
   embedding receipts from one registered model load. Preserve existing document

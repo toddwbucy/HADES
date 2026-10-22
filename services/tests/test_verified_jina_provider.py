@@ -39,7 +39,7 @@ def provider(source, registry, monkeypatch):
               "max_position_embeddings": 32768, "auto_map": {"AutoModel": "modeling_fixture.Fixture"}}
     (source / "config.json").write_text(json.dumps(config))
     registration = registry.register("verified", source, REVISION)
-    state = types.SimpleNamespace(calls=[], loads=[], hook=None, invalid=None)
+    state = types.SimpleNamespace(calls=[], adapters=[], loads=[], hook=None, invalid=None)
 
     class Model(torch.nn.Module):
         """Expose token-dependent vectors so tests can verify exact prompts and pooling."""
@@ -52,14 +52,17 @@ def provider(source, registry, monkeypatch):
 
         def forward(self, input_ids, attention_mask, task_label, output_vlm_last_hidden_states, **kwargs):
             """Record real token IDs and return deterministic hidden states on CPU."""
-            assert task_label == "retrieval" and output_vlm_last_hidden_states
+            assert task_label in {"retrieval", "code"} and output_vlm_last_hidden_states
             assert not self.training and not torch.is_grad_enabled()
             assert not torch.is_autocast_enabled("cpu")
             state.calls.append(input_ids.tolist()[0])
+            state.adapters.append(task_label)
             if state.hook:
                 state.hook()
             hidden = torch.ones((1, input_ids.shape[1], 2048), dtype=torch.float32)
             hidden[:, :, 0] = input_ids.float()
+            if task_label == "code":
+                hidden[:, :, 1] = 5
             if state.invalid == "nan":
                 hidden[:, :, 0] = float("nan")
             if state.invalid == "shape":
@@ -126,6 +129,7 @@ def test_exact_prompt_tokenization_masked_mean_and_float32_normalization(provide
     for task, prefix_id in [("retrieval.passage", 1), ("retrieval.query", 2)]:
         result = embed(p, expected, task=task)
         assert state.calls[-1] == [prefix_id, 3, 4, 5]
+        assert state.adapters[-1] == "retrieval"
         wanted = np.ones(2048, dtype=np.float32)
         wanted[0] = np.mean([prefix_id, 3, 4, 5])
         wanted /= np.linalg.norm(wanted)

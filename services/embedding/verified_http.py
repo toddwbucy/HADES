@@ -46,6 +46,16 @@ class PassageRequest(BaseModel):
     max_input_tokens: int = Field(ge=1, le=0xffffffff)
 
 
+class CodeVerifiedRequest(VerifiedRequest):
+    """Expose code only for an operator-created adapter that implements that task."""
+    task: Literal["retrieval.passage", "retrieval.query", "code"]
+
+
+class CodePassageRequest(PassageRequest):
+    """Code planning uses its own selected receipt and conventional policy."""
+    task: Literal["retrieval.passage", "code"]
+
+
 class LatePassageRequest(PassageRequest):
     """Separate retrieval-passage and encoding-window budgets, with a required minimum overlap."""
     context_cap_tokens: int = Field(ge=1, le=0xffffffff)
@@ -86,6 +96,9 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
     using the legacy app; no registry path or profile is accepted over HTTP.
     """
     state = AppState(EmbeddingConfig(model_name=provider.model_name), embedder=provider)
+    code_enabled = "code" in getattr(provider, "embedding_tasks", ())
+    embedding_request = CodeVerifiedRequest if code_enabled else VerifiedRequest
+    passage_request = CodePassageRequest if code_enabled else PassageRequest
 
     @asynccontextmanager
     async def lifespan(app):
@@ -134,7 +147,7 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
     @app.post("/v1/embeddings")
     async def embeddings(request: Request):
         """Require a receipt at admission and return the actual checked receipt."""
-        parsed, expected = await _read_request(request)
+        parsed, expected = await _read_request(request, embedding_request)
         texts = [parsed.input] if isinstance(parsed.input, str) else parsed.input
         # batch_size is an operational hint. This v1 path deliberately executes
         # one input per forward pass, keeping tokenization/pooling explicit.
@@ -145,7 +158,7 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
     @app.post("/v1/passages")
     async def passages(request: Request):
         """Return complete token-checked byte spans without running model inference."""
-        parsed, expected = await _read_request(request, PassageRequest)
+        parsed, expected = await _read_request(request, passage_request)
         result = await run(lambda: provider.plan(
             model=parsed.model, text=parsed.input, task=parsed.task, expected=expected,
             passage_tokens=parsed.passage_tokens, overlap_tokens=parsed.overlap_tokens,

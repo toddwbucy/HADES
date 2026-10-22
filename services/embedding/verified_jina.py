@@ -73,6 +73,9 @@ class VerifiedJinaProvider:
     covers admission, all inputs, response checking, and unload.
     """
 
+    embedding_tasks = tuple(PROMPTS)
+    passage_tasks = ("retrieval.passage",)
+
     def __init__(self, registration: RegisteredModel, *, device="cpu", use_fp16=False,
                  max_input_tokens: int = MAX_TOKENS):
         """Construct from operator-owned registration with an explicit serving budget."""
@@ -207,11 +210,15 @@ class VerifiedJinaProvider:
                     raise
             return json.loads(json.dumps(self._checked()))
 
+    def _workload(self, description, task):
+        """Select the single observed space; multi-workload adapters override this."""
+        return description
+
     @contextmanager
-    def _operation(self, expected):
+    def _operation(self, expected, task="retrieval.passage"):
         """Pin the actual load across the complete operation, including failure paths."""
         with self._backend._artifact_lock:
-            current = self._checked()
+            current = self._workload(self._checked(), task)
             try:
                 ProviderReceipt.from_dict(current["receipt"]).check_matches(expected)
             except ValueError as exc:
@@ -222,26 +229,28 @@ class VerifiedJinaProvider:
                 self._checked()
 
     def embed(self, *, model: str, texts: list[str], task: str, expected: ProviderReceipt):
-        """Return vectors only for the observed generation and explicit retrieval task."""
-        if model != self._registration.model_id or task not in PROMPTS:
-            raise ValueError("model and task must match the verified retrieval provider")
+        """Return vectors only for the selected workload's observed generation and task."""
+        if model != self._registration.model_id or task not in self.embedding_tasks:
+            raise ValueError("model and task must match the verified provider")
         if not isinstance(expected, ProviderReceipt):
             raise ValueError("an expected provider receipt is required")
         if not isinstance(texts, list) or not 1 <= len(texts) <= MAX_INPUTS or any(not isinstance(t, str) for t in texts):
             raise ValueError("input must contain 1..=128 text strings")
         if sum(len(text.encode("utf-8")) for text in texts) > 8 * 1024 * 1024:
             raise ValueError("input exceeds text byte budget")
-        with self._operation(expected) as observed:
+        with self._operation(expected, task) as observed:
+            behavior = observed["space"]["passage" if task in self.passage_tasks else "query"]
+            ceiling = observed["capabilities"]["max_input_tokens"]
             encoded_inputs = []
             total_tokens = 0
             for index, text in enumerate(texts):
                 encoded = self._backend._tokenizer(
-                    PROMPTS[task] + text, return_tensors="pt", add_special_tokens=True,
+                    behavior["prompt"] + text, return_tensors="pt", add_special_tokens=True,
                     padding=False, truncation=False, return_attention_mask=True, split_special_tokens=False,
                 )
                 tokens = int(encoded["input_ids"].shape[1])
-                if tokens > self._max_input_tokens:
-                    raise InputTooLargeError(index, tokens, self._max_input_tokens)
+                if tokens > ceiling:
+                    raise InputTooLargeError(index, tokens, ceiling)
                 total_tokens += tokens
                 if total_tokens > MAX_REQUEST_TOKENS:
                     raise ValueError("request exceeds total token budget")
@@ -250,7 +259,8 @@ class VerifiedJinaProvider:
             for index, encoded in enumerate(encoded_inputs):
                 inputs = encoded.to(self._backend.device)
                 with torch.no_grad(), torch.autocast(device_type=torch.device(self._backend.device).type, enabled=False):
-                    output = self._backend._model(**inputs, task_label="retrieval", output_vlm_last_hidden_states=True)
+                    output = self._backend._model(**inputs, task_label=behavior["adapter"],
+                                                 output_vlm_last_hidden_states=True)
                     hidden = output.vlm_last_hidden_states
                     if not isinstance(hidden, torch.Tensor) or tuple(hidden.shape) != (1, inputs["input_ids"].shape[1], EMBEDDING_DIM):
                         raise RuntimeError("model returned invalid token-level embeddings")
@@ -267,18 +277,18 @@ class VerifiedJinaProvider:
 
     def plan(self, *, model, text, task, expected, passage_tokens, overlap_tokens, max_input_tokens):
         """Plan conventional source passages under the same checked load used for inference."""
-        if model != self._registration.model_id or task != "retrieval.passage":
+        if model != self._registration.model_id or task not in self.passage_tasks:
             raise ValueError("planning requires the registered model's passage task")
         if not isinstance(expected, ProviderReceipt):
             raise ValueError("an expected provider receipt is required")
         if (type(max_input_tokens) is not int or type(passage_tokens) is not int
                 or not 0 < passage_tokens <= max_input_tokens <= 0xffffffff):
             raise ValueError("passage policy must fit the declared profile ceiling")
-        with self._operation(expected) as observed:
+        with self._operation(expected, task) as observed:
             def count(value, rendered):
                 """Use the actual serving tokenizer and explicit prompt/special-token policy."""
                 encoded = self._backend._tokenizer(
-                    (PROMPTS[task] if rendered else "") + value,
+                    (observed["space"]["passage"]["prompt"] if rendered else "") + value,
                     add_special_tokens=rendered, padding=False, truncation=False,
                     split_special_tokens=False, return_attention_mask=False,
                     return_token_type_ids=False, verbose=False,
@@ -286,5 +296,6 @@ class VerifiedJinaProvider:
                 return len(encoded["input_ids"])
 
             result = plan_passages(text, passage_tokens=passage_tokens, overlap_tokens=overlap_tokens,
-                                   max_input_tokens=min(max_input_tokens, self._max_input_tokens), count=count)
+                                   max_input_tokens=min(max_input_tokens, observed["capabilities"]["max_input_tokens"]),
+                                   count=count)
             return dict(result, model=self.model_name, task=task, receipt=dict(observed["receipt"]))
