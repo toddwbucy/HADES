@@ -135,6 +135,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Pin CI's protoc 23.4 archive and checksum instead of relying on release-list
+  discovery, which can fail before Rust and database checks begin.
+
 - Preserve each interrupted reading request independently across later saves and
   browser tabs. Open accepted relationships and basis links as edges in the graph
   viewer, with their real endpoint selected.

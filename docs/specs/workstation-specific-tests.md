@@ -13,6 +13,10 @@ Updated for audit [#20](https://github.com/toddwbucy/HADES/issues/20).
 | Profile selection | Persistent enablement, switching, simulated reboot, failure/rollback | Mock systemctl/curl only |
 | Optional workstation probes | `clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`, CUDA-specific Python case | Explicit analyzer/CUDA prerequisites; not evidence supplied by CPU CI |
 
+CI installs the checksum-pinned Linux x86_64 protoc 23.4 archive through
+`scripts/install_ci_protoc.sh`, without querying GitHub's release listing.
+When updating the pin, verify its checksum and compile all canonical `proto/` files.
+
 The opt-in [Jina code qualification](verified-code-provider.md) uses approved
 offline model assets and a private HTTP server to check actual document/code
 adapters through Rust. `verified_jina_workloads` is ignored in ordinary CI;
