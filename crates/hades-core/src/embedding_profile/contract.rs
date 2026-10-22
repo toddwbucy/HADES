@@ -133,6 +133,29 @@ impl EmbeddingSpace {
         self.query.validate()
     }
 
+    /// Shared identity/task checks for persisted policy and live workload observations.
+    pub(crate) fn validate_for(
+        &self,
+        model: &ModelIdentity,
+        tokenizer_md5: &Md5Digest,
+        capabilities: &Capabilities,
+    ) -> Result<(), ContractError> {
+        self.validate()?;
+        require(
+            self.artifact_md5 == model.manifest_md5,
+            "workload artifact differs from database model",
+        )?;
+        require(
+            &self.tokenizer_manifest_md5 == tokenizer_md5,
+            "workload tokenizer differs from declared tokenizer assets",
+        )?;
+        require(
+            capabilities.tasks.contains(&self.passage.task)
+                && capabilities.tasks.contains(&self.query.task),
+            "workload uses an unsupported task",
+        )
+    }
+
     /// SHA-256 identifies the canonical behavior document. Artifact identity
     /// remains MD5; this digest does not authenticate a model or its source.
     pub fn id(&self) -> Result<SpaceId, ContractError> {
@@ -168,6 +191,26 @@ pub struct ModelIdentity {
     pub tokenizer_files: Vec<String>,
 }
 
+impl ModelIdentity {
+    /// Validate the shared model once and return its declared tokenizer subset digest.
+    pub(crate) fn validate(&self, manifest: &ArtifactManifest) -> Result<Md5Digest, ContractError> {
+        label(&self.id)?;
+        label(&self.revision)?;
+        manifest.check_digest(&self.manifest_md5)?;
+        let mut tokenizer_files = Vec::new();
+        for path in &self.tokenizer_files {
+            let entry = manifest
+                .files
+                .iter()
+                .find(|file| &file.path == path)
+                .ok_or_else(|| ContractError("tokenizer asset is absent from manifest".into()))?;
+            tokenizer_files.push(entry.clone());
+        }
+        // Also rejects empty/duplicate tokenizer declarations.
+        ArtifactManifest::new(tokenizer_files)?.digest()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
@@ -178,6 +221,23 @@ pub struct Capabilities {
     pub tokenizer_offsets: bool,
     pub tasks: Vec<String>,
     pub max_input_tokens: u32,
+}
+
+impl Capabilities {
+    /// Check text-serving limits and task declarations without inventing a database policy.
+    pub(crate) fn validate(&self) -> Result<(), ContractError> {
+        require(self.text, "document/code workloads require text capability")?;
+        require(
+            self.max_input_tokens > 0,
+            "context token limit must be positive",
+        )?;
+        let mut tasks = std::collections::BTreeSet::new();
+        for task in &self.tasks {
+            label(task)?;
+            require(tasks.insert(task), "duplicate supported task")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +285,22 @@ pub struct Workloads {
 pub enum WorkloadKind {
     Documents,
     Code,
+}
+
+impl Workloads {
+    /// Inspect explicit database intent without substituting another workload.
+    pub fn get(&self, kind: WorkloadKind) -> Option<&Workload> {
+        match kind {
+            WorkloadKind::Documents => self.documents.as_ref(),
+            WorkloadKind::Code => self.code.as_ref(),
+        }
+    }
+
+    /// Keep disabled-workload failures local to the profile contract at every binding boundary.
+    pub fn enabled(&self, kind: WorkloadKind) -> Result<&Workload, ContractError> {
+        self.get(kind)
+            .ok_or_else(|| ContractError("workload is disabled_by_profile".into()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,57 +352,20 @@ impl EmbeddingProfile {
         )?;
         require(self.revision > 0, "profile revision must be positive")?;
         label(&self.generation)?;
-        label(&self.model.id)?;
-        label(&self.model.revision)?;
         label(&self.runtime_binding.provider_id)?;
-        manifest.check_digest(&self.model.manifest_md5)?;
-        let mut tokenizer_files = Vec::new();
-        for path in &self.model.tokenizer_files {
-            let entry = manifest
-                .files
-                .iter()
-                .find(|file| &file.path == path)
-                .ok_or_else(|| ContractError("tokenizer asset is absent from manifest".into()))?;
-            tokenizer_files.push(entry.clone());
-        }
-        // Also rejects empty/duplicate tokenizer declarations.
-        let tokenizer_md5 = ArtifactManifest::new(tokenizer_files)?.digest()?;
-        require(
-            self.capabilities.text,
-            "document/code workloads require text capability",
-        )?;
-        require(
-            self.capabilities.max_input_tokens > 0,
-            "context token limit must be positive",
-        )?;
-        let mut tasks = std::collections::BTreeSet::new();
-        for task in &self.capabilities.tasks {
-            label(task)?;
-            require(tasks.insert(task), "duplicate supported task")?;
-        }
+        let tokenizer_md5 = self.model.validate(manifest)?;
+        self.capabilities.validate()?;
         require(
             self.workloads.documents.is_some() || self.workloads.code.is_some(),
             "enable at least one workload",
         )?;
-        for (kind, workload) in [
-            (WorkloadKind::Documents, &self.workloads.documents),
-            (WorkloadKind::Code, &self.workloads.code),
-        ] {
-            let Some(workload) = workload else { continue };
-            workload.space.validate()?;
-            require(
-                workload.space.artifact_md5 == self.model.manifest_md5,
-                "workload artifact differs from database model",
-            )?;
-            require(
-                workload.space.tokenizer_manifest_md5 == tokenizer_md5,
-                "workload tokenizer differs from declared tokenizer assets",
-            )?;
-            require(
-                tasks.contains(&workload.space.passage.task)
-                    && tasks.contains(&workload.space.query.task),
-                "workload uses an unsupported task",
-            )?;
+        for kind in [WorkloadKind::Documents, WorkloadKind::Code] {
+            let Some(workload) = self.workloads.get(kind) else {
+                continue;
+            };
+            workload
+                .space
+                .validate_for(&self.model, &tokenizer_md5, &self.capabilities)?;
             require(
                 !workload.specialized_code
                     || (kind == WorkloadKind::Code && self.capabilities.specialized_code),
@@ -380,12 +419,7 @@ impl EmbeddingProfile {
             self.state == ProfileState::Ready,
             "workspace profile is not ready",
         )?;
-        let workload = match kind {
-            WorkloadKind::Documents => &self.workloads.documents,
-            WorkloadKind::Code => &self.workloads.code,
-        }
-        .as_ref()
-        .ok_or_else(|| ContractError("workload is disabled_by_profile".into()))?;
+        let workload = self.workloads.enabled(kind)?;
         observed.validate()?;
         require(
             observed.artifact_md5 == self.model.manifest_md5,

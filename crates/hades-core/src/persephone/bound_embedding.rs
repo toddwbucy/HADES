@@ -1,4 +1,4 @@
-//! Explicit profile-bound transport for #225, not yet used by production callers.
+//! Receipt-bound transport for model-paired workloads.
 //!
 //! The provider_registry factory supplies the endpoint and an observed receipt
 //! issued after verified loading. This low-level client enforces that receipt over the
@@ -48,12 +48,14 @@ pub struct BoundEmbeddingClient {
     binding: BoundEmbeddingRequest,
     chunking: ChunkPolicy,
     role: EmbeddingRole,
-    max_input_tokens: u32,
+    profile_max_input_tokens: u32,
+    serving_max_input_tokens: u32,
     normalization: Normalization,
 }
 
 impl BoundEmbeddingClient {
     /// Validate and snapshot a ready profile and trusted provider observation.
+    /// The receipt and serving ceiling must come from the same selected workload observation.
     /// Transport construction is lazy; this does not probe or load the provider.
     pub async fn connect(
         profile: &EmbeddingProfile,
@@ -62,6 +64,7 @@ impl BoundEmbeddingClient {
         role: EmbeddingRole,
         provider: ProviderConnection,
         observed: &ProviderReceipt,
+        observed_max_input_tokens: u32,
     ) -> Result<Self, EmbeddingError> {
         let binding = profile.bind(manifest, workload, role, observed)?;
         require(
@@ -76,12 +79,11 @@ impl BoundEmbeddingClient {
             provider.max_response_bytes > 0,
             "response limit must be positive",
         )?;
-        // bind() above already rejects a disabled workload.
-        let selected = match workload {
-            WorkloadKind::Documents => profile.workloads.documents.as_ref(),
-            WorkloadKind::Code => profile.workloads.code.as_ref(),
-        }
-        .expect("validated enabled workload");
+        require(
+            observed_max_input_tokens > 0,
+            "observed token ceiling must be positive",
+        )?;
+        let selected = profile.workloads.enabled(workload)?;
         let inner = EmbeddingClient::connect(EmbeddingClientConfig {
             endpoint: provider.endpoint,
             model: binding.model.clone(),
@@ -97,7 +99,9 @@ impl BoundEmbeddingClient {
             binding,
             chunking: selected.chunking.clone(),
             role,
-            max_input_tokens: profile.capabilities.max_input_tokens,
+            profile_max_input_tokens: profile.capabilities.max_input_tokens,
+            serving_max_input_tokens: observed_max_input_tokens
+                .min(profile.capabilities.max_input_tokens),
             normalization: selected.space.representation.normalize,
         })
     }
@@ -105,6 +109,16 @@ impl BoundEmbeddingClient {
     /// Inspect the immutable pin without exposing an unbound client or setter.
     pub fn binding(&self) -> &BoundEmbeddingRequest {
         &self.binding
+    }
+
+    /// The wire request preserves saved policy; the serving tokenizer must clamp its output.
+    /// Independently enforce the selected observation, including caller-supplied/reused plans.
+    fn check_plan_ceiling(&self, planned_max_input_tokens: u32) -> Result<(), EmbeddingError> {
+        require(
+            planned_max_input_tokens <= self.serving_max_input_tokens,
+            "passage plan exceeds the observed workload token ceiling",
+        )?;
+        Ok(())
     }
 
     /// Plan complete conventional passages using the pinned provider's real tokenizer.
@@ -135,11 +149,17 @@ impl BoundEmbeddingClient {
                 Some(&json!({
                     "model":self.binding.model,"task":self.binding.task,"input":text,
                     "passage_tokens":passage_tokens,"overlap_tokens":overlap_tokens,
-                    "max_input_tokens":self.max_input_tokens,
+                    "max_input_tokens":self.profile_max_input_tokens,
                 })),
             )
             .await?;
-        output.validate(text, &self.binding, &self.chunking, self.max_input_tokens)?;
+        output.validate(
+            text,
+            &self.binding,
+            &self.chunking,
+            self.profile_max_input_tokens,
+        )?;
+        self.check_plan_ceiling(output.max_input_tokens)?;
         Ok(BoundEmbeddingResult {
             output,
             binding: self.binding.clone(),

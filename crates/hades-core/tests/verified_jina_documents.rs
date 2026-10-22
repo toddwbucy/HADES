@@ -5,7 +5,7 @@
 use hades_core::{
     config::{HadesConfig, RegisteredProviderConfig, RegisteredProvidersConfig},
     db::{ArangoClient, ArangoPool, crud},
-    embedding_profile::{ChunkPolicy, PassagePolicy, store::ProfileStore},
+    embedding_profile::{ChunkPolicy, PassagePolicy, WorkloadKind, store::ProfileStore},
     pipeline::profiled_documents::{ProfiledDocuments, files::FileInput},
     service::{ConnectionPolicy, handle_request},
     test_support::{Fixtures, with_temp_db},
@@ -73,7 +73,14 @@ async fn install(pool: &ArangoPool, context: &Value) -> (ProfiledDocuments, Setu
     // The independent Rust registry/HTTP observation must agree with the Python qualification.
     assert_eq!(json!(observed.description()), context["description"]);
     assert_eq!(json!(observed.manifest()), context["manifest"]);
-    let passage_tokens = 500.min(observed.description().capabilities.max_input_tokens);
+    let passage_tokens = 500.min(
+        observed
+            .description()
+            .advertised_workload(WorkloadKind::Documents)
+            .unwrap()
+            .capabilities
+            .max_input_tokens,
+    );
     let policy = if context["chunk_policy"] == "late" {
         ChunkPolicy::Late {
             context_cap_tokens: 1024,

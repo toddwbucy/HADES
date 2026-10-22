@@ -137,6 +137,15 @@ pub struct Peer {
 impl Peer {
     /// Serve deterministic normalized vectors with injectable failures over a private socket.
     pub fn new(fixture: &Fixture) -> Self {
+        Self::start(fixture, false)
+    }
+
+    /// Advertise the same document behavior through the explicit workload wire format.
+    pub fn with_workload_description(fixture: &Fixture) -> Self {
+        Self::start(fixture, true)
+    }
+
+    fn start(fixture: &Fixture, workload_description: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let registry =
@@ -213,6 +222,11 @@ impl Peer {
                     let mut body = if verifying {
                         let mut response = description.clone();
                         response["receipt"] = json!(receipt);
+                        if workload_description {
+                            response = json!({"format":"hades-provider-description-v2", "model":response["model"],
+                                "workloads":{"documents":{"capabilities":response["capabilities"],
+                                    "space":response["space"],"receipt":response["receipt"]},"code":null}});
+                        }
                         response
                     } else if planning {
                         let text = request["input"].as_str().unwrap();

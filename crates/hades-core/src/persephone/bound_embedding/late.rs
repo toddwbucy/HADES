@@ -65,9 +65,15 @@ impl BoundEmbeddingClient {
             "model":self.binding.model, "task":self.binding.task, "input":text,
             "passage_tokens":passages.passage_tokens,"overlap_tokens":passages.overlap_tokens,
             "context_cap_tokens":context_cap_tokens,"minimum_window_overlap_tokens":minimum_window_overlap_tokens,
-            "max_input_tokens":self.max_input_tokens,
+            "max_input_tokens":self.profile_max_input_tokens,
         }))).await?;
-        output.validate(text, &self.binding, &self.chunking, self.max_input_tokens)?;
+        output.validate(
+            text,
+            &self.binding,
+            &self.chunking,
+            self.profile_max_input_tokens,
+        )?;
+        self.check_plan_ceiling(output.max_input_tokens)?;
         Ok(BoundEmbeddingResult {
             output,
             binding: self.binding.clone(),
@@ -84,7 +90,13 @@ impl BoundEmbeddingClient {
             self.role == EmbeddingRole::Passage,
             "only passage roles can embed late documents",
         )?;
-        plan.validate(text, &self.binding, &self.chunking, self.max_input_tokens)?;
+        plan.validate(
+            text,
+            &self.binding,
+            &self.chunking,
+            self.profile_max_input_tokens,
+        )?;
+        self.check_plan_ceiling(plan.max_input_tokens)?;
         let mut results = vec![None; plan.passages.len()];
         for (window_index, window) in plan.windows.iter().enumerate() {
             let assigned: Vec<_> = plan

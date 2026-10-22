@@ -74,6 +74,7 @@ impl Fixture {
             role,
             mock.connection(),
             &self.receipt,
+            self.profile.capabilities.max_input_tokens,
         )
         .await
         .unwrap()
@@ -587,11 +588,12 @@ async fn late_inputs_pin_receipts_and_discard_results_on_reload() {
 /// Refuse invalid profile/provider combinations before attempting inference.
 #[tokio::test]
 async fn invalid_bindings_fail_before_transport() {
-    for case in 0..8 {
+    for case in 0..9 {
         let mut fixture = Fixture::new(false);
         let mock = Mock::json(vec![]);
         let mut provider = mock.connection();
         let mut workload = WorkloadKind::Documents;
+        let mut observed_max_input_tokens = fixture.profile.capabilities.max_input_tokens;
         match case {
             0 => fixture.profile.state = ProfileState::Initializing,
             1 => workload = WorkloadKind::Code,
@@ -611,6 +613,7 @@ async fn invalid_bindings_fail_before_transport() {
             }
             6 => provider.max_response_bytes = 0,
             7 => provider.timeout = Duration::ZERO,
+            8 => observed_max_input_tokens = 0,
             _ => unreachable!(),
         }
         let result = BoundEmbeddingClient::connect(
@@ -620,6 +623,7 @@ async fn invalid_bindings_fail_before_transport() {
             EmbeddingRole::Query,
             provider,
             &fixture.receipt,
+            observed_max_input_tokens,
         )
         .await;
         assert!(
@@ -681,6 +685,7 @@ async fn bound_transport_limits_response_bytes() {
         EmbeddingRole::Query,
         provider,
         &fixture.receipt,
+        fixture.profile.capabilities.max_input_tokens,
     )
     .await
     .unwrap();

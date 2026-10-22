@@ -71,10 +71,24 @@ async fn touch_profile(pool: &ArangoPool) {
 /// Verify actual wire roles and source/chunk/vector identity through a complete search.
 #[tokio::test]
 async fn roundtrip_records_identity_and_uses_asymmetric_tasks() {
-    with_temp_db("bound_roundtrip", Fixtures::Empty, |pool| async move {
+    document_roundtrip(false).await;
+}
+
+/// The new workload observation also reaches guarded storage and search without changing provenance.
+#[tokio::test]
+async fn workload_description_preserves_document_roundtrip() {
+    document_roundtrip(true).await;
+}
+
+async fn document_roundtrip(workload_description: bool) {
+    with_temp_db("bound_roundtrip", Fixtures::Empty, move |pool| async move {
         let fixture = Fixture::new(2);
         fixture.install(&pool).await;
-        let peer = Peer::new(&fixture);
+        let peer = if workload_description {
+            Peer::with_workload_description(&fixture)
+        } else {
+            Peer::new(&fixture)
+        };
         let documents = fixture.connect(&pool, &peer).await;
         let source = "notes/日本語: \"a\" / ? @source";
         let key = insert(&documents, source, &["apple café\n", "banana 東京"]).await;

@@ -2,17 +2,19 @@
 
 This slice of [#225](https://github.com/toddwbucy/HADES/issues/225) connects the
 [portable profile/receipt contracts](embedding-identity-contract.md) to the Rust
-HTTP client. `persephone::bound_embedding::BoundEmbeddingClient` is an explicit,
-opt-in library boundary. No CLI, MCP, background job, or frontend operation uses
-it yet. The installed Jina HTTP service does not issue full provider receipts;
-its responses will be rejected by this client. The internal
+HTTP client. `persephone::bound_embedding::BoundEmbeddingClient` supplies the
+transport for model-paired document ingestion and search. Applications enter
+through the registered provider catalog below. Legacy service responses without
+full provider receipts are rejected by this client. The
 [verified Jina provider](verified-jina-provider.md) now implements the producing
 side for conventional retrieval, without installation activation.
 
 ## Construct a fixed binding
 
 `BoundEmbeddingClient::connect` accepts a profile, artifact manifest, workload,
-role, `ProviderConnection`, and observed `ProviderReceipt`. It validates the ready
+role, `ProviderConnection`, observed `ProviderReceipt`, and observed
+`max_input_tokens`. The receipt and positive serving ceiling must come from the
+same selected workload observation. It validates the ready
 profile and enabled workload, compares artifact and behavior-space identities,
 and requires the resolved provider ID to match the profile. Construction is lazy:
 it neither probes the endpoint nor loads a model.
@@ -28,8 +30,10 @@ The model, vector width, task, profile revision, corpus generation, and expected
 receipt come from the binding. Operational input supplies only provider ID,
 endpoint, positive request timeout, and a positive response-byte limit. No Jina
 defaults, alternate endpoint, arbitrary task override, or unbound inner client
-are exposed. Cloning retains the original pin. Changing the caller's profile
-object does not retarget existing clients.
+are exposed. The client also snapshots the smaller of the saved global token
+ceiling and the observed workload ceiling. Cloning retains these limits with
+the original receipt pin. Changing the caller's profile object does not retarget
+existing clients.
 
 ## Receipt wire contract
 
@@ -81,13 +85,15 @@ not permission to write to a database. The orchestrator must retain database
 identity and recheck profile revision, corpus generation, and job ownership
 before committing. `plan_passages(text)` sends the saved conventional policy to
 the trusted provider and validates the typed response's source coverage, identity,
-and token limits before returning it. It uses the same receipt as embedding;
+and token limits before returning it. Requests preserve the saved policy while
+the provider plans within its actual serving budget. Rust additionally rejects
+plans above the selected workload's observed ceiling. This also applies to
+`plan_late_passages` and to caller-supplied plans passed to `embed_planned_late`
+before any inference. It uses the same receipt as embedding;
 query/late roles cannot call this method. See [token-aware planning](profile-token-planning.md).
-The client does not implement a tokenizer or manage caches. The verified provider
-implements a conventional Jina behavior space and receipt production. Complete
-workload policies and enforcement at every public entry point remain
-prerequisites for enabling database pairing. Existing clients retain their
-previous wire behavior.
+The client does not implement a tokenizer or manage caches. Direct inference
+still requires provider-side token counting and overflow refusal. Verified code
+production and graph persistence remain separate integration work.
 
 ## Validation
 
