@@ -135,7 +135,21 @@ impl Fixture {
             .initialize(self.profile.clone(), self.manifest.clone())
             .await
             .unwrap();
-        for &(collection, kind) in collections {
+        let code = collections
+            .iter()
+            .any(|(name, _)| *name == "codebase_files");
+        if code {
+            // Exercise the actual schema owner, including ontology and all nine
+            // lookup indexes, instead of provisioning a test-only approximation.
+            let schema = hades_core::schema_apply::parse(include_str!(
+                "../../../../config/schemas/codebase.yaml"
+            ))
+            .unwrap();
+            hades_core::schema_apply::apply(pool, &schema, Default::default())
+                .await
+                .unwrap();
+        }
+        for &(collection, kind) in collections.iter().filter(|_| !code) {
             crud::create_collection(pool, collection, Some(kind))
                 .await
                 .unwrap();

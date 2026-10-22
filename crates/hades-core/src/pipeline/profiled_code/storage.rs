@@ -160,10 +160,12 @@ fn preserve_symbols(file: &Value, incoming: &[Value]) -> Result<(), ArangoError>
     let previous = file["record_manifest"][CODEBASE.symbols]
         .as_object()
         .ok_or_else(|| invalid("invalid stored symbol inventory"))?;
+    let incoming: std::collections::HashSet<&str> = incoming
+        .iter()
+        .filter_map(|row| row["_key"].as_str())
+        .collect();
     ensure(
-        previous
-            .keys()
-            .all(|key| incoming.iter().any(|row| row["_key"] == *key)),
+        previous.keys().all(|key| incoming.contains(key.as_str())),
         "replacement would retire or move symbol endpoints; explicit graph reconciliation is required",
     )
 }
@@ -171,40 +173,39 @@ fn preserve_symbols(file: &Value, incoming: &[Value]) -> Result<(), ArangoError>
 async fn children(
     client: &ArangoClient,
     key: &str,
-) -> Result<(Rows, Vec<OwnedCollection>), ArangoError> {
+    owners: &[OwnedCollection],
+) -> Result<Rows, ArangoError> {
     let mut rows = Rows::new();
-    let mut owners = Vec::new();
     let mut bytes = 0;
-    for (collection, _) in CODEBASE.all_collections() {
-        if collection == CODEBASE.files {
-            continue;
-        }
-        let owner = OwnedCollection::require(client, collection, "file_key").await?;
-        let found = owner
+    for owner in owners {
+        let (found, size) = owner
             .children(client, key, MAX_ROWS, MAX_PREPARED_BYTES)
             .await?;
-        bytes += serde_json::to_vec(&found)?.len();
+        bytes += size;
         ensure(
             bytes <= MAX_PREPARED_BYTES,
             "stored code graph exceeds 16 MiB",
         )?;
-        rows.insert(collection.into(), found);
-        owners.push(owner);
+        rows.insert(owner.collection().into(), found);
     }
-    Ok((rows, owners))
+    Ok(rows)
 }
 
 pub(super) async fn write(
     client: ArangoClient,
     prepared: PreparedCodeFile,
 ) -> Result<String, ArangoError> {
+    ensure(
+        Ontology::load(&client).await? == prepared.ontology,
+        "code ontology changed after preparation; reconnect before publication",
+    )?;
     let key = prepared.file_key();
     let existing = file(&client, key).await?;
     ensure(
         existing.as_ref().map(revision).transpose()? == prepared.previous_revision.as_deref(),
         "source changed after preparation; prepare it again",
     )?;
-    let (old, owners) = children(&client, key).await?;
+    let old = children(&client, key, &prepared.owners).await?;
     if let Some(row) = &existing {
         let incoming_tier = prepared.file["analysis_tier"]
             .as_str()
@@ -222,7 +223,7 @@ pub(super) async fn write(
             "new code file has orphan or foreign graph records",
         )?;
     }
-    for owner in owners {
+    for owner in &prepared.owners {
         owner.remove(&client, key, MAX_PREPARED_BYTES).await?;
     }
     let mode = if existing.is_some() {

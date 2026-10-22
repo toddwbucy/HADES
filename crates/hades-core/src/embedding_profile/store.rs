@@ -251,7 +251,7 @@ impl ProfileStore {
                 .check(&client)
                 .await
                 .map_err(setup::storage_error)?;
-            setup::schema(&client, false, true)
+            setup::schema(&client, setup::SchemaMode::RequireIndexes, true)
                 .await
                 .map_err(setup::storage_error)?;
             ensure(

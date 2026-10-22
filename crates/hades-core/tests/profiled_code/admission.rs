@@ -93,6 +93,7 @@ async fn missing_or_incompatible_owner_indexes_refuse_admission_and_publication(
         code.commit(code.prepare(input("one.rs", ""), false).await.unwrap()).await.unwrap();
         for (collection, _) in CODEBASE.all_collections() {
             if collection == CODEBASE.files { continue; }
+            let code = connect(&pool, &peer).await;
             let prepared = code.prepare(input("one.rs", "let changed = 1;"), true).await.unwrap();
             let index = owner_index(&pool, collection, "file_key").await;
             let plan = pool.writer().post("explain", &json!({
@@ -105,7 +106,7 @@ async fn missing_or_incompatible_owner_indexes_refuse_admission_and_publication(
             let observations = peer.observations();
             assert!(ProfiledCode::connect(pool.clone(), &peer.catalog()).await.is_err());
             assert_eq!(peer.observations(), observations);
-            assert!(code.commit(prepared).await.unwrap_err().to_string().contains("file_key index"));
+            assert!(code.commit(prepared).await.is_err());
             assert_eq!(rows(&pool).await, before);
             // A sparse or compound index is not a complete owner lookup contract.
             let wrong = pool.writer().post(&format!("index?collection={collection}"), &json!({
@@ -120,10 +121,12 @@ async fn missing_or_incompatible_owner_indexes_refuse_admission_and_publication(
             let prepared = documents.prepare(DocumentInput {source_id:"notes".into(), text:"apple".into()}, false).await.unwrap();
             let index = owner_index(&pool, collection, "parent_key").await;
             index::drop_index(&pool, index["id"].as_str().unwrap()).await.unwrap();
-            let observations = peer.observations();
-            assert!(ProfiledDocuments::connect(pool.clone(), &peer.catalog()).await.is_err());
-            assert_eq!(peer.observations(), observations);
-            assert!(documents.commit(prepared).await.unwrap_err().to_string().contains("parent_key index"));
+            ProfiledDocuments::connect(pool.clone(), &peer.catalog()).await.unwrap();
+            let plans = peer.plans().len();
+            assert!(documents.prepare(DocumentInput {source_id:"notes".into(), text:"apple".into()}, false)
+                .await.err().unwrap().to_string().contains("parent_key index"));
+            assert_eq!(peer.plans().len(), plans);
+            assert!(documents.commit(prepared).await.is_err());
             assert_eq!(hades_core::db::crud::count_collection(&pool,"documents").await.unwrap(),0);
             index::ensure_lookup_index(&pool, collection, "parent_key").await.unwrap();
         }

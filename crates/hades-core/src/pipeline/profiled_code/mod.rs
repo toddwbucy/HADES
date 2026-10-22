@@ -1,10 +1,13 @@
 //! Internal conventional code preparation and atomic publication of a single file graph.
 //! Analyzers, filesystem admission, cross-file enrichment and public routing are separate owners.
 mod graph;
+mod ontology;
 mod storage;
 
 use std::collections::BTreeMap;
 
+use super::profiled_storage::OwnedCollection;
+use ontology::Ontology;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -49,6 +52,8 @@ pub struct PreparedCodeFile {
     previous_revision: Option<String>,
     file: Value,
     rows: Rows,
+    owners: Vec<OwnedCollection>,
+    ontology: Ontology,
 }
 
 impl PreparedCodeFile {
@@ -74,6 +79,8 @@ pub struct ProfiledCode {
     store: ProfileStore,
     snapshot: ProfileSnapshot,
     passage: BoundEmbeddingClient,
+    owners: Vec<OwnedCollection>,
+    ontology: Ontology,
 }
 
 impl ProfiledCode {
@@ -98,6 +105,7 @@ impl ProfiledCode {
             "this code path requires conventional chunking; contextual code is unavailable",
         )?;
         let client = pool.writer().clone().with_response_limit(64 * 1024)?;
+        let mut owners = Vec::new();
         for (name, kind) in CODEBASE.all_collections() {
             let properties = client.get(&format!("collection/{name}/properties")).await?;
             ensure(
@@ -105,9 +113,10 @@ impl ProfiledCode {
                 "code storage requires its complete document/edge schema",
             )?;
             if name != CODEBASE.files {
-                crate::db::index::require_owner_index(&client, name, "file_key").await?;
+                owners.push(OwnedCollection::require(&client, name, "file_key").await?);
             }
         }
+        let ontology = Ontology::load(&client).await?;
         let observed = catalog.verify_profile(profile, snapshot.manifest()).await?;
         let passage = observed
             .client(
@@ -126,6 +135,8 @@ impl ProfiledCode {
             store,
             snapshot,
             passage,
+            owners,
+            ontology,
         })
     }
 
@@ -136,10 +147,22 @@ impl ProfiledCode {
         input: CodeInput,
         replace: bool,
     ) -> Result<PreparedCodeFile, PipelineError> {
-        let resolved = graph::validate_input(&input)?;
+        let resolved = graph::validate_input(&input, &self.ontology)?;
         self.current().await?;
         let key = &resolved.file_key;
         let (mut file, mut rows) = graph::records(&input, &resolved, self.passage.binding());
+        // Full source is retained both in the file and across its passages. Reject
+        // known oversized graphs before asking the provider to tokenize anything.
+        ensure(
+            serde_json::to_vec(&(&file, &rows))
+                .map_err(ArangoError::from)?
+                .len()
+                + serde_json::to_vec(&input.text)
+                    .map_err(ArangoError::from)?
+                    .len()
+                <= MAX_PREPARED_BYTES,
+            "prepared code graph exceeds 16 MiB before planning; split the source explicitly",
+        )?;
         let previous_revision = storage::admit(
             self.pool.writer(),
             key,
@@ -161,12 +184,7 @@ impl ProfiledCode {
             .iter()
             .map(|span| input.text[span.start_byte..span.end_byte].to_owned())
             .collect();
-        let embedded = self.passage.embed(&texts, Some(16)).await?;
-        ensure(
-            embedded.binding == planned.binding && embedded.output.embeddings.len() == texts.len(),
-            "provider returned an incomplete or differently bound code file",
-        )?;
-        let binding = embedded.binding;
+        let binding = planned.binding;
         let normalization = self
             .snapshot
             .profile()
@@ -177,19 +195,9 @@ impl ProfiledCode {
             .space
             .representation
             .normalize;
-        for vector in &embedded.output.embeddings {
-            validate_vector(vector, binding.dimension, normalization)?;
-        }
         file["passage_plan"] = json!(planned.output);
         file["chunk_count"] = json!(texts.len());
-        for (index, ((span, text), vector)) in planned
-            .output
-            .spans
-            .iter()
-            .zip(texts)
-            .zip(embedded.output.embeddings)
-            .enumerate()
-        {
+        for (index, (span, text)) in planned.output.spans.iter().zip(&texts).enumerate() {
             let chunk = format!("bcode_{}", digest(&json!([binding.generation, key, index])));
             let common = json!({"_key":chunk,"format":FORMAT,"file_key":key,
                 "chunk_key":chunk,"chunk_index":index,"content_hash":file["content_hash"],
@@ -201,13 +209,50 @@ impl ProfiledCode {
             let mut embedding = common;
             embedding["model"] = json!(binding.model);
             embedding["dimension"] = json!(binding.dimension);
-            embedding["embedding"] = json!(vector);
+            embedding["embedding"] = json!([]);
             rows.get_mut(CODEBASE.embeddings).unwrap().push(embedding);
+        }
+        // A finite JSON number plus separator fits in 32 bytes. Reserve vectors
+        // and the key/hash inventory before spending even the first embedding call.
+        let manifest_bytes: usize = rows
+            .iter()
+            .map(|(name, rows)| {
+                name.len()
+                    + 6
+                    + rows
+                        .iter()
+                        .map(|row| row["_key"].as_str().unwrap().len() + 72)
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+            + 32;
+        ensure(
+            serde_json::to_vec(&(&file, &rows))
+                .map_err(ArangoError::from)?
+                .len()
+                + manifest_bytes
+                + texts.len() * binding.dimension as usize * 32
+                <= MAX_PREPARED_BYTES,
+            "prepared code graph size bound exceeds 16 MiB before embedding; split the source explicitly",
+        )?;
+        let embedded = self.passage.embed(&texts, Some(16)).await?;
+        ensure(
+            embedded.binding == binding && embedded.output.embeddings.len() == texts.len(),
+            "provider returned an incomplete or differently bound code file",
+        )?;
+        for (row, vector) in rows
+            .get_mut(CODEBASE.embeddings)
+            .unwrap()
+            .iter_mut()
+            .zip(embedded.output.embeddings)
+        {
+            validate_vector(&vector, binding.dimension, normalization)?;
+            row["embedding"] = json!(vector);
         }
         // The inventory detects orphan rows, edits and unknown authored fields before replacement.
         file["record_manifest"] = json!(graph::manifest(&rows)?);
         ensure(
-            serde_json::to_vec(&json!([file, rows]))
+            serde_json::to_vec(&(&file, &rows))
                 .map_err(ArangoError::from)?
                 .len()
                 <= MAX_PREPARED_BYTES,
@@ -219,12 +264,16 @@ impl ProfiledCode {
             previous_revision,
             file,
             rows,
+            owners: self.owners.clone(),
+            ontology: self.ontology.clone(),
         })
     }
 
     pub async fn commit(&self, prepared: PreparedCodeFile) -> Result<CodeReceipt, PipelineError> {
         ensure(
-            prepared.snapshot == self.snapshot && prepared.binding == *self.passage.binding(),
+            prepared.snapshot == self.snapshot
+                && prepared.binding == *self.passage.binding()
+                && prepared.ontology == self.ontology,
             "prepared code belongs to a different database or provider binding",
         )?;
         let mut receipt = CodeReceipt {
@@ -247,6 +296,7 @@ impl ProfiledCode {
                     .all_collections()
                     .iter()
                     .map(|(name, _)| (*name).into())
+                    .chain(std::iter::once("hades_schema".into()))
                     .collect(),
                 move |client| storage::write(client, prepared),
             )
@@ -258,6 +308,10 @@ impl ProfiledCode {
         ensure(
             self.store.load().await? == self.snapshot,
             "stale database profile; resolve a fresh code binding",
+        )?;
+        ensure(
+            Ontology::load(self.pool.writer()).await? == self.ontology,
+            "code ontology changed; reconnect before preparing a graph",
         )?;
         Ok(())
     }

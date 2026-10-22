@@ -141,9 +141,6 @@ pub(crate) async fn validate_documents(
                 "document storage requires three document collections",
             ));
         }
-        if collection != "documents" {
-            crate::db::index::require_owner_index(&client, collection, "parent_key").await?;
-        }
     }
     Ok(())
 }

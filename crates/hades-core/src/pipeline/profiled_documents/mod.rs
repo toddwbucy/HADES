@@ -8,6 +8,7 @@ pub mod files;
 mod plan;
 mod storage;
 
+use super::profiled_storage::OwnedCollection;
 use super::profiled_vectors::validate_vector;
 use plan::DocumentPlan;
 
@@ -47,6 +48,7 @@ pub struct PreparedDocument {
     document: Value,
     chunks: Vec<Value>,
     embeddings: Vec<Value>,
+    owners: [OwnedCollection; 2],
 }
 
 impl PreparedDocument {
@@ -186,7 +188,7 @@ impl ProfiledDocuments {
             None,
         )
         .await?;
-        self.prepare_admitted(input, admission.revision, None, ())
+        self.prepare_admitted(input, admission.revision, admission.owners, None, ())
             .await
     }
 
@@ -195,6 +197,7 @@ impl ProfiledDocuments {
         &self,
         input: DocumentInput,
         previous_revision: Option<String>,
+        owners: [OwnedCollection; 2],
         ingestion: Option<files::FileProvenance>,
         retention: R,
     ) -> Result<PreparedDocument, PipelineError> {
@@ -286,7 +289,7 @@ impl ProfiledDocuments {
             embeddings.push(embedding);
         }
         ensure(
-            serde_json::to_vec(&json!([document, chunks, embeddings]))
+            serde_json::to_vec(&(&document, &chunks, &embeddings))
                 .map_err(ArangoError::from)?
                 .len()
                 <= MAX_PREPARED_BYTES,
@@ -299,6 +302,7 @@ impl ProfiledDocuments {
             document,
             chunks,
             embeddings,
+            owners,
         })
     }
 

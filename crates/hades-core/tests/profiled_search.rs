@@ -24,6 +24,114 @@ mod fault;
 // These tests share dispatch's four-search process budget, not database state.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[tokio::test]
+async fn pre_index_workspaces_keep_search_and_accept_an_explicit_additive_upgrade() {
+    let _serial = SERIAL.lock().await;
+    with_temp_db(
+        "search_old_owner_schema",
+        Fixtures::Empty,
+        |pool| async move {
+            let fixture = Fixture::new(2);
+            fixture.install(&pool).await;
+            let peer = Peer::new(&fixture);
+            let key = insert(&pool, &fixture, &peer, "notes").await;
+            for name in ["chunks", "embeddings"] {
+                for index in hades_core::db::index::list_indexes(&pool, name)
+                    .await
+                    .unwrap()
+                {
+                    if index.index_type == "persistent" {
+                        hades_core::db::index::drop_index(&pool, &index.id)
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+            let saved = rows(&pool).await;
+            assert_eq!(
+                search(&pool, &config(&pool, &peer)).await["results"][0]["parent_key"],
+                key
+            );
+            hades_core::embedding_profile::admission::document_tree_admission(&pool, false)
+                .await
+                .unwrap();
+            let documents = fixture.connect(&pool, &peer).await;
+            let plans = peer.plans().len();
+            let requests = peer.requests().len();
+            assert!(
+                documents
+                    .prepare(
+                        DocumentInput {
+                            source_id: "notes".into(),
+                            text: "banana".into()
+                        },
+                        true
+                    )
+                    .await
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("parent_key index")
+            );
+            assert_eq!(peer.plans().len(), plans);
+            assert_eq!(peer.requests().len(), requests);
+            assert_eq!(rows(&pool).await, saved);
+            for name in ["chunks", "embeddings"] {
+                assert_eq!(
+                    hades_core::db::index::list_indexes(&pool, name)
+                        .await
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+            let inventory = crud::list_collections(&pool, false)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|collection| collection.name)
+                .collect::<std::collections::BTreeSet<_>>();
+            // Equivalent to the documented ensureIndex calls: no schema apply,
+            // collection creation, ontology publication or data replacement.
+            for name in ["chunks", "embeddings"] {
+                hades_core::db::index::ensure_lookup_index(&pool, name, "parent_key")
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                crud::list_collections(&pool, false)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|collection| collection.name)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                inventory
+            );
+            assert_eq!(
+                rows(&pool).await,
+                saved,
+                "index upgrade must preserve every payload and revision"
+            );
+            let prepared = documents
+                .prepare(
+                    DocumentInput {
+                        source_id: "notes".into(),
+                        text: "banana".into(),
+                    },
+                    true,
+                )
+                .await
+                .unwrap();
+            documents.commit(prepared).await.unwrap();
+            assert_eq!(
+                search(&pool, &config(&pool, &peer)).await["results"][0]["text"],
+                "banana"
+            );
+        },
+    )
+    .await;
+}
+
 fn config(pool: &ArangoPool, peer: &Peer) -> HadesConfig {
     let mut config = HadesConfig::with_database(pool.database());
     config.registered_providers = Some(peer.configuration());

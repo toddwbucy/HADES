@@ -11,6 +11,14 @@ use serde_json::json;
 pub(crate) const MARKERS: &str = "hades_setup";
 pub(crate) const DATA: [&str; 3] = ["documents", "chunks", "embeddings"];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemaMode {
+    Create,
+    RepairIndexes,
+    Inspect,
+    RequireIndexes,
+}
+
 /// Internal proof minted only from an acknowledged, durable setup ledger record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -177,19 +185,27 @@ pub(crate) async fn collection(
     name: &str,
     create: bool,
 ) -> Result<(), SetupError> {
-    collection_state(client, name, create, false).await
+    collection_state(
+        client,
+        name,
+        if create {
+            SchemaMode::Create
+        } else {
+            SchemaMode::RequireIndexes
+        },
+    )
+    .await
 }
 
 async fn collection_state(
     client: &ArangoClient,
     name: &str,
-    create: bool,
-    partial: bool,
+    mode: SchemaMode,
 ) -> Result<(), SetupError> {
     let path = format!("collection/{name}/properties");
     let properties = match client.get(&path).await {
         Ok(value) => value,
-        Err(e) if e.is_not_found() && create => {
+        Err(e) if e.is_not_found() && mode == SchemaMode::Create => {
             client
                 .post(
                     "collection",
@@ -207,8 +223,8 @@ async fn collection_state(
             && properties["isSystem"] == false,
         "collection differs from the confirmed document schema",
     )?;
-    let missing_owner = index_inventory(client, name, create || partial).await?;
-    if create && missing_owner {
+    let missing_owner = index_inventory(client, name, mode != SchemaMode::RequireIndexes).await?;
+    if matches!(mode, SchemaMode::Create | SchemaMode::RepairIndexes) && missing_owner {
         // A retry may resume between collection creation and index creation, but
         // setup must never mutate an unexpected populated collection to make it fit.
         verify(
@@ -273,7 +289,7 @@ pub(super) async fn partial_schema(client: &ArangoClient) -> Result<(), SetupErr
     collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
     for name in DATA {
         if names.iter().any(|existing| existing == name) {
-            collection_state(client, name, false, true).await?;
+            collection_state(client, name, SchemaMode::Inspect).await?;
             verify(
                 count(client, name).await? == 0,
                 "initializing workspace contains data; setup cannot adopt it",
@@ -286,7 +302,7 @@ pub(super) async fn partial_schema(client: &ArangoClient) -> Result<(), SetupErr
 /// Document replacement needs owner indexes; exact retrieval needs no ANN vector index.
 pub(crate) async fn schema(
     client: &ArangoClient,
-    create: bool,
+    mode: SchemaMode,
     empty: bool,
 ) -> Result<(), SetupError> {
     let names = inventory_with_jobs(client, !empty).await?;
@@ -298,12 +314,27 @@ pub(crate) async fn schema(
     }
     collection(client, crate::embedding_profile::store::COLLECTION, false).await?;
     for name in DATA {
-        collection(client, name, create).await?;
+        // Recovery validates every collection and count before adding any index.
+        let inspect = if mode == SchemaMode::RepairIndexes {
+            SchemaMode::Inspect
+        } else {
+            mode
+        };
+        collection_state(client, name, inspect).await?;
         if empty {
             verify(
                 count(client, name).await? == 0,
                 "initializing workspace contains data; setup cannot adopt it",
             )?;
+        }
+    }
+    if mode == SchemaMode::RepairIndexes {
+        verify(
+            empty,
+            "index recovery requires an initializing empty workspace",
+        )?;
+        for name in DATA {
+            collection_state(client, name, mode).await?;
         }
     }
     Ok(())

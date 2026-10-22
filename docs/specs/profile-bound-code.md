@@ -11,18 +11,25 @@ CLI, MCP, background code ingestion or managed code search.
 `connect` loads the ready database profile from the writer, requires an enabled
 conventional code workload, the eight existing `CODEBASE` collections and a
 non-unique, non-sparse persistent `file_key` index on each of the seven child
-collections, then
+collections and saved direct edge definitions in `hades_schema`, then
 verifies the installation-owned provider catalog. It selects the code workload's
 passage task, receipt, dimension and token policy and rechecks the complete
 database snapshot after provider verification. It creates no schema or collections.
-Provision these indexes with the code schema (including all four edge collections);
-the existing `db::index::ensure_lookup_index` helper supplies their definition.
+`config/schemas/codebase.yaml` owns these indexes through `lookup_fields`, including
+all four edge collections; `hades --db NAME schema apply` provisions them. The
+future managed code setup entry point must apply these declarations before
+publishing readiness. The canonical schema also supplies the endpoint definitions.
 Missing or incompatible indexes are refused before provider verification.
 
 `CodeInput` contains the exact namespace/path, source text, `FileAnalysis` and
 file-local relationships. Callers supply neither vectors nor token counts.
 Relationships reference the file or a primitive symbol's input index; arbitrary
-database endpoints and duplicate identities are refused. The core API trusts the
+database endpoints and duplicate identities are refused. Each edge, including a
+generated `defines` edge, must match the database's saved `from_collections` and
+`to_collections`. Missing or ambiguous definitions fail admission. The canonical
+schema permits calls/implements from symbols to symbols, and imports from files
+to files or symbols; endpoint permissions are loaded as data, with no Rust fallback.
+The core API trusts the
 analyzer's reported semantics. Future filesystem/analyzer admission must pin the
 source before analysis and retain the same profile through this preparation.
 
@@ -41,7 +48,11 @@ establish that the stored graph is current.
 
 Limits are 2 MiB of source text, 128 tokenizer-planned passages, 1024 input symbols,
 4096 explicit relationships, 4 MiB of analyzer metadata and 16 MiB of prepared
-records. Conventional passages are tokenizer-based, not AST chunk boundaries.
+records. Known source/graph costs are checked before planning. After planning, a
+conservative bound reserves serialized vectors and inventory overhead before the
+first embedding request; inputs exceeding that bound must be split even if their
+eventual vectors might serialize smaller. Final records are measured without a
+deep graph clone. Conventional passages are tokenizer-based, not AST chunk boundaries.
 Specialized code and explicitly configured ordinary-text code both work; the
 task is taken from the selected workload rather than inferred from the filename.
 
@@ -54,12 +65,15 @@ binding. Files retain exact source text, analyzer provenance, the counted passag
 plan and an inventory of their owned records. File/symbol keys reuse existing
 code identity helpers; passage keys also include the corpus generation.
 
-One transaction locks workspace metadata and all eight code collections,
-revalidates the profile and source revision, checks the old graph inventory, and
+One transaction locks workspace metadata, `hades_schema` and all eight code collections,
+revalidates the profile, endpoint definitions and source revision, checks the old graph inventory, and
 publishes all records. Individual and bulk acknowledgments must name the expected
 keys and collections. A write failure or cancellation before commit rolls back;
 a lost commit acknowledgment requires reconciliation with durable state.
-Owner reads and deletes force the validated persistent index; a missing index
+Admission caches index names and IDs. Under the lock, each owner read checks that
+exact index directly rather than enumerating the collection's indexes. Child sets
+are measured once, and symbol preservation uses a set of incoming keys. Owner
+reads and deletes force the validated persistent index; a missing or replaced index
 cannot silently become a collection scan under the exclusive locks. Shared
 document/code storage helpers enforce bounded queries, revisions and complete
 write acknowledgments. `CodeReceipt.relationships` counts all persisted edge

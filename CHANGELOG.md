@@ -22,8 +22,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Add internal profile-bound conventional code graph preparation and atomic
   publication. Pin the selected code workload, retain complete source/graph
   provenance, and refuse stale, foreign, edited or downgraded replacements.
-  Require indexed owner lookups, share bounded record I/O with document storage,
-  and cover mixed workloads and line-shift refusal. Public code ingestion,
+  Require indexed owner lookups and data-owned endpoint definitions, bound graph
+  size before inference, share bounded record I/O with document storage, and cover
+  mixed workloads and line-shift refusal. Public code ingestion,
   unchanged-file skipping and symbol retirement remain gated (#225).
 
 - Add an opt-in verified Jina provider for conventional document and specialized
@@ -418,6 +419,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
+
+- Managed document writes require persistent `parent_key` indexes on chunks and
+  embeddings. Existing workspaces retain search and no-op admission; explicitly
+  provision the two non-unique indexes explicitly before further writes, following
+  the additive commands in `docs/specs/recoverable-workspace-setup.md`.
+  Setup recovers missing indexes at older Verify/Publish checkpoints only while
+  all owned data collections are empty, and leaves Ready workspaces untouched.
+  The canonical code schema now declares all seven `file_key` indexes (#225).
 
 - Ingest the document portion of mixed trees under documents-only model profiles,
   reporting skipped code in `disabled_by_profile.code` and retaining `profile_pin`

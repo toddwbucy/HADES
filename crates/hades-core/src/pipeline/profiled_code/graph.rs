@@ -45,7 +45,10 @@ struct ResolvedRelationship {
     to: String,
 }
 
-pub(super) fn validate_input(input: &CodeInput) -> Result<ResolvedGraph, PipelineError> {
+pub(super) fn validate_input(
+    input: &CodeInput,
+    ontology: &ontology::Ontology,
+) -> Result<ResolvedGraph, PipelineError> {
     validate_source(&input.text)?;
     for value in [&input.namespace, &input.path] {
         ensure(
@@ -81,11 +84,19 @@ pub(super) fn validate_input(input: &CodeInput) -> Result<ResolvedGraph, Pipelin
     // Catch duplicate keys and invalid endpoints before planning or inference.
     let file_key = keys::scoped_file_key(&input.namespace, &input.path);
     let symbols = symbol_ids(input, &file_key)?;
+    if symbols.iter().any(Option::is_some) {
+        ontology.check(CODEBASE.defines_edges, CODEBASE.files, CODEBASE.symbols)?;
+    }
     let mut edges = HashSet::new();
     let mut relationships = Vec::new();
     for relationship in &input.relationships {
         let from = endpoint(relationship.from, &file_key, &symbols)?;
         let to = endpoint(relationship.to, &file_key, &symbols)?;
+        ontology.check(
+            relationship.kind.collection(),
+            from.split_once('/').unwrap().0,
+            to.split_once('/').unwrap().0,
+        )?;
         ensure(
             edges.insert((relationship.kind.collection(), from.clone(), to.clone())),
             "duplicate code relationship",

@@ -1,5 +1,9 @@
 //! Bounded record I/O shared by managed document and code publication.
-use crate::db::{ArangoClient, ArangoError, index::require_owner_index, query};
+use crate::db::{
+    ArangoClient, ArangoError,
+    index::{OwnerIndex, is_owner_index, require_owner_index},
+    query,
+};
 use serde_json::{Value, json};
 
 fn invalid(message: &str) -> ArangoError {
@@ -96,15 +100,20 @@ pub(super) async fn aql(
     })).await
 }
 
-/// Resolve the actual index name again in the publication transaction. Forced hints
-/// refuse missing/replaced indexes instead of silently falling back to a full scan.
+/// Resolve the index once before inference; publication checks that exact index
+/// instead of listing the whole inventory while holding exclusive locks.
+#[derive(Clone)]
 pub(super) struct OwnedCollection {
     collection: String,
     field: &'static str,
-    index: String,
+    index: OwnerIndex,
 }
 
 impl OwnedCollection {
+    pub(super) fn collection(&self) -> &str {
+        &self.collection
+    }
+
     pub(super) async fn require(
         client: &ArangoClient,
         collection: &str,
@@ -126,16 +135,30 @@ impl OwnedCollection {
         key: &str,
         max_rows: usize,
         max_bytes: usize,
-    ) -> Result<Vec<Value>, ArangoError> {
+    ) -> Result<(Vec<Value>, usize), ArangoError> {
+        let index = client
+            .clone()
+            .with_response_limit(4096)?
+            .get(&format!("index/{}", self.index.id))
+            .await?;
+        if !is_owner_index(&index, self.field)
+            || index["id"] != self.index.id
+            || index["name"] != self.index.name
+        {
+            return Err(invalid(
+                "admitted owner index changed; reconnect before ingestion",
+            ));
+        }
         let response = aql(client, &format!(
             "FOR r IN @@collection OPTIONS {{indexHint:@index, forceIndexHint:true}} FILTER r.{} == @owner LIMIT @limit RETURN r", self.field),
-            json!({"@collection":self.collection,"index":self.index,"owner":key,"limit":max_rows+1}),
+            json!({"@collection":self.collection,"index":self.index.name,"owner":key,"limit":max_rows+1}),
             max_rows+2, max_bytes).await?;
         let rows = query::completed_rows(&response)?;
-        if rows.len() > max_rows || serde_json::to_vec(rows)?.len() > max_bytes {
+        let bytes = serde_json::to_vec(rows)?.len();
+        if rows.len() > max_rows || bytes > max_bytes {
             return Err(invalid("stored children exceed row/byte limits"));
         }
-        Ok(rows.clone())
+        Ok((rows.clone(), bytes))
     }
 
     pub(super) async fn remove(
@@ -146,7 +169,7 @@ impl OwnedCollection {
     ) -> Result<(), ArangoError> {
         let response = aql(client, &format!(
             "FOR r IN @@collection OPTIONS {{indexHint:@index, forceIndexHint:true}} FILTER r.{} == @owner REMOVE r IN @@collection", self.field),
-            json!({"@collection":self.collection,"index":self.index,"owner":key}), 1, bytes).await?;
+            json!({"@collection":self.collection,"index":self.index.name,"owner":key}), 1, bytes).await?;
         query::completed_mutation(&response)
     }
 }

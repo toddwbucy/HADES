@@ -21,6 +21,9 @@ use provider::{Fault, Fixture, Peer};
 #[path = "profiled_code/admission.rs"]
 mod admission;
 
+#[path = "profiled_code/ontology.rs"]
+mod ontology;
+
 fn input(path: &str, apple: &str) -> CodeInput {
     let text = format!("fn apple() {{ {apple} }}\nfn banana() {{ apple(); }}\n");
     let analysis = code::analyze(&text, "fixture.rs").unwrap();

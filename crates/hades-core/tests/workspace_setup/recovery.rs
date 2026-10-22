@@ -62,6 +62,109 @@ async fn schema_state(pool: &ArangoPool) -> BTreeMap<String, serde_json::Value> 
 }
 
 #[tokio::test]
+async fn old_verify_and_publish_checkpoints_reconcile_only_empty_owned_schemas() {
+    for (nth, step) in [(2, SetupStep::Verify), (3, SetupStep::Publish)] {
+        for populated in [false, true] {
+            with_temp_db(
+                "setup_old_checkpoint",
+                Fixtures::Empty,
+                move |pool| async move {
+                    remove_fixture_database(&pool).await;
+                    let fixture = Fixture::new(2);
+                    let peer = Peer::new(&fixture);
+                    let root = ledger();
+                    let mut fault = rule("POST", "transaction/begin", None, nth);
+                    fault.before = true;
+                    let proxy = Proxy::new(pool.writer(), fault);
+                    let service = setup(root.path(), proxy.admin.clone(), &peer);
+                    let request = request(&pool, &fixture);
+                    assert!(service.run(request.clone()).await.is_err());
+                    assert_eq!(
+                        service
+                            .inspect(&request.operation_id)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .step,
+                        step
+                    );
+                    for name in ["chunks", "embeddings"] {
+                        for index in hades_core::db::index::list_indexes(&pool, name)
+                            .await
+                            .unwrap()
+                        {
+                            if index.index_type == "persistent" {
+                                hades_core::db::index::drop_index(&pool, &index.id)
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    if populated {
+                        crud::insert_document(
+                            &pool,
+                            "embeddings",
+                            &json!({"_key":"foreign","text":"keep"}),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    let before = schema_state(&pool).await;
+                    let metadata = metadata_rows(&pool).await;
+                    let ledger = ledger_bytes(root.path());
+                    let report = service.diagnose(&request.operation_id).await.unwrap();
+                    assert_eq!(
+                        report.action,
+                        if populated {
+                            RecoveryAction::InspectRequired
+                        } else {
+                            RecoveryAction::RetryIdenticalRequest
+                        }
+                    );
+                    assert_eq!(schema_state(&pool).await, before);
+                    assert_eq!(ledger_bytes(root.path()), ledger);
+                    if populated {
+                        assert!(service.run(request).await.is_err());
+                        assert_eq!(
+                            schema_state(&pool).await,
+                            before,
+                            "no indexes may be added before every collection is checked"
+                        );
+                        assert_eq!(metadata_rows(&pool).await, metadata);
+                    } else {
+                        assert_eq!(
+                            service.run(request).await.unwrap().status,
+                            SetupStatus::Ready
+                        );
+                        for name in ["chunks", "embeddings"] {
+                            assert_eq!(
+                                hades_core::db::index::list_indexes(&pool, name)
+                                    .await
+                                    .unwrap()
+                                    .len(),
+                                2
+                            );
+                            assert_eq!(crud::count_collection(&pool, name).await.unwrap(), 0);
+                        }
+                        assert_eq!(
+                            ProfileStore::new(pool.clone())
+                                .unwrap()
+                                .load()
+                                .await
+                                .unwrap()
+                                .profile()
+                                .revision,
+                            2
+                        );
+                    }
+                },
+            )
+            .await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn owner_index_creation_resumes_but_ready_schema_is_never_repaired_implicitly() {
     for before in [true, false] {
         with_temp_db(
@@ -126,11 +229,25 @@ async fn owner_index_creation_resumes_but_ready_schema_is_never_repaired_implici
                         .await
                         .unwrap()
                         .action,
-                    RecoveryAction::InspectRequired
+                    RecoveryAction::None
                 );
-                assert!(service.run(request).await.is_err());
+                assert_eq!(
+                    service.run(request).await.unwrap().status,
+                    SetupStatus::Ready
+                );
+                let documents = ProfiledDocuments::connect(pool.clone(), &peer.catalog())
+                    .await
+                    .unwrap();
+                assert_eq!(documents.search("apple", 1, 1).await.unwrap().scanned, 0);
                 assert!(
-                    ProfiledDocuments::connect(pool.clone(), &peer.catalog())
+                    documents
+                        .prepare(
+                            DocumentInput {
+                                source_id: "notes".into(),
+                                text: "apple".into()
+                            },
+                            false
+                        )
                         .await
                         .is_err()
                 );

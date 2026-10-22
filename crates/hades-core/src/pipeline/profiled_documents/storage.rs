@@ -55,6 +55,7 @@ const VECTOR_FIELDS: &[&str] = &[
 pub(super) struct SourceAdmission {
     pub revision: Option<String>,
     pub metadata: Value,
+    pub owners: [OwnedCollection; 2],
 }
 
 /// Check an existing source without adopting legacy data or dropping authored metadata.
@@ -66,6 +67,12 @@ pub(super) async fn admit_source(
     snapshot: &ProfileSnapshot,
     file_identity: Option<&files::FileIdentity>,
 ) -> Result<SourceAdmission, ArangoError> {
+    // Only writers need owner lookups. Search and no-op tree admission remain
+    // compatible with managed workspaces created before owner indexes existed.
+    let owners = [
+        OwnedCollection::require(client, "chunks", "parent_key").await?,
+        OwnedCollection::require(client, "embeddings", "parent_key").await?,
+    ];
     let existing = document(client, key).await?;
     if let Some(row) = existing {
         ensure(
@@ -89,6 +96,7 @@ pub(super) async fn admit_source(
             }
         }
         return Ok(SourceAdmission {
+            owners,
             revision: Some(revision(&row)?.into()),
             metadata: row
                 .get("file_ingestion")
@@ -97,6 +105,7 @@ pub(super) async fn admit_source(
         });
     }
     Ok(SourceAdmission {
+        owners,
         revision: None,
         metadata: json!({}),
     })
@@ -123,12 +132,11 @@ pub(super) async fn write(
         validate_document(row, key, &prepared.binding, &prepared.snapshot)?;
     }
     // These bounded reads also detect stray/foreign children of a supposedly new source.
-    let chunk_owner = OwnedCollection::require(&client, "chunks", "parent_key").await?;
-    let embedding_owner = OwnedCollection::require(&client, "embeddings", "parent_key").await?;
-    let chunks = chunk_owner
+    let [chunk_owner, embedding_owner] = &prepared.owners;
+    let (chunks, _) = chunk_owner
         .children(&client, key, MAX_PASSAGES, MAX_PREPARED_BYTES)
         .await?;
-    let embeddings = embedding_owner
+    let (embeddings, _) = embedding_owner
         .children(&client, key, MAX_PASSAGES, MAX_PREPARED_BYTES)
         .await?;
     if let Some(row) = &existing {
