@@ -32,9 +32,22 @@ def test_both_workloads_run_all_gates_and_keep_one_fresh_load(code_provider):
              "queries": [{"id": "one", "text": "one", "expected_document": "one"}],
              "tokenizer_samples": ["one"]}
     evidence = {}
+    checked_generations = []
+    def check_weights(current):
+        generation = current.describe()["workloads"]["documents"]["receipt"]["serving_generation"]
+        assert generation not in checked_generations
+        checked_generations.append(generation)
+        return 1
     observed = qualify_workloads(p, {kind: suite for kind in ("documents", "code")},
-                                 evidence, adapter_check=lambda _: 1)
-    assert observed == p.describe() and len(state.loads) == 3
+                                 evidence, adapter_check=check_weights)
+    assert observed == p.describe() and len(state.loads) == 2
+    assert len(checked_generations) == len(evidence["adapter_checks"]) == 2
+    assert evidence["documents"]["initial_receipt"]["serving_generation"] == checked_generations[0]
+    assert evidence["code"]["initial_receipt"]["serving_generation"] == checked_generations[0]
+    assert observed["workloads"]["code"]["receipt"]["serving_generation"] == checked_generations[1]
+    assert evidence["documents"]["initial_observation_loaded_model"] is True
+    assert evidence["code"]["initial_observation_loaded_model"] is False
+    assert "initial_load_seconds" not in evidence["code"]
     assert evidence["cross_workload_receipts_rejected"] == 3
     for kind, ceiling, adapter in [("documents", 16, "retrieval"), ("code", 8, "code")]:
         result = evidence[kind]
@@ -47,6 +60,26 @@ def test_code_suite_is_fixed_and_uses_distinct_languages():
     cases, digest = load_cases(ROOT / "services/tests/fixtures/jina_code_qualification.json")
     assert len(cases["documents"]) == 8 and len(cases["queries"]) == 6 and len(digest) == 64
     assert {"rust-parse", "sql-total", "debounce", "binary-search"} <= {row["id"] for row in cases["documents"]}
+
+
+def test_checkpoint_validation_is_not_reused_across_reload(code_provider):
+    """A fresh load must pass its own weight check before either workload's reload probe."""
+    p, state = code_provider
+    suite = {"documents": [{"id": "one", "text": "one"}],
+             "queries": [{"id": "one", "text": "one", "expected_document": "one"}],
+             "tokenizer_samples": ["one"]}
+    checks = []
+    def check_weights(_current):
+        checks.append(True)
+        if len(checks) == 2:
+            raise ValueError("reload adapter drift")
+        return 1
+    evidence = {}
+    with pytest.raises(ValueError, match="reload adapter drift"):
+        qualify_workloads(p, {kind: suite for kind in ("documents", "code")}, evidence,
+                          adapter_check=check_weights)
+    assert len(checks) == len(state.loads) == 2
+    assert all("reload_cosine" not in evidence[kind] for kind in ("documents", "code"))
 
 
 def test_rust_recount_rejects_wrong_code_counts_and_borrowed_receipts(code_provider):
@@ -67,7 +100,14 @@ def test_rust_recount_rejects_wrong_code_counts_and_borrowed_receipts(code_provi
         recheck(p, context, bad)
     bad = json.loads(json.dumps(result))
     bad["code"]["planning"]["receipt"] = result["documents"]["planning"]["receipt"]
-    with pytest.raises(ValueError, match="receipt changed"):
+    with pytest.raises(ValueError, match="expected workload"):
+        recheck(p, context, bad)
+    # A wholly valid documents plan of the same code text is the important
+    # counterexample: both task AND receipt match the wrong workload, and its
+    # identical prompt makes all token counts plausible.
+    bad = json.loads(json.dumps(result))
+    bad["code"]["planning"] = result["documents"]["planning"]
+    with pytest.raises(ValueError, match="expected workload"):
         recheck(p, context, bad)
 
 
@@ -124,7 +164,7 @@ def test_cli_cleanup_failure_never_publishes_success(tmp_path, provider, monkeyp
     finally:
         os.umask(previous_umask)
     report = json.loads((output / "report.json").read_text())
-    assert report["passed"] is False and report["cleanup_error"] == "cleanup fixture"
+    assert report["passed"] is False and report["cleanup_error"]["message"] == "cleanup fixture"
     if fail_provider:
         assert report["error"]["message"] == "provider fixture"
 

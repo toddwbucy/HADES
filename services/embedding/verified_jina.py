@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
+from types import MappingProxyType
 
 import torch
 
@@ -19,8 +20,10 @@ from .jina_v4 import EMBEDDING_DIM, MAX_TOKENS, InputTooLargeError, JinaV4Embedd
 from .registry import RegisteredModel
 from .snapshot import ArtifactChangedError
 from .passage_plan import plan_passages
+from .workload_contracts import WORKLOAD_CONTRACTS
 
-PROMPTS = {"retrieval.passage": "Passage: ", "retrieval.query": "Query: "}
+DOCUMENT_CONTRACT = WORKLOAD_CONTRACTS["documents"]
+PROMPTS = MappingProxyType(DOCUMENT_CONTRACT.prompts)
 TOKENIZER_FILES = frozenset({"config.json", "tokenizer_config.json", "tokenizer.json",
                              "special_tokens_map.json", "added_tokens.json", "vocab.json", "merges.txt"})
 MAX_INPUTS = 128
@@ -74,7 +77,7 @@ class VerifiedJinaProvider:
     """
 
     embedding_tasks = tuple(PROMPTS)
-    passage_tasks = ("retrieval.passage",)
+    passage_tasks = (DOCUMENT_CONTRACT.passage_task,)
 
     def __init__(self, registration: RegisteredModel, *, device="cpu", use_fp16=False,
                  max_input_tokens: int = MAX_TOKENS):
@@ -126,7 +129,7 @@ class VerifiedJinaProvider:
             "transformers.models.qwen2.tokenization_qwen2_fast", "Qwen2TokenizerFast"
         ):
             raise BehaviorChangedError("verified text requires the standard Qwen2 fast tokenizer")
-        if model.config.hidden_size != EMBEDDING_DIM or "retrieval" not in model.config.task_names:
+        if model.config.hidden_size != EMBEDDING_DIM or DOCUMENT_CONTRACT.adapter not in model.config.task_names:
             raise BehaviorChangedError("loaded model does not implement the Jina retrieval contract")
         if self._max_input_tokens > min(model.config.max_position_embeddings, tokenizer.model_max_length):
             raise BehaviorChangedError("serving budget exceeds loaded model/tokenizer context")
@@ -162,10 +165,8 @@ class VerifiedJinaProvider:
                                "pooling": "attention-masked-mean-all-tokens-fp32-v1", "distance": "cosine",
                                "inference_precision": "no-autocast-parameters-sha256:" + _digest(sorted(precision)),
                                "implementation": "hades-jina-raw-text-v1:" + _digest(runtime)},
-            "passage": {"task": "retrieval.passage", "prompt": PROMPTS["retrieval.passage"],
-                        "adapter": "retrieval", "special_tokens": "qwen2-add-special-tokens-v1"},
-            "query": {"task": "retrieval.query", "prompt": PROMPTS["retrieval.query"],
-                      "adapter": "retrieval", "special_tokens": "qwen2-add-special-tokens-v1"},
+            "passage": DOCUMENT_CONTRACT.behavior("passage"),
+            "query": DOCUMENT_CONTRACT.behavior("query"),
         }
         receipt = ProviderReceipt(provenance["manifest_md5"], embedding_space_id(space),
                                   provenance["serving_generation"])

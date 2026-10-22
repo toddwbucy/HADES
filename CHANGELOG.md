@@ -24,6 +24,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   prompts, adapters, and serving limits; qualify both through fixed retrieval,
   tokenizer, reload, and Rust HTTP checks. Existing document/contextual providers
   retain their contracts; managed code ingestion remains gated (#225).
+  Pin independent recounts to the expected workload, keep qualification policies
+  within each workload's ceiling, and retain original failures alongside cleanup
+  errors through a shared qualification lifecycle.
 
 - Add explicit document/code provider observations for model-bound workspaces,
   with separate capability checks, observed planning limits, and correctly selected

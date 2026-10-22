@@ -507,6 +507,11 @@ real-model/Rust qualification protocol. Guarded code graph persistence, code
 pipeline admission, and contextual code remain required before enabling the
 corresponding managed code ingestion paths.
 
+Mixed-workload setup must validate each initial chunk/window policy against that
+workload's own observed ceiling. The profile-wide maximum is an outer bound, not
+permission to borrow the other workload's capacity. Later serving-limit changes
+retain the existing per-workload clamping behavior from #245.
+
 [Background document jobs](profiled-ingestion-jobs.md) now verify the parent
 admission, persist a compact profile pin and pass it through the sealed child
 configuration. Workers reject stale/cross-database pins before extraction;

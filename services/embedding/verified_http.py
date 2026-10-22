@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
 from .config import EmbeddingConfig
 from .http_server import AppState, PEError, error_response
@@ -27,7 +27,7 @@ class VerifiedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     model: str
     input: str | list[str]
-    task: Literal["retrieval.passage", "retrieval.query"]
+    task: Literal[*VerifiedJinaProvider.embedding_tasks]
     encoding_format: Literal["float"] = "float"
     expected_receipt: dict
     batch_size: int | None = Field(default=None, ge=1)
@@ -39,21 +39,11 @@ class PassageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     model: str
     input: str
-    task: Literal["retrieval.passage"]
+    task: Literal[*VerifiedJinaProvider.passage_tasks]
     expected_receipt: dict
     passage_tokens: int = Field(ge=1, le=0xffffffff)
     overlap_tokens: int = Field(ge=0, le=0xffffffff)
     max_input_tokens: int = Field(ge=1, le=0xffffffff)
-
-
-class CodeVerifiedRequest(VerifiedRequest):
-    """Expose code only for an operator-created adapter that implements that task."""
-    task: Literal["retrieval.passage", "retrieval.query", "code"]
-
-
-class CodePassageRequest(PassageRequest):
-    """Code planning uses its own selected receipt and conventional policy."""
-    task: Literal["retrieval.passage", "code"]
 
 
 class LatePassageRequest(PassageRequest):
@@ -67,7 +57,7 @@ class LateEmbeddingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     model: str
     input: str
-    task: Literal["retrieval.passage"]
+    task: Literal[*VerifiedJinaProvider.passage_tasks]
     expected_receipt: dict
     boundaries: list[list[int]] = Field(min_length=1, max_length=128)
 
@@ -96,9 +86,12 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
     using the legacy app; no registry path or profile is accepted over HTTP.
     """
     state = AppState(EmbeddingConfig(model_name=provider.model_name), embedder=provider)
-    code_enabled = "code" in getattr(provider, "embedding_tasks", ())
-    embedding_request = CodeVerifiedRequest if code_enabled else VerifiedRequest
-    passage_request = CodePassageRequest if code_enabled else PassageRequest
+    embedding_tasks = getattr(provider, "embedding_tasks", VerifiedJinaProvider.embedding_tasks)
+    passage_tasks = getattr(provider, "passage_tasks", VerifiedJinaProvider.passage_tasks)
+    embedding_request = create_model("ProviderEmbeddingRequest", __base__=VerifiedRequest,
+                                     task=(Literal[*embedding_tasks], ...))
+    passage_request = create_model("ProviderPassageRequest", __base__=PassageRequest,
+                                   task=(Literal[*passage_tasks], ...))
 
     @asynccontextmanager
     async def lifespan(app):

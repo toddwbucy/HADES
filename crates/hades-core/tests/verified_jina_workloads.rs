@@ -16,6 +16,33 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
     dot / (norm(a) * norm(b))
 }
 
+fn conventional_policies(documents: u32, code: u32) -> [ChunkPolicy; 2] {
+    [documents, code].map(|ceiling| ChunkPolicy::Conventional {
+        passage_tokens: 256.min(ceiling / 2),
+        overlap_tokens: 8.min(ceiling / 8),
+    })
+}
+
+#[test]
+fn policies_fit_each_workload_at_unequal_ceilings() {
+    for (documents, code) in [(1024, 64), (64, 1024), (8192, 32), (32, 8192)] {
+        for (policy, ceiling) in conventional_policies(documents, code)
+            .into_iter()
+            .zip([documents, code])
+        {
+            let ChunkPolicy::Conventional {
+                passage_tokens,
+                overlap_tokens,
+            } = policy
+            else {
+                unreachable!()
+            };
+            assert!(0 < passage_tokens && passage_tokens < ceiling);
+            assert!(overlap_tokens < passage_tokens);
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "run through qualify_verified_code.py with an explicitly approved local registration"]
 async fn registered_conventional_workloads() {
@@ -59,15 +86,12 @@ async fn registered_conventional_workloads() {
         .capabilities
         .max_input_tokens
         .max(code.capabilities.max_input_tokens);
-    let chunking = ChunkPolicy::Conventional {
-        passage_tokens: 256.min(ceiling / 2),
-        overlap_tokens: 8.min(ceiling / 8),
-    };
+    let [document_policy, code_policy] = conventional_policies(
+        documents.capabilities.max_input_tokens,
+        code.capabilities.max_input_tokens,
+    );
     let mut profile = observed
-        .document_profile(
-            "conventional-code-qualification-v1".into(),
-            chunking.clone(),
-        )
+        .document_profile("conventional-code-qualification-v1".into(), document_policy)
         .unwrap();
     // Explicit test intent, not inferred database policy or persisted setup state.
     profile.state = ProfileState::Ready;
@@ -76,7 +100,7 @@ async fn registered_conventional_workloads() {
     profile.capabilities.tasks.push("code".into());
     profile.workloads.code = Some(Workload {
         space: code.space.clone(),
-        chunking,
+        chunking: code_policy,
         specialized_code: true,
     });
     profile.validate(observed.manifest()).unwrap();
@@ -132,6 +156,9 @@ async fn registered_conventional_workloads() {
         }
         let text = context["planning_texts"][name].as_str().unwrap();
         let plan = passages.plan_passages(text).await.unwrap();
+        assert_eq!(&plan.binding.expected, selected.receipt);
+        assert_eq!(&plan.output.receipt, selected.receipt);
+        assert_eq!(plan.output.task, selected.space.passage.task);
         assert_eq!(
             plan.output.max_input_tokens,
             selected.capabilities.max_input_tokens

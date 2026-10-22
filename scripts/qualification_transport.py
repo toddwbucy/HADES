@@ -1,4 +1,4 @@
-"""Owned private HTTP/Rust lifecycle shared by opt-in model qualification tools."""
+"""Owned private HTTP/child lifecycle shared by opt-in model qualification tools."""
 
 import asyncio
 from contextlib import contextmanager
@@ -9,8 +9,52 @@ import signal
 import tempfile
 import time
 
+from embedding.qualification_run import attach_cleanup_errors, error_record
 
-async def run_rust_contract(provider, context, output, *, repo, target, test, environment, recheck):
+
+async def _cleanup(child, server, serving, primary, child_timeout):
+    """Attempt both owners' cleanup and retain secondary failures on the original error."""
+    errors = []
+    first = None
+    try:
+        if child is not None and child.returncode is None:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(child.wait(), child_timeout)
+            except TimeoutError:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await child.wait()
+    except BaseException as error:
+        first = error
+        errors.append(dict(error_record(error), component="child"))
+    server.should_exit = True
+    try:
+        await asyncio.wait_for(asyncio.shield(serving), 45)
+    except BaseException as error:
+        if first is None:
+            first = error
+        errors.append(dict(error_record(error), component="server"))
+        if not serving.done():
+            server.force_exit = True
+            serving.cancel()
+        # Retrieve task failures even when cancellation interrupts shutdown.
+        await asyncio.gather(serving, return_exceptions=True)
+    if errors:
+        if primary is not None:
+            attach_cleanup_errors(primary, errors)
+        else:
+            attach_cleanup_errors(first, errors)
+            raise first
+
+
+async def run_http_contract(provider, context, output, *, repo, name, label, command,
+                            recheck, timeout, child_timeout):
     """Keep the provider and child owned through checks, timeout, cancellation and cleanup."""
     import uvicorn
     from embedding.verified_http import create_verified_app
@@ -30,7 +74,7 @@ async def run_rust_contract(provider, context, output, *, repo, target, test, en
         server = OwnedServer(uvicorn.Config(app, uds=str(socket), log_level="warning",
                                             access_log=False, timeout_graceful_shutdown=30))
         serving = asyncio.create_task(server.serve())
-        child = None
+        child, primary = None, None
         try:
             deadline = time.monotonic() + 30
             while not server.started:
@@ -40,40 +84,39 @@ async def run_rust_contract(provider, context, output, *, repo, target, test, en
                 if time.monotonic() >= deadline:
                     raise TimeoutError("provider startup timed out")
                 await asyncio.sleep(0.05)
-            env = dict(os.environ, **{environment + "_CONTEXT": str(context_path),
-                                      environment + "_REPORT": str(output / "rust.json")})
-            with (output / "rust.log").open("w") as log:
+            report_path = output / (name + ".json")
+            args, environment = command(context_path, report_path)
+            with (output / (name + ".log")).open("w") as log:
                 child = await asyncio.create_subprocess_exec(
-                    "cargo", "test", "--locked", "--offline", "-p", "hades-core", "--test", target,
-                    "--", "--ignored", "--exact", test, "--nocapture",
-                    cwd=repo, env=env, stdout=log, stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                    *args, cwd=repo, env=dict(os.environ, **environment), stdout=log,
+                    stderr=asyncio.subprocess.STDOUT, start_new_session=True,
                 )
-                code = await asyncio.wait_for(child.wait(), 900)
+                code = await asyncio.wait_for(child.wait(), timeout)
             if code:
-                raise RuntimeError(f"Rust qualification failed ({code}); inspect rust.log")
-            result = json.loads((output / "rust.json").read_text())
+                raise RuntimeError(f"{label} failed ({code}); inspect {name}.log")
+            result = json.loads(report_path.read_text())
             if result.get("passed") is not True:
-                raise RuntimeError("Rust did not acknowledge success")
-            result["tokenizer_recheck"] = recheck(provider, context, result)
+                raise RuntimeError(f"{label} did not acknowledge success")
+            recheck(provider, context, result)
             return result
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            if child is not None and child.returncode is None:
-                try:
-                    os.killpg(child.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    await asyncio.wait_for(child.wait(), 30)
-                except TimeoutError:
-                    try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    await child.wait()
-            server.should_exit = True
-            try:
-                await asyncio.wait_for(asyncio.shield(serving), 45)
-            except TimeoutError:
-                server.force_exit = True
-                serving.cancel()
-                await asyncio.gather(serving, return_exceptions=True)
+            await _cleanup(child, server, serving, primary, child_timeout)
+
+
+async def run_rust_contract(provider, context, output, *, repo, target, test, environment, recheck):
+    """Run a bounded opt-in Rust transport target without creating a database."""
+    def command(context_path, report_path):
+        return (["cargo", "test", "--locked", "--offline", "-p", "hades-core", "--test", target,
+                 "--", "--ignored", "--exact", test, "--nocapture"],
+                {environment + "_CONTEXT": str(context_path), environment + "_REPORT": str(report_path)})
+
+    def checked(current, ctx, result):
+        result["tokenizer_recheck"] = recheck(current, ctx, result)
+
+    return await run_http_contract(
+        provider, context, output, repo=repo, name="rust", label="Rust qualification",
+        command=command, recheck=checked, timeout=900, child_timeout=30,
+    )

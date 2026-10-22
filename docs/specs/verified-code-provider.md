@@ -16,6 +16,9 @@ registered model snapshot and returns `hades-provider-description-v2`:
 
 The symmetric code prompt matches HADES's existing explicit code-task choice;
 it is part of this adapter's declared space, not an implicit model default.
+The immutable `workload_contracts.py` table supplies these task/prompt/adapter
+records to serving and qualification. HTTP task literals are built from the
+operator-created provider's supported tasks, preserving strict request admission.
 Both workloads use the standard Qwen2 fast tokenizer without truncation,
 attention-masked mean pooling in float32, and L2-normalized 2048-dimensional
 float32 vectors. Model parameter precision, tokenizer behavior and numerical
@@ -65,9 +68,24 @@ The command owns a private Unix HTTP server and runs the ignored Rust
 the protected registration independently, compares the complete V2 observation,
 constructs an explicitly mixed profile in memory, and binds both passage/query
 roles. It checks retrieval and long-source plans through the actual transport;
-Python independently recounts accepted byte slices before shutdown. No database
-or installed service is used. The server, child process and model load are owned
+Python independently recounts accepted byte slices before shutdown. The recount
+pins the task and receipt from the expected workload's actual observation before
+inspecting counts; Rust output
+cannot select its own verification workload. Rust also asserts the planned task
+and receipt and sizes each initial chunk policy against that workload's ceiling,
+including unequal cases such as 1024/64 tokens. No database or installed service
+is used. The server, child process and model load are owned
 through failure, timeout and cancellation cleanup.
+
+Both workloads run on the same initial load and then share one reload. The full
+adapter checkpoint is compared once per generation, shared across workloads;
+validation is never reused across a reload. `initial_observation_seconds` and
+`initial_observation_loaded_model` distinguish a cold load from description
+revalidation. The original, contextual and code CLIs share preflight, exclusive
+evidence creation, implementation identity, interruption handling and reporting
+through `QualificationRun`. Their private HTTP transports also share cleanup.
+Secondary shutdown failures are retained in `cleanup_errors` alongside the
+original error, and a cleanup-only failure cannot produce successful evidence.
 
 Use the approved ML environment and a previously approved registration. Do not
 upgrade the installed runtime or download model assets as part of this command:
@@ -94,13 +112,18 @@ tokenization and HTTP logic. Run them with the dependency/protobuf setup in
 approved large model. Real-model evidence is recorded separately under
 `docs/evidence/` after the implementation and protocol are committed.
 
-## ThinkPad qualification, 2026-10-21
+## Initial ThinkPad qualification, 2026-10-21
 
 [Committed evidence](../evidence/jina-code-thinkpad-2026-10-21.json) passed on clean
 implementation `2e2a7cd307b4480b6f89f6c3cad14313037831a2`, using the approved local
 artifact MD5 `446160668af00248832ed8cf5d8d4432`. The runtime was Torch 2.14.1,
 Transformers 4.52.4, CUDA 13.0 and the RTX PRO 5000 Blackwell laptop GPU.
 The run occurred October 22 UTC / October 21 in America/Chicago.
+
+This v1 report is retained as historical evidence. Review identified that its
+independent recount did not pin the expected workload. Protocol v2 adds that
+check and the shared-load, policy and lifecycle changes described above; its
+qualification evidence must be recorded from a fresh committed implementation.
 
 | Check | Documents | Code |
 | --- | --- | --- |

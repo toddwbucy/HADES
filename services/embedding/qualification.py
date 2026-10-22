@@ -18,6 +18,7 @@ import torch
 from .identity import ProviderReceipt, _exact_fields, _unique_object
 from .jina_v4 import EMBEDDING_DIM, InputTooLargeError
 from .verified_jina import PROMPTS, ReceiptMismatchError, _versions
+from .workload_contracts import WORKLOAD_CONTRACTS
 
 PROTOCOL = "hades-verified-jina-qualification-v2"
 MIN_REPEAT_COSINE = 0.99999
@@ -135,18 +136,19 @@ def boundary_texts(tokenizer, task, ceiling, *, prompt=None):
     return fitting, oversized
 
 
-def check_stored_plan(provider, text, plan, *, prompt=None):
+def check_stored_plan(provider, text, plan, *, task, expected, prompt):
     """Independently recount persisted byte slices under the same actual provider load."""
     raw = text.encode("utf-8")
     require(plan["source_sha256"] == hashlib.sha256(raw).hexdigest(), "planning source changed")
-    expected = ProviderReceipt.from_dict(plan["receipt"])
-    with provider._operation(expected, plan["task"]):
+    require(plan["task"] == task and plan["receipt"] == expected.to_dict(),
+            "stored plan does not match the expected workload task/receipt")
+    require(plan["model"] == provider.model_name, "stored plan model changed")
+    with provider._operation(expected, task):
         tokenizer = provider._backend._tokenizer
 
         def count(value, rendered=False):
             """Use direct tokenizer calls, without the planner's search or accounting helpers."""
-            prefix = PROMPTS["retrieval.passage"] if prompt is None else prompt
-            return len(tokenizer((prefix if rendered else "") + value,
+            return len(tokenizer((prompt if rendered else "") + value,
                                  add_special_tokens=rendered, padding=False, truncation=False,
                                  split_special_tokens=False)["input_ids"])
 
@@ -197,15 +199,14 @@ def verify_adapters(provider):
     return checked
 
 
-def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None, workload=None):
-    """Measure fixed gates for one explicit workload, retaining a fresh verified load."""
-    require(workload in (None, "documents", "code"), "unknown qualification workload")
+def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None, workload=None,
+            reload_checks=None):
+    """Measure one workload; optionally defer its reload probe to a shared load owner."""
+    require(workload is None or workload in WORKLOAD_CONTRACTS, "unknown qualification workload")
     # Use protocol constants, not a prompt copied from the description under test.
-    from .verified_code import CODE_PROMPT
-    prompts = {"code": CODE_PROMPT} if workload == "code" else PROMPTS
-    passage_task = "code" if workload == "code" else "retrieval.passage"
-    query_task = "code" if workload == "code" else "retrieval.query"
-    adapter = "code" if workload == "code" else "retrieval"
+    contract = WORKLOAD_CONTRACTS[workload or "documents"]
+    prompts = contract.prompts
+    passage_task, query_task, adapter = contract.passage_task, contract.query_task, contract.adapter
 
     def selected(description):
         """V2 selection is explicit; never borrow a missing workload's receipt."""
@@ -219,6 +220,7 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None, wo
     if gpu:
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
+    already_loaded = provider.is_loaded
     started = time.monotonic()
     description = provider.describe()
     load_seconds = time.monotonic() - started
@@ -234,7 +236,8 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None, wo
         "all_expected_documents_rank_first": True, "max_norm_error": MAX_NORM_ERROR,
         "minimum_repeat_cosine": MIN_REPEAT_COSINE, "minimum_reload_cosine": MIN_RELOAD_COSINE,
     }, "runtime": {"device": device, "libraries": _versions(), "cuda_runtime": torch.version.cuda},
-        "initial_load_seconds": load_seconds, "initial_receipt": expected.to_dict(),
+        "initial_observation_seconds": load_seconds, "initial_observation_loaded_model": not already_loaded,
+        "initial_receipt": expected.to_dict(),
         "description": description})
     if gpu:
         report["runtime"]["gpu"] = torch.cuda.get_device_name(device)
@@ -321,27 +324,33 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None, wo
         report["mismatched_receipts_rejected"] = 3
     finally:
         hook.remove()
-    provider.unload()
-    started = time.monotonic()
-    reloaded = provider.describe()
-    report["reload_seconds"] = time.monotonic() - started
-    current = ProviderReceipt.from_dict(selected(reloaded)["receipt"])
-    require(current.artifact_md5 == expected.artifact_md5 and current.space_id == expected.space_id
-            and current.serving_generation != expected.serving_generation, "reload changed stable identity")
-    require(tokenizer_observation(provider._backend._tokenizer, cases["tokenizer_samples"]) == tokens,
-            "tokenizer IDs changed on reload")
-    try:
-        embed(["short input"], query_task)
-    except ReceiptMismatchError:
-        pass
+    def recheck_reload(reloaded, reload_seconds):
+        """Keep this workload's old receipt/vector oracle across the owner's reload."""
+        report["reload_seconds"] = reload_seconds
+        current = ProviderReceipt.from_dict(selected(reloaded)["receipt"])
+        require(current.artifact_md5 == expected.artifact_md5 and current.space_id == expected.space_id
+                and current.serving_generation != expected.serving_generation, "reload changed stable identity")
+        require(tokenizer_observation(provider._backend._tokenizer, cases["tokenizer_samples"]) == tokens,
+                "tokenizer IDs changed on reload")
+        try:
+            embed(["short input"], query_task)
+        except ReceiptMismatchError:
+            pass
+        else:
+            raise ValueError("pre-reload receipt was accepted")
+        after = embed([cases["queries"][0]["text"]], query_task, current)[0]
+        report["reload_cosine"] = cosine(queries[0], after)
+        require(report["reload_cosine"] >= MIN_RELOAD_COSINE, "reload repeatability criterion failed")
+        report["description"] = reloaded
+        report["initial_receipt"] = expected.to_dict()
+
+    if reload_checks is None:
+        provider.unload()
+        started = time.monotonic()
+        reloaded = provider.describe()
+        recheck_reload(reloaded, time.monotonic() - started)
     else:
-        raise ValueError("pre-reload receipt was accepted")
-    after = embed([cases["queries"][0]["text"]], query_task, current)[0]
-    report["reload_cosine"] = cosine(queries[0], after)
-    require(report["reload_cosine"] >= MIN_RELOAD_COSINE, "reload repeatability criterion failed")
-    report["operations"] = timings
-    report["description"] = reloaded
-    report["initial_receipt"] = expected.to_dict()
+        reload_checks.append(recheck_reload)
     if gpu:
         report["peak_cuda_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
         report["peak_cuda_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
