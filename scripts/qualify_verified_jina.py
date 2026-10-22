@@ -8,103 +8,48 @@ service activation is performed. The output directory must not already exist.
 
 import argparse
 import asyncio
-from contextlib import contextmanager
-from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
-import signal
-import subprocess
 import sys
-import tempfile
-import time
 import warnings
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "services"))
+sys.path.insert(0, str(REPO / "scripts"))
+
+from embedding.qualification_run import (
+    QualificationRun, install_interrupt_handler, require_device, validate_environment,
+)
 
 
 async def database_roundtrip(provider, context, output, server_args):
-    """Own a private verified HTTP server while the strict runner owns its database."""
-    import uvicorn
-    from embedding.verified_http import create_verified_app
+    """Share private provider ownership while the strict runner owns its disposable DB."""
+    from qualification_transport import run_http_contract
+    from embedding.identity import ProviderReceipt
     from embedding.qualification import check_stored_plan
+    from embedding.workload_contracts import WORKLOAD_CONTRACTS
 
-    class OwnedServer(uvicorn.Server):
-        """Leave process signals with the qualification owner, including runner cleanup."""
-        @contextmanager
-        def capture_signals(self):
-            """Do not install server-wide signal handlers inside the owned task."""
-            yield
+    def command(context_path, report_path):
+        return ([sys.executable, str(REPO / "scripts/test_isolated_database.py"), *server_args,
+                 "--verified-jina", str(context_path), "--verified-jina-report", str(report_path)], {})
 
-    with tempfile.TemporaryDirectory(prefix="hades-jina-") as directory:
-        socket = Path(directory) / "provider.sock"
-        context["socket"] = str(socket)
-        context_path = Path(directory) / "context.json"
-        context_path.write_text(json.dumps(context, ensure_ascii=False), encoding="utf-8")
-        app = create_verified_app(provider)
-        # A cold Rust build can exceed normal idle expiry. This owner retains
-        # the observation for the bounded qualification and unloads at shutdown.
-        app.state.app_state.config.idle_timeout_seconds = 0
-        server = OwnedServer(uvicorn.Config(
-            app, uds=str(socket), log_level="warning",
-            access_log=False, timeout_graceful_shutdown=30,
-        ))
-        serving = asyncio.create_task(server.serve())
-        child = None
-        try:
-            deadline = time.monotonic() + 30
-            while not server.started:
-                if serving.done():
-                    await serving
-                    raise RuntimeError("private provider stopped before startup")
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("private provider startup timed out")
-                await asyncio.sleep(0.05)
-            command = [sys.executable, str(REPO / "scripts/test_isolated_database.py"), *server_args,
-                       "--verified-jina", str(context_path),
-                       "--verified-jina-report", str(output / "database.json")]
-            with (output / "database.log").open("w") as log:
-                child = await asyncio.create_subprocess_exec(
-                    *command, cwd=REPO, stdout=log, stderr=asyncio.subprocess.STDOUT,
-                    start_new_session=True,
-                )
-                # The runner bounds its cargo command and owns cleanup of every
-                # database process. Allow its shutdown budget before escalation.
-                code = await asyncio.wait_for(child.wait(), timeout=1100)
-            if code:
-                raise RuntimeError(f"isolated Rust round trip failed ({code}); inspect database.log")
-            result = json.loads((output / "database.json").read_text())
-            if result.get("passed") is not True:
-                raise RuntimeError("database report did not acknowledge success")
-            if context.get("chunk_policy") == "late":
-                from embedding.late_qualification import recheck
-                result["planning"]["tokenizer_recheck"] = recheck(provider, context["planning_text"], result["planning"])
-            else:
-                result["planning"]["tokenizer_recheck"] = check_stored_plan(
-                    provider, context["planning_text"], result["planning"]["plan"])
-            return result
-        finally:
-            if child is not None and child.returncode is None:
-                try:
-                    os.killpg(child.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    await asyncio.wait_for(child.wait(), 100)
-                except TimeoutError:
-                    try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    await child.wait()
-            server.should_exit = True
-            try:
-                await asyncio.wait_for(asyncio.shield(serving), 45)
-            except TimeoutError:
-                server.force_exit = True
-                serving.cancel()
-                await asyncio.gather(serving, return_exceptions=True)
+    def recheck(current, ctx, result):
+        if ctx.get("chunk_policy") == "late":
+            from embedding.late_qualification import recheck as check_late
+            checked = check_late(current, ctx["planning_text"], result["planning"])
+        else:
+            contract = WORKLOAD_CONTRACTS["documents"]
+            checked = check_stored_plan(
+                current, ctx["planning_text"], result["planning"]["plan"],
+                task=contract.passage_task, prompt=contract.passage_prompt,
+                expected=ProviderReceipt.from_dict(current.describe()["receipt"]),
+            )
+        result["planning"]["tokenizer_recheck"] = checked
+
+    return await run_http_contract(
+        provider, context, output, repo=REPO, name="database", label="isolated Rust round trip",
+        command=command, recheck=recheck, timeout=1100, child_timeout=100,
+    )
 
 
 def main(argv=None):
@@ -119,43 +64,24 @@ def main(argv=None):
     server.add_argument("--arangod", type=Path, help="existing binary for a private Unix-only server")
     server.add_argument("--docker", action="store_true", help="use the runner's pinned isolated image")
     args = parser.parse_args(argv)
-    if any(os.environ.get(name) != "1" for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")):
-        parser.error("set HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1 before starting")
-    if args.device != "cpu" and not (
-        args.device.startswith("cuda:") and args.device[5:].isdigit()
-    ):
-        parser.error("device must be cpu or cuda:<ordinal>")
+    validate_environment(parser, args)
     if not 32 <= args.max_input_tokens <= 8192:
         parser.error("qualification ceiling must be 32..8192 tokens")
-    if args.arangod and not args.arangod.is_file():
-        parser.error("arangod must name an existing binary")
-    os.umask(0o077)
-    output = args.output_dir.absolute()
-    output.mkdir(mode=0o700, parents=True, exist_ok=False)
-    report = {"passed": False, "started_at": datetime.now(timezone.utc).isoformat(),
-              "stage": "preflight"}
-    provider = None
-    interrupted_run = False
-    try:
+    with QualificationRun(args.output_dir, REPO) as run:
+        report, output = run.report, run.output
         import torch
         from embedding.qualification import load_cases, qualify
         from embedding.registry import ModelRegistry
         from embedding.verified_jina import VerifiedJinaProvider
-        if args.device.startswith("cuda:") and (
-            not torch.cuda.is_available() or int(args.device[5:]) >= torch.cuda.device_count()
-        ):
-            raise RuntimeError("requested CUDA device is unavailable; CPU fallback is refused")
+        require_device(args.device)
+        run.record_implementation()
         cases, digest = load_cases(REPO / "services/tests/fixtures/jina_qualification.json")
         report["suite_sha256"] = digest
-        report["implementation_commit"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
-        report["implementation_dirty"] = bool(subprocess.check_output(
-            ["git", "status", "--porcelain", "--untracked-files=normal"], cwd=REPO, text=True).strip())
         registration = ModelRegistry(args.registry).load(args.provider)
         report["manifest"] = json.loads(registration.manifest.canonical_bytes())
-        provider = VerifiedJinaProvider(registration, device=args.device,
+        provider = run.own(VerifiedJinaProvider(registration, device=args.device,
                                        use_fp16=args.device.startswith("cuda:"),
-                                       max_input_tokens=args.max_input_tokens)
+                                       max_input_tokens=args.max_input_tokens))
         if provider._backend.device != args.device:
             raise RuntimeError("provider selected a different device")
         warnings.filterwarnings("error", message="Found missing adapter keys.*")
@@ -172,30 +98,9 @@ def main(argv=None):
         server_args = ["--docker"] if args.docker else ["--arangod", str(args.arangod.absolute())]
         report["database"] = asyncio.run(database_roundtrip(provider, context, output, server_args))
         report.update(passed=True, stage="complete")
-    except (Exception, KeyboardInterrupt) as error:
-        interrupted_run = isinstance(error, KeyboardInterrupt)
-        report["error"] = {"type": type(error).__name__, "message": str(error)[:2048]}
-        print(f"Qualification failed during {report['stage']}: {error}", file=sys.stderr)
-    finally:
-        if provider is not None:
-            try:
-                provider.unload()
-            except Exception as error:
-                if report["passed"]:
-                    report["stage"] = "cleanup"
-                report["passed"] = False
-                report["cleanup_error"] = {"type": type(error).__name__, "message": str(error)[:2048]}
-        report["finished_at"] = datetime.now(timezone.utc).isoformat()
-        (output / "report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        print(f"Qualification evidence: {output}", flush=True)
-    return 130 if interrupted_run else (0 if report["passed"] else 1)
+    return run.exit_code
 
 
 if __name__ == "__main__":
-    def interrupted(_signum, _frame):
-        """Unwind through owned provider, runner, and evidence cleanup on termination."""
-        raise KeyboardInterrupt("qualification interrupted")
-
-    signal.signal(signal.SIGTERM, interrupted)
+    install_interrupt_handler()
     raise SystemExit(main())

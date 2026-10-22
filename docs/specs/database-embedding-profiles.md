@@ -500,9 +500,17 @@ profile-aware pipeline is available.
 now admits separate document/code spaces, receipts, and capabilities from one
 registered model and coherent serving generation. It retains original document
 observations, checks every enabled workload, and supports synthetic code-only and
-ordinary-text-code providers without inferring database intent. Real verified
-Jina code inference/qualification and guarded code graph persistence remain
-required before enabling code ingestion.
+ordinary-text-code providers without inferring database intent. The opt-in
+[verified Jina code provider](verified-code-provider.md) now implements conventional
+document/code inference with separate receipts, token ceilings, and a fixed
+real-model/Rust qualification protocol. Guarded code graph persistence, code
+pipeline admission, and contextual code remain required before enabling the
+corresponding managed code ingestion paths.
+
+Mixed-workload setup must validate each initial chunk/window policy against that
+workload's own observed ceiling. The profile-wide maximum is an outer bound, not
+permission to borrow the other workload's capacity. Later serving-limit changes
+retain the existing per-workload clamping behavior from #245.
 
 [Background document jobs](profiled-ingestion-jobs.md) now verify the parent
 admission, persist a compact profile pin and pass it through the sealed child

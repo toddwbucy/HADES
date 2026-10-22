@@ -18,6 +18,7 @@ import torch
 from .identity import ProviderReceipt, _exact_fields, _unique_object
 from .jina_v4 import EMBEDDING_DIM, InputTooLargeError
 from .verified_jina import PROMPTS, ReceiptMismatchError, _versions
+from .workload_contracts import WORKLOAD_CONTRACTS
 
 PROTOCOL = "hades-verified-jina-qualification-v2"
 MIN_REPEAT_COSINE = 0.99999
@@ -119,11 +120,11 @@ def tokenizer_observation(tokenizer, samples):
     return {"normalization": normalization, "samples": observations}
 
 
-def boundary_texts(tokenizer, task, ceiling):
+def boundary_texts(tokenizer, task, ceiling, *, prompt=None):
     """Construct and verify exact fitting/one-over inputs without a token estimate."""
     def count(text):
         """Count exactly the same prefix and special-token policy as the adapter."""
-        return len(tokenizer(PROMPTS[task] + text, add_special_tokens=True,
+        return len(tokenizer((PROMPTS[task] if prompt is None else prompt) + text, add_special_tokens=True,
                              padding=False, truncation=False, split_special_tokens=False)["input_ids"])
     # This fixed unit is checked, not assumed, to add one token per repetition.
     first = count("hello ")
@@ -135,17 +136,19 @@ def boundary_texts(tokenizer, task, ceiling):
     return fitting, oversized
 
 
-def check_stored_plan(provider, text, plan):
+def check_stored_plan(provider, text, plan, *, task, expected, prompt):
     """Independently recount persisted byte slices under the same actual provider load."""
     raw = text.encode("utf-8")
     require(plan["source_sha256"] == hashlib.sha256(raw).hexdigest(), "planning source changed")
-    expected = ProviderReceipt.from_dict(plan["receipt"])
-    with provider._operation(expected):
+    require(plan["task"] == task and plan["receipt"] == expected.to_dict(),
+            "stored plan does not match the expected workload task/receipt")
+    require(plan["model"] == provider.model_name, "stored plan model changed")
+    with provider._operation(expected, task):
         tokenizer = provider._backend._tokenizer
 
         def count(value, rendered=False):
             """Use direct tokenizer calls, without the planner's search or accounting helpers."""
-            return len(tokenizer((PROMPTS["retrieval.passage"] if rendered else "") + value,
+            return len(tokenizer((prompt if rendered else "") + value,
                                  add_special_tokens=rendered, padding=False, truncation=False,
                                  split_special_tokens=False)["input_ids"])
 
@@ -196,24 +199,45 @@ def verify_adapters(provider):
     return checked
 
 
-def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None):
-    """Measure fixed provider gates, retaining a fresh verified load for the DB round trip."""
+def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None, workload=None,
+            reload_checks=None):
+    """Measure one workload; optionally defer its reload probe to a shared load owner."""
+    require(workload is None or workload in WORKLOAD_CONTRACTS, "unknown qualification workload")
+    # Use protocol constants, not a prompt copied from the description under test.
+    contract = WORKLOAD_CONTRACTS[workload or "documents"]
+    prompts = contract.prompts
+    passage_task, query_task, adapter = contract.passage_task, contract.query_task, contract.adapter
+
+    def selected(description):
+        """V2 selection is explicit; never borrow a missing workload's receipt."""
+        if workload is None:
+            return description
+        require(description["format"] == "hades-provider-description-v2", "workload requires V2")
+        return description["workloads"][workload]
+
     device = provider._backend.device
     gpu = device.startswith("cuda")
     if gpu:
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
+    already_loaded = provider.is_loaded
     started = time.monotonic()
     description = provider.describe()
     load_seconds = time.monotonic() - started
-    expected = ProviderReceipt.from_dict(description["receipt"])
+    observed = selected(description)
+    expected = ProviderReceipt.from_dict(observed["receipt"])
+    for role, task in (("passage", passage_task), ("query", query_task)):
+        require(observed["space"][role]["task"] == task
+                and observed["space"][role]["prompt"] == prompts[task]
+                and observed["space"][role]["adapter"] == adapter, "unexpected qualified task behavior")
     model = description["model"]["id"]
     report = evidence if evidence is not None else {}
     report.update({"protocol": PROTOCOL, "criteria": {
         "all_expected_documents_rank_first": True, "max_norm_error": MAX_NORM_ERROR,
         "minimum_repeat_cosine": MIN_REPEAT_COSINE, "minimum_reload_cosine": MIN_RELOAD_COSINE,
     }, "runtime": {"device": device, "libraries": _versions(), "cuda_runtime": torch.version.cuda},
-        "initial_load_seconds": load_seconds, "initial_receipt": expected.to_dict(),
+        "initial_observation_seconds": load_seconds, "initial_observation_loaded_model": not already_loaded,
+        "initial_receipt": expected.to_dict(),
         "description": description})
     if gpu:
         report["runtime"]["gpu"] = torch.cuda.get_device_name(device)
@@ -229,7 +253,7 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None):
         """Time a fully synchronized, receipted operation and validate every vector."""
         tokenizer = provider._backend._tokenizer
         expected_tokens = sum(len(tokenizer(
-            PROMPTS[task] + text, add_special_tokens=True, padding=False,
+            prompts[task] + text, add_special_tokens=True, padding=False,
             truncation=False, split_special_tokens=False)["input_ids"]) for text in texts)
         if gpu:
             torch.cuda.synchronize(device)
@@ -248,27 +272,28 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None):
         )
         return vectors
 
-    passages = embed([doc["text"] for doc in cases["documents"]], "retrieval.passage")
-    queries = embed([q["text"] for q in cases["queries"]], "retrieval.query")
+    passages = embed([doc["text"] for doc in cases["documents"]], passage_task)
+    queries = embed([q["text"] for q in cases["queries"]], query_task)
     report["retrieval"] = rank(cases["documents"], passages, cases["queries"], queries)
-    repeat = embed([cases["queries"][0]["text"]], "retrieval.query")[0]
+    repeat = embed([cases["queries"][0]["text"]], query_task)[0]
     report["repeat_cosine"] = cosine(queries[0], repeat)
     require(report["repeat_cosine"] >= MIN_REPEAT_COSINE, "repeatability criterion failed")
     forwards = []
 
     def observe_forward(_module, _args, kwargs):
         """Observe real input IDs without replacing weights or numerical code."""
+        require(kwargs["task_label"] == adapter, "forward used the wrong workload adapter")
         forwards.append(kwargs["input_ids"].detach().cpu().tolist()[0])
 
     hook = provider._backend._model.register_forward_pre_hook(observe_forward, with_kwargs=True)
     try:
         boundaries = []
-        for task in PROMPTS:
-            ceiling = description["capabilities"]["max_input_tokens"]
-            fitting, oversized = boundary_texts(tokenizer, task, ceiling)
+        for task in prompts:
+            ceiling = observed["capabilities"]["max_input_tokens"]
+            fitting, oversized = boundary_texts(tokenizer, task, ceiling, prompt=prompts[task])
             before = len(forwards)
             embed([fitting], task)
-            wanted = tokenizer(PROMPTS[task] + fitting, add_special_tokens=True,
+            wanted = tokenizer(prompts[task] + fitting, add_special_tokens=True,
                                padding=False, truncation=False, split_special_tokens=False)["input_ids"]
             require(len(forwards) == before + 1 and forwards[-1] == wanted,
                     "fitting input was truncated or retokenized before the real forward pass")
@@ -283,13 +308,14 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None):
                 raise ValueError("oversized input was accepted")
             boundaries.append({"task": task, "accepted_tokens": ceiling,
                                "observed_forward_tokens": len(forwards[-1]),
-                               "rejected_tokens": ceiling + 1, "overflow_forward_calls": len(forwards) - before})
+                               "rejected_tokens": ceiling + 1, "overflow_forward_calls": len(forwards) - before,
+                               "adapter": adapter})
         report["boundaries"] = boundaries
         before = len(forwards)
         for wrong in (replace(expected, artifact_md5="0" * 32), replace(expected, space_id="0" * 64),
                       replace(expected, serving_generation="other-load")):
             try:
-                embed(["short input"], "retrieval.query", wrong)
+                embed(["short input"], query_task, wrong)
             except ReceiptMismatchError:
                 pass
             else:
@@ -298,27 +324,33 @@ def qualify(provider, cases, *, adapter_check=verify_adapters, evidence=None):
         report["mismatched_receipts_rejected"] = 3
     finally:
         hook.remove()
-    provider.unload()
-    started = time.monotonic()
-    reloaded = provider.describe()
-    report["reload_seconds"] = time.monotonic() - started
-    current = ProviderReceipt.from_dict(reloaded["receipt"])
-    require(current.artifact_md5 == expected.artifact_md5 and current.space_id == expected.space_id
-            and current.serving_generation != expected.serving_generation, "reload changed stable identity")
-    require(tokenizer_observation(provider._backend._tokenizer, cases["tokenizer_samples"]) == tokens,
-            "tokenizer IDs changed on reload")
-    try:
-        embed(["short input"], "retrieval.query")
-    except ReceiptMismatchError:
-        pass
+    def recheck_reload(reloaded, reload_seconds):
+        """Keep this workload's old receipt/vector oracle across the owner's reload."""
+        report["reload_seconds"] = reload_seconds
+        current = ProviderReceipt.from_dict(selected(reloaded)["receipt"])
+        require(current.artifact_md5 == expected.artifact_md5 and current.space_id == expected.space_id
+                and current.serving_generation != expected.serving_generation, "reload changed stable identity")
+        require(tokenizer_observation(provider._backend._tokenizer, cases["tokenizer_samples"]) == tokens,
+                "tokenizer IDs changed on reload")
+        try:
+            embed(["short input"], query_task)
+        except ReceiptMismatchError:
+            pass
+        else:
+            raise ValueError("pre-reload receipt was accepted")
+        after = embed([cases["queries"][0]["text"]], query_task, current)[0]
+        report["reload_cosine"] = cosine(queries[0], after)
+        require(report["reload_cosine"] >= MIN_RELOAD_COSINE, "reload repeatability criterion failed")
+        report["description"] = reloaded
+        report["initial_receipt"] = expected.to_dict()
+
+    if reload_checks is None:
+        provider.unload()
+        started = time.monotonic()
+        reloaded = provider.describe()
+        recheck_reload(reloaded, time.monotonic() - started)
     else:
-        raise ValueError("pre-reload receipt was accepted")
-    after = embed([cases["queries"][0]["text"]], "retrieval.query", current)[0]
-    report["reload_cosine"] = cosine(queries[0], after)
-    require(report["reload_cosine"] >= MIN_RELOAD_COSINE, "reload repeatability criterion failed")
-    report["operations"] = timings
-    report["description"] = reloaded
-    report["initial_receipt"] = expected.to_dict()
+        reload_checks.append(recheck_reload)
     if gpu:
         report["peak_cuda_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
         report["peak_cuda_reserved_bytes"] = torch.cuda.max_memory_reserved(device)

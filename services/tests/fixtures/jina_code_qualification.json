@@ -1,0 +1,22 @@
+{
+  "format": "hades-jina-qualification-cases-v1",
+  "documents": [
+    {"id": "binary-search", "text": "def binary_search(values, target):\n    low, high = 0, len(values)\n    while low < high:\n        middle = (low + high) // 2\n        if values[middle] < target:\n            low = middle + 1\n        else:\n            high = middle\n    return low if low < len(values) and values[low] == target else -1\n"},
+    {"id": "sha256-file", "text": "import hashlib\n\ndef sha256_file(path):\n    digest = hashlib.sha256()\n    with open(path, 'rb') as stream:\n        for block in iter(lambda: stream.read(65536), b''):\n            digest.update(block)\n    return digest.hexdigest()\n"},
+    {"id": "breadth-first", "text": "from collections import deque\n\ndef breadth_first(graph, start):\n    pending, seen = deque([start]), {start}\n    while pending:\n        node = pending.popleft()\n        yield node\n        for neighbor in graph[node]:\n            if neighbor not in seen:\n                seen.add(neighbor)\n                pending.append(neighbor)\n"},
+    {"id": "rust-parse", "text": "fn parse_ports(input: &str) -> Result<Vec<u16>, std::num::ParseIntError> {\n    input.split(',').map(|value| value.trim().parse::<u16>()).collect()\n}\n"},
+    {"id": "sql-total", "text": "SELECT customer_id, SUM(amount) AS total_spent\nFROM orders\nWHERE status = 'paid'\nGROUP BY customer_id\nORDER BY total_spent DESC;\n"},
+    {"id": "debounce", "text": "function debounce(callback, delayMs) {\n  let timer;\n  return (...args) => {\n    clearTimeout(timer);\n    timer = setTimeout(() => callback(...args), delayMs);\n  };\n}\n"},
+    {"id": "unicode-normalize", "text": "import unicodedata\n\ndef normalize_labels(labels):\n    return [unicodedata.normalize('NFC', label) for label in labels]\n\nlabels = normalize_labels(['café', 'café', '東京', '🚀'])\n"},
+    {"id": "rust-file", "text": "fn read_config(path: &std::path::Path) -> std::io::Result<String> {\n    std::fs::read_to_string(path)\n}\n"}
+  ],
+  "queries": [
+    {"id": "sorted-search", "text": "Find an element in a sorted array by repeatedly halving the search interval.", "expected_document": "binary-search"},
+    {"id": "file-digest", "text": "Compute a file's SHA-256 checksum without loading the whole file into memory.", "expected_document": "sha256-file"},
+    {"id": "graph-levels", "text": "Traverse graph vertices in breadth-first order using a queue and avoiding repeated visits.", "expected_document": "breadth-first"},
+    {"id": "parse-numbers", "text": "Parse comma-separated port numbers in Rust, returning an error if any number is invalid.", "expected_document": "rust-parse"},
+    {"id": "customer-totals", "text": "Calculate each customer's total paid order amount with a SQL aggregation.", "expected_document": "sql-total"},
+    {"id": "delay-callback", "text": "Delay a JavaScript callback until calls stop arriving, cancelling the previous timer on each call.", "expected_document": "debounce"}
+  ],
+  "tokenizer_samples": ["def café():\n\treturn '東京 🚀'\n", "  // é versus é\n\tlet x = 1;  ", "SELECT 'naïve';\r\n"]
+}

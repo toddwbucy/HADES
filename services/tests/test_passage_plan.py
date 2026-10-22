@@ -156,17 +156,17 @@ def test_qualification_recounts_persisted_plan_without_planner_helpers(provider)
     text = "one two three é " * 8
     plan = p.plan(model=p.model_name, text=text, task="retrieval.passage", expected=expected,
                   passage_tokens=4, overlap_tokens=1, max_input_tokens=16)
-    result = check_stored_plan(p, text, plan)
+    result = check_stored_plan(p, text, plan, task="retrieval.passage", expected=expected, prompt="Passage: ")
     assert result["passed"] and result["checked_passages"] == len(plan["spans"])
     for field in ["body_tokens", "input_tokens", "overlap_tokens"]:
         wrong = copy.deepcopy(plan)
         wrong["spans"][1][field] += 1
         with pytest.raises(ValueError):
-            check_stored_plan(p, text, wrong)
+            check_stored_plan(p, text, wrong, task="retrieval.passage", expected=expected, prompt="Passage: ")
     wrong = copy.deepcopy(plan)
     wrong["receipt"]["serving_generation"] = "other"
-    with pytest.raises(ReceiptMismatchError):
-        check_stored_plan(p, text, wrong)
+    with pytest.raises(ValueError, match="expected workload"):
+        check_stored_plan(p, text, wrong, task="retrieval.passage", expected=expected, prompt="Passage: ")
 
 
 def test_http_planning_refuses_ambiguous_or_unsupported_requests(provider):

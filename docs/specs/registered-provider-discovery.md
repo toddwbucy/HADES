@@ -109,9 +109,11 @@ To check a saved workload, use `description().workload(kind, policy)`, passing
 used by client binding, including original-format ordinary-text code support,
 exact space matching, and required capabilities. A disabled saved workload or
 missing compatible observation produces a profile `ContractError`.
-Serialization preserves the observed wire format. This is a consumer contract
-with synthetic mixed/code-provider coverage; a real verified Jina code producer,
-its qualification, and code graph persistence are subsequent #225 work.
+Serialization preserves the observed wire format. The opt-in
+[verified Jina code producer](verified-code-provider.md) now serves conventional
+document/code observations and has a dedicated real-model/Rust qualification
+command. Synthetic mixed/code-only contracts remain in CPU CI. Managed code
+graph persistence and code ingestion admission are subsequent #225 work.
 
 ## Database admission and lifetime
 
