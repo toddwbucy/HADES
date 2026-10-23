@@ -138,6 +138,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Detect enabled embedder instances when `list-unit-files` reports only the
+  indirect template. Discover persistent/runtime enablement links independently
+  of profile files, validate batched state queries, and report discovery or
+  rollback errors instead of assuming missing output means disabled.
+
 - Preserve managed code symbol IDs across line moves and unambiguous declaration
   reordering, keeping authored and cross-file references intact. Validate existing
   symbols before planning; match scoped names, full Rust impl headers, compiler

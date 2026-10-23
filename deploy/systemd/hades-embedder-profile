@@ -28,9 +28,90 @@ active_units() {
     --plain --no-legend "${UNIT_PREFIX}*.service" | awk '{print $1}'
 }
 
+profile_names() {
+  local conf name
+  for conf in "$PROFILE_DIR"/*.conf; do
+    [[ -f "$conf" ]] || continue
+    name="${conf##*/}"
+    name="${name%.conf}"
+    if [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then printf '%s\n' "$name"; fi
+  done
+}
+
+candidate_units() {
+  # list-unit-files can omit template instances. Profile files alone also miss
+  # removed/renamed configurations and instances enabled by hand. Read dependency
+  # links in the running manager's UnitPath, including XDG, runtime and global
+  # directories. JSON preserves paths containing spaces without shell splitting.
+  local names name
+  names="$(profile_names)" || return 1
+  {
+    while IFS= read -r name; do
+      [[ -z "$name" ]] || printf '%s%s.service\n' "$UNIT_PREFIX" "$name"
+    done <<< "$names"
+    busctl --user --json=short get-property org.freedesktop.systemd1 \
+      /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager UnitPath | \
+      python3 -c '
+import json, os, sys
+prefix = sys.argv[1]
+try:
+    result = json.load(sys.stdin)
+    paths = result.get("data")
+    if result.get("type") != "as" or not isinstance(paths, list) or not paths:
+        raise ValueError("invalid manager UnitPath")
+    for path in paths:
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ValueError("invalid unit search directory")
+        try:
+            entries = list(os.scandir(path))
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            if not entry.name.endswith((".wants", ".requires")) or not entry.is_dir():
+                continue
+            with os.scandir(entry.path) as links:
+                for link in links:
+                    name = link.name
+                    if (not link.is_symlink() or not name.startswith(prefix)
+                            or not name.endswith(".service") or name == prefix + ".service"):
+                        continue
+                    if any(c.isspace() for c in name):
+                        raise ValueError("invalid embedder instance link: " + name)
+                    print(name)
+except (OSError, ValueError, AttributeError) as error:
+    sys.exit("cannot discover embedder enablement: " + str(error))
+' "$UNIT_PREFIX"
+  } | LC_ALL=C sort -u
+}
+
 enabled_units() {
-  systemctl --user list-unit-files --state=enabled,enabled-runtime \
-    --no-legend "${UNIT_PREFIX}*.service" | awk '{print $1, $2}'
+  local names output status=0 expected=1 i state
+  local -a units states enabled=()
+  names="$(candidate_units)" || return 1
+  [[ -n "$names" ]] || return 0
+  mapfile -t units <<< "$names"
+  output="$(systemctl --user is-enabled "${units[@]}")" || status=$?
+  mapfile -t states <<< "$output"
+  if [[ -z "$output" || ${#states[@]} != ${#units[@]} ]]; then
+    echo 'cannot read complete embedder enablement; no state may be assumed disabled' >&2
+    return 1
+  fi
+  for i in "${!units[@]}"; do
+    state="${states[i]}"
+    case "$state" in
+      enabled|enabled-runtime) enabled+=("${units[i]} $state"); expected=0 ;;
+      alias|static|indirect|generated|transient) expected=0 ;;
+      disabled|linked|linked-runtime|masked|masked-runtime) ;;
+      *) echo "cannot read enablement for ${units[i]}: unexpected state '$state'" >&2; return 1 ;;
+    esac
+  done
+  if (( status != expected )); then
+    echo "cannot read embedder enablement: inconsistent systemctl exit status $status" >&2
+    return 1
+  fi
+  # Publish only a complete, validated snapshot, including in rollback where
+  # errexit is suppressed by the caller's error handling.
+  if (( ${#enabled[@]} )); then printf '%s\n' "${enabled[@]}"; fi
 }
 
 show_active() {
@@ -47,14 +128,15 @@ show_active() {
 case "${1:-show}" in
   show) show_active; exit ;;
   list)
-    shopt -s nullglob
-    for conf in "$PROFILE_DIR"/*.conf; do
-      name="$(basename "$conf" .conf)"
+    names="$(profile_names)"
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      conf="$PROFILE_DIR/$name.conf"
       card="$(sed -n 's/^CUDA_VISIBLE_DEVICES=//p' "$conf")"
       ceiling="$(sed -n 's/^HADES_EMBEDDER_MAX_TOKENS=//p' "$conf")"
       batch="$(sed -n 's/^HADES_EMBEDDER_BATCH_SIZE=//p' "$conf")"
       printf '%-6s card=%s ceiling=%s batch=%s\n' "$name" "$card" "$ceiling" "$batch"
-    done
+    done <<< "$names"
     exit ;;
 esac
 
@@ -73,7 +155,7 @@ if [[ ! "$READY_TIMEOUT" =~ ^[1-9][0-9]{0,2}$ ]]; then
   exit 2
 fi
 # Validate dependencies and serialize selectors before any service mutation.
-for dependency in systemctl curl python3 flock; do command -v "$dependency" >/dev/null; done
+for dependency in systemctl busctl curl python3 flock; do command -v "$dependency" >/dev/null; done
 lock_dir="${XDG_RUNTIME_DIR:-${HOME}/.local/state}/hades"
 mkdir -p "$lock_dir"
 exec 9>"${lock_dir}/embedder-profile.lock"
