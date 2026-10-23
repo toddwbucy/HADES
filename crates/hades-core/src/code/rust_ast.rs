@@ -4,6 +4,7 @@
 //! computes code metrics, and identifies top-level definition boundaries
 //! for AST-aligned chunking.
 
+use quote::quote;
 use serde_json::json;
 use syn::{Item, Visibility, spanned::Spanned, visit::Visit};
 use tracing::warn;
@@ -193,8 +194,17 @@ impl SymbolCollector {
                 // Descend into impl items with context.
                 let old_ctx = self.impl_context.take();
                 self.impl_context = Some(impl_label);
+                let inner_start = self.symbols.len();
                 for impl_item in &imp.items {
                     self.visit_impl_item(impl_item);
+                }
+                // Keep the legacy display/key label compatible with enrichment,
+                // but give managed identity matching the complete impl header.
+                // From<A>/From<B>, reference types and where clauses must not
+                // collapse just because path_name intentionally omits arguments.
+                let identity = impl_identity(imp);
+                for symbol in &mut self.symbols[inner_start..] {
+                    symbol.metadata["impl_identity"] = json!(identity);
                 }
                 self.impl_context = old_ctx;
             }
@@ -597,6 +607,19 @@ fn prepend_module_path(metadata: &mut serde_json::Value, module_name: &str) {
         }
         _ => *metadata = json!({ "module_path": joined }),
     }
+}
+
+fn impl_identity(imp: &syn::ItemImpl) -> String {
+    let generics = &imp.generics;
+    let where_clause = &imp.generics.where_clause;
+    let self_ty = &imp.self_ty;
+    let unsafety = &imp.unsafety;
+    let defaultness = &imp.defaultness;
+    let trait_part = imp
+        .trait_
+        .as_ref()
+        .map(|(negation, path, _)| quote!(#negation #path for));
+    quote!(#defaultness #unsafety impl #generics #trait_part #self_ty #where_clause).to_string()
 }
 
 fn type_name(ty: &syn::Type) -> String {

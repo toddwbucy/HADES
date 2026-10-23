@@ -1,6 +1,7 @@
 //! Internal conventional code preparation and atomic publication of a single file graph.
 //! Analyzers, filesystem admission, cross-file enrichment and public routing are separate owners.
 mod graph;
+mod identity;
 mod ontology;
 mod storage;
 
@@ -30,6 +31,7 @@ use crate::{
 pub use graph::{LocalEndpoint, LocalRelationship, RelationshipKind};
 
 const FORMAT: &str = "hades-bound-code-v1";
+const MAX_ANALYSIS_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PREPARED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SYMBOLS: usize = 1024;
 const MAX_RELATIONSHIPS: usize = 4096;
@@ -147,31 +149,26 @@ impl ProfiledCode {
         input: CodeInput,
         replace: bool,
     ) -> Result<PreparedCodeFile, PipelineError> {
-        let resolved = graph::validate_input(&input, &self.ontology)?;
-        self.current().await?;
-        let key = &resolved.file_key;
+        let mut resolved = graph::validate_input(&input, &self.ontology)?;
         let (mut file, mut rows) = graph::records(&input, &resolved, self.passage.binding());
-        // Full source is retained both in the file and across its passages. Reject
-        // known oversized graphs before asking the provider to tokenize anything.
-        ensure(
-            serde_json::to_vec(&(&file, &rows))
-                .map_err(ArangoError::from)?
-                .len()
-                + serde_json::to_vec(&input.text)
-                    .map_err(ArangoError::from)?
-                    .len()
-                <= MAX_PREPARED_BYTES,
-            "prepared code graph exceeds 16 MiB before planning; split the source explicitly",
-        )?;
+        graph::check_unplanned_size(&input, &file, &rows)?;
+        self.current().await?;
         let previous_revision = storage::admit(
             self.pool.writer(),
-            key,
+            &input,
+            &mut resolved,
             replace,
             &self.snapshot,
-            input.analysis.analysis_tier,
-            &rows[CODEBASE.symbols],
+            &self.owners,
         )
         .await?;
+        if previous_revision.is_some() {
+            // Retained/salted IDs can change the encoded size. Rebuild only on
+            // replacement and recheck the exact records before provider work.
+            (file, rows) = graph::records(&input, &resolved, self.passage.binding());
+            graph::check_unplanned_size(&input, &file, &rows)?;
+        }
+        let key = &resolved.file_key;
         let planned = self.passage.plan_passages(&input.text).await?;
         ensure(
             planned.binding == *self.passage.binding(),
@@ -318,10 +315,7 @@ impl ProfiledCode {
 }
 
 fn digest(value: &Value) -> String {
-    Sha256::digest(crate::canonical_json::to_vec(value))
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    keys::hex_digest(&Sha256::digest(crate::canonical_json::to_vec(value)))
 }
 
 fn invalid(message: &str) -> ArangoError {

@@ -183,6 +183,9 @@ async fn prepared_size_is_bounded_before_planning_and_before_embedding() {
         source.text = format!("/*{}*/\n", "\u{0001}".repeat(1_500_000));
         source.analysis = code::analyze(&source.text, "large.rs").unwrap();
         source.relationships.clear();
+        // Local size admission must win even over a stale profile. This proves
+        // the bound is checked before current()/stored-file reconciliation.
+        touch_profile(&pool).await;
         assert!(
             code.prepare(source, false)
                 .await
@@ -192,6 +195,7 @@ async fn prepared_size_is_bounded_before_planning_and_before_embedding() {
                 .contains("before planning")
         );
         assert!(peer.plans().is_empty());
+        let code = connect(&pool, &peer).await;
         let mut source = input("wide.rs", "");
         source.text = "// many spans\n".repeat(80);
         source.analysis = code::analyze(&source.text, "wide.rs").unwrap();

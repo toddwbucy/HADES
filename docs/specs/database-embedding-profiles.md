@@ -506,7 +506,13 @@ document/code inference with separate receipts, token ceilings, and a fixed
 real-model/Rust qualification protocol. The internal
 [code graph persistence path](profile-bound-code.md) now prepares conventional
 embeddings and atomically publishes one analyzed file's graph under its original
-profile admission. Cross-file enrichment, explicit symbol retirement/remapping,
+profile admission. Replacement preserves verified symbol IDs across unambiguous
+line moves and declaration reordering using lexical scope, full Rust impl headers,
+compiler identity and declaration role, retaining external references without
+rewriting them. Unique compiler-identity upgrades also work through nested owners. Cross-file
+enrichers must resolve stored IDs instead of deriving keys from current lines;
+this is an explicit integration blocker. Cross-file enrichment, ambiguous symbol
+reconciliation/retirement,
 public code pipeline/search admission and contextual code remain required before
 enabling the corresponding managed code paths.
 

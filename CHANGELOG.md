@@ -24,7 +24,7 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   provenance, and refuse stale, foreign, edited or downgraded replacements.
   Require indexed owner lookups and data-owned endpoint definitions, bound graph
   size before inference, share bounded record I/O with document storage, and cover
-  mixed workloads and line-shift refusal. Public code ingestion,
+  mixed workloads and symbol retirement refusal. Public code ingestion,
   unchanged-file skipping and symbol retirement remain gated (#225).
 
 - Add an opt-in verified Jina provider for conventional document and specialized
@@ -137,6 +137,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   branch; outgoing-call behavior remains covered (#179, #186).
 
 ### Fixed
+
+- Preserve managed code symbol IDs across line moves and unambiguous declaration
+  reordering, keeping authored and cross-file references intact. Validate existing
+  symbols before planning; match scoped names, full Rust impl headers, compiler
+  identities and declaration roles; permit unique identity upgrades through nested
+  owners and allocate fresh keys for new-symbol
+  collisions. Refuse ambiguous changes or symbol retirement. Public code ingestion
+  remains gated (#225).
 
 - Pin CI's protoc 23.4 archive and checksum instead of relying on release-list
   discovery, which can fail before Rust and database checks begin.

@@ -36,7 +36,43 @@ pub struct LocalRelationship {
 pub(super) struct ResolvedGraph {
     pub(super) file_key: String,
     symbols: Vec<Option<String>>,
+    identities: Vec<Option<identity::Metadata>>,
     relationships: Vec<ResolvedRelationship>,
+}
+
+impl ResolvedGraph {
+    pub(super) fn retain_symbols(
+        &mut self,
+        input: &CodeInput,
+        previous_source: &str,
+        previous: &[Value],
+    ) -> Result<(), ArangoError> {
+        let symbols = identity::reconcile(
+            input,
+            previous_source,
+            previous,
+            &self.symbols,
+            &self.identities,
+        )?;
+        let remap: BTreeMap<_, _> = self
+            .symbols
+            .iter()
+            .zip(&symbols)
+            .filter_map(|(old, new)| old.as_ref().zip(new.as_ref()))
+            .collect();
+        // Resolve each original endpoint once: swaps and chains must not follow
+        // an already rewritten ID into a different symbol.
+        for edge in &mut self.relationships {
+            if let Some(id) = remap.get(&edge.from) {
+                edge.from = (*id).clone();
+            }
+            if let Some(id) = remap.get(&edge.to) {
+                edge.to = (*id).clone();
+            }
+        }
+        self.symbols = symbols;
+        Ok(())
+    }
 }
 
 struct ResolvedRelationship {
@@ -70,6 +106,7 @@ pub(super) fn validate_input(
         analysis.metrics.total_lines == lines,
         "analysis line count differs from source",
     )?;
+    let mut identities = Vec::with_capacity(analysis.symbols.len());
     for symbol in &analysis.symbols {
         ensure(
             !symbol.name.trim().is_empty()
@@ -80,6 +117,11 @@ pub(super) fn validate_input(
                 && symbol.end_line <= lines,
             "code symbol has an invalid name or source span",
         )?;
+        identities.push(if symbol.kind.is_primitive() {
+            Some(identity::metadata(&symbol.metadata)?)
+        } else {
+            None
+        });
     }
     // Catch duplicate keys and invalid endpoints before planning or inference.
     let file_key = keys::scoped_file_key(&input.namespace, &input.path);
@@ -111,14 +153,28 @@ pub(super) fn validate_input(
         serde_json::to_vec(&input.analysis)
             .map_err(ArangoError::from)?
             .len()
-            <= 4 * 1024 * 1024,
+            <= MAX_ANALYSIS_BYTES,
         "analysis metadata exceeds 4 MiB",
     )?;
     Ok(ResolvedGraph {
         file_key,
         symbols,
+        identities,
         relationships,
     })
+}
+
+/// Account for source in both the file and its eventual passages before any I/O.
+pub(super) fn check_unplanned_size(
+    input: &CodeInput,
+    file: &Value,
+    rows: &Rows,
+) -> Result<(), ArangoError> {
+    ensure(
+        serde_json::to_vec(&(file, rows))?.len() + serde_json::to_vec(&input.text)?.len()
+            <= MAX_PREPARED_BYTES,
+        "prepared code graph exceeds 16 MiB before planning; split the source explicitly",
+    )
 }
 
 fn symbol_ids(input: &CodeInput, key: &str) -> Result<Vec<Option<String>>, ArangoError> {
@@ -222,29 +278,31 @@ pub(super) fn manifest(
     rows: &Rows,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, ArangoError> {
     rows.iter()
-        .map(|(collection, records)| {
-            let mut hashes = BTreeMap::new();
-            for row in records {
-                let mut row = row.clone();
-                let object = row
-                    .as_object_mut()
-                    .ok_or_else(|| invalid("invalid code record"))?;
-                object.remove("_id");
-                object.remove("_rev");
-                let key = object
-                    .get("_key")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid("missing code record key"))?
-                    .to_owned();
-                normalize_numbers(&mut row);
-                ensure(
-                    hashes.insert(key, digest(&row)).is_none(),
-                    "duplicate code record key",
-                )?;
-            }
-            Ok((collection.clone(), hashes))
-        })
+        .map(|(collection, records)| Ok((collection.clone(), record_manifest(records)?)))
         .collect()
+}
+
+pub(super) fn record_manifest(records: &[Value]) -> Result<BTreeMap<String, String>, ArangoError> {
+    let mut hashes = BTreeMap::new();
+    for row in records {
+        let mut row = row.clone();
+        let object = row
+            .as_object_mut()
+            .ok_or_else(|| invalid("invalid code record"))?;
+        object.remove("_id");
+        object.remove("_rev");
+        let key = object
+            .get("_key")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("missing code record key"))?
+            .to_owned();
+        normalize_numbers(&mut row);
+        ensure(
+            hashes.insert(key, digest(&row)).is_none(),
+            "duplicate code record key",
+        )?;
+    }
+    Ok(hashes)
 }
 
 /// ArangoDB may return an integral JSON float as an integer. Preserve numerical

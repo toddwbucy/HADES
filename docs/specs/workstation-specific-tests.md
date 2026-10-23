@@ -103,8 +103,14 @@ the default CI matrix includes it. No real model or installed service is used.
 
 The `profiled_code` contract checks internal [code graph persistence](profile-bound-code.md):
 workload selection, bounded preparation, complete graph publication, replacement
-conflicts/rollback, profile and provider drift, edited-record preservation and
-cross-database refusal. Use `--contract profiled_code`; the default matrix includes it.
+conflicts/rollback, profile and provider drift, edited-record preservation,
+stable symbol IDs across scoped method/overload moves and generic/reference impls,
+declaration roles, untouched
+external references, real Python/Rust ambiguity refusal, unique compiler-identity
+upgrades through nested owners, long USRs, new-symbol collision allocation,
+local size rejection before database reads and cross-database refusal.
+Use `--contract profiled_code`;
+the default matrix includes it.
 Public code ingestion remains gated pending its integration.
 
 The `workspace_setup` contract covers [recoverable setup](recoverable-workspace-setup.md):

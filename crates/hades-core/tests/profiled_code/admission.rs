@@ -108,6 +108,11 @@ async fn missing_or_incompatible_owner_indexes_refuse_admission_and_publication(
             assert_eq!(peer.observations(), observations);
             assert!(code.commit(prepared).await.is_err());
             assert_eq!(rows(&pool).await, before);
+            if collection == CODEBASE.symbols {
+                let plans = peer.plans().len();
+                assert!(code.prepare(symbols::shifted_input("one.rs", ""), true).await.is_err());
+                assert_eq!(peer.plans().len(), plans, "reconciliation requires the admitted index before inference");
+            }
             // A sparse or compound index is not a complete owner lookup contract.
             let wrong = pool.writer().post(&format!("index?collection={collection}"), &json!({
                 "type":"persistent","fields":["file_key","chunk_index"],"unique":false,"sparse":true
