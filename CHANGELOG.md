@@ -138,9 +138,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
-- Detect enabled embedder profile instances with `systemctl is-enabled` for each
-  configured profile. On this host, `list-unit-files` reported only the indirect
-  template, so the profile selector exited before switching GPU 2 to GPU 1.
+- Detect enabled embedder instances when `list-unit-files` reports only the
+  indirect template. Discover persistent/runtime enablement links independently
+  of profile files, validate batched state queries, and report discovery or
+  rollback errors instead of assuming missing output means disabled.
 
 - Preserve managed code symbol IDs across line moves and unambiguous declaration
   reordering, keeping authored and cross-file references intact. Validate existing

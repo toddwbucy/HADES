@@ -49,6 +49,22 @@ restarting it. A lock prevents overlapping selector runs; do not run competing
 manual `systemctl` commands during a switch. Multiple active instances cause a
 refusal requiring operator review.
 
+Discovery combines valid profile filenames with instance links in `.wants` and
+`.requires` directories throughout the running user manager's `UnitPath`. This
+includes persistent, runtime and global user-unit directories, so deleting a
+profile file does not hide its boot selection. The selector reads `UnitPath`
+through `busctl --user --json=short` and checks concrete units in one
+`systemctl --user is-enabled` call per snapshot; it does not depend on template
+instances appearing in `list-unit-files`. See systemd's
+[unit-path documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd-analyze.html#unit-paths).
+`busctl` is required alongside Bash, systemctl, Python 3, curl and flock.
+
+Empty, partial, unknown or inconsistent enablement responses abort selection.
+An unreadable rollback snapshot reports `ROLLBACK INCOMPLETE`. Global enablement
+that user-level `disable` cannot remove prevents successful convergence; reconcile
+those links with the administrator. Profile names use letters, digits, `_` or
+`-`; `list` and discovery exclude other `.conf` filenames.
+
 Switching still runs the service's normal device/VRAM preflight. The selector
 requires an active unit and matching `/v1/models` profile metadata with positive
 dimension and context limits. Metadata is **not an inference test**. Its wait is
@@ -82,10 +98,15 @@ For a running server, schedule and carry out these steps explicitly:
    target before starting the prior unit; restore exactly one boot selection.
    Preserve logs and revert the installed script/template if needed.
 
-This procedure has not been executed on the audited live server. Its observed
-active GPU2/failed-but-enabled GPU1 state remains unchanged by repository work.
+Deployment validation must name the host and date; an old GPU-selection report
+does not establish the current running configuration. The first
+[ThinkPad installation](../../docs/installation-thinkpad-services.md) uses a
+standalone `hades-embedder.service` with `embedder.env`. The selector manages the
+`hades-embedder@NAME.service` template deployment described here. Moving a
+standalone installation to profiles requires the maintenance procedure above.
 
-Run the isolated selector regressions (fake systemctl/curl, no GPU/network):
+Run the isolated selector regressions (fake systemctl/busctl/curl, temporary
+enablement links, no GPU/network):
 
 ```bash
 python3 -m unittest discover -s scripts/tests -p test_embedder_profile.py -v
