@@ -158,7 +158,7 @@ pub(super) async fn admit(
     let owner = owners
         .iter()
         .find(|owner| owner.collection() == CODEBASE.symbols)
-        .expect("admitted symbol owner index");
+        .ok_or_else(|| invalid("missing admitted symbol owner index"))?;
     let (symbols, _) = owner
         .children(client, key, MAX_SYMBOLS, MAX_PREPARED_BYTES)
         .await?;
@@ -168,7 +168,9 @@ pub(super) async fn admit(
     )?;
     resolved.retain_symbols(
         input,
-        row["full_text"].as_str().expect("validated stored source"),
+        row["full_text"]
+            .as_str()
+            .ok_or_else(|| invalid("missing validated stored source"))?,
         &symbols,
     )?;
     Ok(Some(revision(&row)?.into()))

@@ -2,6 +2,9 @@
 use super::*;
 use hades_core::db::crud;
 
+#[path = "symbols/review.rs"]
+mod review;
+
 pub(super) fn shifted_input(path: &str, body: &str) -> CodeInput {
     let mut next = input(path, body);
     next.text.insert_str(0, "// inserted above every symbol\n");
@@ -267,7 +270,7 @@ async fn ambiguous_declarations_and_changed_identity_never_repurpose_an_endpoint
             fixture.install_code(&pool).await;
             let peer = Peer::with_workload_description(&fixture);
             let code = connect(&pool, &peer).await;
-            let text = module("first", "/* same */") + &module("second", "/* same */");
+            let text = "#[cfg(unix)]\nfn choose() {}\n#[cfg(windows)]\nfn choose() {}\n".to_owned();
             code.commit(code.prepare(source(&text), false).await.unwrap())
                 .await
                 .unwrap();
@@ -302,41 +305,31 @@ async fn ambiguous_declarations_and_changed_identity_never_repurpose_an_endpoint
                 &code,
                 &pool,
                 &peer,
-                source(&(module("first", "let x = 1;") + &module("second", "/* same */"))),
+                source(&text.replace("{}", "{ let x = 1; }")),
                 "ambiguous symbol identity",
             )
             .await;
 
             let mut renamed = source(&text);
-            renamed.analysis.symbols[0].name = "renamed".into();
+            for symbol in &mut renamed.analysis.symbols {
+                symbol.name = "renamed".into();
+            }
             refused_before_planning(&code, &pool, &peer, renamed, "symbol endpoints").await;
             let mut changed_kind = source(&text);
-            changed_kind.analysis.symbols[0].kind = code::SymbolKind::Function;
+            for symbol in &mut changed_kind.analysis.symbols {
+                symbol.kind = code::SymbolKind::Struct;
+            }
             refused_before_planning(&code, &pool, &peer, changed_kind, "symbol endpoints").await;
             let mut language = source(&text);
             language.analysis.language = code::Language::Python;
             refused_before_planning(&code, &pool, &peer, language, "source language").await;
-
-            // Different bodies are not identities: swapping them between two
-            // scopes must not silently move each existing endpoint with its text.
-            let mut distinct =
-                source(&(module("first", "/* apple */") + &module("second", "/* banana */")));
-            distinct.path = "distinct.rs".into();
-            code.commit(code.prepare(distinct, false).await.unwrap())
-                .await
-                .unwrap();
-            let mut swapped =
-                source(&(module("first", "/* banana */") + &module("second", "/* apple */")));
-            swapped.path = "distinct.rs".into();
-            refused_before_planning(&code, &pool, &peer, swapped, "ambiguous symbol identity")
-                .await;
         },
     )
     .await;
 }
 
 #[tokio::test]
-async fn a_new_symbol_cannot_reuse_a_retained_endpoint_at_its_historical_line() {
+async fn a_new_symbol_gets_a_fresh_id_at_a_retained_endpoints_historical_line() {
     with_temp_db(
         "code_retained_collision",
         Fixtures::Empty,
@@ -349,8 +342,30 @@ async fn a_new_symbol_cannot_reuse_a_retained_endpoint_at_its_historical_line() 
             code.commit(code.prepare(compiler_source(&first), false).await.unwrap())
                 .await
                 .unwrap();
-            let next = compiler_source(&(module("second", "/* banana */") + &first));
-            refused_before_planning(&code, &pool, &peer, next, "collides with a new symbol").await;
+            let original_id = compiler_symbol_id(&rows(&pool).await, "first");
+            let text = module("second", "/* banana */") + &first;
+            let mut added_id = None;
+            for prefix in ["", "// move both again\n"] {
+                let mut next = compiler_source(&(prefix.to_string() + &text));
+                let from = overload(&next, "second");
+                let to = overload(&next, "first");
+                call(&mut next, from, to);
+                code.commit(code.prepare(next, true).await.unwrap())
+                    .await
+                    .unwrap();
+                let stored = rows(&pool).await;
+                assert_eq!(compiler_symbol_id(&stored, "first"), original_id);
+                let fresh = compiler_symbol_id(&stored, "second");
+                assert_ne!(fresh, original_id);
+                if let Some(id) = &added_id {
+                    assert_eq!(&fresh, id);
+                } else {
+                    assert!(fresh.starts_with(&format!("{}/bsym_", CODEBASE.symbols)));
+                    added_id = Some(fresh.clone());
+                }
+                assert_eq!(stored[CODEBASE.calls_edges][0]["_from"], fresh);
+                assert_eq!(stored[CODEBASE.calls_edges][0]["_to"], original_id);
+            }
         },
     )
     .await;
@@ -366,7 +381,7 @@ async fn malformed_compiler_identities_fail_before_planning_new_files() {
         for usr in [
             json!(42),
             json!(""),
-            json!("x".repeat(4097)),
+            json!("x".repeat(4 * 1024 * 1024 + 1)),
             json!("bad\nidentity"),
         ] {
             let mut next = input("new.rs", "");

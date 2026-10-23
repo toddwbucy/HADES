@@ -111,6 +111,7 @@ pub(super) fn validate_input(
         )?;
         if symbol.kind.is_primitive() {
             identity::compiler_identity(&symbol.metadata)?;
+            identity::definition_role(&symbol.metadata)?;
         }
     }
     // Catch duplicate keys and invalid endpoints before planning or inference.
@@ -143,7 +144,7 @@ pub(super) fn validate_input(
         serde_json::to_vec(&input.analysis)
             .map_err(ArangoError::from)?
             .len()
-            <= 4 * 1024 * 1024,
+            <= MAX_ANALYSIS_BYTES,
         "analysis metadata exceeds 4 MiB",
     )?;
     Ok(ResolvedGraph {

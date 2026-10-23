@@ -140,8 +140,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Preserve managed code symbol IDs across line moves and unambiguous declaration
   reordering, keeping authored and cross-file references intact. Validate existing
-  symbols before planning, match overloads by explicit compiler identities, and refuse
-  ambiguous changes, key collisions or symbol retirement. Public code ingestion
+  symbols before planning; match scoped names, compiler identities and declaration
+  roles; permit unique identity upgrades and allocate fresh keys for new-symbol
+  collisions. Refuse ambiguous changes or symbol retirement. Public code ingestion
   remains gated (#225).
 
 - Pin CI's protoc 23.4 archive and checksum instead of relying on release-list

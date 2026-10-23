@@ -210,6 +210,24 @@ pub fn symbol_key(file_key: &str, qualified_name: &str, line: usize) -> String {
     format!("{fk}__{readable}__{hash8}")
 }
 
+/// Allocate a fresh managed symbol key when its provisional key is already
+/// retained by another definition. Existing endpoints are never re-keyed.
+pub(crate) fn disambiguated_symbol_key(base: &str, identity: &str, attempt: usize) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"hades:managed-symbol:v1\0");
+    for component in [base, identity] {
+        hasher.update((component.len() as u64).to_be_bytes());
+        hasher.update(component.as_bytes());
+    }
+    hasher.update((attempt as u64).to_be_bytes());
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("bsym_{digest}")
+}
+
 /// Build a deterministic edge key from source, type, and target.
 ///
 /// Uses a truncated SHA-256 hash of the combined input to keep keys

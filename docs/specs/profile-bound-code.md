@@ -100,24 +100,36 @@ admitted owner index and checks them against the saved inventory. Missing, edite
 or foreign symbols fail without inference or writes. Every old symbol must have
 an unambiguous match in the new analysis:
 
-- A unique `(qualified_name, lang_kind, compiler identity)` tuple retains its key
-  across line moves, reordering and body edits. The optional compiler identity is
-  the analyzer's existing `metadata.usr` value, validated as a bounded nonempty
-  string. Without that value, the qualified name and kind must identify one symbol.
-- Repeated names can move when distinct compiler identities disambiguate them.
-  Otherwise they can retain exact positions only when the full source is unchanged.
-  Body text and declaration order cannot establish identity: swapping two bodies
-  must not move their references with the text. Adding, changing or dropping a
-  compiler identity requires explicit reconciliation, including analyzer upgrades.
-- Missing matches, ambiguous changes, language changes and collisions between a
-  retained key and a new declaration are refused. Renames, removals and analysis
-  downgrades remain unavailable through this path.
+- Matches use qualified name, language kind and optional compiler identity
+  (`metadata.usr`). Without a USR, they also require the same verified lexical
+  container chain, recovered from module/type/callable spans. This distinguishes
+  Rust impl methods whose qualified names omit their enclosing module. Same-line
+  or overlapping spans that cannot prove ownership require unchanged source and
+  exact positions. Compiler identities include semantic ownership and allow a
+  definition to move out of its lexical class body.
+- Optional `metadata.is_definition` distinguishes a C/C++ declaration from its
+  definition even when both share a USR. Both existing vertices survive. Repeated
+  declarations with the same role, Python property/setter or overload definitions,
+  and Rust `cfg` alternatives in the same scope still require unchanged source
+  and exact positions. Even adding a comment to these ambiguous files is refused
+  until explicit reconciliation exists. Body text and declaration order are not
+  identity evidence.
+- An analyzer upgrade may add a USR when name/kind/verified scope is unique on
+  both sides and any previously known declaration role is unchanged. This does
+  not permit overload guessing or changes to existing USRs. If an enclosing
+  container's own identity changes, the scope proof must be reconciled explicitly.
+  USRs remain intact within the shared 4 MiB total analysis budget; they are never
+  truncated or silently discarded.
+- Missing matches, ambiguous changes and language changes are refused. Renames,
+  removals and analysis downgrades remain unavailable through this path.
 
 For example, adding a comment above `fn apple()` updates its source location and
 embeddings while preserving its `_id`. Local edges are built against retained IDs;
 endpoint substitutions happen once, so swaps cannot redirect a relationship twice.
 Authored references, other files' edges and unrelated collections are never
-rewritten. New symbols are accepted when their keys do not conflict.
+rewritten. If a new symbol occupies an existing endpoint's historical line, it
+receives a deterministic, separately salted key. Allocation reserves all retained
+and provisional keys and makes at most 1025 attempts; existing IDs never change.
 
 Publication still checks the original file revision and complete graph inventory
 under the transaction locks. Concurrent edits or a later write failure preserve
@@ -140,8 +152,9 @@ The default isolated CI matrix includes this target. Synthetic providers cover
 two/three-dimensional spaces, asymmetric tasks, code-only and ordinary-text-code
 profiles, a mixed document/code load with distinct widths and receipts, exact
 source spans, missing/incorrect owner indexes, retained symbol IDs across repeated
-line moves, compiler-identified overload moves/body swaps/additions, ambiguity
-and key-collision refusal,
+line moves, scoped Rust method moves/body swaps, declaration/definition roles,
+real Python/Rust ambiguity refusal, unique analyzer upgrades, long USRs,
+new-symbol key collisions,
 untouched external references, replacement conflicts, rollback, profile/provider
 drift, invalid graphs, cross-database admission, corruption, cancellation and
 failed later batches. No installed model or live research database is used.
@@ -150,3 +163,14 @@ Public analyzer/file/job integration, cross-file relationship publication,
 ambiguous symbol reconciliation/retirement, managed code search, contextual code,
 broader setup and the frontend remain subsequent work. The current public code-ingestion guard
 stays in place. Existing legacy records cannot be adopted by relabeling them.
+
+**Cross-file enrichment blocker:** existing `code/cpp_edges.rs`,
+`code/python_calls.rs`, `code/lsp/edges.rs`, `code/rust_imports.rs` and
+`code/tree_sitter_edges.rs` still derive endpoints with `symbol_key` from current
+source lines. These keys can differ from retained managed IDs. Before admitting
+any of these enrichers to managed files, resolve candidates through the verified
+stored symbol inventory using scoped identity, USR and declaration role, require
+unique live endpoints, and check the inventory again at publication. Add
+regressions that move a retained symbol, enrich calls/imports across files, and
+verify every endpoint exists and refers to the intended definition. The current
+guard must remain until that lookup and publication contract is implemented.

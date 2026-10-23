@@ -31,6 +31,7 @@ use crate::{
 pub use graph::{LocalEndpoint, LocalRelationship, RelationshipKind};
 
 const FORMAT: &str = "hades-bound-code-v1";
+const MAX_ANALYSIS_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PREPARED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SYMBOLS: usize = 1024;
 const MAX_RELATIONSHIPS: usize = 4096;
