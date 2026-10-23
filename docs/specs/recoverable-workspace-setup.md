@@ -74,7 +74,7 @@ database or model. Diagnostics do not copy server response bodies or secrets.
 | Marker, with a durably acknowledged ID | Recheck that database incarnation. Create/reconcile only an empty marker collection or the exact existing ownership marker. |
 | Profile | Reconcile an empty metadata collection or exactly the four initial records in one transaction; never overwrite unknown or mismatched records. |
 | Schema | Resume missing collections only in the owned database; validate existing collections and refuse content in an initializing workspace. |
-| Verify / publish | Recheck actual provider compatibility, ownership, schema and exact profile before publishing ready revision two. |
+| Verify / publish | Recheck ownership and exact profile; reconcile missing owner indexes only after every initializing data collection is verified empty. Recheck provider compatibility and schema before publishing ready revision two. |
 | Publish, after a lost readiness response | Accept only the exact ready successor. Preserve immutable metadata instead of replaying publication. |
 | Complete | Recheck ownership, schema and saved profile; return the same receipt without rewriting database records. Existing document data is allowed. |
 
@@ -94,9 +94,36 @@ that its remote effect was rolled back.
 
 The minimal schema contains `hades_setup`, `hades_workspace`, `documents`,
 `chunks`, and `embeddings`: document collections with `waitForSync` enabled and
-only their primary unique `_key` indexes. It does not create graph schema seeds
+primary unique `_key` indexes. `chunks` and `embeddings` also require one
+non-unique, non-sparse persistent `parent_key` index for bounded replacement
+lookups. Setup creates these indexes in its owned empty schema and reconciles
+interruption before or after index creation, including older Verify/Publish
+checkpoints whose schema originally had only primary indexes. Read-only diagnosis recognizes
+this partial schema without repairing it. It does not create graph schema seeds
 or an unqualified vector index. Retrieval uses the internal exact-scan path.
 Unknown collections, indexes, metadata rows, or preexisting vectors are refused.
+Ready workspaces from before this requirement remain searchable, and completed
+setup retries still verify them without changing their indexes. Actual writes
+require the owner indexes before extraction/planning; neither ingestion nor a
+completed setup retry repairs them. To upgrade an existing document workspace,
+an administrator can run these additive commands in an authenticated ArangoDB
+shell after selecting the intended workspace:
+
+```javascript
+db._useDatabase("WORKSPACE");
+db.chunks.ensureIndex({type: "persistent", fields: ["parent_key"], unique: false, sparse: false});
+db.embeddings.ensureIndex({type: "persistent", fields: ["parent_key"], unique: false, sparse: false});
+```
+
+This creates the two non-unique indexes while retaining data, record revisions,
+saved profiles and ontology. Stop ingestion during this maintenance operation.
+Do not use a partial `schema apply` file for this upgrade: schema application
+also publishes ontology metadata and could replace an existing relation order.
+Search and no-op tree admission do not need the indexes. Unknown or incompatible
+indexes still fail setup verification; only a missing owner index is compatible.
+Broader code setup remains gated and must provision the seven `file_key` indexes
+declared in `config/schemas/codebase.yaml` and required by
+[code graph storage](profile-bound-code.md).
 After readiness, [background document jobs](profiled-ingestion-jobs.md) may add
 the synchronous `hades_ingest_jobs` document collection. Identical setup retries
 validate and preserve that operational history; initializing schema checks still

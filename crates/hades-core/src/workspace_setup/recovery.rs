@@ -199,7 +199,7 @@ impl WorkspaceSetup {
         let schema = if record.receipt.step == SetupStep::Schema {
             database::partial_schema(&client).await
         } else {
-            database::schema(&client, false, !ready).await
+            database::schema(&client, database::SchemaMode::Inspect, !ready).await
         };
         if schema.is_err() {
             return Ok(report.conclude(

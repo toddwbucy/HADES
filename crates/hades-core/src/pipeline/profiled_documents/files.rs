@@ -223,6 +223,7 @@ impl ProfiledDocuments {
                     text: extraction.full_text,
                 },
                 admission.revision,
+                admission.owners,
                 Some(provenance),
                 retention.clone(),
             )

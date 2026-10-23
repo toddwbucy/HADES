@@ -5,6 +5,9 @@
 //! batch processing with two-phase GPU memory optimization.
 
 mod orchestrator;
+pub mod profiled_code;
 pub mod profiled_documents;
+mod profiled_storage;
+mod profiled_vectors;
 
 pub use orchestrator::{DocumentResult, Pipeline, PipelineConfig, PipelineError, PipelineSummary};

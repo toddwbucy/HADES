@@ -243,7 +243,7 @@ impl WorkspaceSetup {
             checkpoint(lease, record, SetupStep::Schema, SetupStatus::Initializing).await?;
         }
         if record.receipt.step == SetupStep::Schema {
-            database::schema(&client, true, true).await?;
+            database::schema(&client, database::SchemaMode::Create, true).await?;
             checkpoint(lease, record, SetupStep::Verify, SetupStatus::Initializing).await?;
         }
         let snapshot = store.load().await?;
@@ -272,7 +272,11 @@ impl WorkspaceSetup {
         }
         database::schema(
             &client,
-            false,
+            if snapshot.profile().state == ProfileState::Ready {
+                database::SchemaMode::Inspect
+            } else {
+                database::SchemaMode::RepairIndexes
+            },
             snapshot.profile().state != ProfileState::Ready,
         )
         .await?;

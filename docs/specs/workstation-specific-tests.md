@@ -13,6 +13,10 @@ Updated for audit [#20](https://github.com/toddwbucy/HADES/issues/20).
 | Profile selection | Persistent enablement, switching, simulated reboot, failure/rollback | Mock systemctl/curl only |
 | Optional workstation probes | `clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`, CUDA-specific Python case | Explicit analyzer/CUDA prerequisites; not evidence supplied by CPU CI |
 
+CI installs the checksum-pinned Linux x86_64 protoc 23.4 archive through
+`scripts/install_ci_protoc.sh`, without querying GitHub's release listing.
+When updating the pin, verify its checksum and compile all canonical `proto/` files.
+
 The opt-in [Jina code qualification](verified-code-provider.md) uses approved
 offline model assets and a private HTTP server to check actual document/code
 adapters through Rust. `verified_jina_workloads` is ignored in ordinary CI;
@@ -96,6 +100,12 @@ private verified HTTP fixtures and disposable two- and three-dimensional
 databases. It checks provider/profile drift, stored provenance, atomic replacement,
 scan budgets, and database isolation. Select it with `--contract profiled_documents`;
 the default CI matrix includes it. No real model or installed service is used.
+
+The `profiled_code` contract checks internal [code graph persistence](profile-bound-code.md):
+workload selection, bounded preparation, complete graph publication, replacement
+conflicts/rollback, profile and provider drift, edited-record preservation and
+cross-database refusal. Use `--contract profiled_code`; the default matrix includes it.
+Public code ingestion remains gated pending its integration.
 
 The `workspace_setup` contract covers [recoverable setup](recoverable-workspace-setup.md):
 durable reservations, ownership markers, interrupted/uncertain writes, exact

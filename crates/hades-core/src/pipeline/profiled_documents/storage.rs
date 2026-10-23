@@ -2,6 +2,9 @@
 //! transaction client; external embedding never runs while these locks are held.
 use super::*;
 use crate::db::{ArangoClient, query};
+use crate::pipeline::profiled_storage::{
+    self as records, OwnedCollection, acknowledged, allowed_fields, aql, insert_rows, revision,
+};
 use crate::retrieval::TopK;
 
 const DOCUMENT_FIELDS: &[&str] = &[
@@ -52,6 +55,7 @@ const VECTOR_FIELDS: &[&str] = &[
 pub(super) struct SourceAdmission {
     pub revision: Option<String>,
     pub metadata: Value,
+    pub owners: [OwnedCollection; 2],
 }
 
 /// Check an existing source without adopting legacy data or dropping authored metadata.
@@ -63,6 +67,12 @@ pub(super) async fn admit_source(
     snapshot: &ProfileSnapshot,
     file_identity: Option<&files::FileIdentity>,
 ) -> Result<SourceAdmission, ArangoError> {
+    // Only writers need owner lookups. Search and no-op tree admission remain
+    // compatible with managed workspaces created before owner indexes existed.
+    let owners = [
+        OwnedCollection::require(client, "chunks", "parent_key").await?,
+        OwnedCollection::require(client, "embeddings", "parent_key").await?,
+    ];
     let existing = document(client, key).await?;
     if let Some(row) = existing {
         ensure(
@@ -86,6 +96,7 @@ pub(super) async fn admit_source(
             }
         }
         return Ok(SourceAdmission {
+            owners,
             revision: Some(revision(&row)?.into()),
             metadata: row
                 .get("file_ingestion")
@@ -94,6 +105,7 @@ pub(super) async fn admit_source(
         });
     }
     Ok(SourceAdmission {
+        owners,
         revision: None,
         metadata: json!({}),
     })
@@ -101,20 +113,7 @@ pub(super) async fn admit_source(
 
 /// A missing document is distinct from a missing collection or database.
 async fn document(client: &ArangoClient, key: &str) -> Result<Option<Value>, ArangoError> {
-    match client
-        .clone()
-        .with_response_limit(MAX_PREPARED_BYTES)?
-        .get(&format!("document/documents/{key}"))
-        .await
-    {
-        Ok(row) => Ok(Some(row)),
-        Err(ArangoError::Api {
-            status: 404,
-            error_num: 1202,
-            ..
-        }) => Ok(None),
-        Err(error) => Err(error),
-    }
+    records::document(client, "documents", key, MAX_PREPARED_BYTES).await
 }
 
 /// Reject content changes after preparation, and remove only a complete managed source.
@@ -133,8 +132,13 @@ pub(super) async fn write(
         validate_document(row, key, &prepared.binding, &prepared.snapshot)?;
     }
     // These bounded reads also detect stray/foreign children of a supposedly new source.
-    let chunks = children(&client, "chunks", key).await?;
-    let embeddings = children(&client, "embeddings", key).await?;
+    let [chunk_owner, embedding_owner] = &prepared.owners;
+    let (chunks, _) = chunk_owner
+        .children(&client, key, MAX_PASSAGES, MAX_PREPARED_BYTES)
+        .await?;
+    let (embeddings, _) = embedding_owner
+        .children(&client, key, MAX_PASSAGES, MAX_PREPARED_BYTES)
+        .await?;
     if let Some(row) = &existing {
         let count = row["chunk_count"].as_u64().unwrap() as usize;
         ensure(
@@ -186,16 +190,8 @@ pub(super) async fn write(
             "new source has orphan children",
         )?;
     }
-    for collection in ["chunks", "embeddings"] {
-        let response = aql(
-            &client,
-            "FOR r IN @@collection FILTER r.parent_key == @parent REMOVE r IN @@collection",
-            json!({"@collection":collection,"parent":key}),
-            1,
-            MAX_PREPARED_BYTES,
-        )
-        .await?;
-        query::completed_mutation(&response)?;
+    for owner in [chunk_owner, embedding_owner] {
+        owner.remove(&client, key, MAX_PREPARED_BYTES).await?;
     }
     // All prior children were validated above. Any collision with another source
     // remains an error; overwrite is enabled only for this metadata revision.
@@ -209,46 +205,14 @@ pub(super) async fn write(
         .with_response_limit(64 * 1024)?
         .post(path, &prepared.document)
         .await?;
-    acknowledged(&response, &prepared.document)?;
+    acknowledged(&response, &prepared.document, "documents")?;
     for (collection, rows) in [
         ("chunks", prepared.chunks),
         ("embeddings", prepared.embeddings),
     ] {
-        for batch in rows.chunks(32) {
-            let response = client
-                .clone()
-                .with_response_limit(64 * 1024)?
-                .post(&format!("document/{collection}"), &json!(batch))
-                .await?;
-            let results = response
-                .as_array()
-                .filter(|r| r.len() == batch.len())
-                .ok_or_else(|| invalid("incomplete document insertion acknowledgment"))?;
-            for (ack, row) in results.iter().zip(batch) {
-                acknowledged(ack, row)?;
-            }
-        }
+        insert_rows(&client, collection, &rows).await?;
     }
     Ok(())
-}
-
-/// Bound children before deletion; a source cannot own more than the admission limit.
-async fn children(
-    client: &ArangoClient,
-    collection: &str,
-    key: &str,
-) -> Result<Vec<Value>, ArangoError> {
-    let response = aql(
-        client,
-        "FOR r IN @@collection FILTER r.parent_key == @parent LIMIT @limit RETURN r",
-        json!({"@collection":collection,"parent":key,"limit":MAX_PASSAGES + 1}),
-        MAX_PASSAGES + 2,
-        MAX_PREPARED_BYTES,
-    )
-    .await?;
-    let rows = query::completed_rows(&response)?;
-    ensure(rows.len() <= MAX_PASSAGES, "source has too many children")?;
-    Ok(rows.clone())
 }
 
 /// Enforce a complete scan with bounded pages and O(K) retained search results.
@@ -543,15 +507,6 @@ fn validate_document(
     Ok(())
 }
 
-/// Protect additional authored metadata from destructive whole-record replacement.
-fn allowed_fields(row: &Value, fields: &[&str]) -> Result<(), ArangoError> {
-    ensure(
-        row.as_object()
-            .is_some_and(|r| r.keys().all(|k| fields.contains(&k.as_str()))),
-        "replacement would discard unknown fields",
-    )
-}
-
 /// Require the canonical lowercase SHA-256 spelling used by source and key digests.
 fn valid_digest(s: &str) -> bool {
     s.len() == 64
@@ -564,44 +519,4 @@ fn valid_key(s: &str, prefix: &str) -> bool {
     s.strip_prefix(prefix)
         .and_then(|s| s.strip_prefix('_'))
         .is_some_and(valid_digest)
-}
-
-/// Require a bounded Arango revision before pinning or acknowledging a document.
-fn revision(row: &Value) -> Result<&str, ArangoError> {
-    row["_rev"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 128)
-        .ok_or_else(|| invalid("missing document revision"))
-}
-
-/// HTTP 2xx alone does not acknowledge every document in a bulk write.
-fn acknowledged(ack: &Value, row: &Value) -> Result<(), ArangoError> {
-    ensure(
-        ack["error"].as_bool() != Some(true) && ack["_key"] == row["_key"],
-        "document insertion was not acknowledged",
-    )?;
-    revision(ack)?;
-    Ok(())
-}
-
-/// Every query is deliberately completed in one bounded response inside the transaction.
-async fn aql(
-    client: &ArangoClient,
-    query: &str,
-    bind: Value,
-    batch: usize,
-    bytes: usize,
-) -> Result<Value, ArangoError> {
-    client
-        .clone()
-        .with_response_limit(bytes)?
-        .post(
-            "cursor",
-            &json!({
-                "query":query, "bindVars":bind, "batchSize":batch, "ttl":5,
-                "memoryLimit":32 * 1024 * 1024,
-                "options":{"maxRuntime":5,"failOnWarning":true}
-            }),
-        )
-        .await
 }

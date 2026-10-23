@@ -8,6 +8,8 @@ pub mod files;
 mod plan;
 mod storage;
 
+use super::profiled_storage::OwnedCollection;
+use super::profiled_vectors::validate_vector;
 use plan::DocumentPlan;
 
 use serde::Serialize;
@@ -46,6 +48,7 @@ pub struct PreparedDocument {
     document: Value,
     chunks: Vec<Value>,
     embeddings: Vec<Value>,
+    owners: [OwnedCollection; 2],
 }
 
 impl PreparedDocument {
@@ -185,7 +188,7 @@ impl ProfiledDocuments {
             None,
         )
         .await?;
-        self.prepare_admitted(input, admission.revision, None, ())
+        self.prepare_admitted(input, admission.revision, admission.owners, None, ())
             .await
     }
 
@@ -194,6 +197,7 @@ impl ProfiledDocuments {
         &self,
         input: DocumentInput,
         previous_revision: Option<String>,
+        owners: [OwnedCollection; 2],
         ingestion: Option<files::FileProvenance>,
         retention: R,
     ) -> Result<PreparedDocument, PipelineError> {
@@ -285,7 +289,7 @@ impl ProfiledDocuments {
             embeddings.push(embedding);
         }
         ensure(
-            serde_json::to_vec(&json!([document, chunks, embeddings]))
+            serde_json::to_vec(&(&document, &chunks, &embeddings))
                 .map_err(ArangoError::from)?
                 .len()
                 <= MAX_PREPARED_BYTES,
@@ -298,6 +302,7 @@ impl ProfiledDocuments {
             document,
             chunks,
             embeddings,
+            owners,
         })
     }
 
@@ -432,28 +437,6 @@ fn validate_input(input: &DocumentInput) -> Result<(), PipelineError> {
         "invalid source identifier",
     )?;
     validate_source(&input.text)?;
-    Ok(())
-}
-
-/// Reject zero/nonfinite vectors and check the declared normalization before storage/scoring.
-fn validate_vector(
-    vector: &[f32],
-    dimension: u32,
-    normalization: Normalization,
-) -> Result<(), ArangoError> {
-    ensure(
-        vector.len() == dimension as usize && vector.iter().all(|v| v.is_finite()),
-        "invalid vector dimension or finite values",
-    )?;
-    let norm: f64 = vector.iter().map(|v| f64::from(*v).powi(2)).sum();
-    ensure(
-        norm.is_finite() && norm > 0.0,
-        "vector has zero or invalid norm",
-    )?;
-    ensure(
-        normalization != Normalization::L2 || (norm.sqrt() - 1.0).abs() <= 0.001,
-        "vector violates the profile's L2 normalization",
-    )?;
     Ok(())
 }
 
