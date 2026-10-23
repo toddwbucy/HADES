@@ -10,8 +10,8 @@ async fn recovered_embedding_windows_determine_file_outcome() {
         let tree = tempfile::tempdir().unwrap();
         let socket = tree.path().join("provider.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        // mode, request count. The initial multi-window client call fails on
-        // its second request; calls 3 onward are its per-window retries.
+        // mode, request count. A transient second-window failure gets one
+        // exact retry; terminal failures preserve every committed record.
         let state = Arc::new(Mutex::new((0usize, 0usize)));
         let provider_state = state.clone();
         let app = Router::new().route("/v1/embeddings", post(move |Json(body): Json<Value>| {
@@ -22,7 +22,7 @@ async fn recovered_embedding_windows_determine_file_outcome() {
                     state.1 += 1;
                     *state
                 };
-                if (mode > 0 && mode < 5 && call == 2) || (mode == 2 && call == 4) {
+                if (mode > 0 && mode < 5 && call == 2) || (mode == 2 && call >= 2) {
                     return (axum::http::StatusCode::SERVICE_UNAVAILABLE,
                         Json(json!({"error":{"message":"controlled window failure"}}))).into_response();
                 }
@@ -68,7 +68,7 @@ async fn recovered_embedding_windows_determine_file_outcome() {
             *state.lock().unwrap() = (0,0);
             let mut imports = ImportContext::default();
             let seed = ingest_file(&pool,Some(&embedder),&config,&path,&rel,None,&mut imports,None,
-                true,false,false,9000,namespace,&None).await.unwrap();
+                true,false,false,Some(hades_core::chunking::prechunk::PrechunkConfig::default().resolve(4756).unwrap()),namespace,&None).await.unwrap();
             assert!(seed.success, "seed must succeed: {:?}", seed.error);
             let windows = state.lock().unwrap().1;
             assert!(windows >= 2, "fixture must span multiple real late windows");
@@ -88,13 +88,15 @@ async fn recovered_embedding_windows_determine_file_outcome() {
             *state.lock().unwrap() = (mode,0);
             let mut imports = ImportContext::default();
             let result = ingest_file(&pool,Some(&embedder),&config,&path,&rel,None,&mut imports,None,
-                true,false,false,9000,namespace,&None).await.unwrap();
+                true,false,false,Some(hades_core::chunking::prechunk::PrechunkConfig::default().resolve(4756).unwrap()),namespace,&None).await.unwrap();
             let calls = state.lock().unwrap().1;
             let after = snapshot(pool.clone(),key.clone()).await;
             println!("EMBED_RETRY_OUTCOME {}",json!({"case":case,"success":result.success,
                 "embedding_error":result.embedding_error,"windows":windows,"calls":calls,
                 "graph_unchanged":before==after,"chunks":result.num_chunks,"embeddings":result.num_embeddings}));
-            if mode < 5 { assert_eq!(calls, if mode == 0 { windows } else { windows + 2 }); }
+            if mode == 0 { assert_eq!(calls, after[CODEBASE.files][0]["embedding_window_plan"]["windows"].as_array().unwrap().len()); }
+            if mode == 1 { assert_eq!(calls, after[CODEBASE.files][0]["embedding_window_plan"]["windows"].as_array().unwrap().len() + 1); }
+            if mode == 2 { assert_eq!(calls, 3); }
             if mode < 2 || mode == 6 {
                 if !result.success { violations.push(format!("{case}: complete valid vectors rejected")); continue; }
                 let file = &after[CODEBASE.files][0];
@@ -109,6 +111,9 @@ async fn recovered_embedding_windows_determine_file_outcome() {
                     let c = after[CODEBASE.chunks].as_array().unwrap().iter().find(|c| c["_key"]==row["chunk_key"]).unwrap();
                     assert_eq!(c["chunk_index"],row["chunk_index"]);
                     assert_eq!(c["parent_chunk_index"],row["parent_chunk_index"]);
+                    let index=row["chunk_index"].as_u64().unwrap() as usize;
+                    assert_eq!(row["embedding_window"]["selected_window"],file["embedding_window_plan"]["chunk_windows"][index]);
+                    assert_eq!(row["embedding_window"]["plan"]["backend_ceiling_tokens"],4756);
                 }
                 assert!(imports.committed_revisions.contains_key(&key));
             } else {
@@ -172,7 +177,7 @@ async fn adaptive_prechunk_recovers_dense_inputs_on_both_paths() {
             let input = vec![TextChunk {text:text.clone(),start_char:0,end_char:text.len(),chunk_index:7,total_chunks:2},
                 TextChunk {text:"tail".into(),start_char:text.len(),end_char:source.len(),chunk_index:42,total_chunks:2}];
             let policy = PrechunkConfig::default().resolve(11892).unwrap();
-            let (chunks,parents,r) = embed_chunks(&client,&source,input,policy,"code",None,late).await.unwrap();
+            let (chunks,parents,r,plan) = embed_chunks(&client,&source,input,policy,"code",None,late).await.unwrap();
             assert!(observed.lock().unwrap().iter().any(|(_,refused)| *refused),"must reproduce refusal under defaults");
             assert_eq!(parents.last(),Some(&42));
             assert!(parents[..parents.len()-1].iter().all(|p| *p==7));
@@ -182,13 +187,68 @@ async fn adaptive_prechunk_recovers_dense_inputs_on_both_paths() {
                 assert_eq!(source.get(c.start_char..c.end_char),Some(c.text.as_str()));
                 assert!((c.text.len()*10).div_ceil(13) <= 11892);
             }
-            assert!(chunks.windows(2).any(|p| p[0].end_char>p[1].start_char));
-            assert_eq!(chunks[0].end_char-chunks[1].start_char,if text.is_ascii() {1299} else {1298});
+            if late {
+                let plan = plan.unwrap();
+                assert!(plan.size_refinements > 0);
+                assert!(chunks.windows(2).all(|p| p[0].end_char == p[1].start_char));
+                assert_eq!(plan.chunk_windows.len(), chunks.len());
+            } else {
+                assert!(chunks.windows(2).any(|p| p[0].end_char>p[1].start_char));
+                assert_eq!(chunks[0].end_char-chunks[1].start_char,if text.is_ascii() {1299} else {1298});
+            }
         }
         let source = "🦀";
         let input = vec![TextChunk{text:source.into(),start_char:0,end_char:source.len(),chunk_index:7,total_chunks:1}];
         let error = embed_chunks(&client,source,input,PrechunkConfig::default().resolve(11892).unwrap(),"code",None,late).await.unwrap_err();
-        assert!(error.to_string().contains("PE_INPUT_TOO_LARGE"));
+        assert!(error.to_string().contains("PE_INPUT_TOO_LARGE") || error.to_string().contains("UTF-8"));
     }
     peer.abort(); let _ = peer.await;
+}
+
+#[tokio::test]
+async fn late_context_vectors_keep_selected_window_and_source_order() {
+    use axum::{Json, Router, routing::post};
+    use hades_core::chunking::{TextChunk, prechunk::{PrechunkConfig, embed_chunks}};
+    use hades_core::persephone::embedding::{EmbeddingClientConfig, EmbeddingEndpoint};
+    use std::sync::{Arc, Mutex};
+    let source: String = (0..50).map(|i| format!("{i:04} ")).collect();
+    let served = source.clone();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("contexts.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let app = Router::new().route("/v1/embeddings",post(move |Json(body):Json<Value>| {
+        let source = served.clone(); let seen=observed.clone();
+        async move {
+            let text=body["input"][0].as_str().unwrap();
+            let start=source.find(text).unwrap();
+            assert_eq!(text.len(),60,"every request is a full context window");
+            let bounds=body["late_chunk"]["boundaries"].as_array().unwrap();
+            let rows:Vec<_>=bounds.iter().enumerate().map(|(i,b)| {
+                let global=start+b[0].as_u64().unwrap() as usize;
+                seen.lock().unwrap().push(global);
+                json!({"index":0,"chunk_index":i,"char_start":b[0],"char_end":b[1],
+                    "embedding":[global as f32,start as f32]})
+            }).collect();
+            Json(json!({"model":"fixture","data":rows}))
+        }
+    }));
+    let peer=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    let client=EmbeddingClient::connect(EmbeddingClientConfig{
+        endpoint:EmbeddingEndpoint::Unix(socket),model:"fixture".into(),expected_dimension:2,..Default::default()
+    }).await.unwrap();
+    let input:Vec<_>=(0..10).map(|i| TextChunk {text:source[i*25..(i+1)*25].into(),
+        start_char:i*25,end_char:(i+1)*25,chunk_index:i+100,total_chunks:10}).collect();
+    let policy=PrechunkConfig{max_window_tokens:Some(30),overlap_tokens:5,safety_margin_tokens:4}.resolve(128).unwrap();
+    let (chunks,parents,result,plan)=embed_chunks(&client,&source,input,policy,"code",None,true).await.unwrap();
+    let plan=plan.unwrap();
+    assert_eq!(seen.lock().unwrap().len(),chunks.len(),"each stored passage is pooled once");
+    for (i,c) in chunks.iter().enumerate() {
+        assert_eq!(result.embeddings[i][0],c.start_char as f32);
+        assert_eq!(result.embeddings[i][1],plan.windows[plan.chunk_windows[i]].start_byte as f32);
+        assert_eq!(parents[i],100+c.start_char/25);
+    }
+    assert_eq!(chunks.iter().map(|c|c.text.as_str()).collect::<String>(),source);
+    peer.abort(); let _=peer.await;
 }

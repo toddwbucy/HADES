@@ -33,6 +33,20 @@ training.server`, `python -m extraction.server`, or `python -m embedding.http_se
 using explicit service configuration. Installing a wheel does not provision
 systemd units or start services.
 
+For the Jina v4 snapshot `853c867b65b749f3c3c72a06868140d842e04f06`, apply the
+validated model constraints when installing from the repository root:
+
+```bash
+python -m pip install -c services/constraints-jina-v4.txt -e './services[dev]'
+python scripts/install/check_jina_model.py --model /path/to/pinned/snapshot --device cuda:0
+```
+
+The check compares every task-adapter tensor with the checkpoint and runs a
+short embedding. It refuses an unavailable CUDA device instead of accepting CPU
+fallback. It does not validate the maximum context window. See the
+[ThinkPad installation record](../docs/installation-thinkpad.md) for the dependency
+mismatch that prompted these constraints and the measured installation results.
+
 ## Distribution contracts
 
 With the hashed CPU CI dependencies installed, run:

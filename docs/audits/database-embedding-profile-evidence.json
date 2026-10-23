@@ -1,0 +1,70 @@
+{
+  "audit_date": "2026-10-19",
+  "audited_commit": "f930fbca1c5362f0e8e337ceeb1a1f9d21173cec",
+  "probe": {
+    "command": "python3 docs/audits/database_embedding_profile_probe.py --hades-bin /path/to/hades-built-from-audited-commit",
+    "binary_sha256": "cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42",
+    "binary_matches_deployment_record": true,
+    "configured": {
+      "model": "fixture/smaller-model",
+      "dimension": 384
+    },
+    "observed": {
+      "requested_model": "jinaai/jina-embeddings-v4",
+      "requested_task": "retrieval.passage",
+      "accepted_response_dimension": 2048,
+      "configuration_honored": false,
+      "exit_code": 0,
+      "mock_requests": 1
+    },
+    "scope": {
+      "transport": "private_unix_socket",
+      "database_requests": 0,
+      "model_downloads": 0,
+      "basis": "Source-audited embed text path; scope assertions, not measured counters."
+    }
+  },
+  "tests": [
+    {
+      "command": "cargo test --locked -p hades-core --test embedding_client --test embedding_contract",
+      "passed": 13
+    },
+    {
+      "command": "cargo test --locked -p hades-core --lib chunking::",
+      "passed": 38
+    },
+    {
+      "command": "cargo test --locked -p hades-core --lib retrieval::",
+      "passed": 3
+    }
+  ],
+  "validation": {
+    "relative_document_links_checked": 31,
+    "markdown_fences_balanced": true,
+    "probe_python_compiles": true
+  },
+  "limits": {
+    "production_code_changed": false,
+    "production_services_restarted": false,
+    "database_writes": 0,
+    "model_downloads": 0,
+    "real_inference_requests": 0,
+    "retrieval_quality_measured": false,
+    "proposed_design_implemented": false
+  },
+  "environment_note": "Initial private-socket contract tests were denied by the sandbox; rerun with temporary socket permission passed.",
+  "review_followup": {
+    "manifest_vectors": 3,
+    "independent_serializations": [
+      "Python json.dumps ensure_ascii=False",
+      "Node JSON.stringify with UTF-8 file sorting"
+    ],
+    "checks": [
+      "canonical JSON",
+      "exact UTF-8 bytes",
+      "MD5",
+      "distinct NFC and NFD filenames"
+    ],
+    "probe_functions_documented": 4
+  }
+}

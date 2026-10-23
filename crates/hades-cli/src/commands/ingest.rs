@@ -33,6 +33,9 @@ use hades_core::pipeline::{Pipeline, PipelineConfig};
 use super::codebase_ingest::{self, PhaseOutcome};
 use super::output::{self, OutputFormat};
 
+#[path = "profiled_ingest.rs"]
+mod profiled;
+
 /// Code-file extensions for auto-detecting the `code` embedding task.
 const CODE_EXTENSIONS: &[&str] = &[
     "py", "rs", "cu", "cuh", "cpp", "c", "h", "hpp", "js", "ts", "go", "java", "rb", "swift", "kt",
@@ -40,6 +43,30 @@ const CODE_EXTENSIONS: &[&str] = &[
 
 /// Keys that user-provided metadata cannot override.
 const PROTECTED_KEYS: &[&str] = &["_key", "status", "source", "source_git"];
+
+/// Parse once at command entry and retain the same values through tree validation and execution.
+struct DocumentOptions {
+    metadata: Option<Value>,
+    profile: &'static CollectionProfile,
+}
+
+impl DocumentOptions {
+    fn parse(metadata_json: Option<&str>, collection: Option<&str>) -> Result<Self> {
+        let metadata = metadata_json
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .context("--metadata must be valid JSON")?;
+        if metadata.as_ref().is_some_and(|value| !value.is_object()) {
+            bail!("--metadata must be a JSON object");
+        }
+        let profile = match collection {
+            Some(name) => CollectionProfile::get(name)
+                .with_context(|| format!("unknown collection profile: {name}"))?,
+            None => CollectionProfile::default_profile(),
+        };
+        Ok(Self { metadata, profile })
+    }
+}
 
 /// Ingest command failed with partial results.
 ///
@@ -104,11 +131,75 @@ pub async fn run_unified(
 ) -> Result<()> {
     let cmd_start = Instant::now();
     let root = codebase_ingest::resolve_ingest_root(&root)?;
+    let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    if let Some(binding) = &config.ingest_binding {
+        binding.check(&db).await?;
+    }
     let source_git = provenance.resolve(&root).await?;
     let unparsed_set = codebase_ingest::normalize_unparsed_ext(unparsed_ext);
     let found = codebase_ingest::discover_by_route(&root, &unparsed_set)?;
+    let admission = hades_core::embedding_profile::admission::document_tree_admission(
+        &db,
+        !found.code.is_empty(),
+    )
+    .await?;
+    let tree_pin = admission.pin;
+    let code_disabled =
+        admission.code == hades_core::embedding_profile::admission::CodeAdmission::Disabled;
+    match (&config.ingest_binding, &tree_pin) {
+        (Some(hades_core::ingest_jobs::Binding::Profiled(expected)), actual)
+            if actual.as_ref() != Some(expected.as_ref()) =>
+        {
+            bail!(
+                "ingestion profile changed during tree admission; start a new ingestion after review"
+            );
+        }
+        (Some(hades_core::ingest_jobs::Binding::Legacy), Some(_)) => {
+            bail!("legacy ingestion cannot adopt a model-bound workspace; start a new ingestion");
+        }
+        _ => {}
+    }
+    // Keep legacy document setup failures in the unified result, after its code phase.
+    let options = DocumentOptions::parse(metadata_json, collection);
+    let mut tree_config = config.clone();
+    if let Some(pin) = &tree_pin {
+        profiled::validate_tree_options(
+            config,
+            options
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?,
+            concurrency,
+            task,
+            allow_degraded_enrichment,
+        )?;
+        // Foreground routing gets the same drift protection as a sealed worker.
+        tree_config.ingest_binding = Some(hades_core::ingest_jobs::Binding::Profiled(Box::new(
+            pin.clone(),
+        )));
+    } else {
+        // A foreground tree may not adopt a newly installed profile between phases either.
+        tree_config.ingest_binding = Some(hades_core::ingest_jobs::Binding::Legacy);
+    }
+    let config = &tree_config;
+    let disabled_code = if code_disabled {
+        // Match unrouted reporting: Unix paths need not be valid UTF-8, and
+        // serializing a raw PathBuf would fail after permitted documents commit.
+        found
+            .code
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
     // Freeze all repository observations before either phase can write (#186).
-    let inputs: Vec<_> = found.code.iter().chain(&found.documents).cloned().collect();
+    let inputs: Vec<_> = found
+        .code
+        .iter()
+        .filter(|_| !code_disabled)
+        .chain(&found.documents)
+        .cloned()
+        .collect();
     provenance.prepare(&inputs).await;
     let source_git = if inputs.is_empty() {
         source_git
@@ -127,7 +218,7 @@ pub async fn run_unified(
     // Code first. The two phases write disjoint collections, so the order is
     // only about which failure an operator sees first, and losing the code
     // graph's edges is the more serious of the two.
-    let mut code = if found.code.is_empty() {
+    let mut code = if code_disabled || found.code.is_empty() {
         None
     } else {
         Some(
@@ -148,6 +239,14 @@ pub async fn run_unified(
         )
     };
 
+    // Provenance resolution awaited external work after admission. Recheck a no-op
+    // here because no document phase will perform the usual subsequent pin check.
+    if inputs.is_empty()
+        && let Some(binding) = &config.ingest_binding
+    {
+        binding.check(&db).await?;
+    }
+
     // A setup failure in the document phase must not take the code phase's
     // summary with it. `?` here discarded minutes of completed analyzer work,
     // symbols, edges and embeddings — all of it durably stored — because the
@@ -157,22 +256,24 @@ pub async fn run_unified(
     let documents = if found.documents.is_empty() {
         None
     } else {
-        match run_phase(
-            config,
-            found.documents.clone(),
-            false,
-            metadata_json,
-            &[],
-            collection,
-            force,
-            task,
-            None,
-            false,
-            false,
-            concurrency,
-            Some(root.clone()),
-            provenance.clone(),
-        )
+        match async {
+            run_phase(
+                config,
+                found.documents.clone(),
+                false,
+                options?,
+                &[],
+                force,
+                task,
+                None,
+                false,
+                false,
+                concurrency,
+                Some(root.clone()),
+                provenance.clone(),
+            )
+            .await
+        }
         .await
         {
             Ok(outcome) => Some(outcome),
@@ -189,7 +290,7 @@ pub async fn run_unified(
     let doc_failure = documents.as_ref().and_then(|o| o.failure.as_ref());
     let success = code_failure.is_none() && doc_failure.is_none() && document_setup_error.is_none();
 
-    let result_data = json!({
+    let mut result_data = json!({
         "enrichment_degraded": failed_request_count > 0,
         "failed_request_count": failed_request_count,
         "failed_requests_truncated": failed_request_count > failed_requests.len() as u64,
@@ -209,6 +310,19 @@ pub async fn run_unified(
         "document_phase_error": document_setup_error,
         "duration_ms": cmd_start.elapsed().as_millis(),
     });
+    if let Some(pin) = tree_pin {
+        result_data["profile_pin"] = json!(pin);
+        result_data["disabled_by_profile"] = json!({"code": disabled_code});
+        // The pin identifies admission, not current readiness. Setup/drift errors
+        // must not advertise a ready profile in the envelope or saved job result.
+        if inputs.is_empty()
+            || documents
+                .as_ref()
+                .is_some_and(|outcome| outcome.data["embedding_profile_state"] == "ready")
+        {
+            result_data["embedding_profile_state"] = json!("ready");
+        }
+    }
 
     output::print_output_with_success("ingest", result_data, &OutputFormat::Json, success);
 
@@ -272,13 +386,13 @@ pub async fn run(
     root: Option<PathBuf>,
     provenance: Arc<hades_core::source_git::Batch>,
 ) -> Result<()> {
+    let options = DocumentOptions::parse(metadata_json, collection)?;
     let mut outcome = run_phase(
         config,
         inputs,
         batch,
-        metadata_json,
+        options,
         claims,
-        collection,
         force,
         task,
         id,
@@ -307,13 +421,12 @@ pub async fn run(
 /// This is the entry point called from `main.rs` when the user runs
 /// `hades ingest ...`.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_phase(
+async fn run_phase(
     config: &HadesConfig,
     inputs: Vec<PathBuf>,
     batch: bool,
-    metadata_json: Option<&str>,
-    _claims: &[String],
-    collection: Option<&str>,
+    options: DocumentOptions,
+    claims: &[String],
     force: bool,
     task: Option<&str>,
     id: Option<&str>,
@@ -334,24 +447,10 @@ pub async fn run_phase(
         bail!("--id can only be used with a single input");
     }
 
-    // Parse custom metadata if provided.
-    let extra_metadata: Option<Value> = match metadata_json {
-        Some(s) => {
-            let val: Value = serde_json::from_str(s).context("--metadata must be valid JSON")?;
-            if !val.is_object() {
-                bail!("--metadata must be a JSON object, got: {}", val);
-            }
-            Some(val)
-        }
-        None => None,
-    };
-
-    // Resolve collection profile.
-    let profile = match collection {
-        Some(name) => CollectionProfile::get(name)
-            .ok_or_else(|| anyhow::anyhow!("unknown collection profile: {name}"))?,
-        None => CollectionProfile::default_profile(),
-    };
+    let DocumentOptions {
+        metadata: extra_metadata,
+        profile,
+    } = options;
 
     // Inputs stay as the caller wrote them at this level: item ids and batch
     // resume keys derive from these strings, and per-document error isolation
@@ -360,12 +459,35 @@ pub async fn run_phase(
     let file_paths: Vec<PathBuf> = inputs.to_vec();
 
     // -- Connect to services ---------------------------------------------------
+    let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    if let Some(binding) = &config.ingest_binding {
+        binding.check(&db).await?;
+    }
+    if hades_core::embedding_profile::admission::is_managed(&db).await? {
+        return profiled::run(
+            config,
+            db,
+            file_paths,
+            profile,
+            extra_metadata,
+            claims,
+            force,
+            task,
+            id,
+            batch,
+            resume,
+            reset,
+            concurrency,
+            root,
+            provenance,
+        )
+        .await;
+    }
     let embedder = EmbeddingClient::connect_at(&config.embedding.service.socket)
         .await
         .context("failed to connect to embedding service")?;
 
     config.chunking.prechunk.from_backend(&embedder).await?;
-    let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
     ensure_document_collections(&db, profile).await?;
 
     let extractor = ExtractionClient::connect_at(&config.extraction.service.socket)
@@ -380,6 +502,7 @@ pub async fn run_phase(
     let embed_task = determine_embed_task(task, profile);
     let pipeline_config = PipelineConfig {
         prechunk: config.chunking.prechunk.clone(),
+        late_chunking: config.chunking.document_late_chunking,
         profile,
         embed_task,
         embed_batch_size: Some(config.embedding.batch.size),
@@ -391,6 +514,7 @@ pub async fn run_phase(
         // skipped `delete_doc_chunks`, which is what removes the chunks a shorter
         // new version no longer has.
         overwrite: true,
+        reextract_fallback: force,
     };
 
     let pipeline = Arc::new(Pipeline::new(
@@ -483,6 +607,15 @@ pub async fn run_phase(
         .map_err(|e| anyhow::anyhow!("batch processing error: {e}"))?;
 
     // -- Output summary --------------------------------------------------------
+    batch_outcome(summary, envelope_git, cmd_start)
+}
+
+/// Keep the foreground batch envelope consistent across legacy and bound ingestion.
+fn batch_outcome(
+    summary: hades_core::batch::BatchSummary,
+    envelope_git: Option<hades_core::source_git::SourceGit>,
+    cmd_start: Instant,
+) -> Result<PhaseOutcome> {
     let duration_ms = cmd_start.elapsed().as_millis() as u64;
 
     let result_values: Vec<Value> = summary

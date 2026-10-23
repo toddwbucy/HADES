@@ -40,6 +40,11 @@ pub async fn run(
     // ── Source database (read-only) ─────────────────────────────────
     let source_pool =
         ArangoPool::from_config(config).context("failed to connect to source ArangoDB")?;
+    hades_core::embedding_profile::admission::require_legacy(
+        &source_pool,
+        "structural embedding update",
+    )
+    .await?;
 
     info!(db = %source_pool.database(), "connected to source database");
 
@@ -54,6 +59,11 @@ pub async fn run(
     };
 
     info!(db = %export_pool.database(), "export target validated");
+    hades_core::embedding_profile::admission::require_legacy(
+        &export_pool,
+        "structural embedding export",
+    )
+    .await?;
 
     // Preserve the full-update fast-fail path: unlike `--new-nodes`, it has
     // no possible no-op result that would justify loading the graph first.

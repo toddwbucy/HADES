@@ -1,0 +1,178 @@
+diff --git a/3rdParty/jemalloc/jemalloc/src/jemalloc_cpp.cpp b/3rdParty/jemalloc/jemalloc/src/jemalloc_cpp.cpp
+index 08107a8ab..fd74a0494 100644
+--- a/3rdParty/jemalloc/jemalloc/src/jemalloc_cpp.cpp
++++ b/3rdParty/jemalloc/jemalloc/src/jemalloc_cpp.cpp
+@@ -93,7 +93,7 @@ handleOOM(std::size_t size, bool nothrow) {
+ 	}
+ 
+ 	if (ptr == nullptr && !nothrow)
+-		std::__throw_bad_alloc();
++		throw std::bad_alloc();
+ 	return ptr;
+ }
+ 
+diff --git a/arangod/Aql/Optimizer/Rule/HandleViews.cpp b/arangod/Aql/Optimizer/Rule/HandleViews.cpp
+index 38fe9f827..dc0723317 100644
+--- a/arangod/Aql/Optimizer/Rule/HandleViews.cpp
++++ b/arangod/Aql/Optimizer/Rule/HandleViews.cpp
+@@ -61,13 +61,13 @@
+ namespace arangodb::iresearch {
+ 
+ #ifndef USE_ENTERPRISE
+-Variable const* replaceOffsetInfo(aql::CalculationNode& calcNode,
++aql::Variable const* replaceOffsetInfo(aql::CalculationNode& calcNode,
+                                   aql::Variable const& ref,
+                                   aql::AstNode const& node);
+-Variable const* replaceOffsetInfo(aql::CalculationNode& calcNode,
++aql::Variable const* replaceOffsetInfo(aql::CalculationNode& calcNode,
+                                   aql::Variable const& ref,
+                                   aql::AstNode const& node) {
+-  functions::NotImplementedEE(nullptr, node, {});  // will throw
++  aql::functions::NotImplementedEE(nullptr, node, {});  // will throw
+   return nullptr;
+ }
+ #endif
+diff --git a/arangod/Cluster/ClusterCollectionMethods.h b/arangod/Cluster/ClusterCollectionMethods.h
+index c1ce307d3..d57dfec7a 100644
+--- a/arangod/Cluster/ClusterCollectionMethods.h
++++ b/arangod/Cluster/ClusterCollectionMethods.h
+@@ -22,6 +22,8 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
++
+ #include "Basics/Result.h"
+ 
+ #include <memory>
+diff --git a/arangod/Cluster/ClusterHotBackup.cpp b/arangod/Cluster/ClusterHotBackup.cpp
+index fd90b92f2..31bbb7735 100644
+--- a/arangod/Cluster/ClusterHotBackup.cpp
++++ b/arangod/Cluster/ClusterHotBackup.cpp
+@@ -41,6 +41,7 @@
+ #include "Transaction/ManagerFeature.h"
+ #include "Utils/Events.h"
+ #include "Utils/ExecContext.h"
++#include "VocBase/Methods/Version.h"
+ 
+ #ifdef USE_ENTERPRISE
+ #include "Enterprise/RocksDBEngine/RocksDBHotBackup/RocksDBHotBackup.h"
+diff --git a/arangod/Cluster/Utils/PlanCollectionToAgencyWriter.h b/arangod/Cluster/Utils/PlanCollectionToAgencyWriter.h
+index de7da043d..8c0cde2e1 100644
+--- a/arangod/Cluster/Utils/PlanCollectionToAgencyWriter.h
++++ b/arangod/Cluster/Utils/PlanCollectionToAgencyWriter.h
+@@ -22,6 +22,8 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
++
+ #include <memory>
+ #include <string>
+ #include <unordered_map>
+diff --git a/arangod/Graph/algorithm-aliases.h b/arangod/Graph/algorithm-aliases.h
+index 824721a39..dbde604b0 100644
+--- a/arangod/Graph/algorithm-aliases.h
++++ b/arangod/Graph/algorithm-aliases.h
+@@ -113,11 +113,15 @@ struct BFSConfiguration {
+   // for that, SmartGraphProvider fns addExpansionIterator and expandToNextBatch
+   // need to be implemented
+   // using Queue = FifoQueue<Step>;
++#ifdef USE_ENTERPRISE
+   using Queue = typename std::conditional<
+       std::is_same_v<ProviderType,
+                      enterprise::SmartGraphProvider<ClusterProviderStep>>,
+       FifoQueue<Step>,
+       CursorFifoQueue<Step, typename ProviderType::NeighbourCursor>>::type;
++#else
++  using Queue = CursorFifoQueue<Step, typename ProviderType::NeighbourCursor>;
++#endif
+   using Store = PathStore<Step>;
+   using Validator =
+       PathValidator<Provider, Store, vertexUniqueness, edgeUniqueness>;
+@@ -131,11 +135,15 @@ struct DFSConfiguration {
+   // smart traversal queue on coordinator needs to be non-batched
+   // for that, SmartGraphProvider fns addExpansionIterator and
+   // expandToNextBatch need to be implemented
++#ifdef USE_ENTERPRISE
+   using Queue = typename std::conditional<
+       std::is_same_v<ProviderType,
+                      enterprise::SmartGraphProvider<ClusterProviderStep>>,
+       LifoQueue<Step>,
+       CursorLifoQueue<Step, typename ProviderType::NeighbourCursor>>::type;
++#else
++  using Queue = CursorLifoQueue<Step, typename ProviderType::NeighbourCursor>;
++#endif
+   using Store = PathStore<Step>;
+   using Validator =
+       PathValidator<Provider, Store, vertexUniqueness, edgeUniqueness>;
+@@ -149,11 +157,15 @@ struct WeightedConfiguration {
+   // smart traversal queue on coordinator needs to be non-batched
+   // for that, SmartGraphProvider fns addExpansionIterator and
+   // expandToNextBatch need to be implemented
++#ifdef USE_ENTERPRISE
+   using Queue = typename std::conditional<
+       std::is_same_v<ProviderType,
+                      enterprise::SmartGraphProvider<ClusterProviderStep>>,
+       WeightedQueue<Step>,
+       CursorWeightedQueue<Step, typename ProviderType::NeighbourCursor>>::type;
++#else
++  using Queue = CursorWeightedQueue<Step, typename ProviderType::NeighbourCursor>;
++#endif
+   using Store = PathStore<Step>;
+   using Validator =
+       PathValidator<Provider, Store, vertexUniqueness, edgeUniqueness>;
+diff --git a/arangod/RocksDBEngine/RocksDBReplicationCommon.h b/arangod/RocksDBEngine/RocksDBReplicationCommon.h
+index 9af0fdbd9..25567c4eb 100644
+--- a/arangod/RocksDBEngine/RocksDBReplicationCommon.h
++++ b/arangod/RocksDBEngine/RocksDBReplicationCommon.h
+@@ -22,6 +22,8 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
++
+ #include "Basics/Result.h"
+ 
+ namespace arangodb {
+diff --git a/arangod/SystemMonitor/AsyncRegistry/Metrics.h b/arangod/SystemMonitor/AsyncRegistry/Metrics.h
+index e052ea07b..20fae9329 100644
+--- a/arangod/SystemMonitor/AsyncRegistry/Metrics.h
++++ b/arangod/SystemMonitor/AsyncRegistry/Metrics.h
+@@ -21,6 +21,8 @@
+ ////////////////////////////////////////////////////////////////////////////////
+ #pragma once
+ 
++#include <cstdint>
++
+ #include "Containers/Concurrent/metrics.h"
+ #include "Metrics/Fwd.h"
+ 
+diff --git a/arangod/VocBase/VocbaseMetrics.h b/arangod/VocBase/VocbaseMetrics.h
+index 8e3e96495..11787ad2b 100644
+--- a/arangod/VocBase/VocbaseMetrics.h
++++ b/arangod/VocBase/VocbaseMetrics.h
+@@ -19,7 +19,9 @@
+ /// Copyright holder is ArangoDB GmbH, Cologne, Germany
+ ////////////////////////////////////////////////////////////////////////////////
+ #pragma once
++#include <cstdint>
+ #include <memory>
++#include <string_view>
+ #include "Metrics/Fwd.h"
+ 
+ namespace arangodb {
+diff --git a/lib/Logger/LogAppenderFile.cpp b/lib/Logger/LogAppenderFile.cpp
+index d7e487161..d67ba8cb5 100644
+--- a/lib/Logger/LogAppenderFile.cpp
++++ b/lib/Logger/LogAppenderFile.cpp
+@@ -29,6 +29,9 @@
+ #include "Basics/Exceptions.h"
+ #include "Basics/files.h"
+ #include "Basics/operating-system.h"
++#ifdef TRI_HAVE_UNISTD_H
++#include <unistd.h>
++#endif
+ #include "Logger/Logger.h"
+ 
+ namespace arangodb {

@@ -94,11 +94,7 @@ pub fn scoped_file_key(namespace: &str, rel_path: &str) -> String {
             }
         })
         .collect();
-    let digest: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let digest = hex_digest(&hasher.finalize());
     format!("f2_{readable}__{digest}")
 }
 
@@ -210,6 +206,20 @@ pub fn symbol_key(file_key: &str, qualified_name: &str, line: usize) -> String {
     format!("{fk}__{readable}__{hash8}")
 }
 
+/// Allocate a fresh managed symbol key when its provisional key is already
+/// retained by another definition. Existing endpoints are never re-keyed.
+pub(crate) fn disambiguated_symbol_key(base: &str, identity: &[u8; 32], attempt: usize) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"hades:managed-symbol:v1\0");
+    for component in [base.as_bytes(), identity.as_slice()] {
+        hasher.update((component.len() as u64).to_be_bytes());
+        hasher.update(component);
+    }
+    hasher.update((attempt as u64).to_be_bytes());
+    let digest = hex_digest(&hasher.finalize());
+    format!("bsym_{digest}")
+}
+
 /// Build a deterministic edge key from source, type, and target.
 ///
 /// Uses a truncated SHA-256 hash of the combined input to keep keys
@@ -292,13 +302,18 @@ pub fn model_hash(model_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(model_id.as_bytes());
     let digest = hasher.finalize();
+    hex_digest(&digest)
+}
+
+/// Encode a digest consistently without changing existing key formats.
+pub(crate) fn hex_digest(digest: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// First 8 hex chars of a SHA-256 digest.
 fn hex8(digest: &[u8]) -> String {
     // 4 bytes = 8 hex chars
-    digest[..4].iter().map(|b| format!("{b:02x}")).collect()
+    hex_digest(&digest[..4])
 }
 
 #[cfg(test)]

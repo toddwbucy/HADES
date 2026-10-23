@@ -1,0 +1,57 @@
+{
+  "format": "hades-model-manifest-test-vectors-v1",
+  "cases": [
+    {
+      "name": "unicode_and_escaping",
+      "source_files": [
+        {
+          "path": "weights/caf\u00e9\"\\part.bin",
+          "content_hex": "616263"
+        },
+        {
+          "path": "tokenizer/\u2028.json",
+          "content_hex": "7b7d"
+        }
+      ],
+      "canonical_json": "{\"files\":[{\"bytes\":2,\"md5\":\"99914b932bd37a50b983c5e7c90ae93b\",\"path\":\"tokenizer/\u2028.json\"},{\"bytes\":3,\"md5\":\"900150983cd24fb0d6963f7d28e17f72\",\"path\":\"weights/caf\u00e9\\\"\\\\part.bin\"}],\"format\":\"hades-model-manifest-v1\"}",
+      "canonical_utf8_hex": "7b2266696c6573223a5b7b226279746573223a322c226d6435223a223939393134623933326264333761353062393833633565376339306165393362222c2270617468223a22746f6b656e697a65722fe280a82e6a736f6e227d2c7b226279746573223a332c226d6435223a223930303135303938336364323466623064363936336637643238653137663732222c2270617468223a22776569676874732f636166c3a95c225c5c706172742e62696e227d5d2c22666f726d6174223a2268616465732d6d6f64656c2d6d616e69666573742d7631227d",
+      "manifest_md5": "fd4e48945ee23add3509a0a82fff8e6b"
+    },
+    {
+      "name": "decomposed_filename",
+      "source_files": [
+        {
+          "path": "weights/cafe\u0301\"\\part.bin",
+          "content_hex": "616263"
+        },
+        {
+          "path": "tokenizer/\u2028.json",
+          "content_hex": "7b7d"
+        }
+      ],
+      "canonical_json": "{\"files\":[{\"bytes\":2,\"md5\":\"99914b932bd37a50b983c5e7c90ae93b\",\"path\":\"tokenizer/\u2028.json\"},{\"bytes\":3,\"md5\":\"900150983cd24fb0d6963f7d28e17f72\",\"path\":\"weights/cafe\u0301\\\"\\\\part.bin\"}],\"format\":\"hades-model-manifest-v1\"}",
+      "canonical_utf8_hex": "7b2266696c6573223a5b7b226279746573223a322c226d6435223a223939393134623933326264333761353062393833633565376339306165393362222c2270617468223a22746f6b656e697a65722fe280a82e6a736f6e227d2c7b226279746573223a332c226d6435223a223930303135303938336364323466623064363936336637643238653137663732222c2270617468223a22776569676874732f63616665cc815c225c5c706172742e62696e227d5d2c22666f726d6174223a2268616465732d6d6f64656c2d6d616e69666573742d7631227d",
+      "manifest_md5": "63a104ead643bbd26c0ba1211ec62b49"
+    },
+    {
+      "name": "utf8_file_order",
+      "source_files": [
+        {
+          "path": "weights/\ud800\udc00.bin",
+          "content_hex": "616263"
+        },
+        {
+          "path": "weights/\ue000.bin",
+          "content_hex": ""
+        },
+        {
+          "path": "weights/a.bin",
+          "content_hex": "61"
+        }
+      ],
+      "canonical_json": "{\"files\":[{\"bytes\":1,\"md5\":\"0cc175b9c0f1b6a831c399e269772661\",\"path\":\"weights/a.bin\"},{\"bytes\":0,\"md5\":\"d41d8cd98f00b204e9800998ecf8427e\",\"path\":\"weights/\ue000.bin\"},{\"bytes\":3,\"md5\":\"900150983cd24fb0d6963f7d28e17f72\",\"path\":\"weights/\ud800\udc00.bin\"}],\"format\":\"hades-model-manifest-v1\"}",
+      "canonical_utf8_hex": "7b2266696c6573223a5b7b226279746573223a312c226d6435223a223063633137356239633066316236613833316333393965323639373732363631222c2270617468223a22776569676874732f612e62696e227d2c7b226279746573223a302c226d6435223a226434316438636439386630306232303465393830303939386563663834323765222c2270617468223a22776569676874732fee80802e62696e227d2c7b226279746573223a332c226d6435223a223930303135303938336364323466623064363936336637643238653137663732222c2270617468223a22776569676874732ff09080802e62696e227d5d2c22666f726d6174223a2268616465732d6d6f64656c2d6d616e69666573742d7631227d",
+      "manifest_md5": "0c422205567758a0e6afe2515817bc1e"
+    }
+  ]
+}

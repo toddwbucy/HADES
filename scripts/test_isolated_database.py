@@ -14,7 +14,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
-                      "graph_loader", "graph_contract", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db"]
+                      "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db", "embedding_profile_store", "profiled_documents", "profiled_code", "workspace_setup", "profiled_search", "profiled_files", "profiled_jobs"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
 IMAGE = "arangodb@sha256:3ce7aa54ac9b0942a2b201cd47a397cb89c3d5ff5a087d701f3c785109d0dfb7"
 
@@ -64,6 +64,24 @@ def stop_group(child):
     raise RuntimeError(f"private process group {child.pid} did not stop")
 
 
+def run_reading_e2e(argv, env, timeout, results):
+    """Record the browser flow's outcome and reap its private process group."""
+    # CPU Docling/Chromium need more virtual address space than bounded_process
+    # permits. Keep low scheduling priority and group ownership without that cap.
+    child = subprocess.Popen(argv, cwd=REPO, env=env, start_new_session=True,
+                             preexec_fn=lower_priority)
+    try:
+        code = child.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired, RuntimeError) as error:
+        results["reading-e2e"] = {"passed": False, "command": argv, "error": str(error)}
+        raise
+    finally:
+        stop_group(child)
+    results["reading-e2e"] = {"passed": code == 0, "exit_code": code, "command": argv}
+    if code:
+        raise RuntimeError("guided reading end-to-end test failed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     server = parser.add_mutually_exclusive_group(required=True)
@@ -77,8 +95,31 @@ def main():
                            help="run the cross-language training/export contract with this CPU interpreter")
     benchmark.add_argument("--cli-lifecycle", action="store_true",
                            help="run the CLI lifecycle contracts on the private server")
+    benchmark.add_argument("--mcp-authored", action="store_true",
+                           help="run the authored-graph MCP roundtrip on the private server")
     benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
                            help="run one database contract on the same strict private server")
+    benchmark.add_argument("--verified-jina", type=Path,
+                           help="run the opt-in real provider contract using this qualification context")
+    parser.add_argument("--verified-jina-report", type=Path,
+                        help="new report file for the real provider contract")
+    benchmark.add_argument("--graphable-import", action="store_true",
+                           help="run the mechanical importer CLI on the private server")
+    parser.add_argument("--graphable-source", type=Path,
+                        help="reviewed graphable Markdown for the opt-in real-document test")
+    parser.add_argument("--graphable-archive", type=Path,
+                        help="original source archive for the real-document test")
+    benchmark.add_argument("--reading-e2e-python", type=Path,
+                           help="run the real guided-reading browser flow with this Python interpreter")
+    benchmark.add_argument("--reading-chat-browser", action="store_true",
+                           help="run browser/Codex reading contracts on a disposable database")
+    parser.add_argument("--reading-chat-auth", type=Path,
+                        help="opt into real Codex inference using a temporary private copy of this auth.json")
+    parser.add_argument("--reading-chat-codex", type=Path, default=Path("/usr/bin/codex"))
+    parser.add_argument("--reading-node", type=Path)
+    parser.add_argument("--reading-playwright", type=Path)
+    parser.add_argument("--reading-chromium", type=Path)
+    parser.add_argument("--reading-model-cache", type=Path)
     parser.add_argument("--benchmark-rows", type=int, default=1024)
     parser.add_argument("--benchmark-dimension", type=int, default=64)
     parser.add_argument("--benchmark-trials", type=int, default=16)
@@ -89,7 +130,28 @@ def main():
         parser.error("arangod must name an existing binary")
     if args.training_alignment_python and not args.training_alignment_python.is_file():
         parser.error("training alignment requires an existing Python interpreter")
+    if bool(args.verified_jina) != bool(args.verified_jina_report):
+        parser.error("--verified-jina and --verified-jina-report are required together")
+    if args.verified_jina and not args.verified_jina.is_file():
+        parser.error("verified Jina context must name an existing file")
+    if args.verified_jina_report and (
+        not args.verified_jina_report.parent.is_dir()
+        or args.verified_jina_report.exists() or args.verified_jina_report.is_symlink()
+    ):
+        parser.error("verified Jina report must be a new file in an existing directory")
 
+    if (args.graphable_source or args.graphable_archive) and not args.graphable_import:
+        parser.error("graphable source/archive require --graphable-import")
+    if args.graphable_archive and not args.graphable_source:
+        parser.error("graphable archive requires --graphable-source")
+    for path in (args.graphable_source, args.graphable_archive):
+        if path and not path.is_file():
+            parser.error("graphable input must name an existing file")
+
+    if args.reading_chat_browser and not (args.reading_playwright and args.reading_chromium):
+        parser.error("reading chat browser requires --reading-playwright and --reading-chromium")
+    if args.reading_chat_auth and not args.reading_chat_browser:
+        parser.error("reading chat authentication requires --reading-chat-browser")
     root = Path(tempfile.mkdtemp(prefix="hades-tests-", dir="/tmp"))
     print(f"Isolated test artifacts: {root}", flush=True)
     sock = root / "arango.sock"
@@ -172,7 +234,8 @@ def main():
              "--rocksdb.block-cache-size", "67108864",
              "--rocksdb.total-write-buffer-size", "67108864",
              "--rocksdb.write-buffer-size", "16777216", "--rocksdb.max-background-jobs", "2",
-             "--arangosearch.threads", "1", "--arangosearch.threads-limit", "1"]
+             "--arangosearch.commit-threads", "1", "--arangosearch.consolidation-threads", "1",
+             "--arangosearch.execution-threads-limit", "1"]
     container = f"hades-tests-{os.getpid()}-{root.name}"
     if args.docker:
         argv = ["docker", "run", "--rm", "--name", container, "--network", "none",
@@ -199,8 +262,44 @@ def main():
             else:
                 raise RuntimeError("private server startup timed out")
             print(f"Private ArangoDB {version} ready; no TCP listener", flush=True)
+            if args.verified_jina:
+                env["HADES_VERIFIED_JINA_CONTEXT"] = str(args.verified_jina.absolute())
+                env["HADES_VERIFIED_JINA_REPORT"] = str(args.verified_jina_report.absolute())
+                command("verified-jina", ["-p", "hades-core", "--test", "verified_jina_documents"],
+                        ignored=True)
+                return
+            if args.graphable_import:
+                if args.graphable_source:
+                    env["HADES_GRAPHABLE_SOURCE"] = str(args.graphable_source.absolute())
+                if args.graphable_archive:
+                    env["HADES_GRAPHABLE_ARCHIVE"] = str(args.graphable_archive.absolute())
+                env["HADES_GRAPHABLE_REPORT"] = str(root / "graphable-report.json")
+                command("graphable-cli", ["-p", "hades-cli", "--test", "graphable_import"])
+                return
             if args.cli_lifecycle:
                 command("cli-lifecycle", ["-p", "hades-cli", "--test", "codebase_lifecycle"])
+                return
+            if args.reading_chat_browser:
+                env.update(HADES_CHAT_TEST_ROOT=str(root),
+                           PLAYWRIGHT_MODULE=str(args.reading_playwright.absolute()),
+                           CHROMIUM_PATH=str(args.reading_chromium.absolute()),
+                           HADES_CHAT_CODEX=str(args.reading_chat_codex.absolute()))
+                if args.reading_chat_auth:
+                    env["HADES_CHAT_TEST_AUTH"] = str(args.reading_chat_auth.absolute())
+                run_reading_e2e(["cargo", "test", "--locked", "--offline", "-p", "hades-core",
+                                 "--test", "reading_chat", "reading_chat_browser", "--", "--ignored", "--nocapture"],
+                                env, args.command_timeout, results)
+                return
+            if args.reading_e2e_python:
+                argv = [str(args.reading_e2e_python), str(REPO / "scripts/test_guided_reading.py"),
+                        "--root", str(root), "--node", str(args.reading_node),
+                        "--playwright", str(args.reading_playwright), "--chromium", str(args.reading_chromium),
+                        "--model-cache", str(args.reading_model_cache)]
+                run_reading_e2e(argv, env, args.command_timeout, results)
+                return
+            if args.mcp_authored:
+                command("mcp-authored", ["-p", "hades-cli", "--test", "codebase_lifecycle",
+                                         "mcp_authored_graph_tool_roundtrip"])
                 return
             if args.training_alignment_python:
                 # Preserve a virtualenv interpreter symlink: resolving it can
@@ -218,16 +317,28 @@ def main():
                 command(target, ["-p", "hades-core", "--test", target], ignored=True)
                 return
             if args.contract:
+                if args.contract == "graphable_import":
+                    command("graphable-unit", ["-p", "hades-core", "--lib", "graphable"])
+                if args.contract == "reading_chat":
+                    command("reading-chat-monitor", ["-p", "hades-core", "--lib", "reading::chat::tests::monitor_"])
                 command(args.contract, ["-p", "hades-core", "--test", args.contract])
+                if args.contract == "profiled_search":
+                    command("profiled-cli", ["-p", "hades-cli", "--test", "profiled_admission"])
+                if args.contract == "profiled_files":
+                    command("profiled-ingestion-cli", ["-p", "hades-cli", "--test", "profiled_ingestion"])
+                if args.contract == "profiled_jobs":
+                    command("profiled-jobs-cli", ["-p", "hades-cli", "--test", "profiled_jobs"])
                 return
             missing = dict(env)
             missing.pop("ARANGO_SOCKET")
             command("strict-prerequisite", ["-p", "hades-core", "--test", "arango_crud", "test_count_collection"],
                     missing, expect_missing_socket=True)
+            command("graphable-unit", ["-p", "hades-core", "--lib", "graphable"])
+            command("reading-chat-monitor", ["-p", "hades-core", "--lib", "reading::chat::tests::monitor_"])
             targets = DATABASE_CONTRACTS
             command("database-contracts", ["-p", "hades-core", *[arg for target in targets for arg in ("--test", target)]])
             command("codebase", ["-p", "hades-cli", "--bin", "hades", "commands::codebase_"])
-            command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle"])
+            command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle", "--test", "graphable_import", "--test", "profiled_admission", "--test", "profiled_ingestion", "--test", "profiled_jobs"])
         finally:
             stop_group(child)
             if args.docker:

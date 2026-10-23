@@ -13,12 +13,14 @@ orchestrator.
 from __future__ import annotations
 
 import gc
+from functools import wraps
 import logging
 import os
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
+import uuid
 
 import numpy as np
 import torch
@@ -28,6 +30,10 @@ BackendOutOfMemoryError = torch.cuda.OutOfMemoryError
 from transformers import AutoModel, AutoTokenizer
 
 from .tensors import embeddings_to_numpy
+from .snapshot import ArtifactChangedError
+
+if TYPE_CHECKING:
+    from .registry import RegisteredModel
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +140,41 @@ _TASK_TO_ADAPTER = {
 SUPPORTED_TASKS = ["retrieval.passage", "retrieval.query", "text-matching", "code"]
 
 
+def _guard_artifacts(function):
+    """Serialize registered loads/inference/unload and reject changed serving files.
+
+    Only the outer operation scans metadata. No full weight hashing occurs per
+    request. A failed check invalidates both model objects and the load identity.
+    """
+    @wraps(function)
+    def guarded(self, *args, **kwargs):
+        """Keep a verified copy stable for the complete operation, including all batches."""
+        if self._registration is None:
+            return function(self, *args, **kwargs)
+        with self._artifact_lock:
+            outer = self._artifact_depth == 0
+            self._artifact_depth += 1
+            try:
+                if outer and self._snapshot is not None:
+                    self._snapshot.check()
+                try:
+                    return function(self, *args, **kwargs)
+                finally:
+                    if outer and self._snapshot is not None:
+                        self._snapshot.check()
+            except ArtifactChangedError:
+                self._model = None
+                self._tokenizer = None
+                self._loaded_artifact = None
+                if self._snapshot is not None:
+                    self._snapshot.close()
+                    self._snapshot = None
+                raise
+            finally:
+                self._artifact_depth -= 1
+    return guarded
+
+
 class InputTooLargeError(ValueError):
     """An input does not fit the load profile's sequence ceiling.
 
@@ -178,7 +219,25 @@ class JinaV4Embedder:
         device: str = "cuda:2",
         use_fp16: bool = True,
         batch_size: int = 128,
+        registration: RegisteredModel | None = None,
     ) -> None:
+        """Optionally bind loading to a trusted registration in an offline process.
+
+        HTTP configuration does not expose this option yet. It is the internal
+        verified-loading boundary for the next provider/client integration.
+        """
+        self._registration = registration
+        self._snapshot = None
+        self._loaded_artifact = None
+        self._artifact_lock = threading.RLock()
+        self._artifact_depth = 0
+        if registration is not None:
+            from huggingface_hub.constants import HF_HUB_OFFLINE
+            from transformers.utils.hub import is_offline_mode
+            if not HF_HUB_OFFLINE or not is_offline_mode():
+                raise ValueError("registered loading requires HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1 before process startup")
+            if model_name != registration.model_id:
+                raise ValueError("configured model does not match the trusted registration")
         self._model_name = model_name
         self._batch_size = batch_size
 
@@ -288,10 +347,15 @@ class JinaV4Embedder:
         )
 
     def _load_unlocked(self) -> None:
-        """Load model and tokenizer. Caller MUST hold _load_lock."""
+        """Load both objects under _load_lock and, for registered loads, _artifact_lock."""
         if self._model is not None:
             return
 
+        # A rejected snapshot can leave freed weights in the CUDA allocator.
+        # Release them before preflight measures the next load's available VRAM.
+        if self._device.startswith("cuda"):
+            gc.collect()
+            torch.cuda.empty_cache()
         self._preflight_device()
 
         logger.info(
@@ -299,23 +363,43 @@ class JinaV4Embedder:
         )
         start = time.time()
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            self._model_name, trust_remote_code=True
-        )
-
-        model = AutoModel.from_pretrained(
-            self._model_name, trust_remote_code=True, torch_dtype=self._dtype
-        )
-
-        if self._device != "cpu":
-            model = model.to(self._device)
-
-        # Set model to inference mode
-        model.requires_grad_(False)
+        snapshot = None
+        loaded_artifact = None
+        try:
+            path = self._model_name
+            local = {}
+            if self._registration is not None:
+                snapshot = self._registration.prepare()
+                snapshot.check()
+                path = str(snapshot.root)
+                local = {"local_files_only": True}
+            tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, **local)
+            model = AutoModel.from_pretrained(
+                path, trust_remote_code=True, torch_dtype=self._dtype,
+                **local, **({"use_safetensors": True} if snapshot is not None else {}),
+            )
+            if self._device != "cpu":
+                model = model.to(self._device)
+            model.requires_grad_(False)
+            if snapshot is not None:
+                snapshot.check()
+                loaded_artifact = {
+                    "provider_id": self._registration.provider_id,
+                    "model_id": self._registration.model_id,
+                    "revision": self._registration.revision,
+                    "manifest_md5": self._registration.manifest.digest(),
+                    "serving_generation": uuid.uuid4().hex,
+                }
+        except BaseException:
+            if snapshot is not None:
+                snapshot.close()
+            raise
 
         # Assign atomically — both succeed or neither is visible
         self._tokenizer = tokenizer
         self._model = model
+        self._snapshot = snapshot
+        self._loaded_artifact = loaded_artifact
 
         logger.info(
             "Model loaded in %.2fs (dtype=%s)",
@@ -324,6 +408,7 @@ class JinaV4Embedder:
         )
 
     @property
+    @_guard_artifacts
     def model(self):
         """Lazy-load model on first access (double-checked locking)."""
         m = self._model
@@ -335,6 +420,7 @@ class JinaV4Embedder:
             return self._model
 
     @property
+    @_guard_artifacts
     def tokenizer(self):
         """Lazy-load tokenizer on first access (double-checked locking)."""
         t = self._tokenizer
@@ -365,6 +451,17 @@ class JinaV4Embedder:
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    @property
+    @_guard_artifacts
+    def loaded_artifact(self) -> dict | None:
+        """Return checked load provenance, never a behavior-space/provider receipt.
+
+        This does not trigger loading. Full provider receipts still require the
+        adapter's resolved task/representation contract and request enforcement.
+        """
+        return dict(self._loaded_artifact) if self._loaded_artifact is not None else None
+
+    @_guard_artifacts
     def embed_texts(
         self,
         texts: list[str],
@@ -433,6 +530,7 @@ class JinaV4Embedder:
                 if n_tokens > budget:
                     raise InputTooLargeError(index, n_tokens, budget)
 
+    @_guard_artifacts
     def embed_late_chunked(
         self,
         text: str,
@@ -740,7 +838,9 @@ class JinaV4Embedder:
 
     def unload(self) -> None:
         """Release GPU memory held by the model."""
-        with self._load_lock:
+        # Do not run the mutation guard here: cleanup must also work after a
+        # failed snapshot check. Registered inference holds this same lock.
+        with self._artifact_lock, self._load_lock:
             if self._model is not None:
                 logger.info("Unloading Jina V4 model...")
                 del self._model
@@ -748,6 +848,10 @@ class JinaV4Embedder:
             if self._tokenizer is not None:
                 del self._tokenizer
                 self._tokenizer = None
+            self._loaded_artifact = None
+            if self._snapshot is not None:
+                self._snapshot.close()
+                self._snapshot = None
         gc.collect()
         try:
             if torch.cuda.is_available():

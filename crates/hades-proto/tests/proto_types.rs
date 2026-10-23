@@ -71,6 +71,7 @@ fn test_extraction_types() {
         extract_equations: true,
         extract_images: false,
         use_ocr: false,
+        include_reading_document: false,
     };
     assert_eq!(req.source_type, SourceType::Pdf as i32);
     assert!(req.extract_tables);
@@ -83,6 +84,7 @@ fn test_extraction_types() {
 
     let resp = ExtractResponse {
         full_text: "Some extracted text".to_string(),
+        reading_document_json: String::new(),
         tables: vec![table],
         equations: vec![],
         images: vec![],
@@ -97,6 +99,7 @@ fn test_extraction_types() {
         supported_types: vec![SourceType::Pdf.into(), SourceType::Latex.into()],
         features: vec!["ocr".to_string(), "tables".to_string()],
         gpu_available: true,
+        reading_extensions: vec![".pdf".into(), ".docx".into()],
     };
     assert_eq!(info.supported_extensions.len(), 2);
 }

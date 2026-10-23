@@ -1,0 +1,112 @@
+# Profile-bound embedding client
+
+This slice of [#225](https://github.com/toddwbucy/HADES/issues/225) connects the
+[portable profile/receipt contracts](embedding-identity-contract.md) to the Rust
+HTTP client. `persephone::bound_embedding::BoundEmbeddingClient` supplies the
+transport for model-paired document ingestion and search. Applications enter
+through the registered provider catalog below. Legacy service responses without
+full provider receipts are rejected by this client. The
+[verified Jina provider](verified-jina-provider.md) now implements the producing
+side for conventional retrieval, without installation activation.
+
+## Construct a fixed binding
+
+`BoundEmbeddingClient::connect` accepts a profile, artifact manifest, workload,
+role, `ProviderConnection`, observed `ProviderReceipt`, and observed
+`max_input_tokens`. The receipt and positive serving ceiling must come from the
+same selected workload observation. It validates the ready
+profile and enabled workload, compares artifact and behavior-space identities,
+and requires the resolved provider ID to match the profile. Construction is lazy:
+it neither probes the endpoint nor loads a model.
+
+Application code uses the [registered provider catalog](registered-provider-discovery.md)
+to obtain an opaque `VerifiedProvider`, then its `client(...)` factory. That path
+checks protected registration, the configured private Unix endpoint, and actual
+HTTP observation before calling this low-level constructor. Supplying matching
+strings directly to the low-level constructor does not establish trust. Remote
+provider authentication and credential resolution remain separate work.
+
+The model, vector width, task, profile revision, corpus generation, and expected
+receipt come from the binding. Operational input supplies only provider ID,
+endpoint, positive request timeout, and a positive response-byte limit. No Jina
+defaults, alternate endpoint, arbitrary task override, or unbound inner client
+are exposed. The client also snapshots the smaller of the saved global token
+ceiling and the observed workload ceiling. Cloning retains these limits with
+the original receipt pin. Changing the caller's profile object does not retarget
+existing clients.
+
+## Receipt wire contract
+
+Every `POST /v1/embeddings` and `POST /v1/passages` request made by the bound
+client includes `expected_receipt`, with exactly this shape:
+
+```json
+{
+  "format": "hades-provider-receipt-v1",
+  "artifact_md5": "36ad00d2e76767b48b3a55053472dcf5",
+  "space_id": "ec03fc217ec93d932741ef76c3bc39b91fbf35176c3e563177749447950db6c4",
+  "serving_generation": "load-fixture-1"
+}
+```
+
+These values are from the shared synthetic fixture, not an installed model.
+A successful response must contain an identical `receipt` object and the exact
+profile model ID. The bound path does not accept installation-path aliases.
+Missing/null receipts, unknown formats or fields, malformed digests, duplicate
+receipt/model identity keys, or changed artifact, space, or serving generation
+fail before vectors are returned. Existing vector shape, finite-value, index,
+row-count, and late-boundary response checks still apply. HTTP responses are
+bounded before parsing, including error responses.
+
+The same pin is sent for every batch, OOM split/retry, and late-chunked input.
+Receipt failure discards the entire operation's accumulated result. It does not
+refresh identity, retry against another provider, or accept a newer generation.
+An HTTP 409 provider refusal is returned to the caller. A new load requires a
+fresh trusted observation and explicit client construction.
+
+The provider implementation must compare `expected_receipt` against its
+actual loaded artifact/behavior/generation before inference, hold that identity
+through the complete operation, and recheck before returning its own `receipt`.
+Echoing the request is insufficient. The [verified provider](verified-jina-provider.md)
+implements this boundary for its explicit conventional text contract. Production
+activation and additional capabilities remain pending.
+
+## Request policy and persistence boundary
+
+Queries use ordinary embeddings with the profile's query task, including queries
+against late-chunked corpora. Conventional passage workloads use `embed`; late
+passage workloads use `embed_late_chunked`. Unsupported mode/role combinations
+and empty work are rejected before dispatch. Late requests require nonempty
+character ranges within every input; validation covers the entire input list
+before sending the first request.
+
+Results carry the captured `BoundEmbeddingRequest` alongside vectors. This is
+not permission to write to a database. The orchestrator must retain database
+identity and recheck profile revision, corpus generation, and job ownership
+before committing. `plan_passages(text)` sends the saved conventional policy to
+the trusted provider and validates the typed response's source coverage, identity,
+and token limits before returning it. Requests preserve the saved policy while
+the provider plans within its actual serving budget. Rust additionally rejects
+plans above the selected workload's observed ceiling. This also applies to
+`plan_late_passages` and to caller-supplied plans passed to `embed_planned_late`
+before any inference. It uses the same receipt as embedding;
+query/late roles cannot call this method. See [token-aware planning](profile-token-planning.md).
+The client does not implement a tokenizer or manage caches. Direct inference
+still requires provider-side token counting and overflow refusal. Verified code
+production and graph persistence remain separate integration work.
+
+## Validation
+
+The synthetic provider uses private temporary Unix sockets and the shared
+384-dimensional profile fixture; no model, GPU, or database is required:
+
+```sh
+cargo test --locked -p hades-core --test bound_embedding_contract \
+  --test embedding_contract --test embedding_client
+```
+
+CI includes the new target in its service-free contract gate. Tests cover explicit
+profile resolution, asymmetric tasks, same-width incompatible spaces, malformed
+and duplicate identity fields, batch/reload rejection, OOM retry pins, late-mode
+policy, independent bindings/clones, response limits, provider refusal, strict
+plans, Unicode coverage, overlap policy, and allocation limits.

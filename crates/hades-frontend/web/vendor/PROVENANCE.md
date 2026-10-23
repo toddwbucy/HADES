@@ -31,3 +31,11 @@ npm install graphology-layout-forceatlas2@0.10.1 graphology-utils
 npx esbuild entry.js --bundle --format=iife --global-name=HadesFA2 --minify \
     --outfile=fa2.bundle.min.js
 ```
+
+## Guided-reading PDF renderer
+
+`pdf.mjs`, `pdf.worker.mjs`, and `pdf_viewer.css` are the unmodified build and
+viewer assets from `pdfjs-dist` 5.4.296 (Apache-2.0). See `pdfjs-LICENSE`. They
+are served locally, with no runtime CDN dependency. Re-vendor from the pinned
+package's `build/` and `web/` directories. The source version and selection
+serialization are recorded in `docs/guided-reading.md`.

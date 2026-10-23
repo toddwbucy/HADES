@@ -107,6 +107,8 @@ pub async fn create_vector_index(
     n_probe: u32,
     metric: VectorMetric,
 ) -> Result<IndexInfo, ArangoError> {
+    crate::embedding_profile::admission::require_legacy(pool, "legacy vector index creation")
+        .await?;
     let n_lists = match n_lists {
         Some(n) => n,
         None => {
@@ -165,6 +167,53 @@ pub async fn ensure_lookup_index(
         )
         .await?;
     Ok(())
+}
+
+/// A complete owner lookup must include every row and allow multiple children per owner.
+pub(crate) fn is_owner_index(index: &Value, field: &str) -> bool {
+    index["type"] == "persistent"
+        && index["fields"] == serde_json::json!([field])
+        && index["unique"] == false
+        && index["sparse"] == false
+        && index["name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty() && name.len() <= 128)
+}
+
+/// Read-only admission for a forced owner lookup; never create indexes during ingestion.
+#[derive(Clone)]
+pub(crate) struct OwnerIndex {
+    pub id: String,
+    pub name: String,
+}
+
+pub(crate) async fn require_owner_index(
+    client: &super::ArangoClient,
+    collection: &str,
+    field: &str,
+) -> Result<OwnerIndex, ArangoError> {
+    let response = client
+        .clone()
+        .with_response_limit(64 * 1024)?
+        .get(&format!(
+            "index?collection={}",
+            encode_query_value(collection)
+        ))
+        .await?;
+    response["indexes"]
+        .as_array()
+        .and_then(|indexes| indexes.iter().find(|index| is_owner_index(index, field)))
+        .and_then(|index| {
+            let id = index["id"].as_str()?;
+            let (owner, number) = id.split_once('/')?;
+            (owner == collection && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| OwnerIndex { id: id.into(), name: index["name"].as_str().unwrap().into() })
+        })
+        .ok_or_else(|| {
+            ArangoError::Request(format!(
+                "managed storage requires a non-unique, non-sparse persistent {field} index on {collection}; provision it before ingestion"
+            ))
+        })
 }
 
 /// Drop an index by its full ID (e.g. `"collection/12345"`).

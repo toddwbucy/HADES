@@ -45,6 +45,8 @@ pub enum SessionKind {
 /// tier above the ceiling is an error, not a silent clamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionPolicy {
+    /// Guided MCP endpoints allow proposals but deny direct knowledge provisioning.
+    pub guided_reading: bool,
     /// Highest tier this connection may operate at.
     pub max_tier: SessionKind,
     /// Whether this connection may invoke [`AccessTier::Provisioning`]
@@ -91,6 +93,7 @@ impl ConnectionPolicy {
     /// limits are empty because they do not gate an admin session.
     pub fn local_admin() -> Self {
         Self {
+            guided_reading: false,
             max_tier: SessionKind::Admin,
             allow_provisioning: true,
             provisioning: ProvisioningLimits::default(),
@@ -101,6 +104,7 @@ impl ConnectionPolicy {
     /// an admin session is rejected outright.
     pub fn agent_only() -> Self {
         Self {
+            guided_reading: false,
             max_tier: SessionKind::Agent,
             allow_provisioning: false,
             provisioning: ProvisioningLimits::default(),
@@ -114,6 +118,7 @@ impl ConnectionPolicy {
     /// remain unavailable to the transport that gets this.
     pub fn agent_with_provisioning(limits: ProvisioningLimits) -> Self {
         Self {
+            guided_reading: false,
             max_tier: SessionKind::Agent,
             allow_provisioning: true,
             provisioning: limits,
@@ -297,6 +302,17 @@ pub async fn handle_request(
     let request_id = parsed.request_id;
     let cmd = parsed.command;
 
+    if policy.guided_reading
+        && cmd.access_tier() == AccessTier::Provisioning
+        && !matches!(cmd, DaemonCommand::ReadingPropose(_))
+    {
+        return DaemonResponse::err(
+            "ACCESS_DENIED",
+            "guided reading permits proposals, not direct graph or ingestion writes",
+        )
+        .with_request_id(request_id);
+    }
+
     // Enforce access tier. Agent-tier commands are always available; Admin and
     // Internal need an admin session; Provisioning needs an admin session or a
     // transport that explicitly granted it. The grant comes from the policy the
@@ -339,7 +355,12 @@ pub async fn handle_request(
     // `db.schema.init` through the pool, so both names are checked.
     if matches!(
         cmd,
-        DaemonCommand::DbSchemaInit(_) | DaemonCommand::IngestStart(_)
+        DaemonCommand::DbSchemaInit(_)
+            | DaemonCommand::IngestStart(_)
+            | DaemonCommand::KgCreate(_)
+            | DaemonCommand::KgAddNode(_)
+            | DaemonCommand::KgAddEdge(_)
+            | DaemonCommand::ReadingPropose(_)
     ) {
         let targets = [Some(pool.database()), config.database.name.as_deref()];
         if let Some(name) = targets

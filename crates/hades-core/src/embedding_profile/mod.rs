@@ -1,0 +1,45 @@
+//! Portable embedding identity contracts for #225.
+//!
+//! These types do not register providers, verify a running model, or activate
+//! database pairing. Callers must establish trusted artifact provenance and a
+//! verified immutable serving snapshot before using a receipt. Shared search
+//! resolves saved profiles; legacy vector admission refuses managed databases.
+
+pub mod admission;
+mod contract;
+mod manifest;
+pub mod store;
+#[cfg(test)]
+mod tests;
+
+pub use contract::*;
+pub use manifest::*;
+
+use thiserror::Error;
+
+/// A malformed identity or an incompatible profile/provider binding.
+#[derive(Debug, Error)]
+#[error("embedding profile: {0}")]
+pub struct ContractError(pub String);
+
+/// Convert a failed invariant into a contract error without normalizing input.
+pub(crate) fn require(condition: bool, message: &str) -> Result<(), ContractError> {
+    if condition {
+        Ok(())
+    } else {
+        Err(ContractError(message.into()))
+    }
+}
+
+/// Bound identity labels and reject empty or control-bearing identifiers.
+pub(crate) fn label(value: &str) -> Result<(), ContractError> {
+    require(
+        !value.trim().is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control),
+        "identity labels must be nonempty, at most 4096 UTF-8 bytes, and contain no controls",
+    )
+}
+
+/// Encode digest bytes as lowercase hexadecimal, retaining leading zeroes.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

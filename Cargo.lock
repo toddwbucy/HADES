@@ -828,6 +828,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "flate2",
@@ -870,14 +871,18 @@ dependencies = [
  "hyper",
  "hyper-util",
  "hyperlocal",
+ "ignore",
  "libc",
+ "md-5",
  "moka",
  "proc-macro2",
+ "quote",
  "rand 0.9.2",
  "regex",
  "reqwest",
  "roxmltree",
  "rustpython-parser",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -907,6 +912,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "hades-core",
  "libc",
  "serde",
  "serde_json",
@@ -1525,6 +1531,16 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
 
 [[package]]
 name = "memchr"

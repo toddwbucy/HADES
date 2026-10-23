@@ -41,18 +41,25 @@ collections:
     type: document
   - name: codebase_symbols
     type: document
+    lookup_fields: [file_key]
   - name: codebase_chunks
     type: document
+    lookup_fields: [file_key]
   - name: codebase_embeddings
     type: document
+    lookup_fields: [file_key]
   - name: codebase_defines_edges
     type: edge
+    lookup_fields: [file_key]
   - name: codebase_calls_edges
     type: edge
+    lookup_fields: [file_key]
   - name: codebase_imports_edges
     type: edge
+    lookup_fields: [file_key]
   - name: codebase_implements_edges
     type: edge
+    lookup_fields: [file_key]
   # The document profile. Present because one `hades ingest` over a mixed tree
   # fills both, and a schema naming only half of what the ingest writes is a
   # schema that goes stale on its first run.
@@ -60,8 +67,10 @@ collections:
     type: document
   - name: chunks
     type: document
+    lookup_fields: [parent_key]
   - name: embeddings
     type: document
+    lookup_fields: [parent_key]
 
 edge_definitions:
   - name: codebase_defines_edges

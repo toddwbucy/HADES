@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use hades_core::HadesConfig;
 use hades_core::chunking::ChunkingStrategy;
-use hades_core::chunking::prechunk::BYTES_PER_TOKEN_FLOOR;
+use hades_core::chunking::prechunk::PrechunkWindow;
 use hades_core::code::lsp::go_symbols::GoSymbolExtractor;
 use hades_core::code::lsp::symbols::FileExtraction;
 use hades_core::code::lsp::{
@@ -41,24 +41,11 @@ use hades_core::db::crud;
 use hades_core::db::keys;
 use hades_core::db::query::ExecutionTarget;
 use hades_core::db::{ArangoErrorKind, ArangoPool};
-use hades_core::ingest_routing::{self, Route};
+pub(crate) use hades_core::ingest_routing::discovery::discover_by_route;
+use hades_core::ingest_routing::discovery::{SKIP_DIRS, UnhandledFile, shebang_of};
 use hades_core::persephone::embedding::EmbeddingClient;
 
 use super::output::{self, OutputFormat};
-
-/// Hard floor for directory exclusions — applied even when the project has
-/// no `.gitignore`, no `.ignore`, and no `.hadesignore`. The `ignore` crate's
-/// standard filters (gitignore + hidden-file skipping) already handle most
-/// real repos; this list catches the unfortunate case of a flat directory
-/// dropped onto disk without any ignore files.
-const SKIP_DIRS: &[&str] = &[
-    "__pycache__",
-    "node_modules",
-    "target",
-    "venv",
-    "dist",
-    "build",
-];
 
 /// Per-file result for JSON output.
 #[derive(serde::Serialize)]
@@ -200,6 +187,7 @@ pub async fn run_phase(
 
     // Connect to services.
     let db = ArangoPool::from_config(config).context("failed to connect to ArangoDB")?;
+    hades_core::embedding_profile::admission::require_legacy(&db, "code ingestion").await?;
 
     // Embedding is optional — ingest proceeds without vectors if the service is unavailable.
     let embedder = match EmbeddingClient::connect_at(&config.embedding.service.socket).await {
@@ -216,7 +204,7 @@ pub async fn run_phase(
     // Ask the backend what it will accept, once per run. The answer is a
     // property of the load profile the embedder happens to be running, so it
     // cannot be a constant and must not be read per file.
-    let window_bytes = embed_window_bytes(embedder.as_ref(), config).await?;
+    let embedding_window = resolve_embedding_window(embedder.as_ref(), config).await?;
 
     // Ensure codebase collections exist.
     ensure_collections(&db).await?;
@@ -431,6 +419,7 @@ pub async fn run_phase(
                         &db,
                         embedder.as_ref(),
                         config,
+                        embedding_window,
                         file_path,
                         &rel_path,
                         None,
@@ -468,7 +457,7 @@ pub async fn run_phase(
                     force,
                     allow_analysis_downgrade,
                     gopls_cmd.is_some(),
-                    window_bytes,
+                    embedding_window,
                     namespace,
                     &source_git,
                 )
@@ -900,13 +889,13 @@ static LATE_CHUNKING_DISABLED: LazyLock<bool> = LazyLock::new(|| {
 });
 
 /// Resolve the shared policy before any file writes; no guessed backend ceiling.
-async fn embed_window_bytes(
+async fn resolve_embedding_window(
     embedder: Option<&EmbeddingClient>,
     config: &HadesConfig,
-) -> Result<usize> {
+) -> Result<Option<PrechunkWindow>> {
     match embedder {
-        Some(client) => Ok(config.chunking.prechunk.from_backend(client).await?.bytes),
-        None => Ok(usize::MAX), // no embedding request or row will be produced
+        Some(client) => Ok(Some(config.chunking.prechunk.from_backend(client).await?)),
+        None => Ok(None), // no embedding request or row will be produced
     }
 }
 
@@ -916,7 +905,7 @@ async fn prepare_embeddings(
     config: &HadesConfig,
     source: &str,
     chunks: Vec<hades_core::chunking::TextChunk>,
-    window_bytes: usize,
+    embedding_window: Option<PrechunkWindow>,
     fkey: &str,
     late: bool,
 ) -> Result<(
@@ -924,16 +913,13 @@ async fn prepare_embeddings(
     Vec<usize>,
     Vec<Value>,
     Option<String>,
+    Option<hades_core::chunking::windows::WindowPlan>,
 )> {
     let Some(client) = embedder.filter(|_| !chunks.is_empty()) else {
         let parents = chunks.iter().map(|c| c.chunk_index).collect();
-        return Ok((chunks, parents, Vec::new(), None));
+        return Ok((chunks, parents, Vec::new(), None, None));
     };
-    let policy = hades_core::chunking::prechunk::PrechunkWindow {
-        tokens: (window_bytes / BYTES_PER_TOKEN_FLOOR) as u32,
-        bytes: window_bytes,
-        overlap_bytes: config.chunking.prechunk.overlap_tokens as usize * BYTES_PER_TOKEN_FLOOR,
-    };
+    let policy = embedding_window.context("missing resolved embedding window")?;
     match hades_core::chunking::prechunk::embed_chunks(
         client,
         source,
@@ -945,7 +931,8 @@ async fn prepare_embeddings(
     )
     .await
     {
-        Ok((chunks, parents, r)) => {
+        Ok((chunks, parents, r, plan)) => {
+            let summary = plan.as_ref().map(|p| p.summary()).unwrap_or(Value::Null);
             let rows = chunks.iter().zip(&r.embeddings).map(|(c, vector)| {
                 let ckey = keys::chunk_key(fkey, c.chunk_index);
                 let mut row = json!({"_key": keys::embedding_key(&ckey), "chunk_key": ckey,
@@ -954,11 +941,18 @@ async fn prepare_embeddings(
                     "window_tokens": policy.tokens});
                 let index = row["chunk_index"].as_u64().expect("mapped chunk index") as usize;
                 row["parent_chunk_index"] = json!(parents[index]);
+                row["embedding_window"] = plan.as_ref().map(|p| p.chunk_provenance(index, &summary)).unwrap_or(Value::Null);
                 row
             }).collect();
-            Ok((chunks, parents, rows, None))
+            Ok((chunks, parents, rows, None, plan))
         }
-        Err(e) => Ok((Vec::new(), Vec::new(), Vec::new(), Some(e.to_string()))),
+        Err(e) => Ok((
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some(e.to_string()),
+            None,
+        )),
     }
 }
 
@@ -1273,163 +1267,10 @@ async fn verify_file_identity(
     Ok(())
 }
 
-/// A file under the ingest root that discovery deliberately did not pick up.
-///
-/// Recorded rather than dropped so `codebase drift` can report a third bucket.
-/// A file that is neither ingested nor reportable is a silent hole: the pair
-/// (ingest, drift) otherwise reports a clean sweep over a partially-covered
-/// tree, which is a false green rather than a visible gap (#183).
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct UnhandledFile {
-    pub path: String,
-    pub reason: &'static str,
-}
-
 /// The outcome of a discovery walk: what will be ingested, and what will not.
 pub(crate) struct Discovery {
     pub files: Vec<PathBuf>,
     pub unhandled: Vec<UnhandledFile>,
-}
-
-/// The first line of a file, if it is readable as UTF-8.
-///
-/// Used only for shebang sniffing, so a binary (invalid UTF-8) simply yields
-/// `None` and stays out of discovery.
-///
-/// The read is capped: `read_line` alone allocates until the first newline, so
-/// an extensionless blob with none near the start (a compiled `a.out`, a
-/// checked-in artifact, a minified single-line bundle) would be pulled entirely
-/// into memory during a directory walk that previously never opened it.
-/// A shebang lives in the first handful of bytes or not at all.
-fn first_line(path: &Path) -> Option<String> {
-    use std::io::{BufRead, BufReader, Read};
-    /// Longest plausible shebang line; anything beyond cannot be one.
-    const SHEBANG_PROBE_BYTES: u64 = 256;
-    let file = std::fs::File::open(path).ok()?;
-    let mut line = String::new();
-    BufReader::new(file.take(SHEBANG_PROBE_BYTES))
-        .read_line(&mut line)
-        .ok()?;
-    Some(line)
-}
-
-/// The analyzer language implied by a file's shebang, plus whether it had one.
-///
-/// Only consulted for extensionless files: an extension is cheaper and more
-/// reliable when present.
-/// Only extensionless files are sniffed. An extension is cheaper and more
-/// reliable when present, and — critically — the ingest loop applies the same
-/// restriction, so admitting an extension-bearing script here would let it pass
-/// discovery and then fail with "cannot detect language" instead of the
-/// actionable "unsupported file type … use --language or --unparsed-ext".
-pub(crate) fn shebang_of(path: &Path) -> Option<(bool, Option<Language>)> {
-    if path.extension().is_some() {
-        return None;
-    }
-    let line = first_line(path)?;
-    let trimmed = line.trim_end();
-    if !Language::is_shebang(trimmed) {
-        return None;
-    }
-    Some((true, Language::from_shebang(trimmed)))
-}
-
-/// Every file under `root`, classified by which pipeline claims it.
-///
-/// One walk, one routing decision per file, so a unified ingest can report what
-/// happened to everything rather than leaving a caller to infer it from two
-/// separate commands' counts. Honors the same ignore rules as code discovery:
-/// `.gitignore`, `.ignore`, `.hadesignore` and [`SKIP_DIRS`].
-///
-/// Extensionless files with a shebang are classified as code, matching
-/// `discover_files_detailed`, which includes them so they are visible to ingest
-/// and drift instead of disappearing (#183).
-///
-/// `unparsed_set` are extensions the operator asked to embed without a parser.
-/// They count as code here because that is the phase which ingests them, and a
-/// report that called them unrouted while the code phase was storing them would
-/// be wrong in the direction operators trust.
-pub(crate) fn discover_by_route(
-    root: &Path,
-    unparsed_set: &std::collections::HashSet<String>,
-) -> Result<RouteDiscovery> {
-    let mut found = RouteDiscovery::default();
-
-    let unparsed = |p: &Path| {
-        p.extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| unparsed_set.contains(&e.to_lowercase()))
-    };
-
-    if root.is_file() {
-        match ingest_routing::route_for(root) {
-            Route::Code(_) => found.code.push(root.to_path_buf()),
-            Route::Document => found.documents.push(root.to_path_buf()),
-            Route::Unrouted => {
-                if unparsed(root) || shebang_of(root).is_some() {
-                    found.code.push(root.to_path_buf());
-                } else {
-                    found.unrouted.push(UnhandledFile {
-                        path: root.to_string_lossy().to_string(),
-                        reason: "no handler for extension",
-                    });
-                }
-            }
-        }
-        return Ok(found);
-    }
-
-    let walker = WalkBuilder::new(root)
-        .follow_links(false)
-        .add_custom_ignore_filename(".hadesignore")
-        .filter_entry(|entry| {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                && let Some(name) = entry.file_name().to_str()
-            {
-                return !SKIP_DIRS.contains(&name);
-            }
-            true
-        })
-        .build();
-
-    for entry in walker {
-        let entry = entry.context("error walking directory")?;
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.path();
-        match ingest_routing::route_for(path) {
-            Route::Code(_) => found.code.push(path.to_path_buf()),
-            Route::Document => found.documents.push(path.to_path_buf()),
-            Route::Unrouted => {
-                if unparsed(path) || (path.extension().is_none() && shebang_of(path).is_some()) {
-                    found.code.push(path.to_path_buf());
-                } else {
-                    found.unrouted.push(UnhandledFile {
-                        path: path.to_string_lossy().to_string(),
-                        reason: if path.extension().is_some() {
-                            "no handler for extension"
-                        } else {
-                            "no extension and no shebang"
-                        },
-                    });
-                }
-            }
-        }
-    }
-
-    found.code.sort();
-    found.documents.sort();
-    found.unrouted.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(found)
-}
-
-/// What one walk found, split by route.
-#[derive(Default)]
-pub(crate) struct RouteDiscovery {
-    pub(crate) code: Vec<PathBuf>,
-    pub(crate) documents: Vec<PathBuf>,
-    pub(crate) unrouted: Vec<UnhandledFile>,
 }
 
 pub(crate) fn discover_files(
@@ -1549,7 +1390,7 @@ async fn ingest_file(
     force: bool,
     allow_analysis_downgrade: bool,
     gopls_scheduled: bool,
-    window_bytes: usize,
+    embedding_window: Option<PrechunkWindow>,
     namespace: &str,
     source_git: &Option<hades_core::source_git::SourceGit>,
 ) -> Result<FileResult> {
@@ -1592,6 +1433,7 @@ async fn ingest_file(
                     db,
                     embedder,
                     config,
+                    embedding_window,
                     file_path,
                     rel_path,
                     Some(lang.name()),
@@ -1737,12 +1579,12 @@ async fn ingest_file(
 
     // Chunk with AST-aligned chunking.
     let chunker = AstChunking::new(analysis.top_level_defs.clone());
-    let (chunks, parents, embedding_docs, embedding_error) = prepare_embeddings(
+    let (chunks, parents, embedding_docs, embedding_error, window_plan) = prepare_embeddings(
         embedder,
         config,
         &source,
         chunker.chunk(&source),
-        window_bytes,
+        embedding_window,
         &fkey,
         !*LATE_CHUNKING_DISABLED,
     )
@@ -1883,7 +1725,7 @@ async fn ingest_file(
         .filter_map(|d| d["_key"].as_str())
         .collect::<std::collections::HashSet<_>>()
         .len();
-    let file_doc = file_document(FileRow {
+    let mut file_doc = file_document(FileRow {
         key: &fkey,
         namespace,
         source_git,
@@ -1902,6 +1744,7 @@ async fn ingest_file(
         fallback_reason: analysis.fallback_reason.as_deref(),
     });
 
+    file_doc["embedding_window_plan"] = json!(window_plan);
     let remapped_symbols = symbol_key_remap.len();
     let stored = super::codebase_persist::Replacement {
         key: fkey.clone(),
@@ -2224,6 +2067,7 @@ async fn ingest_unparsed_file(
     db: &ArangoPool,
     embedder: Option<&EmbeddingClient>,
     config: &HadesConfig,
+    embedding_window: Option<PrechunkWindow>,
     file_path: &Path,
     rel_path: &str,
     language_label: Option<&str>,
@@ -2287,13 +2131,12 @@ async fn ingest_unparsed_file(
     // Parser-free chunking: empty defs => whole file, split at line boundaries
     // to stay under the max chunk size.
     let chunker = AstChunking::new(Vec::new());
-    let window_bytes = embed_window_bytes(embedder, config).await?;
-    let (chunks, parents, embedding_docs, embedding_error) = prepare_embeddings(
+    let (chunks, parents, embedding_docs, embedding_error, window_plan) = prepare_embeddings(
         embedder,
         config,
         &source,
         chunker.chunk(&source),
-        window_bytes,
+        embedding_window,
         &fkey,
         false,
     )
@@ -2340,7 +2183,7 @@ async fn ingest_unparsed_file(
     // Merge the file node — preserve any pre-existing fields, set only ours,
     // create if absent.
     let total_lines = source.lines().count();
-    let fields = file_document(FileRow {
+    let mut fields = file_document(FileRow {
         key: &fkey,
         namespace,
         source_git,
@@ -2359,6 +2202,7 @@ async fn ingest_unparsed_file(
         analyzer: "raw-text",
         fallback_reason: Some(fallback_reason),
     });
+    fields["embedding_window_plan"] = json!(window_plan);
     super::codebase_persist::Replacement {
         key: fkey.clone(),
         expected_revision,
@@ -4002,7 +3846,7 @@ mod tests {
             pool.writer().post(&format!("document/{}",CODEBASE.symbols), &json!({"_key":old,"file_key":file})).await.unwrap();
             let endpoint=format!("{}/{}",CODEBASE.symbols,old);
             pool.writer().post(&format!("document/{}",CODEBASE.calls_edges), &json!({"_key":"prior","_from":endpoint,"_to":endpoint,"resolution":"semantic"})).await.unwrap();
-            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
+            let result=ingest_unparsed_file(&pool,None,&HadesConfig::default(),None,&source,"main.rs",Some("rust"),"controlled parser failure",true,true,namespace,&None).await.unwrap();
             assert!(result.success);
             assert!(pool.writer().get(&format!("document/{}/prior",CODEBASE.calls_edges)).await.is_ok(),"raw replacement purged semantic edge");
             super::super::codebase_persist::prune_semantic_orphans(&pool,vec![endpoint]).await.unwrap();
@@ -4206,7 +4050,7 @@ mod tests {
                         false,
                         false,
                         false,
-                        12_000,
+                        None,
                         "",
                         &None,
                     )
@@ -4710,7 +4554,7 @@ mod tests {
                 false,
                 false,
                 false,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -4724,6 +4568,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4746,6 +4591,7 @@ mod tests {
                     &pool,
                     None,
                     &config,
+                    None,
                     &path,
                     "file.py",
                     Some("python"),
@@ -4770,6 +4616,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4795,6 +4642,7 @@ mod tests {
                 &pool,
                 None,
                 &config,
+                None,
                 &path,
                 "file.py",
                 Some("python"),
@@ -4922,7 +4770,7 @@ mod tests {
                 false,
                 false,
                 false,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -4968,7 +4816,7 @@ mod tests {
                 true,
                 false,
                 true,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -5012,7 +4860,7 @@ mod tests {
                 true,
                 false,
                 false,
-                12_000,
+                None,
                 "",
                 &None,
             )
@@ -5113,7 +4961,7 @@ mod tests {
                     false,
                     false,
                     false,
-                    12_000,
+                    None,
                     "",
                     &None,
                 )
@@ -5145,7 +4993,7 @@ mod tests {
                     true,
                     false,
                     false,
-                    12_000,
+                    None,
                     "",
                     &None,
                 )
@@ -5508,18 +5356,6 @@ mod tests {
         let without_ext = dir.path().join("deploy-thing");
         fs::write(&without_ext, "#!/bin/bash\necho hi\n").unwrap();
         assert!(shebang_of(&without_ext).is_some());
-    }
-
-    #[test]
-    fn test_first_line_probe_is_bounded() {
-        let dir = tempfile::tempdir().unwrap();
-        // A newline-free blob must not be read whole during a directory walk.
-        let blob = dir.path().join("bigblob");
-        fs::write(&blob, "x".repeat(2 * 1024 * 1024)).unwrap();
-        let line = first_line(&blob).unwrap();
-        assert!(line.len() <= 256, "probe read {} bytes", line.len());
-        // And it is correctly not treated as a script.
-        assert!(shebang_of(&blob).is_none());
     }
 
     #[test]

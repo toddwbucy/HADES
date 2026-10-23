@@ -10,6 +10,8 @@
 //! languages: a caller that adds an extension has to say which pipeline claims
 //! it, and a file that matches nothing is reported rather than dropped.
 
+pub mod discovery;
+
 use std::path::Path;
 
 use crate::code::Language;
@@ -30,23 +32,20 @@ pub enum Route {
 
 /// Extensions the extraction service can turn into text.
 ///
-/// This list is what the service *accepts*, verified against it rather than
-/// inferred from what docling can do in principle:
-///
-/// - `md`, `markdown`, `txt`, `text`, `rst` take the server's plain-read path
-/// - `pdf` goes to docling, whose `SUPPORTED_EXTENSIONS` is `{pdf, txt, text, md}`
-/// - `tex` and `gz` go to the LaTeX backend
-///
-/// **`html`, `htm`, `csv`, `docx`, `pptx` and `xlsx` were briefly listed here** on
-/// the assumption that docling's unknown-format fallback would take them. It does
-/// not: `docling_backend.py:122` returns "Unsupported format" for anything outside
-/// that four-extension set, and the 13 `.html` templates in one real corpus failed
-/// extraction after the walk had already claimed them. Claiming a file and failing
-/// it is worse than declining it, because `unrouted` is a list an operator reads
-/// while a failed document is a line in a summary.
-///
-/// Adding one back means teaching the extractor first and this table second.
-const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "text", "rst", "pdf", "tex", "gz"];
+/// Kept in sync with the pinned Docling registry by the Python adapter tests.
+/// Docling owns these document formats, including Markdown and Office files.
+/// Native RST and arXiv archive handling remain available. Optional upstream
+/// dependencies may be required for legacy Office, audio and specialized XML.
+/// Missing dependencies fail extraction explicitly, never trigger a text fallback.
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    "aac", "adoc", "asc", "asciidoc", "avi", "bmp", "boxnote", "csv", "dclg", "dclg.xml", "dclx",
+    "doc", "docm", "docx", "dot", "dotm", "dotx", "ebc", "ebcdic", "eml", "epub", "flac", "gz",
+    "htm", "html", "jpeg", "jpg", "json", "latex", "m4a", "markdown", "md", "mkv", "mov", "mp3",
+    "mp4", "msg", "nxml", "odp", "ods", "odt", "ogg", "otp", "ots", "ott", "pages", "pdf", "png",
+    "pot", "potm", "potx", "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx", "qmd", "rmd", "rst",
+    "tar.gz", "tex", "text", "tgz", "tif", "tiff", "txt", "vtt", "wav", "webm", "webp", "xbrl",
+    "xhtml", "xls", "xlsm", "xlsx", "xlt", "xml",
+];
 
 /// Route one path by its extension.
 ///
@@ -103,21 +102,11 @@ mod tests {
         }
     }
 
-    /// Formats the extraction service refuses must be declined by the router,
-    /// not claimed and then failed. 13 `.html` templates in one corpus were
-    /// routed to extraction and came back "Unsupported format", which turns a
-    /// readable `unrouted` entry into a failed document in a summary.
     #[test]
-    fn formats_the_extractor_refuses_are_not_claimed() {
-        for file in [
-            "templates/instrument.html",
-            "page.htm",
-            "table.csv",
-            "report.docx",
-            "deck.pptx",
-            "book.xlsx",
-        ] {
-            assert_eq!(route_for(&PathBuf::from(file)), Route::Unrouted, "{file}");
+    fn docling_formats_route_to_documents() {
+        for ext in DOCUMENT_EXTENSIONS {
+            let file = format!("fixture.{ext}");
+            assert_eq!(route_for(Path::new(&file)), Route::Document, "{file}");
         }
     }
 
@@ -137,7 +126,10 @@ mod tests {
             Route::Unrouted
         );
         assert_eq!(route_for(&PathBuf::from("Makefile")), Route::Unrouted);
-        assert_eq!(route_for(&PathBuf::from("image.png")), Route::Unrouted);
+        assert_eq!(
+            route_for(&PathBuf::from("image.unsupported")),
+            Route::Unrouted
+        );
     }
 
     /// `.ts` has no analyzer and no registered grammar today, so it must not

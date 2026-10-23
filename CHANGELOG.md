@@ -19,14 +19,86 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add internal profile-bound conventional code graph preparation and atomic
+  publication. Pin the selected code workload, retain complete source/graph
+  provenance, and refuse stale, foreign, edited or downgraded replacements.
+  Require indexed owner lookups and data-owned endpoint definitions, bound graph
+  size before inference, share bounded record I/O with document storage, and cover
+  mixed workloads and symbol retirement refusal. Public code ingestion,
+  unchanged-file skipping and symbol retirement remain gated (#225).
+
+- Add an opt-in verified Jina provider for conventional document and specialized
+  code embeddings from one registered load. Keep separate workload receipts,
+  prompts, adapters, and serving limits; qualify both through fixed retrieval,
+  tokenizer, reload, and Rust HTTP checks. Existing document/contextual providers
+  retain their contracts; managed code ingestion remains gated (#225).
+  Pin independent recounts to the expected workload, keep qualification policies
+  within each workload's ceiling, and retain original failures alongside cleanup
+  errors through a shared qualification lifecycle.
+
+- Add explicit document/code provider observations for model-bound workspaces,
+  with separate capability checks, observed planning limits, and correctly selected
+  embedding receipts from one registered model load. Preserve existing document
+  providers and explicit ordinary-text code profiles on the original single-space
+  protocol. Reject cross-workload receipts; verified code ingestion remains gated
+  pending its provider and graph-storage integration (#225).
+
+- Add human passage corrections to guided reading, with save/cancel, revision
+  history, before/after changes, and append-only restoration. Preserve original
+  extraction and accepted evidence, flag references to changed passages, and
+  include correction revisions in MCP context and authorship exports.
+
+- Add persistent Converted, Original PDF, and Side by side view controls to guided
+  reading. Wide comparison keeps both surfaces visible with independent scrolling
+  and PDF page navigation, preserving passage references and highlights.
+
+- Make the saved Docling conversion the default guided-reading surface for every
+  document format, with numbered passages and source-page comparison links. Keep
+  original PDF references available without remapping existing anchors.
+
+- Add a human-guided document reading desk with original-byte archives, PDF and
+  structured Docling views, classified highlights and figure anchors, shared
+  focus/pins, revisioned proposals, atomic human acceptance, contextual node
+  boundaries, staged reading, and authorship/outline export. Add guided-only MCP
+  authorization, browser write guards, password-file loading, and CLI recovery.
+  Preserve source/model/human attribution and keep embedding readiness separate.
+
+- Add reproducible CPU Docling/PDF.js layout probes and document observed anchor
+  limits for the guided-reading workflow. Validate cases before loading models or
+  creating output, without database or live-service writes.
+
+- Add `hades graphable import` with mechanical mapping in `hades-core`, immutable
+  source archives, exact source evidence, version-scoped identities, and atomic,
+  retry-safe writes. Preserve unreviewed claims as source text, report unresolved
+  definitions and references, and keep embedding a separate operation. Support
+  read-only planning and reviewed Markdown extractions with original archives.
+
+- Extend the graph viewer into a reading workspace with document outlines,
+  glossary navigation, semantic passage search, source connections, and bounded
+  node/edge reference packets for conversation. Preserve CLI-only integration,
+  explicit database scope, and read-only operations. Use the HADES logo and offer
+  persistent Auto, Wide, and Compact layout preferences for large displays.
+
+- Add an opt-in MCP deployment workflow check covering database creation,
+  authored writes, document ingestion, semantic retrieval, and traversal, with
+  explicit isolated test inputs and regression checks for false success.
+
+- Document an exercised graphable-document ingestion mapping, including source
+  provenance, version-scoped identities, and links from semantic search chunks
+  to authored graph sections.
+
+- Add MCP `kg_create`, `kg_add_node`, and `kg_add_edge` provisioning tools for
+  direct authored knowledge graphs. Each graph owns separate node and edge
+  collections and can link to ingested documents and codebase files without
+  putting authored rows under ingest replacement ownership.
+
 - Document the graph's data-ownership contract: ingest owns code and document
   rows, adapters own their domain rows, admin `db` writes are an unvalidated
-  escape hatch, and MCP agents change the graph only by changing source and
-  ingesting. The MCP server instructions now say so and list `db_schema_init`
-  as provisioning-gated; stale section references, the MCP tool count and the
-  `--force` semantic-edge comment are corrected. The MCP instructions and
-  deployment docs no longer imply the provisioning prefix bounds `ingest_start`
-  or `db_schema_init`: it bounds only `create_database` (#188).
+  escape hatch, and MCP agents can add authored graph rows or ingest source
+  files. The MCP server instructions list `db_schema_init` and authored graph
+  writes as provisioning-gated; stale section references, the MCP tool count,
+  and the `--force` semantic-edge comment are corrected. The provisioning
+  prefix bounds all six provisioning commands' database writes (#188).
 
 - Add explicit degraded semantic enrichment acceptance to unified ingest, daemon
   and MCP ingestion, retaining exact failure counts, bounded diagnostic samples,
@@ -69,6 +141,68 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Detect enabled embedder profile instances with `systemctl is-enabled` for each
   configured profile. On this host, `list-unit-files` reported only the indirect
   template, so the profile selector exited before switching GPU 2 to GPU 1.
+
+- Preserve managed code symbol IDs across line moves and unambiguous declaration
+  reordering, keeping authored and cross-file references intact. Validate existing
+  symbols before planning; match scoped names, full Rust impl headers, compiler
+  identities and declaration roles; permit unique identity upgrades through nested
+  owners and allocate fresh keys for new-symbol
+  collisions. Refuse ambiguous changes or symbol retirement. Public code ingestion
+  remains gated (#225).
+
+- Pin CI's protoc 23.4 archive and checksum instead of relying on release-list
+  discovery, which can fail before Rust and database checks begin.
+
+- Preserve each interrupted reading request independently across later saves and
+  browser tabs. Open accepted relationships and basis links as edges in the graph
+  viewer, with their real endpoint selected.
+
+- Separate reading event keys by the full session/request identity while keeping
+  legacy retries valid. Scope interrupted browser actions to their database and
+  reject writes from tabs whose database no longer matches the viewer.
+
+- Keep authorship exports at one session revision during concurrent writes, and
+  load saved readings and retry controls even when the extractor is unavailable.
+
+- Save boundary drafts before entering Read, keep unsaved fields through failed
+  actions and polling, and explain the specific requirement blocking a stage.
+
+- Match extraction RPC limits to the guided-reading upload limit and persist
+  malformed or unavailable reading surfaces as recoverable failures. Reject
+  empty viewer credentials in every mode, prevent late polls from undoing newer
+  state, and clean up the browser-test process group on timeout.
+
+- Align the guided-reading PDF text layer with the rendered page so pointer
+  selection targets the visible text. Disable classification during Bound and
+  explain how to enter Read before saving highlights.
+
+- Make Docling the primary document converter with pinned 2.126.0/core 2.96.0
+  dependencies, complete-status validation, linked captions, formula policy
+  metadata, and registry-aligned format routing. Remove automatic PyMuPDF fallback
+  and reject legacy degraded responses at the Rust client. Add real-converter
+  gRPC tests and explicit inventory/re-extraction guidance, preserving stored
+  fallback content unless `ingest --force` elects replacement (#210).
+
+
+- Keep appended ingestion annotations out of glossary definitions and their
+  evidence. Precompute illustration coverage for content and citation mapping,
+  avoiding repeated full-entry scans on large graphable documents.
+
+- Count Markdown tabs by indentation column, accept tabs after heading markers,
+  and keep quote markers inside outer code fences literal during graphable import.
+
+- Accept indented graphable headings without interpreting blockquoted code as
+  graph structure. Keep repeat imports stable when database JSON readback
+  represents an exact integral float as an integer, while rejecting value edits.
+
+- Preserve separate unbulleted glossary definitions, accept YAML comments, and
+  keep indented fenced examples out of graphable structure. Batch import retry
+  comparisons while retaining atomic writes and conflicts on authored edits.
+
+- Preserve parent navigation for semantic hits with missing chunk indices,
+  accept legacy numeric-string indices, expand search hits once, preserve newer
+  selections during slow loads, and retain library elements during selection.
+  Correct the viewer's authentication and database-scope documentation.
 
 - The WeaverTools adapter reads graph records under `experiments/` beside
   `docs/`, and citations from each probe's `code/` as from `crates/`, pruning
@@ -259,6 +393,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Documentation
 
+- Refresh the README around the human-agent workspace, guided reading, MCP,
+  graphable import, and source retrieval. Separate system installation into its
+  own guide and distinguish mapped content from semantic retrieval readiness.
+
 - Document structural-vector provenance and refresh boundaries, including
   ingestion retention differences and remaining audit verification (#12).
 
@@ -293,6 +431,25 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
+
+- Managed document writes require persistent `parent_key` indexes on chunks and
+  embeddings. Existing workspaces retain search and no-op admission; explicitly
+  provision the two non-unique indexes explicitly before further writes, following
+  the additive commands in `docs/specs/recoverable-workspace-setup.md`.
+  Setup recovers missing indexes at older Verify/Publish checkpoints only while
+  all owned data collections are empty, and leaves Ready workspaces untouched.
+  The canonical code schema now declares all seven `file_key` indexes (#225).
+
+- Ingest the document portion of mixed trees under documents-only model profiles,
+  reporting skipped code in `disabled_by_profile.code` and retaining `profile_pin`
+  in managed results. Empty or disabled-only trees validate document policy,
+  storage and options before returning a no-op without foreground model services.
+  Refuse unsupported code-enabled background trees before creating job history,
+  and omit readiness claims when profile revalidation fails (#225).
+
+- Expand H.A.D.E.S. as Human Augmented Data Exploration System in the README and
+  workspace branding. Record human-led highlighting, source-contextual IS/IS-NOT
+  boundaries, and reviewed connection proposals as the guided-reading direction.
 
 - Build codebase file rows through one schema for semantic, structural and text
   analysis: always include matching `path`/`rel_path`, preserving the existing

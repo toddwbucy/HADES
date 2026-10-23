@@ -30,6 +30,7 @@ const state = {
   edgeVal: "",             // value to emphasize; "" = emphasize nothing
   hidden: new Set(),       // hidden collections
   selected: null,          // selected node id
+  selectedEdge: null,
   neighbors: new Set(),    // neighbors of the selected node
   colorMap: new Map(),     // node category value -> colour, for current colorBy
   edgeColorMap: new Map(), // edge category value -> colour, for current edgeColorBy
@@ -38,6 +39,19 @@ const state = {
 let graph = null;
 let renderer = null;
 let layout = null;
+let navigationEpoch = 0;
+
+function beginNavigation() {
+  navigationEpoch++;
+  stopLayout();
+  if (layout) { layout.kill(); layout = null; }
+  clearTimeout(runLayout._t);
+  if (renderer) renderer.kill();
+  renderer = null; graph = null; state.snapshot = null; state.selected = null; state.selectedEdge = null;
+  setInspector('<div class="empty">Loading workspace…</div>');
+  window.workspace?.loading();
+  return navigationEpoch;
+}
 
 // ---------- deep links ----------
 //
@@ -50,8 +64,10 @@ const deepLink = (() => {
   const p = new URLSearchParams(location.search);
   return {
     db: p.get("db"),
+    conversation: p.get("conversation"),
     graph: p.get("graph"),
     node: p.get("node"),
+    edge: p.get("edge"),
     expand: p.get("expand") === "1",
     limit: p.get("limit"),
   };
@@ -60,7 +76,7 @@ const deepLink = (() => {
 let pendingLink = { ...deepLink };
 
 /// Build a shareable URL for the current view (optionally focused on a node).
-function currentLink(nodeId) {
+function currentLink(nodeId, edgeId) {
   const u = new URL(location.origin + location.pathname);
   if (state.db) u.searchParams.set("db", state.db);
   if (state.snapshot) u.searchParams.set("graph", state.snapshot.meta.named_graph);
@@ -70,15 +86,35 @@ function currentLink(nodeId) {
     u.searchParams.set("node", nodeId);
     u.searchParams.set("expand", "1");
   }
+  if (edgeId) u.searchParams.set("edge", edgeId);
+  const current = new URLSearchParams(location.search);
+  const conversation = window.workspaceChat?.binding()
+    || (current.get('db') === state.db ? current.get('conversation') : null);
+  if (conversation) u.searchParams.set("conversation", conversation);
   return u.toString();
 }
 
 /// Keep the address bar in sync with the current view (no page reload).
-function syncUrl(nodeId) {
-  history.replaceState(null, "", currentLink(nodeId));
+function syncUrl(nodeId, edgeId) {
+  history.replaceState(null, "", currentLink(nodeId, edgeId));
 }
 
 // ---------- data loading ----------
+
+async function navigationJson(url, ticket) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Workspace request failed");
+    const value = await response.json();
+    return ticket === navigationEpoch ? value : null;
+  } catch (_) {
+    if (ticket === navigationEpoch) {
+      setStats("Workspace unavailable. Refresh to retry.");
+      window.workspace?.empty("The workspace could not be loaded. Refresh to try again.");
+    }
+    return null;
+  }
+}
 
 async function loadDatabases() {
   const r = await fetch("/api/databases");
@@ -93,11 +129,14 @@ async function loadDatabases() {
 }
 
 async function loadGraphList() {
-  const r = await fetch("/api/graphs?db=" + encodeURIComponent(state.db));
-  const { graphs = [] } = await r.json();
+  const ticket = beginNavigation();
+  const data = await navigationJson("/api/graphs?db=" + encodeURIComponent(state.db), ticket);
+  if (!data) return;
+  const { graphs = [] } = data;
+  if (ticket !== navigationEpoch) return;
   const picker = document.getElementById("graph-picker");
   picker.innerHTML = graphs.map((g) => `<option>${esc(g)}</option>`).join("");
-  if (!graphs.length) { setStats(`no named graphs in ${esc(state.db)}`); return; }
+  if (!graphs.length) { setStats(`no named graphs in ${esc(state.db)}`); window.workspace?.empty("No named graphs in this database."); return; }
   const wanted = pendingLink.graph && graphs.includes(pendingLink.graph) ? pendingLink.graph : graphs[0];
   picker.value = wanted;
   if (pendingLink.limit) document.getElementById("load-limit").value = pendingLink.limit;
@@ -107,16 +146,22 @@ async function loadGraphList() {
 /// After a graph loads, honor ?node= — focus it, and expand if asked. When the
 /// node isn't in the loaded slice, pull it in via expansion rather than failing.
 async function applyPendingNode() {
+  const ticket = navigationEpoch;
   const target = pendingLink.node;
+  const targetEdge = pendingLink.edge;
   pendingLink = {}; // one-shot
-  if (!target) { syncUrl(); return; }
+  if (!target) { syncUrl(state.selected); return; }
   if (!graph.hasNode(target)) {
     setOverlay("fetching linked node…");
     await expandNode(target).catch(() => {});
   }
+  if (ticket !== navigationEpoch || !graph) return;
   if (graph.hasNode(target)) {
     if (deepLink.expand) await expandNode(target).catch(() => {});
+    if (ticket !== navigationEpoch || !graph) return;
     focusNode(target);
+    if (targetEdge && graph.hasEdge(targetEdge)) inspectEdge(targetEdge);
+    else if (targetEdge) setOverlay("Linked edge is not in this view. Expand its endpoint or reload the snapshot.");
   } else {
     setOverlay(`linked node not found: ${target}`);
   }
@@ -130,18 +175,16 @@ function focusNode(id) {
 }
 
 async function loadGraph(name) {
+  const ticket = beginNavigation();
   setStats(`loading ${name}…`);
   // Optional server-side cap for large graphs (0/empty = load all).
   const limit = parseInt(document.getElementById("load-limit").value, 10);
   let url = "/api/graph-data?db=" + encodeURIComponent(state.db) + "&graph=" + encodeURIComponent(name);
   if (Number.isFinite(limit) && limit > 0) url += "&limit=" + limit;
-  const r = await fetch(url);
-  if (!r.ok) {
-    const e = await r.json().catch(() => ({}));
-    setStats("error: " + (e.error || r.status));
-    return;
-  }
-  state.snapshot = await r.json();
+  const snapshot = await navigationJson(url, ticket);
+  if (!snapshot) return;
+  if (ticket !== navigationEpoch) return;
+  state.snapshot = snapshot;
   // Per-graph view state must not survive a graph/database switch: a selection
   // or filter carried over from the previous graph refers to ids and
   // collections that don't exist here, which would silently dim or hide the
@@ -152,6 +195,7 @@ async function loadGraph(name) {
   render();
   runLayout();
   reportStats();
+  window.workspace?.loaded();
   await applyPendingNode();
 }
 
@@ -160,6 +204,7 @@ async function loadGraph(name) {
 /// exposes it, so a deliberate choice survives where it still means something.
 function resetViewState() {
   state.selected = null;
+  state.selectedEdge = null;
   state.neighbors = new Set();
   state.hidden = new Set();
   state.edgeVal = "";
@@ -279,6 +324,7 @@ function recomputeSizes() {
 function render() {
   if (renderer) renderer.kill();
   renderer = new Sigma(graph, document.getElementById("graph"), {
+    allowInvalidContainer: true,
     defaultEdgeColor: DIM,
     renderEdgeLabels: false,
     labelColor: { color: "#c9d1d9" },
@@ -352,6 +398,8 @@ function setLayoutButton(running) {
 const EXPAND_LIMIT = 100;
 
 async function expandNode(id) {
+  if (!graph || !state.snapshot) return 0;
+  const ticket = navigationEpoch;
   const g = state.snapshot.meta.named_graph;
   setOverlay("expanding…");
   try {
@@ -359,12 +407,17 @@ async function expandNode(id) {
     // its edges have an endpoint to attach to.
     if (!graph.hasNode(id)) {
       const nr = await fetch(`/api/node?db=${encodeURIComponent(state.db)}&id=${encodeURIComponent(id)}`);
+      if (ticket !== navigationEpoch) return 0;
       if (!nr.ok) { setOverlay("node not found"); return 0; }
-      mergeDelta({ nodes: [await nr.json()], edges: [] }, { x: 0, y: 0 });
+      const node = await nr.json();
+      if (ticket !== navigationEpoch) return 0;
+      mergeDelta({ nodes: [node], edges: [] }, { x: 0, y: 0 });
     }
     const r = await fetch(`/api/expand?db=${encodeURIComponent(state.db)}&graph=${encodeURIComponent(g)}&node=${encodeURIComponent(id)}&limit=${EXPAND_LIMIT}`);
+    if (ticket !== navigationEpoch) return 0;
     if (!r.ok) { setOverlay("expand failed"); return 0; }
     const delta = await r.json();
+    if (ticket !== navigationEpoch) return 0;
     const anchor = graph.hasNode(id)
       ? { x: graph.getNodeAttribute(id, "x"), y: graph.getNodeAttribute(id, "y") }
       : { x: 0, y: 0 };
@@ -373,7 +426,7 @@ async function expandNode(id) {
     if (added) runLayout();
     return added;
   } catch (_) {
-    setOverlay("expand error");
+    if (ticket === navigationEpoch) setOverlay("expand error");
     return 0;
   }
 }
@@ -407,6 +460,7 @@ function mergeDelta(delta, anchor) {
     recomputeSizes();
     refreshLiveStats();
     renderer.refresh();
+    window.workspace?.expanded();
   }
   return added;
 }
@@ -675,7 +729,7 @@ function wireContextMenu() {
   document.getElementById("modal-close").onclick = () => {
     document.getElementById("copy-modal").hidden = true;
   };
-  document.getElementById("share-view").onclick = () => copyText(currentLink(state.selected), "View link");
+  document.getElementById("share-view").onclick = () => copyText(currentLink(state.selectedEdge ? graph.source(state.selectedEdge) : state.selected, state.selectedEdge), "View link");
 }
 
 // ---------- interaction: drag, click-to-inspect, neighbour focus ----------
@@ -723,7 +777,9 @@ function wireInteraction() {
 }
 
 function selectNode(id) {
+  if (!graph || !renderer || (id && !graph.hasNode(id))) return;
   state.selected = id;
+  state.selectedEdge = null;
   state.neighbors = new Set();
   if (id) {
     graph.forEachNeighbor(id, (n) => state.neighbors.add(n));
@@ -733,6 +789,7 @@ function selectNode(id) {
   }
   syncUrl(id); // the address bar always holds a link to what you're looking at
   renderer.refresh();
+  window.workspace?.node(id);
 }
 
 // ---------- inspector ----------
@@ -746,9 +803,13 @@ function inspectNode(id) {
   if (fk) appendSourceAffordance(fk);
 }
 function inspectEdge(edge) {
+  if (!graph?.hasEdge(edge)) return;
+  state.selectedEdge = edge;
   const a = graph.getEdgeAttributes(edge);
   const [s, t] = graph.extremities(edge);
   rows(a.collection, `${graph.getNodeAttribute(s, "label")} → ${graph.getNodeAttribute(t, "label")}`, edge, a.attrs);
+  window.workspace?.edge(edge);
+  syncUrl(s, edge);
 }
 function rows(kind, title, id, attrs) {
   let html = `<div class="kv"><div class="k">${esc(kind)}</div><div class="v"><b>${esc(title)}</b></div></div>`;
@@ -922,4 +983,4 @@ function shq(s) { return `'${String(s).replace(/'/g, "'\\''")}'`; }
 
 wireContextMenu();
 wireStaticControls();
-loadDatabases();
+loadDatabases().catch(() => { setStats("Workspace unavailable. Refresh to retry."); window.workspace?.empty("The workspace could not be loaded."); });

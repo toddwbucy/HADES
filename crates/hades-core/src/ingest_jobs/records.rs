@@ -1,5 +1,5 @@
 //! Persisted phases and detached ownership of ingestion startup/completion.
-use super::{Reservation, process::Process};
+use super::{COLLECTION, Reservation, process::Process};
 use crate::config::HadesConfig;
 use crate::db::{ArangoPool, crud, query};
 use crate::dispatch::HandlerError;
@@ -11,7 +11,6 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-const COLLECTION: &str = "hades_ingest_jobs";
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn service(error: impl std::fmt::Display) -> HandlerError {
@@ -57,6 +56,11 @@ async fn start_with(
     );
     let pool = &bounded_pool;
     let database = config.effective_database().map_err(service)?.to_owned();
+    if database != pool.database() {
+        return Err(service(
+            "ingestion configuration and selected database differ",
+        ));
+    }
     let resolved = std::fs::canonicalize(path).map_err(|e| HandlerError::InvalidParameter {
         name: "path".into(),
         reason: e.to_string(),
@@ -77,8 +81,69 @@ async fn start_with(
     }
     let provenance = crate::source_git::Batch::default();
     let source_git = provenance.resolve(&resolved).await.map_err(service)?;
+    let binding = if crate::embedding_profile::admission::is_managed(pool)
+        .await
+        .map_err(service)?
+    {
+        if allow_degraded_enrichment {
+            return Err(service(
+                "model-bound document jobs do not support degraded code enrichment",
+            ));
+        }
+        if resolved.is_file()
+            && crate::ingest_routing::route_for(&resolved) != crate::ingest_routing::Route::Document
+        {
+            return Err(service(
+                "model-bound jobs require document files or directories; named code files are disabled_by_profile",
+            ));
+        }
+        if !(1..=4).contains(&config.batch_processing.concurrency) {
+            return Err(service(
+                "model-bound document jobs require concurrency 1..=4",
+            ));
+        }
+        // Match the worker's traversal (including ignore files and shebangs)
+        // before contacting the provider or creating history for an impossible job.
+        let tree_pin = if resolved.is_dir() {
+            let root = resolved.clone();
+            // Walking and shebang probes perform blocking filesystem I/O. Keep
+            // large trees off the runtime shared by daemon and MCP requests.
+            let found = tokio::task::spawn_blocking(move || {
+                crate::ingest_routing::discovery::discover_by_route(&root, &Default::default())
+            })
+            .await
+            .map_err(service)?
+            .map_err(service)?;
+            let admission = crate::embedding_profile::admission::document_tree_admission(
+                pool,
+                !found.code.is_empty(),
+            )
+            .await
+            .map_err(|error| service(format!("background ingestion unavailable for this model-bound or initializing workspace: {error}")))?;
+            Some(admission.pin.ok_or_else(|| {
+                service("workspace profile disappeared during background admission")
+            })?)
+        } else {
+            None
+        };
+        let routes = config.registered_providers.as_ref().ok_or_else(|| service("model-bound or initializing workspace requires registered_providers for background ingestion"))?;
+        let catalog = routes.catalog().map_err(service)?;
+        let documents = match tree_pin {
+            Some(pin) => crate::pipeline::profiled_documents::ProfiledDocuments::connect_pinned(pool.clone(), &catalog, &pin).await,
+            None => crate::pipeline::profiled_documents::ProfiledDocuments::connect(pool.clone(), &catalog).await,
+        }.map_err(|error| service(format!("background ingestion unavailable for this model-bound or initializing workspace: {error}")))?;
+        super::Binding::Profiled(Box::new(documents.job_pin().map_err(service)?))
+    } else {
+        super::Binding::Legacy
+    };
+    let profile_pin = match &binding {
+        super::Binding::Profiled(pin) => Some(pin.clone()),
+        super::Binding::Legacy => None,
+    };
     let reservation = super::reserve(&resolved).map_err(service)?;
-    if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
+    if profile_pin.is_some() {
+        prepare_profiled_history(pool).await?;
+    } else if let Err(error) = crud::create_collection(pool, COLLECTION, Some(2)).await
         && error.kind() != crate::db::ArangoErrorKind::Conflict
     {
         return Err(service(format!("cannot prepare ingest records: {error}")));
@@ -104,8 +169,10 @@ async fn start_with(
     }
 
     let job = format!("{:032x}", rand::random::<u128>());
+    let mut child_config = config.clone();
+    child_config.ingest_binding = Some(binding);
     let snapshot = crate::config::snapshot::Snapshot::with_provenance(
-        config,
+        &child_config,
         provenance.snapshot().await.map_err(service)?,
     )
     .map_err(service)?;
@@ -121,13 +188,9 @@ async fn start_with(
     }
     reservation.identify(&database, &job).map_err(service)?;
     let row = json!({"_key":job,"status":"starting","owner_instance":super::instance(),
-        "database":database,"path":resolved,"source_git":source_git,"force":force,"allow_degraded_enrichment":allow_degraded_enrichment,"started_at":chrono::Utc::now().to_rfc3339(),
+        "database":database,"path":resolved,"source_git":source_git,"profile_pin":profile_pin,"force":force,"allow_degraded_enrichment":allow_degraded_enrichment,"started_at":chrono::Utc::now().to_rfc3339(),
         "output_storage":"bounded_job_record","log_path":null,"stderr_path":null});
-    command
-        .arg("--db")
-        .arg(&database)
-        .arg("ingest")
-        .arg(&resolved);
+    command.arg("ingest").arg(&resolved);
     if force {
         command.arg("--force");
     }
@@ -142,6 +205,21 @@ async fn start_with(
     receive
         .await
         .map_err(|_| service("ingest startup owner stopped"))?
+}
+
+/// Require synchronous, primary-only job history before admitting a managed worker.
+async fn prepare_profiled_history(pool: &ArangoPool) -> Result<(), HandlerError> {
+    // A concurrent first job may win creation after our missing-collection probe.
+    // Recheck its exact schema without another create or any property changes.
+    if crate::workspace_setup::database::collection(pool.writer(), COLLECTION, true)
+        .await
+        .is_err()
+    {
+        crate::workspace_setup::database::collection(pool.writer(), COLLECTION, false)
+            .await
+            .map_err(service)?;
+    }
+    Ok(())
 }
 
 async fn persist(pool: &ArangoPool, job: &str, update: &Value) -> bool {
@@ -241,7 +319,7 @@ async fn own_start(
             return;
         }
     };
-    let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"source_git":row["source_git"],"pid":pid,"poll":"ingest.status"})));
+    let _ = reply.send(Ok(json!({"job_id":job,"status":"running","database":row["database"],"path":row["path"],"source_git":row["source_git"],"profile_pin":row["profile_pin"],"pid":pid,"poll":"ingest.status"})));
     let update = match child.finish(shutdown).await {
         Ok(output) => outcome(output),
         Err(error) => failed(&error.to_string()),
@@ -354,6 +432,95 @@ mod tests {
     use crate::cursor_mock::{Mock, Reply};
     use std::sync::Arc;
     use tokio::sync::Notify;
+
+    fn collection_error(status: u16) -> Reply {
+        Reply {
+            status,
+            body: json!({"error":true,"code":status,"errorMessage":"fixture collection error"}),
+            gate: None,
+        }
+    }
+
+    fn history_properties() -> Value {
+        json!({"name":COLLECTION,"type":2,"waitForSync":true,"isSystem":false})
+    }
+
+    fn history_indexes() -> Value {
+        json!({"indexes":[{"type":"primary","unique":true,"fields":["_key"]}]})
+    }
+
+    /// A losing first creator must validate the winner's collection before using it.
+    #[tokio::test]
+    async fn profiled_history_rechecks_schema_after_concurrent_create() {
+        let mut mock = Mock::new(vec![
+            collection_error(404),
+            collection_error(409),
+            Reply::page(history_properties()),
+            Reply::page(history_indexes()),
+        ])
+        .await;
+        prepare_profiled_history(&mock.pool).await.unwrap();
+        mock.event("GET collection/hades_ingest_jobs/properties")
+            .await;
+        assert_eq!(
+            mock.event("POST collection").await,
+            json!({"name":COLLECTION,"type":2,"waitForSync":true})
+        );
+        mock.event("GET collection/hades_ingest_jobs/properties")
+            .await;
+        mock.event("GET index?collection=hades_ingest_jobs").await;
+        assert!(mock.events.try_recv().is_err());
+    }
+
+    /// A failed create cannot admit missing, incompatible or additionally indexed history.
+    #[tokio::test]
+    async fn profiled_history_rejects_missing_or_incompatible_winners() {
+        for defect in [
+            "missing",
+            "name",
+            "type",
+            "waitForSync",
+            "isSystem",
+            "indexes",
+        ] {
+            let mut properties = history_properties();
+            let mut indexes = history_indexes();
+            match defect {
+                "name" => properties["name"] = json!("another_collection"),
+                "type" => properties["type"] = json!(3),
+                "waitForSync" => properties["waitForSync"] = json!(false),
+                "isSystem" => properties["isSystem"] = json!(true),
+                "indexes" => indexes["indexes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"type":"persistent","unique":false,"fields":["status"]})),
+                _ => {}
+            }
+            let mut replies = vec![collection_error(404), collection_error(409)];
+            replies.push(if defect == "missing" {
+                collection_error(404)
+            } else {
+                Reply::page(properties)
+            });
+            if defect == "indexes" {
+                replies.push(Reply::page(indexes));
+            }
+            let mut mock = Mock::new(replies).await;
+            assert!(
+                prepare_profiled_history(&mock.pool).await.is_err(),
+                "{defect}"
+            );
+            mock.event("GET collection/hades_ingest_jobs/properties")
+                .await;
+            mock.event("POST collection").await;
+            mock.event("GET collection/hades_ingest_jobs/properties")
+                .await;
+            if defect == "indexes" {
+                mock.event("GET index?collection=hades_ingest_jobs").await;
+            }
+            assert!(mock.events.try_recv().is_err(), "{defect}");
+        }
+    }
 
     #[tokio::test]
     async fn panicking_pid_confirmation_reaps_before_admission_release() {

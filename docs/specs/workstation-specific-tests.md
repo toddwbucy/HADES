@@ -13,6 +13,16 @@ Updated for audit [#20](https://github.com/toddwbucy/HADES/issues/20).
 | Profile selection | Persistent enablement, switching, simulated reboot, failure/rollback | Mock systemctl/curl only |
 | Optional workstation probes | `clang_cuda_probe`, `gopls_semantic`, `ra_span_agreement`, CUDA-specific Python case | Explicit analyzer/CUDA prerequisites; not evidence supplied by CPU CI |
 
+CI installs the checksum-pinned Linux x86_64 protoc 23.4 archive through
+`scripts/install_ci_protoc.sh`, without querying GitHub's release listing.
+When updating the pin, verify its checksum and compile all canonical `proto/` files.
+
+The opt-in [Jina code qualification](verified-code-provider.md) uses approved
+offline model assets and a private HTTP server to check actual document/code
+adapters through Rust. `verified_jina_workloads` is ignored in ordinary CI;
+CPU provider/qualification regressions run in `services/tests`. This check creates
+no database and does not activate managed code ingestion.
+
 The CLI lifecycle uses a private deterministic embedding HTTP fixture. It covers
 real storage, late-chunk response mapping, query retrieval, content and symbol-line
 changes, file moves, drift/retirement, graph validation, deletion, and a failed
@@ -75,3 +85,74 @@ environment variables. Add the target to the isolated runner, ensure strict mode
 fails when prerequisites are missing, and assert meaningful stored state after
 failure/retry. CI green is evidence only for the gates listed above, not live
 inference, production reboot behavior, backup restoration, or retrieval quality.
+
+## Embedding profile persistence
+
+The `embedding_profile_store` database contract covers the internal
+[profile persistence and prepared-write guard](persisted-embedding-profiles.md):
+immutable identity records, atomic readiness publication, stale/cross-database
+refusal, metadata validation, and transaction rollback/cancellation. Select it
+with `--contract embedding_profile_store`; it is also in the default CI matrix.
+
+The `profiled_documents` contract covers the internal
+[document ingestion/search integration](profile-bound-documents.md), using
+private verified HTTP fixtures and disposable two- and three-dimensional
+databases. It checks provider/profile drift, stored provenance, atomic replacement,
+scan budgets, and database isolation. Select it with `--contract profiled_documents`;
+the default CI matrix includes it. No real model or installed service is used.
+
+The `profiled_code` contract checks internal [code graph persistence](profile-bound-code.md):
+workload selection, bounded preparation, complete graph publication, replacement
+conflicts/rollback, profile and provider drift, edited-record preservation,
+stable symbol IDs across scoped method/overload moves and generic/reference impls,
+declaration roles, untouched
+external references, real Python/Rust ambiguity refusal, unique compiler-identity
+upgrades through nested owners, long USRs, new-symbol collision allocation,
+local size rejection before database reads and cross-database refusal.
+Use `--contract profiled_code`;
+the default matrix includes it.
+Public code ingestion remains gated pending its integration.
+
+The `workspace_setup` contract covers [recoverable setup](recoverable-workspace-setup.md):
+durable reservations, ownership markers, interrupted/uncertain writes, exact
+retry, concurrent attempts, and refusal of existing or changed databases.
+Select it with `--contract workspace_setup`; the default CI matrix includes it.
+Ledger filesystem contracts run in the service-free `workspace_setup` unit tests.
+
+The `profiled_search` contract checks the public search handler and runs the
+`profiled_admission` CLI target against disposable databases. It covers model
+isolation, source text, profile/provider drift and refusals before legacy vector
+work; use `--contract profiled_search`. Both targets run in the default CI matrix.
+See [public search admission](profiled-search-admission.md).
+
+The `profiled_files` contract checks [foreground file ingestion](profiled-file-ingestion.md)
+and runs the `profiled_ingestion` CLI target. It covers bounded immutable source
+bytes, atomic metadata/replacement, cancellation, provider/profile/source drift,
+policy refusal and partial batch failure. Select it with `--contract profiled_files`;
+both targets also run in the default isolated CI matrix.
+
+The `profiled_jobs` contract checks [background job pins](profiled-ingestion-jobs.md)
+and runs the matching CLI target. It covers database/profile isolation, sealed
+handoff, real daemon workers, explicit replacement and profile drift during
+extraction. Both targets also run in the default isolated CI matrix.
+
+The opt-in [real Jina qualification](verified-jina-qualification.md) uses an
+approved local registration, fixed smoke cases, private verified HTTP, and the
+ignored `verified_jina_documents` test. Its owner selects `--verified-jina` plus
+a new `--verified-jina-report` on the same strict runner. It is separate from the
+default matrix and cannot turn absent real-model/GPU prerequisites into passing
+qualification evidence.
+
+## Codex reading contracts
+
+The isolated database matrix includes `reading_chat`: durable request deduplication,
+immutable passage/reference context, ownership exclusion, approvals, interruption,
+receipt reconciliation, and transcript pagination. It uses a deterministic App
+Server fixture and requires no Codex account. CI also runs
+`node crates/hades-frontend/web/tests/reading-chat.test.cjs` for browser recovery
+and stale response handling.
+
+The opt-in [browser and real Codex checks](../codex-reading.md#limits-and-validation)
+use the same private server runner and `with_temp_db`. They exercise the actual
+viewer/daemon/MCP path, human graph acceptance, and worker reconnect. Real inference
+requires explicit authentication input; it is not a CI prerequisite.

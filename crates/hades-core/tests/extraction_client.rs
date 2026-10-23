@@ -55,6 +55,7 @@ fn test_extract_options_all() {
 #[test]
 fn test_extract_result_struct() {
     let result = ExtractResult {
+        reading_document_json: String::new(),
         full_text: "Hello world".to_string(),
         tables: vec![],
         equations: vec![],
@@ -95,5 +96,64 @@ async fn test_connect_nonexistent_socket_fails() {
     assert!(
         result.is_err(),
         "expected connection error for nonexistent socket"
+    );
+}
+
+/// An old extractor must not turn degraded output into a successful ingest.
+#[tokio::test]
+async fn deployed_fallback_response_is_rejected() {
+    use hades_core::persephone::extraction::ExtractionClient;
+    use hades_proto::extraction::extraction_service_server::{
+        ExtractionService, ExtractionServiceServer,
+    };
+    use hades_proto::extraction::{
+        CapabilitiesRequest, ExtractRequest, ExtractResponse, ExtractorInfo,
+    };
+    use tonic::{Request, Response, Status};
+    struct Fallback;
+    #[tonic::async_trait]
+    impl ExtractionService for Fallback {
+        async fn extract(
+            &self,
+            _: Request<ExtractRequest>,
+        ) -> Result<Response<ExtractResponse>, Status> {
+            Ok(Response::new(ExtractResponse {
+                full_text: "degraded text".into(),
+                metadata: [("extractor".into(), "pymupdf_fallback".into())].into(),
+                ..Default::default()
+            }))
+        }
+        async fn capabilities(
+            &self,
+            _: Request<CapabilitiesRequest>,
+        ) -> Result<Response<ExtractorInfo>, Status> {
+            Ok(Response::new(ExtractorInfo::default()))
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("extract.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let incoming = futures::stream::unfold(listener, |listener| async {
+        let next = listener.accept().await.map(|(stream, _)| stream);
+        Some((next, listener))
+    });
+    let server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(ExtractionServiceServer::new(Fallback))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    let client = ExtractionClient::connect_unix_at(path).await.unwrap();
+    let result = client
+        .extract_file(std::path::Path::new("fixture.pdf"), Default::default())
+        .await;
+    server.abort();
+    let _ = server.await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("degraded pymupdf_fallback extraction rejected")
     );
 }

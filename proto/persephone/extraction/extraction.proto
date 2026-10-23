@@ -62,6 +62,9 @@ message ExtractRequest {
 
   // Whether to use OCR for scanned content.
   bool use_ocr = 7;
+
+  // Opt-in structured reading surface, separate from embedding text.
+  bool include_reading_document = 8;
 }
 
 // Extracted content from a document.
@@ -83,6 +86,9 @@ message ExtractResponse {
 
   // Source type that was used for extraction.
   SourceType source_type = 6;
+
+  // Versioned Docling blocks with tables and layout. Empty on older servers.
+  string reading_document_json = 7;
 }
 
 // A table extracted from the document.
@@ -140,4 +146,7 @@ message ExtractorInfo {
 
   // Whether GPU is available for extraction.
   bool gpu_available = 4;
+
+  // Formats with the opt-in structured document reading surface.
+  repeated string reading_extensions = 5;
 }

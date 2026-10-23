@@ -165,7 +165,9 @@ impl ExtractionClient {
             }
         };
 
-        let inner = ExtractionServiceClient::new(channel);
+        let inner = ExtractionServiceClient::new(channel)
+            .max_decoding_message_size(16 * 1024 * 1024)
+            .max_encoding_message_size(16 * 1024 * 1024);
         info!("connected to extraction service");
 
         Ok(Self { inner, config })
@@ -220,6 +222,7 @@ impl ExtractionClient {
             extract_equations: options.extract_equations,
             extract_images: options.extract_images,
             use_ocr: options.use_ocr,
+            include_reading_document: options.include_reading_document,
         };
 
         self.do_extract(request).await
@@ -244,6 +247,7 @@ impl ExtractionClient {
             extract_equations: options.extract_equations,
             extract_images: options.extract_images,
             use_ocr: options.use_ocr,
+            include_reading_document: options.include_reading_document,
         };
 
         self.do_extract(request).await
@@ -299,6 +303,16 @@ impl ExtractionClient {
     async fn do_extract(&self, request: ExtractRequest) -> Result<ExtractResult, ExtractionError> {
         let response: ExtractResponse = self.inner.clone().extract(request).await?.into_inner();
 
+        if response
+            .metadata
+            .get("extractor")
+            .is_some_and(|name| name == "pymupdf_fallback")
+        {
+            return Err(ExtractionError::InvalidResponse(
+                "degraded pymupdf_fallback extraction rejected; repair and restart the Docling service before re-ingesting".into(),
+            ));
+        }
+
         if response.full_text.is_empty()
             && response.tables.is_empty()
             && response.equations.is_empty()
@@ -331,6 +345,7 @@ impl ExtractionClient {
             images: response.images,
             metadata: response.metadata,
             source_type,
+            reading_document_json: response.reading_document_json,
         })
     }
 
@@ -383,6 +398,8 @@ pub struct ExtractOptions {
     pub extract_images: bool,
     /// Whether to use OCR for scanned content.
     pub use_ocr: bool,
+    /// Preserve a structured representation for guided reading.
+    pub include_reading_document: bool,
 }
 
 impl ExtractOptions {
@@ -398,6 +415,7 @@ impl ExtractOptions {
             extract_equations: true,
             extract_images: true,
             use_ocr: false,
+            include_reading_document: false,
         }
     }
 }
@@ -405,6 +423,8 @@ impl ExtractOptions {
 /// Result of an extraction operation.
 #[derive(Debug, Clone)]
 pub struct ExtractResult {
+    /// Versioned structured document, present only when requested.
+    pub reading_document_json: String,
     /// Full extracted text content.
     pub full_text: String,
     /// Extracted tables.

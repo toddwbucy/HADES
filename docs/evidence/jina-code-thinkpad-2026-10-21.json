@@ -1,0 +1,1244 @@
+{
+  "protocol": "hades-verified-code-qualification-v1",
+  "passed": true,
+  "started_at": "2026-10-22T01:04:49.747161+00:00",
+  "stage": "complete",
+  "implementation_commit": "2e2a7cd307b4480b6f89f6c3cad14313037831a2",
+  "implementation_dirty": false,
+  "suite_sha256": {
+    "documents": "45d3a94d24272e0c3b6063a53271b485dabeb0b336d4ead83ffffd2bfca8b868",
+    "code": "d92953445212481ddedb435cebbef1b7d69cec5ccc822ce47c1a3a322168c026"
+  },
+  "planning_sha256": {
+    "documents": "0e1431c47b217a1d4a15a8a93935d580ac24aff02300f8708ae3fbba3bcd8a5d",
+    "code": "c594c7a0d0113c467068b23897f040af20ee581b41a99c58e33d73241e2275f6"
+  },
+  "manifest": {
+    "files": [
+      {
+        "bytes": 900,
+        "md5": "e3d8a34e76d8605deb9abb0a9898e4cd",
+        "path": "adapters/adapter_config.json"
+      },
+      {
+        "bytes": 359863776,
+        "md5": "a4845feaf4ccffd8bab31a4945782b6b",
+        "path": "adapters/adapter_model.safetensors"
+      },
+      {
+        "bytes": 605,
+        "md5": "b9a7a9cfe915c587f6fa31268b8529b0",
+        "path": "added_tokens.json"
+      },
+      {
+        "bytes": 1049,
+        "md5": "3d8fdf3471faa9db32648cda73421c08",
+        "path": "chat_template.json"
+      },
+      {
+        "bytes": 2751,
+        "md5": "5565fe9bb4494c1a40833279ee637ecf",
+        "path": "config.json"
+      },
+      {
+        "bytes": 274,
+        "md5": "a188f833fecee2e341b2d2ea6594eb90",
+        "path": "config_sentence_transformers.json"
+      },
+      {
+        "bytes": 750,
+        "md5": "6a130c11b70896ab880c206436d2c11b",
+        "path": "configuration_jina_embeddings_v4.py"
+      },
+      {
+        "bytes": 7743,
+        "md5": "0a1885abef9253fb2dfa1211247cb11e",
+        "path": "custom_lora_module.py"
+      },
+      {
+        "bytes": 7550,
+        "md5": "c636cf5449f8fd53013303b481ef94d9",
+        "path": "custom_st.py"
+      },
+      {
+        "bytes": 126,
+        "md5": "009f52f586d87af762b250bded66eec2",
+        "path": "generation_config.json"
+      },
+      {
+        "bytes": 1671853,
+        "md5": "72dacf1de43bc354dc3c521e44ed0b24",
+        "path": "merges.txt"
+      },
+      {
+        "bytes": 4997750728,
+        "md5": "c3569721409e7144c86174ab30c55375",
+        "path": "model-00001-of-00002.safetensors"
+      },
+      {
+        "bytes": 2512111904,
+        "md5": "d9a9efb1c515e5dd0256f841a2f31960",
+        "path": "model-00002-of-00002.safetensors"
+      },
+      {
+        "bytes": 65592,
+        "md5": "d413ef978cca5984d051a9df854ea6cf",
+        "path": "model.safetensors.index.json"
+      },
+      {
+        "bytes": 22602,
+        "md5": "3b7d8ddcfe5055908b8aa1e06ab61e32",
+        "path": "modeling_jina_embeddings_v4.py"
+      },
+      {
+        "bytes": 168,
+        "md5": "43a03d45966f19ceba418ddb86a9c91f",
+        "path": "modules.json"
+      },
+      {
+        "bytes": 726,
+        "md5": "3b6c4b9af0450c1a90d56bde88999fa6",
+        "path": "preprocessor_config.json"
+      },
+      {
+        "bytes": 133535,
+        "md5": "01ea9ade2100957bb89119d6e2e7c97d",
+        "path": "qwen2_5_vl.py"
+      },
+      {
+        "bytes": 613,
+        "md5": "5708ee87a0925280424b5caa0906752f",
+        "path": "special_tokens_map.json"
+      },
+      {
+        "bytes": 11421896,
+        "md5": "aa2988694a177776324112349a8df055",
+        "path": "tokenizer.json"
+      },
+      {
+        "bytes": 7306,
+        "md5": "74c4cd015f8f9fd11ed1c87ed7a5863a",
+        "path": "tokenizer_config.json"
+      },
+      {
+        "bytes": 2776833,
+        "md5": "613b8e4a622c4a2c90e9e1245fc540d6",
+        "path": "vocab.json"
+      }
+    ],
+    "format": "hades-model-manifest-v1"
+  },
+  "runtime": {
+    "device": "cuda:0",
+    "libraries": {
+      "torch": "2.14.1",
+      "transformers": "4.52.4",
+      "tokenizers": "0.21.4",
+      "peft": "0.15.2",
+      "accelerate": "1.15.0",
+      "flash-attn": "absent",
+      "triton": "3.8.0"
+    },
+    "cuda": "13.0",
+    "gpu": "NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU"
+  },
+  "provider": {
+    "documents": {
+      "protocol": "hades-verified-jina-qualification-v2",
+      "criteria": {
+        "all_expected_documents_rank_first": true,
+        "max_norm_error": 0.001,
+        "minimum_repeat_cosine": 0.99999,
+        "minimum_reload_cosine": 0.9999
+      },
+      "runtime": {
+        "device": "cuda:0",
+        "libraries": {
+          "torch": "2.14.1",
+          "transformers": "4.52.4",
+          "tokenizers": "0.21.4",
+          "peft": "0.15.2",
+          "accelerate": "1.15.0",
+          "flash-attn": "absent",
+          "triton": "3.8.0"
+        },
+        "cuda_runtime": "13.0",
+        "gpu": "NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU"
+      },
+      "initial_load_seconds": 21.488966215983965,
+      "initial_receipt": {
+        "format": "hades-provider-receipt-v1",
+        "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+        "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3",
+        "serving_generation": "defd6d8422ef47779bfe1127efd59f88"
+      },
+      "description": {
+        "format": "hades-provider-description-v2",
+        "model": {
+          "id": "jinaai/jina-embeddings-v4",
+          "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+          "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+          "tokenizer_files": [
+            "added_tokens.json",
+            "config.json",
+            "merges.txt",
+            "special_tokens_map.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json"
+          ]
+        },
+        "workloads": {
+          "documents": {
+            "space": {
+              "format": "hades-embedding-space-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+              "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+              "representation": {
+                "dimension": 2048,
+                "output": "dense-f32",
+                "normalize": "l2",
+                "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+                "distance": "cosine",
+                "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+                "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+              },
+              "passage": {
+                "task": "retrieval.passage",
+                "prompt": "Passage: ",
+                "adapter": "retrieval",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              },
+              "query": {
+                "task": "retrieval.query",
+                "prompt": "Query: ",
+                "adapter": "retrieval",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              }
+            },
+            "receipt": {
+              "format": "hades-provider-receipt-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3",
+              "serving_generation": "8c06da5d5b2b4002a39921c5a0842723"
+            },
+            "capabilities": {
+              "text": true,
+              "image_embedding": false,
+              "specialized_code": false,
+              "late_chunking": false,
+              "tokenizer_offsets": false,
+              "tasks": [
+                "retrieval.passage",
+                "retrieval.query"
+              ],
+              "max_input_tokens": 1024
+            }
+          },
+          "code": {
+            "space": {
+              "format": "hades-embedding-space-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+              "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+              "representation": {
+                "dimension": 2048,
+                "output": "dense-f32",
+                "normalize": "l2",
+                "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+                "distance": "cosine",
+                "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+                "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+              },
+              "passage": {
+                "task": "code",
+                "prompt": "Passage: ",
+                "adapter": "code",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              },
+              "query": {
+                "task": "code",
+                "prompt": "Passage: ",
+                "adapter": "code",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              }
+            },
+            "receipt": {
+              "format": "hades-provider-receipt-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "space_id": "7bb231a82aa26f3f7b74186eaa55cb0042666c3e1b4833fed076ae7702e88cca",
+              "serving_generation": "8c06da5d5b2b4002a39921c5a0842723"
+            },
+            "capabilities": {
+              "text": true,
+              "image_embedding": false,
+              "specialized_code": true,
+              "late_chunking": false,
+              "tokenizer_offsets": false,
+              "tasks": [
+                "code"
+              ],
+              "max_input_tokens": 512
+            }
+          }
+        }
+      },
+      "adapter_tensors_verified": 1518,
+      "tokenizer": {
+        "normalization": "NFC",
+        "samples": [
+          {
+            "text": "café é 東京 🚀",
+            "decoded": "café é 東京 🚀",
+            "ids": [
+              924,
+              58858,
+              3958,
+              60596,
+              109,
+              46553,
+              11162,
+              248,
+              222
+            ]
+          },
+          {
+            "text": "  spaces\tand\nnewlines  ",
+            "decoded": "  spaces\tand\nnewlines  ",
+            "ids": [
+              220,
+              12621,
+              52477,
+              198,
+              931,
+              7969,
+              256
+            ]
+          },
+          {
+            "text": "résumé—naïve; 日本語 123.45",
+            "decoded": "résumé—naïve; 日本語 123.45",
+            "ids": [
+              42611,
+              1242,
+              963,
+              2293,
+              3376,
+              37572,
+              586,
+              26,
+              75402,
+              21894,
+              102819,
+              220,
+              16,
+              17,
+              18,
+              13,
+              19,
+              20
+            ]
+          }
+        ]
+      },
+      "operations": [
+        {
+          "task": "retrieval.passage",
+          "inputs": 8,
+          "tokens": 323,
+          "seconds": 2.2251760940416716
+        },
+        {
+          "task": "retrieval.query",
+          "inputs": 6,
+          "tokens": 80,
+          "seconds": 0.8129454540321603
+        },
+        {
+          "task": "retrieval.query",
+          "inputs": 1,
+          "tokens": 11,
+          "seconds": 0.5271578099927865
+        },
+        {
+          "task": "retrieval.passage",
+          "inputs": 1,
+          "tokens": 1024,
+          "seconds": 0.6854995120083913
+        },
+        {
+          "task": "retrieval.query",
+          "inputs": 1,
+          "tokens": 1024,
+          "seconds": 0.6723609649925493
+        },
+        {
+          "task": "retrieval.query",
+          "inputs": 1,
+          "tokens": 11,
+          "seconds": 0.5495201689773239
+        }
+      ],
+      "max_observed_norm_error": 7.471585417029303e-08,
+      "retrieval": [
+        {
+          "query": "plants",
+          "expected": "photosynthesis",
+          "first": "photosynthesis",
+          "rank": 1,
+          "score": 0.7591272214637422
+        },
+        {
+          "query": "restore",
+          "expected": "database-restore",
+          "first": "database-restore",
+          "rank": 1,
+          "score": 0.762659578169413
+        },
+        {
+          "query": "memory",
+          "expected": "rust-ownership",
+          "first": "rust-ownership",
+          "rank": 1,
+          "score": 0.7786129939324198
+        },
+        {
+          "query": "saturday",
+          "expected": "library-hours",
+          "first": "library-hours",
+          "rank": 1,
+          "score": 0.757873555839063
+        },
+        {
+          "query": "train",
+          "expected": "tokyo-kyoto",
+          "first": "tokyo-kyoto",
+          "rank": 1,
+          "score": 0.7910022611017671
+        },
+        {
+          "query": "encoding",
+          "expected": "unicode",
+          "first": "unicode",
+          "rank": 1,
+          "score": 0.8032927052370641
+        }
+      ],
+      "repeat_cosine": 1.0,
+      "boundaries": [
+        {
+          "task": "retrieval.passage",
+          "accepted_tokens": 1024,
+          "observed_forward_tokens": 1024,
+          "rejected_tokens": 1025,
+          "overflow_forward_calls": 0,
+          "adapter": "retrieval"
+        },
+        {
+          "task": "retrieval.query",
+          "accepted_tokens": 1024,
+          "observed_forward_tokens": 1024,
+          "rejected_tokens": 1025,
+          "overflow_forward_calls": 0,
+          "adapter": "retrieval"
+        }
+      ],
+      "mismatched_receipts_rejected": 3,
+      "reload_seconds": 17.507080929004587,
+      "reload_cosine": 1.0,
+      "peak_cuda_allocated_bytes": 8881033728,
+      "peak_cuda_reserved_bytes": 9137291264
+    },
+    "code": {
+      "protocol": "hades-verified-jina-qualification-v2",
+      "criteria": {
+        "all_expected_documents_rank_first": true,
+        "max_norm_error": 0.001,
+        "minimum_repeat_cosine": 0.99999,
+        "minimum_reload_cosine": 0.9999
+      },
+      "runtime": {
+        "device": "cuda:0",
+        "libraries": {
+          "torch": "2.14.1",
+          "transformers": "4.52.4",
+          "tokenizers": "0.21.4",
+          "peft": "0.15.2",
+          "accelerate": "1.15.0",
+          "flash-attn": "absent",
+          "triton": "3.8.0"
+        },
+        "cuda_runtime": "13.0",
+        "gpu": "NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU"
+      },
+      "initial_load_seconds": 0.2475238229962997,
+      "initial_receipt": {
+        "format": "hades-provider-receipt-v1",
+        "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+        "space_id": "7bb231a82aa26f3f7b74186eaa55cb0042666c3e1b4833fed076ae7702e88cca",
+        "serving_generation": "8c06da5d5b2b4002a39921c5a0842723"
+      },
+      "description": {
+        "format": "hades-provider-description-v2",
+        "model": {
+          "id": "jinaai/jina-embeddings-v4",
+          "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+          "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+          "tokenizer_files": [
+            "added_tokens.json",
+            "config.json",
+            "merges.txt",
+            "special_tokens_map.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json"
+          ]
+        },
+        "workloads": {
+          "documents": {
+            "space": {
+              "format": "hades-embedding-space-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+              "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+              "representation": {
+                "dimension": 2048,
+                "output": "dense-f32",
+                "normalize": "l2",
+                "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+                "distance": "cosine",
+                "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+                "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+              },
+              "passage": {
+                "task": "retrieval.passage",
+                "prompt": "Passage: ",
+                "adapter": "retrieval",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              },
+              "query": {
+                "task": "retrieval.query",
+                "prompt": "Query: ",
+                "adapter": "retrieval",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              }
+            },
+            "receipt": {
+              "format": "hades-provider-receipt-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3",
+              "serving_generation": "68bb0810015a4d54a7eb9584a642961e"
+            },
+            "capabilities": {
+              "text": true,
+              "image_embedding": false,
+              "specialized_code": false,
+              "late_chunking": false,
+              "tokenizer_offsets": false,
+              "tasks": [
+                "retrieval.passage",
+                "retrieval.query"
+              ],
+              "max_input_tokens": 1024
+            }
+          },
+          "code": {
+            "space": {
+              "format": "hades-embedding-space-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+              "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+              "representation": {
+                "dimension": 2048,
+                "output": "dense-f32",
+                "normalize": "l2",
+                "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+                "distance": "cosine",
+                "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+                "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+              },
+              "passage": {
+                "task": "code",
+                "prompt": "Passage: ",
+                "adapter": "code",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              },
+              "query": {
+                "task": "code",
+                "prompt": "Passage: ",
+                "adapter": "code",
+                "special_tokens": "qwen2-add-special-tokens-v1"
+              }
+            },
+            "receipt": {
+              "format": "hades-provider-receipt-v1",
+              "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+              "space_id": "7bb231a82aa26f3f7b74186eaa55cb0042666c3e1b4833fed076ae7702e88cca",
+              "serving_generation": "68bb0810015a4d54a7eb9584a642961e"
+            },
+            "capabilities": {
+              "text": true,
+              "image_embedding": false,
+              "specialized_code": true,
+              "late_chunking": false,
+              "tokenizer_offsets": false,
+              "tasks": [
+                "code"
+              ],
+              "max_input_tokens": 512
+            }
+          }
+        }
+      },
+      "adapter_tensors_verified": 1518,
+      "tokenizer": {
+        "normalization": "NFC",
+        "samples": [
+          {
+            "text": "def café():\n\treturn '東京 🚀'\n",
+            "decoded": "def café():\n\treturn '東京 🚀'\n",
+            "ids": [
+              750,
+              51950,
+              3932,
+              853,
+              364,
+              102356,
+              46553,
+              11162,
+              248,
+              222,
+              1248
+            ]
+          },
+          {
+            "text": "  // é versus é\n\tlet x = 1;  ",
+            "decoded": "  // é versus é\n\tlet x = 1;  ",
+            "ids": [
+              220,
+              442,
+              3958,
+              19041,
+              3958,
+              198,
+              10217,
+              856,
+              284,
+              220,
+              16,
+              26,
+              256
+            ]
+          },
+          {
+            "text": "SELECT 'naïve';\r\n",
+            "decoded": "SELECT 'naïve';\r\n",
+            "ids": [
+              4858,
+              364,
+              3376,
+              37572,
+              586,
+              7569
+            ]
+          }
+        ]
+      },
+      "operations": [
+        {
+          "task": "code",
+          "inputs": 8,
+          "tokens": 428,
+          "seconds": 0.8193752869847231
+        },
+        {
+          "task": "code",
+          "inputs": 6,
+          "tokens": 113,
+          "seconds": 0.6712640339974314
+        },
+        {
+          "task": "code",
+          "inputs": 1,
+          "tokens": 18,
+          "seconds": 0.5611102500115521
+        },
+        {
+          "task": "code",
+          "inputs": 1,
+          "tokens": 512,
+          "seconds": 0.6344431409961544
+        },
+        {
+          "task": "code",
+          "inputs": 1,
+          "tokens": 18,
+          "seconds": 0.5573021390009671
+        }
+      ],
+      "max_observed_norm_error": 4.8131370888881975e-08,
+      "retrieval": [
+        {
+          "query": "sorted-search",
+          "expected": "binary-search",
+          "first": "binary-search",
+          "rank": 1,
+          "score": 0.6993994952558563
+        },
+        {
+          "query": "file-digest",
+          "expected": "sha256-file",
+          "first": "sha256-file",
+          "rank": 1,
+          "score": 0.8079625098247526
+        },
+        {
+          "query": "graph-levels",
+          "expected": "breadth-first",
+          "first": "breadth-first",
+          "rank": 1,
+          "score": 0.7180745812822804
+        },
+        {
+          "query": "parse-numbers",
+          "expected": "rust-parse",
+          "first": "rust-parse",
+          "rank": 1,
+          "score": 0.7681160635212047
+        },
+        {
+          "query": "customer-totals",
+          "expected": "sql-total",
+          "first": "sql-total",
+          "rank": 1,
+          "score": 0.7826763099648016
+        },
+        {
+          "query": "delay-callback",
+          "expected": "debounce",
+          "first": "debounce",
+          "rank": 1,
+          "score": 0.6607024448314194
+        }
+      ],
+      "repeat_cosine": 0.9999999999999999,
+      "boundaries": [
+        {
+          "task": "code",
+          "accepted_tokens": 512,
+          "observed_forward_tokens": 512,
+          "rejected_tokens": 513,
+          "overflow_forward_calls": 0,
+          "adapter": "code"
+        }
+      ],
+      "mismatched_receipts_rejected": 3,
+      "reload_seconds": 24.748640852980316,
+      "reload_cosine": 0.9999999999999999,
+      "peak_cuda_allocated_bytes": 8647844352,
+      "peak_cuda_reserved_bytes": 8829009920
+    },
+    "cross_workload_receipts_rejected": 3,
+    "description": {
+      "format": "hades-provider-description-v2",
+      "model": {
+        "id": "jinaai/jina-embeddings-v4",
+        "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+        "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+        "tokenizer_files": [
+          "added_tokens.json",
+          "config.json",
+          "merges.txt",
+          "special_tokens_map.json",
+          "tokenizer.json",
+          "tokenizer_config.json",
+          "vocab.json"
+        ]
+      },
+      "workloads": {
+        "documents": {
+          "space": {
+            "format": "hades-embedding-space-v1",
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+            "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+            "representation": {
+              "dimension": 2048,
+              "output": "dense-f32",
+              "normalize": "l2",
+              "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+              "distance": "cosine",
+              "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+              "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+            },
+            "passage": {
+              "task": "retrieval.passage",
+              "prompt": "Passage: ",
+              "adapter": "retrieval",
+              "special_tokens": "qwen2-add-special-tokens-v1"
+            },
+            "query": {
+              "task": "retrieval.query",
+              "prompt": "Query: ",
+              "adapter": "retrieval",
+              "special_tokens": "qwen2-add-special-tokens-v1"
+            }
+          },
+          "receipt": {
+            "format": "hades-provider-receipt-v1",
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3",
+            "serving_generation": "68bb0810015a4d54a7eb9584a642961e"
+          },
+          "capabilities": {
+            "text": true,
+            "image_embedding": false,
+            "specialized_code": false,
+            "late_chunking": false,
+            "tokenizer_offsets": false,
+            "tasks": [
+              "retrieval.passage",
+              "retrieval.query"
+            ],
+            "max_input_tokens": 1024
+          }
+        },
+        "code": {
+          "space": {
+            "format": "hades-embedding-space-v1",
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+            "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+            "representation": {
+              "dimension": 2048,
+              "output": "dense-f32",
+              "normalize": "l2",
+              "pooling": "attention-masked-mean-all-tokens-fp32-v1",
+              "distance": "cosine",
+              "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+              "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9"
+            },
+            "passage": {
+              "task": "code",
+              "prompt": "Passage: ",
+              "adapter": "code",
+              "special_tokens": "qwen2-add-special-tokens-v1"
+            },
+            "query": {
+              "task": "code",
+              "prompt": "Passage: ",
+              "adapter": "code",
+              "special_tokens": "qwen2-add-special-tokens-v1"
+            }
+          },
+          "receipt": {
+            "format": "hades-provider-receipt-v1",
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "space_id": "7bb231a82aa26f3f7b74186eaa55cb0042666c3e1b4833fed076ae7702e88cca",
+            "serving_generation": "68bb0810015a4d54a7eb9584a642961e"
+          },
+          "capabilities": {
+            "text": true,
+            "image_embedding": false,
+            "specialized_code": true,
+            "late_chunking": false,
+            "tokenizer_offsets": false,
+            "tasks": [
+              "code"
+            ],
+            "max_input_tokens": 512
+          }
+        }
+      }
+    }
+  },
+  "rust": {
+    "code": {
+      "dimension": 2048,
+      "document_count": 8,
+      "planned_embeddings": 7,
+      "planning": {
+        "format": "hades-token-passages-v1",
+        "max_input_tokens": 512,
+        "model": "jinaai/jina-embeddings-v4",
+        "overlap_tokens": 8,
+        "passage_tokens": 256,
+        "receipt": {
+          "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+          "format": "hades-provider-receipt-v1",
+          "serving_generation": "68bb0810015a4d54a7eb9584a642961e",
+          "space_id": "7bb231a82aa26f3f7b74186eaa55cb0042666c3e1b4833fed076ae7702e88cca"
+        },
+        "source_sha256": "c594c7a0d0113c467068b23897f040af20ee581b41a99c58e33d73241e2275f6",
+        "spans": [
+          {
+            "body_tokens": 256,
+            "end_byte": 1027,
+            "input_tokens": 259,
+            "overlap_tokens": 0,
+            "start_byte": 0
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 1961,
+            "input_tokens": 259,
+            "overlap_tokens": 8,
+            "start_byte": 991
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 2999,
+            "input_tokens": 259,
+            "overlap_tokens": 8,
+            "start_byte": 1934
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 3964,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 2970
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 4911,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 3920
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 5919,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 4893
+          },
+          {
+            "body_tokens": 128,
+            "end_byte": 6384,
+            "input_tokens": 132,
+            "overlap_tokens": 8,
+            "start_byte": 5886
+          }
+        ],
+        "task": "code"
+      },
+      "retrieval": [
+        {
+          "expected": "binary-search",
+          "first": "binary-search",
+          "query": "sorted-search",
+          "rank": 1,
+          "repeat_cosine": 0.9999999999999999,
+          "score": 0.6993994952558579
+        },
+        {
+          "expected": "sha256-file",
+          "first": "sha256-file",
+          "query": "file-digest",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.8079625098247529
+        },
+        {
+          "expected": "breadth-first",
+          "first": "breadth-first",
+          "query": "graph-levels",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.7180745812822817
+        },
+        {
+          "expected": "rust-parse",
+          "first": "rust-parse",
+          "query": "parse-numbers",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.7681160635212056
+        },
+        {
+          "expected": "sql-total",
+          "first": "sql-total",
+          "query": "customer-totals",
+          "rank": 1,
+          "repeat_cosine": 1.0,
+          "score": 0.782676309964802
+        },
+        {
+          "expected": "debounce",
+          "first": "debounce",
+          "query": "delay-callback",
+          "rank": 1,
+          "repeat_cosine": 1.0,
+          "score": 0.6607024448314176
+        }
+      ]
+    },
+    "documents": {
+      "dimension": 2048,
+      "document_count": 8,
+      "planned_embeddings": 10,
+      "planning": {
+        "format": "hades-token-passages-v1",
+        "max_input_tokens": 1024,
+        "model": "jinaai/jina-embeddings-v4",
+        "overlap_tokens": 8,
+        "passage_tokens": 256,
+        "receipt": {
+          "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+          "format": "hades-provider-receipt-v1",
+          "serving_generation": "68bb0810015a4d54a7eb9584a642961e",
+          "space_id": "3adfde754e36707cac76908558b20477bacf1a5d19391490550e6c987d4f00a3"
+        },
+        "source_sha256": "0e1431c47b217a1d4a15a8a93935d580ac24aff02300f8708ae3fbba3bcd8a5d",
+        "spans": [
+          {
+            "body_tokens": 256,
+            "end_byte": 1306,
+            "input_tokens": 258,
+            "overlap_tokens": 0,
+            "start_byte": 0
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 2590,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 1284
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 3875,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 2556
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 5160,
+            "input_tokens": 259,
+            "overlap_tokens": 8,
+            "start_byte": 3838
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 6438,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 5106
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 7716,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 6381
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 8993,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 7658
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 10263,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 8935
+          },
+          {
+            "body_tokens": 256,
+            "end_byte": 11538,
+            "input_tokens": 260,
+            "overlap_tokens": 8,
+            "start_byte": 10212
+          },
+          {
+            "body_tokens": 167,
+            "end_byte": 12384,
+            "input_tokens": 172,
+            "overlap_tokens": 7,
+            "start_byte": 11498
+          }
+        ],
+        "task": "retrieval.passage"
+      },
+      "retrieval": [
+        {
+          "expected": "photosynthesis",
+          "first": "photosynthesis",
+          "query": "plants",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.7591272214637432
+        },
+        {
+          "expected": "database-restore",
+          "first": "database-restore",
+          "query": "restore",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.7626595781694122
+        },
+        {
+          "expected": "rust-ownership",
+          "first": "rust-ownership",
+          "query": "memory",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.7786129939324195
+        },
+        {
+          "expected": "library-hours",
+          "first": "library-hours",
+          "query": "saturday",
+          "rank": 1,
+          "repeat_cosine": 0.9999999999999998,
+          "score": 0.7578735558390634
+        },
+        {
+          "expected": "tokyo-kyoto",
+          "first": "tokyo-kyoto",
+          "query": "train",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.7910022611017664
+        },
+        {
+          "expected": "unicode",
+          "first": "unicode",
+          "query": "encoding",
+          "rank": 1,
+          "repeat_cosine": 1.0000000000000002,
+          "score": 0.8032927052370648
+        }
+      ]
+    },
+    "passed": true,
+    "profile": {
+      "capabilities": {
+        "image_embedding": false,
+        "late_chunking": false,
+        "max_input_tokens": 1024,
+        "specialized_code": true,
+        "tasks": [
+          "retrieval.passage",
+          "retrieval.query",
+          "code"
+        ],
+        "text": true,
+        "tokenizer_offsets": false
+      },
+      "format": "hades-embedding-profile-v1",
+      "generation": "conventional-code-qualification-v1",
+      "model": {
+        "id": "jinaai/jina-embeddings-v4",
+        "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+        "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+        "tokenizer_files": [
+          "added_tokens.json",
+          "config.json",
+          "merges.txt",
+          "special_tokens_map.json",
+          "tokenizer.json",
+          "tokenizer_config.json",
+          "vocab.json"
+        ]
+      },
+      "revision": 1,
+      "runtime_binding": {
+        "provider_id": "qualification-jina"
+      },
+      "state": "ready",
+      "workloads": {
+        "code": {
+          "chunking": {
+            "mode": "conventional",
+            "overlap_tokens": 8,
+            "passage_tokens": 256
+          },
+          "space": {
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "format": "hades-embedding-space-v1",
+            "passage": {
+              "adapter": "code",
+              "prompt": "Passage: ",
+              "special_tokens": "qwen2-add-special-tokens-v1",
+              "task": "code"
+            },
+            "query": {
+              "adapter": "code",
+              "prompt": "Passage: ",
+              "special_tokens": "qwen2-add-special-tokens-v1",
+              "task": "code"
+            },
+            "representation": {
+              "dimension": 2048,
+              "distance": "cosine",
+              "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9",
+              "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+              "normalize": "l2",
+              "output": "dense-f32",
+              "pooling": "attention-masked-mean-all-tokens-fp32-v1"
+            },
+            "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+            "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638"
+          },
+          "specialized_code": true
+        },
+        "documents": {
+          "chunking": {
+            "mode": "conventional",
+            "overlap_tokens": 8,
+            "passage_tokens": 256
+          },
+          "space": {
+            "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+            "format": "hades-embedding-space-v1",
+            "passage": {
+              "adapter": "retrieval",
+              "prompt": "Passage: ",
+              "special_tokens": "qwen2-add-special-tokens-v1",
+              "task": "retrieval.passage"
+            },
+            "query": {
+              "adapter": "retrieval",
+              "prompt": "Query: ",
+              "special_tokens": "qwen2-add-special-tokens-v1",
+              "task": "retrieval.query"
+            },
+            "representation": {
+              "dimension": 2048,
+              "distance": "cosine",
+              "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9",
+              "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+              "normalize": "l2",
+              "output": "dense-f32",
+              "pooling": "attention-masked-mean-all-tokens-fp32-v1"
+            },
+            "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+            "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638"
+          },
+          "specialized_code": false
+        }
+      }
+    },
+    "tokenizer_recheck": {
+      "documents": {
+        "passed": true,
+        "whole_input_tokens": 2402,
+        "checked_passages": 10
+      },
+      "code": {
+        "passed": true,
+        "whole_input_tokens": 1619,
+        "checked_passages": 7
+      }
+    }
+  },
+  "rust_seconds": 23.99874140904285,
+  "finished_at": "2026-10-22T01:06:35.636070+00:00"
+}

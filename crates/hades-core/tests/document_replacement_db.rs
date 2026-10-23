@@ -25,6 +25,7 @@ impl ExtractionService for Extractor {
     ) -> Result<Response<ExtractResponse>, Status> {
         Ok(Response::new(ExtractResponse {
             full_text: self.0.into(),
+            metadata: [("extractor".into(), "docling".into())].into(),
             ..Default::default()
         }))
     }
@@ -74,7 +75,7 @@ async fn document_overwrite_failure_boundary() {
             tonic::transport::Server::builder().add_service(ExtractionServiceServer::new(Extractor("replacement text")))
                 .serve_with_incoming(incoming).await.unwrap();
         });
-        let embedder = embedding_mock::start_embedder(&embed_path, 3).await;
+        let embedder = embedding_mock::start_embedder(&embed_path, 5).await;
         let mut peers = Peers(vec![server, embedder]);
         let pipeline = Pipeline::new(
             ExtractionClient::connect_unix_at(&extract_path).await.unwrap(),
@@ -116,6 +117,27 @@ async fn document_overwrite_failure_boundary() {
                 assert_eq!(embedding["embedding"].as_array().unwrap().len(), 2048);
             }
         }
+        // A deployment upgrade must not silently reinterpret old fallback text.
+        crud::insert_documents(&pool, "documents", &[json!({
+            "_key":"fallback", "full_text":"historical fallback text",
+            "extractor_metadata":{"extractor":"pymupdf_fallback"}
+        })], false).await.unwrap();
+        let before = crud::get_document(&pool, "documents", "fallback").await.unwrap();
+        let result = pipeline.process_document(&dir.path().join("fixture.pdf"), "fallback", &OneChunk).await;
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("explicitly re-ingest with --force"));
+        assert_eq!(crud::get_document(&pool, "documents", "fallback").await.unwrap(), before);
+        // Remove the deliberate schema rejection from the earlier failure case.
+        pool.writer().put("collection/embeddings/properties", &json!({"schema":{}})).await.unwrap();
+        let recovery = Pipeline::new(
+            ExtractionClient::connect_unix_at(&extract_path).await.unwrap(),
+            EmbeddingClient::connect_unix_at(&embed_path).await.unwrap(),
+            pool.clone(), PipelineConfig { reextract_fallback:true, ..PipelineConfig::default() },
+        );
+        let result = recovery.process_document(&dir.path().join("fixture.pdf"), "fallback", &OneChunk).await;
+        assert!(result.success, "{result:?}");
+        assert_eq!(crud::get_document(&pool, "documents", "fallback").await.unwrap()["full_text"], "replacement text");
+
         let duplicate_pipeline = Pipeline::new(
             ExtractionClient::connect_unix_at(&extract_path).await.unwrap(),
             EmbeddingClient::connect_unix_at(&embed_path).await.unwrap(),
@@ -415,6 +437,7 @@ async fn cleanup_acknowledgment_is_strict_before_document_writes() {
         let _peers = Peers(vec![server, embedder]);
         let mut replies = vec![
             Reply::page(json!({"result":{"id":"1"}})),
+            Reply::page(json!({"_key":"doc", "extractor_metadata":{"extractor":"docling"}})),
             Reply::page(response),
         ];
         if valid {
@@ -440,6 +463,7 @@ async fn cleanup_acknowledgment_is_strict_before_document_writes() {
             .await;
         assert_eq!(result.success, valid, "{result:?}");
         mock.event("POST transaction/begin").await;
+        mock.event("GET document/documents/doc").await;
         mock.event("POST cursor").await;
         if valid {
             mock.event("POST cursor").await;
@@ -456,4 +480,96 @@ async fn cleanup_acknowledgment_is_strict_before_document_writes() {
             "no writes may follow an invalid cleanup acknowledgment"
         );
     }
+}
+
+#[tokio::test]
+async fn document_late_windows_persist_exact_mapping_and_profile_provenance() {
+    use hades_core::chunking::prechunk::PrechunkConfig;
+    const TEXT: &str = "zero one two three four five six seven eight nine ten eleven twelve";
+    with_temp_db("document_windows", Fixtures::Empty, |pool| async move {
+        for collection in ["documents", "chunks", "embeddings"] {
+            crud::create_collection(&pool, collection, Some(2))
+                .await
+                .unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let extract_path = dir.path().join("extract.sock");
+        let listener = tokio::net::UnixListener::bind(&extract_path).unwrap();
+        let incoming = futures::stream::unfold(listener, |listener| async {
+            let next = listener.accept().await.map(|(stream, _)| stream);
+            Some((next, listener))
+        });
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(ExtractionServiceServer::new(Extractor(TEXT)))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        let mut peers = Peers(vec![server]);
+        let mut counts = Vec::new();
+        for ceiling in [20, 28] {
+            let socket = dir.path().join(format!("embed-{ceiling}.sock"));
+            peers
+                .0
+                .push(embedding_mock::start_embedder_with_ceiling(&socket, 100, ceiling).await);
+            let pipeline = Pipeline::new(
+                ExtractionClient::connect_unix_at(&extract_path)
+                    .await
+                    .unwrap(),
+                EmbeddingClient::connect_unix_at(&socket).await.unwrap(),
+                pool.clone(),
+                PipelineConfig {
+                    late_chunking: true,
+                    prechunk: PrechunkConfig {
+                        overlap_tokens: 2,
+                        safety_margin_tokens: 4,
+                        max_window_tokens: None,
+                    },
+                    ..Default::default()
+                },
+            );
+            let key = format!("window_{ceiling}");
+            let result = pipeline
+                .process_document(&dir.path().join("fixture.txt"), &key, &OneChunk)
+                .await;
+            assert!(result.success, "{result:?}");
+            let document = crud::get_document(&pool, "documents", &key).await.unwrap();
+            let plan = &document["embedding_window_plan"];
+            assert_eq!(plan["backend_ceiling_tokens"], ceiling);
+            counts.push(plan["windows"].as_array().unwrap().len());
+            let mut reconstructed = String::new();
+            for i in 0..result.chunk_count {
+                let chunk_key = format!("{key}_chunk_{i}");
+                let c = crud::get_document(&pool, "chunks", &chunk_key)
+                    .await
+                    .unwrap();
+                let e = crud::get_document(&pool, "embeddings", &format!("{chunk_key}_emb"))
+                    .await
+                    .unwrap();
+                assert_eq!(c["chunk_index"], i);
+                assert_eq!(e["chunk_index"], i);
+                assert_eq!(c["parent_chunk_index"], 0);
+                assert_eq!(e["parent_chunk_index"], 0);
+                let start = c["start_char"].as_u64().unwrap() as usize;
+                let end = c["end_char"].as_u64().unwrap() as usize;
+                assert_eq!(c["text"], &TEXT[start..end]);
+                reconstructed.push_str(c["text"].as_str().unwrap());
+                let provenance = &e["embedding_window"];
+                assert_eq!(provenance["plan"]["backend_ceiling_tokens"], ceiling);
+                assert_eq!(provenance["selected_window"], plan["chunk_windows"][i]);
+                assert!(provenance["window"]["start_byte"].as_u64().unwrap() <= start as u64);
+                assert!(provenance["window"]["end_byte"].as_u64().unwrap() >= end as u64);
+            }
+            assert_eq!(reconstructed, TEXT);
+        }
+        assert!(counts[0] > counts[1]);
+        for task in &peers.0 {
+            task.abort();
+        }
+        for task in peers.0.drain(..) {
+            let _ = task.await;
+        }
+    })
+    .await;
 }

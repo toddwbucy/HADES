@@ -21,22 +21,98 @@ context for the whole session, so the surface has to earn its size.
 | `graph_neighbors` / `graph_traverse` | graph walks, bounded depth |
 | `smell_report` | recorded code smells for a file |
 | `task_list` / `task_show` / `task_create` / `task_update` | kanban board |
+| `kg_create` / `kg_add_node` / `kg_add_edge` | create an authored graph and add nodes or links to processed documents |
 
 Every call is serialized to the daemon frame format and routed through the
-same parse/authorize/dispatch path the Unix socket uses, under
-`ConnectionPolicy::agent_only`. No tool here can reach an Admin-tier command
+same parse/authorize/dispatch path the Unix socket uses, under an Agent ceiling
+with optional provisioning. No tool here can reach an Admin-tier command
 even if one were mounted by mistake.
 
-**What an agent can change.** The graph is derived from source, and no tool
-here edits a node or edge directly. The endpoint's only writes are
-`create_database`, `db_schema_init` and `ingest_start` (provisioning, below)
-and `task_create` / `task_update` on the Persephone kanban. An agent changes
-the graph by changing a file on disk under an ingest root and running
-`ingest_start` over it. That is a destructive write for the source it names:
-re-ingest deletes and rewrites the rows and edges those files own. Which rows each
-owner controls, and what survives a re-ingest, is the
-[Data Ownership](codebase-graph-ontology.md#8-data-ownership) section of the
-ontology. Authored writes over MCP are proposed in #188 and not built.
+**What an agent can change.** `kg_create`, `kg_add_node`, and `kg_add_edge`
+write authored graph rows in collections dedicated to the named graph. An edge
+may connect authored nodes to existing `documents` or `codebase_files` rows.
+`ingest_start` still rewrites the rows and edges its source files own; it does
+not replace authored rows. An authored edge can become dangling if an ingested
+endpoint is later deleted. The [Data Ownership](codebase-graph-ontology.md#8-data-ownership)
+section describes the remaining source and adapter ownership boundaries.
+
+### Create and extend a graph over MCP
+
+With provisioning enabled for a database prefix such as `example_`, call the
+tools in this order:
+
+1. `create_database {"name":"example_research"}` for a new database. Run
+   `db_schema_init {"db":"example_research","seed":"empty"}` if document
+   ingestion will use that database.
+2. `kg_create {"db":"example_research","name":"research"}` creates
+   `research_nodes`, `research_edges`, and a named graph. It also makes
+   `documents` and `codebase_files` available as link endpoints.
+3. `kg_add_node {"db":"example_research","graph":"research","key":"claim_1","data":{"title":"A claim"}}`
+   creates `research_nodes/claim_1`.
+4. `kg_add_edge {"db":"example_research","graph":"research","key":"support_1","from":"research_nodes/claim_1","to":"documents/paper_1","data":{"relation":"supported_by"}}`
+   links it to an existing processed document. Both endpoints must already
+   exist; use the document `_id` returned by `db_get` or `db_list`.
+
+`ingest_start` can populate the document side before or after `kg_create`, but
+its path is still on the HADES host, under an allowed ingest root. Graph nodes
+and edges are readable through `db_get`, `graph_neighbors`, and
+`graph_traverse`. Semantic `db_query` searches ingested document/code chunks;
+authored nodes are not embedded by these tools.
+
+## Verify the deployed workflow
+
+A merged PR or a successful build does not update a running daemon. After
+installing a release and restarting the service, check its actual `tools/list`.
+It must advertise `kg_create`, `kg_add_node`, and `kg_add_edge`. A database in
+`--mcp-dbs` still cannot receive provisioning writes unless its name also matches
+`--mcp-db-prefix`. Keep instance-specific service flags outside the repository.
+
+Run the opt-in workflow check on the HADES host, with an explicit **new** database
+name under a configured provisioning prefix and an allowed local source directory:
+
+```bash
+python3 scripts/check_mcp_workflow.py \
+  --url 'https://<mcp-tls-host>/mcp' \
+  --token-file '<token-file>' \
+  --database example_mcp_check_001 \
+  --fixture-root '<allowed-source-root>' \
+  --output /tmp/hades-mcp-check.json
+```
+
+Use an HTTPS reverse proxy with a trusted certificate. The daemon itself serves
+plain HTTP. The checker also accepts loopback HTTP for a local connection or an
+authenticated SSH tunnel, such as `http://127.0.0.1:11443/mcp` after forwarding
+that port to the daemon's actual bind address. It rejects non-loopback HTTP and
+does not use environment proxies for loopback HTTP.
+
+The checker account needs write and search (execute) permission on the fixture
+root to create fixtures. The daemon account (`hades` in the shipped system
+service) needs traversal through that root and every parent, plus read access
+to the fixture file. Use a directory visible
+inside the service's filesystem namespace, not `/tmp` when `PrivateTmp=true`.
+The checker creates only synthetic public test text, with directory mode `0755`
+and file mode `0644`, even under a restrictive umask. It changes no permissions
+on the supplied root or existing files.
+
+This sends every database operation through MCP. It verifies database creation,
+empty-schema initialization, graph/node/edge creation, duplicate protection,
+actual text extraction and embedding, semantic retrieval, and traversal from
+an authored node to the ingested document. It fails before graph writes if the
+server lacks the tools or the database already exists. It creates a synthetic
+fixture under the supplied root and retains that fixture and database for
+inspection; reruns require a new database name. A timed-out ingestion may still
+run, so inspect the recorded `job_id` before retrying. The script does not alter
+service configuration or delete databases. Run its local tests with:
+
+```bash
+python3 -m unittest discover -s scripts/tests -p test_mcp_workflow.py
+```
+
+Custom graph definitions must retain the exact authored layout if MCP will extend
+them. For chunk-level retrieval links, use a separate edge collection and a
+combined traversal graph, as described in the
+[graphable-document mapping](graphable-document-ingestion.md#graph-mapping).
+Authored-node insertion and successful document embedding remain separate checks.
 
 ## Running it
 
@@ -88,16 +164,16 @@ shell access to the host.
 
 ```
 hades daemon \
-  --mcp-bind 192.168.0.10:10443 \
+  --mcp-bind <private-lan-ip>:10443 \
   --mcp-token-file ~/.config/hades/mcp-token \
-  --mcp-db-prefix bident_ \
-  --mcp-ingest-root /opt/HADES \
-  --mcp-ingest-root /opt/weavertools
+  --mcp-db-prefix example_ \
+  --mcp-ingest-root <allowed-source-root>
 ```
 
-Three tools are Provisioning tier: `create_database`, `db_schema_init` and
-`ingest_start` (`DaemonCommand::access_tier`, `crates/hades-core/src/dispatch.rs`).
-`ingest_status` is Agent tier, so any client may poll a job. The three are
+Six tools are Provisioning tier: `create_database`, `db_schema_init`,
+`ingest_start`, `kg_create`, `kg_add_node`, and `kg_add_edge`
+(`DaemonCommand::access_tier`, `crates/hades-core/src/dispatch.rs`).
+`ingest_status` is Agent tier, so any client may poll a job. All six are
 advertised on every endpoint and authorized on none by default, so a client
 without provisioning gets `ACCESS_DENIED` naming what would have been permitted
 rather than concluding the capability does not exist.
@@ -105,9 +181,10 @@ rather than concluding the capability does not exist.
 **Both flags are load-bearing, and both fail closed.**
 
 `--mcp-db-prefix` bounds every database a provisioning command may write:
-the one `create_database` creates, and the one `db_schema_init` seeds or
-`ingest_start` writes into. Without it, no database may be written, even with
-the other flag set. It also widens the allowlist: every existing database whose
+the one `create_database` creates, the one `db_schema_init` seeds or
+`ingest_start` writes into, and the one the three `kg_*` tools modify. Without
+a prefix, no database may be written, even when an ingest root is set. The
+prefix also widens the allowlist: every existing database whose
 name matches is served, whether or not this endpoint created it, to every tool
 including the reads and the Agent-tier task writes. That is so a database the
 endpoint just created, which is not on `--mcp-dbs`, is not refused the moment
@@ -116,7 +193,7 @@ server is reachable too, so choose a prefix nothing else uses.
 
 **Databases exposed for reading cannot be provisioned.** The prefix is enforced in the
 service layer (`crates/hades-core/src/service.rs`, the provisioning-limits
-check) for all three commands, against the database each one would actually
+check) for all six commands, against the database each one would actually
 write, including the endpoint default when a client omits `db`. An `--mcp-dbs`
 entry or default that matches no prefix is never seeded or ingested into
 (#193). It is not read-only, though: `task_create` and `task_update` are Agent
@@ -138,7 +215,7 @@ listed root, and a path that does not exist is refused rather than guessed at.
 
 **What this does not change.** The tier ceiling stays at Agent, so raw AQL,
 `db.purge`, `db.insert` and `db.graph.drop` remain unavailable to the endpoint.
-Provisioning grants three commands, not a promotion.
+Provisioning grants six commands, not a promotion.
 
 **What it assumes.** That ArangoDB is enforcing its own access control. If the
 instance runs with `authentication = false`, the daemon can reach every database

@@ -1,0 +1,189 @@
+"""Internal receipt-enforced HTTP app factory; no environment/CLI activation yet."""
+
+from contextlib import asynccontextmanager
+import json
+import logging
+from typing import Literal
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+
+from .config import EmbeddingConfig
+from .http_server import AppState, PEError, error_response
+from .identity import ProviderReceipt, _unique_object
+from .jina_v4 import BackendOutOfMemoryError, InputTooLargeError
+from .snapshot import ArtifactChangedError
+from .verified_jina import BehaviorChangedError, ReceiptMismatchError, VerifiedJinaProvider
+from .passage_plan import PlanningError
+
+logger = logging.getLogger(__name__)
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+
+
+class VerifiedRequest(BaseModel):
+    """No task defaults, coercion, or silently ignored unsupported capabilities."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str
+    input: str | list[str]
+    task: Literal[*VerifiedJinaProvider.embedding_tasks]
+    encoding_format: Literal["float"] = "float"
+    expected_receipt: dict
+    batch_size: int | None = Field(default=None, ge=1)
+
+
+class PassageRequest(BaseModel):
+    """A bounded conventional policy and source, with no caller-supplied spans."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str
+    input: str
+    task: Literal[*VerifiedJinaProvider.passage_tasks]
+    expected_receipt: dict
+    passage_tokens: int = Field(ge=1, le=0xffffffff)
+    overlap_tokens: int = Field(ge=0, le=0xffffffff)
+    max_input_tokens: int = Field(ge=1, le=0xffffffff)
+
+
+class LatePassageRequest(PassageRequest):
+    """Separate retrieval-passage and encoding-window budgets, with a required minimum overlap."""
+    context_cap_tokens: int = Field(ge=1, le=0xffffffff)
+    minimum_window_overlap_tokens: int = Field(ge=0, le=0xffffffff)
+
+
+class LateEmbeddingRequest(BaseModel):
+    """One explicitly bounded window; byte/character coordinates are never conflated."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str
+    input: str
+    task: Literal[*VerifiedJinaProvider.passage_tasks]
+    expected_receipt: dict
+    boundaries: list[list[int]] = Field(min_length=1, max_length=128)
+
+
+async def _read_request(request: Request, request_type=VerifiedRequest):
+    """Bound streamed JSON and preserve duplicate-key rejection before validation."""
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_REQUEST_BYTES:
+            raise PEError(413, "PE_REQUEST_TOO_LARGE", "Embedding request exceeds byte limit")
+        body.extend(chunk)
+    try:
+        value = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object)
+        parsed = request_type.model_validate(value)
+        expected = ProviderReceipt.from_dict(parsed.expected_receipt)
+    except (ValueError, ValidationError, RecursionError) as exc:
+        raise PEError(422, "PE_INVALID_REQUEST",
+                      "Invalid request; verified retrieval requires a supported policy and an exact receipt") from exc
+    return parsed, expected
+
+
+def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
+    """Bind an operator-created provider to owned worker/idle/shutdown lifecycle.
+
+    This factory is for integration and qualification. Production startup keeps
+    using the legacy app; no registry path or profile is accepted over HTTP.
+    """
+    state = AppState(EmbeddingConfig(model_name=provider.model_name), embedder=provider)
+    embedding_tasks = getattr(provider, "embedding_tasks", VerifiedJinaProvider.embedding_tasks)
+    passage_tasks = getattr(provider, "passage_tasks", VerifiedJinaProvider.passage_tasks)
+    embedding_request = create_model("ProviderEmbeddingRequest", __base__=VerifiedRequest,
+                                     task=(Literal[*embedding_tasks], ...))
+    passage_request = create_model("ProviderPassageRequest", __base__=PassageRequest,
+                                   task=(Literal[*passage_tasks], ...))
+
+    @asynccontextmanager
+    async def lifespan(app):
+        """Start idle cleanup and drain all admitted operations on shutdown."""
+        await state.start_idle_monitor()
+        try:
+            yield
+        finally:
+            await state.close()
+
+    app = FastAPI(title="HADES verified embedding provider", lifespan=lifespan)
+    app.state.app_state = state
+
+    @app.exception_handler(PEError)
+    async def intentional_error(request, exc):
+        """Expose only bounded public-safe structured contract errors."""
+        return error_response(exc.status_code, exc.detail, exc.code, exc.param, exc.headers, exc.fields)
+
+    async def run(function):
+        """Preserve worker ownership while translating backend identity failures."""
+        try:
+            return await state.run_work(function)
+        except (ReceiptMismatchError, BehaviorChangedError, ArtifactChangedError) as exc:
+            raise PEError(409, "PE_RECEIPT_MISMATCH", "Provider identity is unavailable or changed; reverify binding") from exc
+        except InputTooLargeError as exc:
+            raise PEError(400, "PE_INPUT_TOO_LARGE", "Input exceeds the serving token budget",
+                          "input", reported_tokens=exc.n_tokens, ceiling=exc.max_tokens,
+                          input_index=exc.index) from exc
+        except BackendOutOfMemoryError as exc:
+            raise PEError(503, "PE_BACKEND_OOM", "Embedding backend exhausted memory") from exc
+        except PlanningError as exc:
+            raise PEError(400, "PE_PASSAGE_PLAN_LIMIT", str(exc)) from exc
+        except PEError:
+            raise
+        except ValueError as exc:
+            raise PEError(400, "PE_INVALID_INPUT", "Invalid verified embedding input or unsupported model") from exc
+        except Exception as exc:
+            logger.exception("Verified embedding provider failed")
+            raise PEError(500, "PE_BACKEND_ERROR", "Verified embedding provider failed") from exc
+
+    @app.post("/v1/verify")
+    async def verify():
+        """Explicitly load and observe the operator-selected artifact/behavior identity."""
+        return JSONResponse(await run(provider.describe))
+
+    @app.post("/v1/embeddings")
+    async def embeddings(request: Request):
+        """Require a receipt at admission and return the actual checked receipt."""
+        parsed, expected = await _read_request(request, embedding_request)
+        texts = [parsed.input] if isinstance(parsed.input, str) else parsed.input
+        # batch_size is an operational hint. This v1 path deliberately executes
+        # one input per forward pass, keeping tokenization/pooling explicit.
+        result = await run(lambda: provider.embed(model=parsed.model, texts=texts,
+                                                  task=parsed.task, expected=expected))
+        return JSONResponse(result)
+
+    @app.post("/v1/passages")
+    async def passages(request: Request):
+        """Return complete token-checked byte spans without running model inference."""
+        parsed, expected = await _read_request(request, passage_request)
+        result = await run(lambda: provider.plan(
+            model=parsed.model, text=parsed.input, task=parsed.task, expected=expected,
+            passage_tokens=parsed.passage_tokens, overlap_tokens=parsed.overlap_tokens,
+            max_input_tokens=parsed.max_input_tokens,
+        ))
+        return JSONResponse(result)
+
+    @app.post("/v1/late-passages")
+    async def late_passages(request: Request):
+        """Plan only when the selected adapter explicitly implements contextual passages."""
+        parsed, expected = await _read_request(request, LatePassageRequest)
+        method = getattr(provider, "plan_late", None)
+        if method is None:
+            raise PEError(400, "PE_UNSUPPORTED_CAPABILITY", "Late passage planning is unavailable")
+        return JSONResponse(await run(lambda: method(
+            model=parsed.model, text=parsed.input, task=parsed.task, expected=expected,
+            passage_tokens=parsed.passage_tokens, overlap_tokens=parsed.overlap_tokens,
+            context_cap_tokens=parsed.context_cap_tokens,
+            minimum_window_overlap_tokens=parsed.minimum_window_overlap_tokens,
+            max_input_tokens=parsed.max_input_tokens,
+        )))
+
+    @app.post("/v1/late-embeddings")
+    async def late_embeddings(request: Request):
+        """Return contextual passage vectors and their observed token/character coordinates."""
+        parsed, expected = await _read_request(request, LateEmbeddingRequest)
+        method = getattr(provider, "embed_late", None)
+        if method is None:
+            raise PEError(400, "PE_UNSUPPORTED_CAPABILITY", "Late passage embedding is unavailable")
+        return JSONResponse(await run(lambda: method(
+            model=parsed.model, text=parsed.input, task=parsed.task,
+            boundaries=parsed.boundaries, expected=expected,
+        )))
+
+    return app

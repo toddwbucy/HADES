@@ -6,11 +6,14 @@ pub mod config;
 pub mod daemon_client;
 pub mod db;
 pub mod dispatch;
+pub mod embedding_profile;
 pub mod graph;
+pub mod graphable;
 pub mod ingest_jobs;
 pub mod ingest_routing;
 pub mod persephone;
 pub mod pipeline;
+pub mod reading;
 pub mod retrieval;
 pub mod schema_apply;
 pub mod service;
@@ -19,6 +22,7 @@ pub mod source_git;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod training;
+pub mod workspace_setup;
 
 pub use config::HadesConfig;
 

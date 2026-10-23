@@ -19,9 +19,17 @@ use tracing::warn;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HadesConfig {
+    /// Process-local ingestion admission, set by tree routing or a sealed worker envelope.
+    /// Not a worker marker; ordinary configuration cannot populate this guard.
+    #[serde(skip)]
+    pub ingest_binding: Option<crate::ingest_jobs::Binding>,
+    pub reading_chat: crate::reading::chat::ChatConfig,
     pub chunking: crate::chunking::prechunk::ChunkingPolicy,
     pub database: DatabaseConfig,
     pub embedding: EmbeddingConfig,
+    /// Explicit installation allowlist for database-bound models. No legacy fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registered_providers: Option<super::RegisteredProvidersConfig>,
     /// Document extraction service (docling). `#[serde(default)]` because every
     /// hades.yaml written before this key existed omits it.
     #[serde(default)]

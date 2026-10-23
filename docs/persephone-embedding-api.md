@@ -1,5 +1,8 @@
 # Persephone Embedding API Specification
 
+For HADES ingestion window placement, configuration, provenance and explicit
+re-ingestion, see [Long-document embedding windows](long-document-embedding.md).
+
 **Version:** 1.1
 **Status:** Implemented
 **Path prefix:** `/v1`

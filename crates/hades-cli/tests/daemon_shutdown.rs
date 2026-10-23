@@ -12,11 +12,13 @@ async fn sealed_configuration_bypasses_ambient_loading_only_for_ingestion() {
     let root = tempfile::tempdir().unwrap();
     let mut config = hades_core::config::HadesConfig::with_database("private_snapshot");
     config.database.password = Some("synthetic-snapshot-secret".into());
-    for (subcommand, expected) in [
-        ("ingest", "no inputs provided"),
+    for (subcommand, expected, repeat_database) in [
+        ("ingest", "no inputs provided", false),
+        ("ingest", "no inputs provided", true),
         (
             "status",
             "resolved configuration is only accepted for ingestion",
+            false,
         ),
     ] {
         let snapshot = hades_core::config::snapshot::Snapshot::new(&config).unwrap();
@@ -33,6 +35,9 @@ async fn sealed_configuration_bypasses_ambient_loading_only_for_ingestion() {
         command
             .args(["--resolved-config-fd", &fd.to_string(), subcommand])
             .kill_on_drop(true);
+        if repeat_database {
+            command.args(["--db", "private_snapshot"]);
+        }
         assert!(!format!("{command:?}").contains("synthetic-snapshot-secret"));
         let output = tokio::time::timeout(Duration::from_secs(5), command.output())
             .await
@@ -141,6 +146,20 @@ fn signals_drain_pending_ingest_reservations_before_daemon_exit() {
             let fixture = if pending_ingest {
                 let database = database.try_clone().unwrap();
                 Some(std::thread::spawn(move || {
+                    // This legacy-only peer must explicitly establish absence
+                    // before the job owner can reserve and write its record.
+                    for collection in ["hades_workspace", "hades_setup"] {
+                        let mut connection = accept(&database);
+                        assert_eq!(
+                            request(&mut connection),
+                            format!(
+                                "GET /_db/fixture/_api/collection/{collection}/properties HTTP/1.1"
+                            )
+                        );
+                        let body = br#"{"error":true,"code":404,"errorNum":1203,"errorMessage":"collection not found"}"#;
+                        write!(connection, "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                        connection.write_all(body).unwrap();
+                    }
                     let mut connection = accept(&database);
                     assert_eq!(
                         request(&mut connection),

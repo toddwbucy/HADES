@@ -15,6 +15,7 @@ use crate::config::HadesConfig;
 #[cfg(test)]
 use crate::cursor_mock;
 use crate::db::{ArangoError, ArangoPool};
+pub(crate) use handlers::{db_graph_list, kg_create, kg_layout, kg_names};
 
 /// Maximum value accepted for `limit` parameters in dispatch handlers.
 const MAX_LIMIT: u32 = 1000;
@@ -252,6 +253,33 @@ pub struct DbListParams {
 #[serde(deny_unknown_fields)]
 pub struct DbInsertParams {
     pub collection: String,
+    pub data: Value,
+}
+
+/// Create an authored graph alongside the document and code ingest collections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KgCreateParams {
+    pub name: String,
+}
+
+/// Add a vertex owned by an authored graph, never by an ingest pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KgAddNodeParams {
+    pub graph: String,
+    pub key: String,
+    pub data: Value,
+}
+
+/// Add an authored edge between existing graph, document, or code vertices.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KgAddEdgeParams {
+    pub graph: String,
+    pub key: String,
+    pub from: String,
+    pub to: String,
     pub data: Value,
 }
 
@@ -714,6 +742,27 @@ pub struct CodebaseStatsParams {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", content = "params")]
 pub enum DaemonCommand {
+    #[serde(rename = "reading.chat")]
+    ReadingChat(crate::reading::chat::Request),
+    #[serde(rename = "reading.exchange_context")]
+    ReadingExchangeContext { exchange_id: String },
+    #[serde(rename = "reading.read")]
+    ReadingRead(crate::reading::ReadRequest),
+    #[serde(rename = "reading.capabilities")]
+    ReadingCapabilities {},
+    #[serde(rename = "reading.open")]
+    ReadingOpen(crate::reading::OpenRequest),
+    #[serde(rename = "reading.open_or_resume")]
+    ReadingOpenOrResume(crate::reading::OpenRequest),
+    #[serde(rename = "reading.upload")]
+    ReadingUpload(crate::reading::SourceRequest),
+    #[serde(rename = "reading.extract")]
+    ReadingExtract { source_hash: String },
+    #[serde(rename = "reading.mutate")]
+    ReadingMutate(crate::reading::Mutation),
+    #[serde(rename = "reading.propose")]
+    ReadingPropose(crate::reading::Mutation),
+
     // ── System ──────────────────────────────────────────────────────
     #[serde(rename = "orient")]
     Orient(OrientParams),
@@ -750,6 +799,15 @@ pub enum DaemonCommand {
 
     #[serde(rename = "db.insert")]
     DbInsert(DbInsertParams),
+
+    #[serde(rename = "kg.create")]
+    KgCreate(KgCreateParams),
+
+    #[serde(rename = "kg.add_node")]
+    KgAddNode(KgAddNodeParams),
+
+    #[serde(rename = "kg.add_edge")]
+    KgAddEdge(KgAddEdgeParams),
 
     #[serde(rename = "db.update")]
     DbUpdate(DbUpdateParams),
@@ -991,6 +1049,17 @@ impl DaemonCommand {
     /// - `status`, `db.health`, `db.stats`, `db.collections`, `db.graph.list`
     pub fn access_tier(&self) -> AccessTier {
         match self {
+            Self::ReadingRead(_)
+            | Self::ReadingCapabilities {}
+            | Self::ReadingExchangeContext { .. } => AccessTier::Agent,
+            Self::ReadingChat(_) => AccessTier::Admin,
+            Self::ReadingPropose(_) => AccessTier::Provisioning,
+            Self::ReadingOpen(_)
+            | Self::ReadingOpenOrResume(_)
+            | Self::ReadingUpload(_)
+            | Self::ReadingExtract { .. }
+            | Self::ReadingMutate(_) => AccessTier::Admin,
+
             // ── Agent: bounded reads ──────────────────────────────
             Self::Orient(_) => AccessTier::Agent,
             Self::DbQuery { .. } => AccessTier::Agent,
@@ -1044,6 +1113,7 @@ impl DaemonCommand {
             // ── Provisioning ──────────────────────────────────────
             Self::DbCreateDatabase(_) => AccessTier::Provisioning,
             Self::IngestStart(_) => AccessTier::Provisioning,
+            Self::KgCreate(_) | Self::KgAddNode(_) | Self::KgAddEdge(_) => AccessTier::Provisioning,
             // Reading the status of a job is a bounded read, so an agent
             // session can poll one it was given without being provisioned.
             Self::IngestStatus(_) => AccessTier::Agent,
@@ -1129,6 +1199,39 @@ pub async fn dispatch(
     cmd: DaemonCommand,
 ) -> Result<Value, DispatchError> {
     match cmd {
+        DaemonCommand::ReadingChat(p) => {
+            crate::reading::chat::handle(pool, &config.reading_chat, p)
+                .await
+                .map_err(Into::into)
+        }
+        DaemonCommand::ReadingExchangeContext { exchange_id } => {
+            crate::reading::chat::exchange_context(pool, &exchange_id)
+                .await
+                .map_err(Into::into)
+        }
+        DaemonCommand::ReadingRead(p) => crate::reading::read(pool, p).await.map_err(Into::into),
+        DaemonCommand::ReadingCapabilities {} => crate::reading::capabilities(config)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::ReadingOpen(p) => crate::reading::open(pool, p).await.map_err(Into::into),
+        DaemonCommand::ReadingOpenOrResume(p) => crate::reading::open_or_resume(pool, p)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::ReadingUpload(p) => {
+            crate::reading::upload(pool, p).await.map_err(Into::into)
+        }
+        DaemonCommand::ReadingExtract { source_hash } => {
+            crate::reading::extract(pool, config, source_hash)
+                .await
+                .map_err(Into::into)
+        }
+        DaemonCommand::ReadingMutate(p) => crate::reading::mutate(pool, p, false)
+            .await
+            .map_err(Into::into),
+        DaemonCommand::ReadingPropose(p) => crate::reading::mutate(pool, p, true)
+            .await
+            .map_err(Into::into),
+
         DaemonCommand::GraphEmbedEmbed(params) => {
             handlers::graph_embed_embed(pool, &params.node_id)
                 .await
@@ -1206,6 +1309,15 @@ pub async fn dispatch(
                 .await
                 .map_err(DispatchError::Handler)
         }
+        DaemonCommand::KgCreate(params) => handlers::kg_create(pool, &params.name)
+            .await
+            .map_err(DispatchError::Handler),
+        DaemonCommand::KgAddNode(params) => handlers::kg_add_node(pool, &params)
+            .await
+            .map_err(DispatchError::Handler),
+        DaemonCommand::KgAddEdge(params) => handlers::kg_add_edge(pool, &params)
+            .await
+            .map_err(DispatchError::Handler),
         DaemonCommand::DbUpdate(params) => {
             handlers::db_update(pool, &params.collection, &params.key, &params.data)
                 .await
@@ -1500,7 +1612,7 @@ pub async fn dispatch(
 mod handlers {
     use serde_json::{Value, json};
 
-    use super::{HandlerError, MAX_SCANNED_EMBEDDINGS};
+    use super::{HandlerError, KgAddEdgeParams, KgAddNodeParams, MAX_SCANNED_EMBEDDINGS};
     use crate::db::ArangoPool;
     use crate::db::collections::CollectionProfile;
     use crate::db::crud::{self, CollectionInfo, count_collection, list_collections};
@@ -2509,6 +2621,9 @@ mod handlers {
         limit: u32,
     ) -> Result<serde_json::Value, HandlerError> {
         let (col, key) = parse_node_id(node_id)?;
+        crate::embedding_profile::admission::require_legacy(pool, "structural similarity search")
+            .await
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
 
         // Fetch target embedding.
         let emb_aql = "FOR d IN @@col FILTER d._key == @key RETURN d.structural_embedding";
@@ -3153,6 +3268,260 @@ mod handlers {
             "created": true,
             "edge_definitions": edge_defs,
         }))
+    }
+
+    /// Keep authored data in graph-specific collections. The document and code
+    /// vertices are linked by ID, so their ingest pipelines keep ownership of
+    /// their own rows and never replace authored vertices or edges.
+    pub(crate) fn kg_names(graph: &str) -> Result<(String, String), HandlerError> {
+        let valid = !graph.is_empty()
+            && graph.len() <= 48
+            && graph.starts_with(|c: char| c.is_ascii_alphabetic())
+            && graph
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !valid {
+            return Err(HandlerError::InvalidParameter {
+                name: "graph".into(),
+                reason: "use 1–48 ASCII letters, digits, or underscores, starting with a letter"
+                    .into(),
+            });
+        }
+        Ok((format!("{graph}_nodes"), format!("{graph}_edges")))
+    }
+
+    /// Validate stable authored vertex and edge keys before writing them.
+    fn kg_key(key: &str) -> Result<(), HandlerError> {
+        if key.is_empty()
+            || key.len() > 128
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(HandlerError::InvalidParameter {
+                name: "key".into(),
+                reason: "use 1–128 ASCII letters, digits, underscores, or hyphens".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Accept user properties while reserving database and ownership fields.
+    fn kg_data(data: &Value) -> Result<serde_json::Map<String, Value>, HandlerError> {
+        let obj = data
+            .as_object()
+            .ok_or_else(|| HandlerError::InvalidParameter {
+                name: "data".into(),
+                reason: "must be a JSON object".into(),
+            })?;
+        if let Some(name) = ["_key", "_id", "_rev", "_from", "_to", "_hades"]
+            .into_iter()
+            .find(|name| obj.contains_key(*name))
+        {
+            return Err(HandlerError::InvalidParameter {
+                name: "data".into(),
+                reason: format!("'{name}' is reserved; use the tool's explicit fields"),
+            });
+        }
+        Ok(obj.clone())
+    }
+
+    /// Require the named graph to have the exact authored edge definition.
+    /// This prevents writes into a similarly named collection from silently
+    /// missing graph traversal or crossing a different ontology.
+    pub(crate) async fn kg_layout(
+        pool: &ArangoPool,
+        graph: &str,
+    ) -> Result<(String, String), HandlerError> {
+        let (nodes, edges) = kg_names(graph)?;
+        let graphs = db_graph_list(pool).await?;
+        let expected = [nodes.as_str(), "documents", "codebase_files"];
+        let same_endpoints = |value: &Value| {
+            value.as_array().is_some_and(|names| {
+                names.len() == expected.len()
+                    && expected
+                        .iter()
+                        .all(|name| names.iter().any(|candidate| candidate == name))
+            })
+        };
+        let valid = graphs["graphs"].as_array().is_some_and(|all| {
+            all.iter().any(|g| {
+                g["name"] == graph
+                    && g["edge_definitions"].as_array().is_some_and(|defs| {
+                        defs.len() == 1
+                            && defs[0]["collection"] == edges
+                            && same_endpoints(&defs[0]["from"])
+                            && same_endpoints(&defs[0]["to"])
+                    })
+            })
+        });
+        if !valid {
+            return Err(HandlerError::InvalidParameter {
+                name: "graph".into(),
+                reason: format!("'{graph}' is not an authored KG created by kg.create"),
+            });
+        }
+        Ok((nodes, edges))
+    }
+
+    /// Create the authored graph and its collections without claiming ingest rows.
+    pub async fn kg_create(pool: &ArangoPool, graph: &str) -> Result<Value, HandlerError> {
+        let (nodes, edges) = kg_names(graph)?;
+        let graphs = db_graph_list(pool).await?;
+        if graphs["graphs"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|g| g["name"] == graph))
+        {
+            return Err(HandlerError::Conflict(format!(
+                "graph '{graph}' already exists; use graph_list to inspect it"
+            )));
+        }
+        let collections =
+            list_collections(pool, false)
+                .await
+                .map_err(|source| HandlerError::Query {
+                    context: "list collections before KG creation".into(),
+                    source,
+                })?;
+        let required = [
+            (nodes.as_str(), 2),
+            ("documents", 2),
+            ("codebase_files", 2),
+            (edges.as_str(), 3),
+        ];
+        for (name, kind) in required {
+            if let Some(existing) = collections.iter().find(|c| c.name == name)
+                && existing.collection_type != kind
+            {
+                return Err(HandlerError::Conflict(format!(
+                    "collection '{name}' has type {}, expected {kind}",
+                    existing.collection_type
+                )));
+            }
+        }
+        for name in [&nodes, &edges] {
+            if collections.iter().any(|c| c.name == *name) {
+                let count =
+                    count_collection(pool, name)
+                        .await
+                        .map_err(|source| HandlerError::Query {
+                            context: format!("count existing KG collection '{name}'"),
+                            source,
+                        })?;
+                if count > 0 {
+                    return Err(HandlerError::Conflict(format!(
+                        "authored collection '{name}' already contains {count} row(s)"
+                    )));
+                }
+            }
+        }
+        for (name, kind) in required {
+            if collections.iter().any(|c| c.name == name) {
+                continue;
+            }
+            crud::create_collection(pool, name, Some(kind))
+                .await
+                .map_err(|source| match source {
+                    crate::db::ArangoError::Api {
+                        error_num: 1207, ..
+                    } => HandlerError::Conflict(format!(
+                        "collection '{name}' was created concurrently; retry kg.create"
+                    )),
+                    source => HandlerError::Query {
+                        context: format!("create KG collection '{name}'"),
+                        source,
+                    },
+                })?;
+        }
+        let endpoints = json!([nodes, "documents", "codebase_files"]);
+        db_graph_create(
+            pool,
+            graph,
+            Some(&json!([{"collection": edges, "from": endpoints, "to": endpoints}])),
+        )
+        .await
+        .map_err(|error| match error {
+            HandlerError::Query {
+                source:
+                    crate::db::ArangoError::Api {
+                        error_num: 1925, ..
+                    },
+                ..
+            } => HandlerError::Conflict(format!(
+                "graph '{graph}' was created concurrently; use graph_list to inspect it"
+            )),
+            other => other,
+        })?;
+        Ok(json!({"graph": graph, "nodes": nodes, "edges": edges,
+                  "linkable_collections": ["documents", "codebase_files"]}))
+    }
+
+    /// Insert a keyed node into an authored graph's vertex collection.
+    pub async fn kg_add_node(
+        pool: &ArangoPool,
+        params: &KgAddNodeParams,
+    ) -> Result<Value, HandlerError> {
+        kg_key(&params.key)?;
+        let (nodes, _) = kg_layout(pool, &params.graph).await?;
+        let mut data = kg_data(&params.data)?;
+        data.insert("_key".into(), json!(params.key));
+        data.insert("_hades".into(), json!({"basis": "authored"}));
+        db_insert(pool, &nodes, &Value::Object(data)).await
+    }
+
+    /// Insert a keyed edge after confirming both graph endpoints exist.
+    pub async fn kg_add_edge(
+        pool: &ArangoPool,
+        params: &KgAddEdgeParams,
+    ) -> Result<Value, HandlerError> {
+        kg_key(&params.key)?;
+        let (nodes, edges) = kg_layout(pool, &params.graph).await?;
+        for (field, id) in [("from", &params.from), ("to", &params.to)] {
+            let (collection, key) =
+                id.split_once('/')
+                    .ok_or_else(|| HandlerError::InvalidParameter {
+                        name: field.into(),
+                        reason: "expected collection/key".into(),
+                    })?;
+            if ![nodes.as_str(), "documents", "codebase_files"].contains(&collection) {
+                return Err(HandlerError::InvalidParameter {
+                    name: field.into(),
+                    reason: format!(
+                        "collection '{collection}' is not in graph '{}'",
+                        params.graph
+                    ),
+                });
+            }
+            if key.is_empty()
+                || key.len() > 254
+                || key.bytes().any(|b| b == b'/' || b.is_ascii_control())
+            {
+                return Err(HandlerError::InvalidParameter {
+                    name: field.into(),
+                    reason: "endpoint key must be nonempty, at most 254 bytes, without '/' or control characters".into(),
+                });
+            }
+            let exists = query::query_single(
+                pool,
+                "RETURN DOCUMENT(@id) != null",
+                Some(&json!({"id": id})),
+                ExecutionTarget::Reader,
+            )
+            .await
+            .map_err(|source| HandlerError::Query {
+                context: format!("check edge {field} endpoint"),
+                source,
+            })?;
+            if exists != Some(json!(true)) {
+                return Err(HandlerError::NodeNotFound(id.clone()));
+            }
+        }
+        let mut data = kg_data(&params.data)?;
+        data.insert("_key".into(), json!(params.key));
+        data.insert("_from".into(), json!(params.from));
+        data.insert("_to".into(), json!(params.to));
+        data.insert("_hades".into(), json!({"basis": "authored"}));
+        db_insert(pool, &edges, &Value::Object(data)).await
     }
 
     /// Drop a named graph via the Gharial API.
@@ -5172,6 +5541,47 @@ mod handlers {
         // variable before dispatching, which is the only surface it belongs to.
         let (profile_name, profile) = resolve_query_profile(collection, None)?;
 
+        // The selected database chooses its model. Missing/corrupt profile
+        // metadata and unavailable verification never fall back to global Jina.
+        if crate::embedding_profile::admission::is_managed(pool)
+            .await
+            .map_err(|source| HandlerError::Query {
+                context: "cannot determine database embedding policy".into(),
+                source,
+            })?
+        {
+            if profile.metadata != "documents" || hybrid || structural {
+                return Err(HandlerError::InvalidParameter {
+                    name: "collection/hybrid/structural".into(),
+                    reason: "model-bound search currently supports document passages and exact cosine ranking only; code, hybrid and structural search are unavailable".into(),
+                });
+            }
+            let catalog = config.registered_providers.as_ref()
+                .ok_or_else(|| HandlerError::ServiceError(
+                    "model-bound search requires registered_providers in installation configuration; the legacy embedding endpoint is not a verified provider".into()))?
+                .catalog().map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+            let documents =
+                crate::pipeline::profiled_documents::ProfiledDocuments::connect_retaining(
+                    pool.clone(),
+                    &catalog,
+                    admission.clone(),
+                )
+                .await
+                .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+            let result = documents
+                .search_retaining(text, limit as usize, MAX_SCANNED_EMBEDDINGS, admission)
+                .await
+                .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+            return Ok(json!({
+                "query": text, "collection": profile_name,
+                "model": result.binding.model, "dimension": result.binding.dimension,
+                "result_count": result.items.len(), "results": result.items,
+                "scanned": result.scanned, "embedding_profile_state": "ready",
+                "embedding_binding": result.binding,
+                "structural_applied": false, "structural_reason": "not_requested",
+            }));
+        }
+
         // 2. Embed the query text with the adapter this profile's corpus was
         //    embedded with. The adapters do not share a vector space, so a
         //    mismatch is not a small loss: searching a `code` corpus with
@@ -5333,6 +5743,7 @@ mod handlers {
             "collection": profile_name,
             "model": embed_result.model,
             "dimension": embed_result.dimension,
+            "embedding_profile_state": "legacy_unverified",
             "result_count": results.len(),
             "results": results,
             "structural_applied": structural_reason.is_none(),
@@ -6177,6 +6588,10 @@ mod handlers {
     ) -> Result<Value, HandlerError> {
         use crate::persephone::embedding::EmbeddingClient;
 
+        crate::embedding_profile::admission::require_legacy(pool, "semantic smell report")
+            .await
+            .map_err(|e| HandlerError::ServiceError(e.to_string()))?;
+
         // Run check and verify.
         let check_result = smell_check(pool, path, true).await?;
         let verify_result = smell_verify(pool, path, &[]).await?;
@@ -6997,6 +7412,22 @@ mod tests {
         use tokio::sync::Notify;
 
         let roots = tempfile::tempdir().unwrap();
+        let mut mismatched = Mock::new(vec![]).await;
+        let error = handlers::ingest_start(
+            &mismatched.pool,
+            &HadesConfig::with_database("wrong-database"),
+            roots.path().to_str().unwrap(),
+            false,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("configuration and selected database differ")
+        );
+        assert!(mismatched.events.try_recv().is_err());
         let mut tasks = Vec::new();
         let mut mocks = Vec::new();
         for index in 0..2 {
@@ -7008,7 +7439,7 @@ mod tests {
             tasks.push(tokio::spawn(async move {
                 handlers::ingest_start(
                     &pool,
-                    &HadesConfig::with_database(&format!("database-{index}")),
+                    &HadesConfig::with_database(pool.database()),
                     path.to_str().unwrap(),
                     false,
                     false,
@@ -7019,7 +7450,7 @@ mod tests {
             mocks.push(mock);
         }
         let mut rejected = Mock::new(vec![]).await;
-        let config = HadesConfig::with_database("database-three");
+        let config = HadesConfig::with_database(rejected.pool.database());
         let fresh = roots.path().join("fresh");
         std::fs::create_dir(&fresh).unwrap();
         for path in [roots.path().join("tree-0"), fresh.clone()] {

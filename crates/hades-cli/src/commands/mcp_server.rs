@@ -40,8 +40,8 @@ use hades_core::db::ArangoPool;
 use hades_core::dispatch::{
     DaemonCommand, DbCountParams, DbCreateDatabaseParams, DbGetParams, DbGraphNeighborsParams,
     DbGraphTraverseParams, DbListParams, DbSchemaInitParams, IngestStartParams, IngestStatusParams,
-    OrientParams, SmellReportParams, TaskCreateParams, TaskListParams, TaskShowParams,
-    TaskUpdateParams,
+    KgAddEdgeParams, KgAddNodeParams, KgCreateParams, OrientParams, SmellReportParams,
+    TaskCreateParams, TaskListParams, TaskShowParams, TaskUpdateParams,
 };
 use hades_core::service::{self, ConnectionPolicy};
 
@@ -295,6 +295,51 @@ macro_rules! db_field_doc {
     };
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ReadingExchangeArgs {
+    db: Option<String>,
+    exchange_id: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ReadingReadArgs {
+    db: Option<String>,
+    session: Option<String>,
+    /// context gives bounded focus and decisions; state gives proposal details; export gives history.
+    view: Option<String>,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ReadingProposeArgs {
+    db: Option<String>,
+    session: String,
+    request_id: String,
+    expected_revision: u64,
+    /// Attribution label, not a credential. Include harness/model identity when known.
+    actor: String,
+    /// Example: {"action":"propose","id":"note1","draft":{"title":"A title","note":"A sourced note","is":null,"is_not":null,"standing":"Source status or qualification","highlight":"existing_human_highlight_id","basis":"Why this belongs within the reading boundaries","from":null,"to":null,"relation":null,"inferred":false,"rationale":null}}. The highlight key is named "highlight", not "highlight_id". Include standing, basis, and inferred. Alternatively: {"action":"pins","name":"context","pins":[{"reference":"existing_reference_id","note":"Reason for pinning","seen":false}]}. Only these two actions are permitted.
+    action: ReadingAgentAction,
+}
+/// Publish the actual nested schema so a model need not guess required draft fields.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum ReadingAgentAction {
+    Propose {
+        id: String,
+        draft: Box<hades_core::reading::Draft>,
+    },
+    Pins {
+        name: String,
+        pins: Vec<hades_core::reading::Pin>,
+    },
+}
+impl From<ReadingAgentAction> for hades_core::reading::Action {
+    fn from(value: ReadingAgentAction) -> Self {
+        match value {
+            ReadingAgentAction::Propose { id, draft } => Self::Propose { id, draft: *draft },
+            ReadingAgentAction::Pins { name, pins } => Self::Pins { name, pins },
+        }
+    }
+}
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DbOnlyArgs {
     #[schemars(description = db_field_doc!())]
@@ -317,6 +362,50 @@ struct CreateDatabaseArgs {
         description = "Name of the database to create. Must begin with a prefix this endpoint is allowed to provision."
     )]
     name: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct KgCreateArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    #[schemars(
+        description = "Graph name: 1–48 ASCII letters, digits, or underscores; start with a letter. Creates NAME_nodes and NAME_edges. The graph can also link to ingested documents and codebase_files."
+    )]
+    name: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct KgAddNodeArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    graph: String,
+    #[schemars(
+        description = "Stable node key, 1–128 ASCII letters, digits, underscores, or hyphens"
+    )]
+    key: String,
+    #[schemars(description = "Node properties as a JSON object; system fields are reserved")]
+    data: serde_json::Value,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct KgAddEdgeArgs {
+    #[schemars(description = db_field_doc!())]
+    db: Option<String>,
+    graph: String,
+    #[schemars(
+        description = "Stable edge key, 1–128 ASCII letters, digits, underscores, or hyphens"
+    )]
+    key: String,
+    #[schemars(
+        description = "Existing source vertex as collection/key; authored nodes, documents, and codebase_files are supported"
+    )]
+    from: String,
+    #[schemars(
+        description = "Existing target vertex as collection/key; authored nodes, documents, and codebase_files are supported"
+    )]
+    to: String,
+    #[schemars(description = "Edge properties as a JSON object; system fields are reserved")]
+    data: serde_json::Value,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -612,6 +701,59 @@ impl HadesMcpServer {
 #[tool_router]
 impl HadesMcpServer {
     #[tool(
+        description = "Read the immutable reading or knowledge-workspace context sent for one HADES chat exchange, including explicitly selected conversation references. Unlike live reading_context or graph lookups, this snapshot does not change when a passage or graph object changes. Use the exchange_id supplied with the user message."
+    )]
+    async fn reading_exchange_context(
+        &self,
+        Parameters(a): Parameters<ReadingExchangeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::ReadingExchangeContext {
+                exchange_id: a.exchange_id,
+            },
+        )
+        .await
+    }
+    #[tool(
+        description = "Read guided-reading sessions, current human focus, pins, and proposal decisions. Exact source references do not imply that the agent sees the browser. Poll explicitly; reading does not trigger execution."
+    )]
+    async fn reading_context(
+        &self,
+        Parameters(a): Parameters<ReadingReadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::ReadingRead(hades_core::reading::ReadRequest {
+                session: a.session,
+                view: a.view.unwrap_or_else(|| "context".into()),
+                source_hash: None,
+            }),
+        )
+        .await
+    }
+    #[tool(
+        description = "Propose a sourced note/relationship from a human highlight or post a named pin set. Read session state first for the current revision and highlight IDs. Requires provisioning permission for the database. Cannot accept, edit human classifications, or advance stages. Acceptance occurs in the human viewer. Reuse the exact request ID and payload after a lost response."
+    )]
+    async fn reading_propose(
+        &self,
+        Parameters(a): Parameters<ReadingProposeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let action = a.action.into();
+        self.run(
+            a.db,
+            DaemonCommand::ReadingPropose(hades_core::reading::Mutation {
+                session: a.session,
+                request_id: a.request_id,
+                expected_revision: a.expected_revision,
+                actor: a.actor,
+                action,
+            }),
+        )
+        .await
+    }
+
+    #[tool(
         description = "Enumerate the collections in a database with their document counts and types. Start here when surveying an unfamiliar graph: orient reports collection *profiles*, which do not name the symbol or edge collections a code graph also holds."
     )]
     async fn db_collections(
@@ -661,6 +803,61 @@ impl HadesMcpServer {
         self.run(
             None,
             DaemonCommand::DbCreateDatabase(DbCreateDatabaseParams { name: a.name }),
+        )
+        .await
+    }
+
+    /// Expose graph creation to provisioning-enabled MCP clients.
+    #[tool(
+        description = "Create a named authored knowledge graph with its own node and edge collections. It can link to existing processed documents and codebase files. Requires provisioning and a database matching the configured prefix. Use create_database first for a new database."
+    )]
+    async fn kg_create(
+        &self,
+        Parameters(a): Parameters<KgCreateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::KgCreate(KgCreateParams { name: a.name }),
+        )
+        .await
+    }
+
+    /// Expose keyed authored vertex insertion over MCP.
+    #[tool(
+        description = "Add a keyed authored node to a knowledge graph. Authored nodes live outside ingest-owned collections, so document re-ingest does not replace them. Duplicate keys are refused."
+    )]
+    async fn kg_add_node(
+        &self,
+        Parameters(a): Parameters<KgAddNodeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::KgAddNode(KgAddNodeParams {
+                graph: a.graph,
+                key: a.key,
+                data: a.data,
+            }),
+        )
+        .await
+    }
+
+    /// Expose keyed authored edge insertion over MCP.
+    #[tool(
+        description = "Add a keyed authored edge between existing nodes, processed documents, or codebase files in the named graph. Both endpoints must exist; duplicate edge keys are refused."
+    )]
+    async fn kg_add_edge(
+        &self,
+        Parameters(a): Parameters<KgAddEdgeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run(
+            a.db,
+            DaemonCommand::KgAddEdge(KgAddEdgeParams {
+                graph: a.graph,
+                key: a.key,
+                from: a.from,
+                to: a.to,
+                data: a.data,
+            }),
         )
         .await
     }
@@ -938,9 +1135,8 @@ impl ServerHandler for HadesMcpServer {
             // What a client reads before it looks at a single tool, so it
             // carries the three things that otherwise cost a round trip each:
             // which profile to search, how the traversal graph is resolved,
-            // and that ingest is a job rather than a call. It also says the
-            // graph is source-derived, so an agent looking for an edit tool
-            // learns there is none before it searches (data ownership, #188).
+            // and that ingest is a job rather than a call. Authored KG writes
+            // have their own collections so source ingest retains its owner.
             .with_instructions(
                 "HADES knowledge-graph tools. Every result is the HADES JSON \
              envelope: {success, data, error, error_code}. Start with `orient` to \
@@ -955,24 +1151,28 @@ impl ServerHandler for HadesMcpServer {
              `codebase_graph`. `graph_list` reports each graph with its edge \
              definitions, which is also how to learn the real edge-collection \
              names before guessing at them.\n\n\
-             Building a graph: `ingest_start` takes one directory and routes every \
+             Building a graph: `create_database`, then `kg_create`, creates an \
+             authored graph. `kg_add_node` adds keyed nodes and `kg_add_edge` \
+             links them to other authored nodes or existing `documents` and \
+             `codebase_files`. Use `graph_list` to inspect the graph. \
+             `ingest_start` takes one directory and routes every \
              file by extension, code to the analyzers and documents to extraction, \
              into the same graph. It returns a job id immediately because ingests \
              run for minutes, so poll `ingest_status` rather than waiting. Files \
              nothing claims are listed under `unrouted` rather than skipped.\n\n\
              Limits: this endpoint runs at the agent access tier, so raw AQL, \
              purge, insert and graph drop are unavailable. `create_database`, \
-             `db_schema_init` and `ingest_start` need provisioning, which is off unless the operator \
-             enabled it. All three then act only on databases whose names match \
+             `db_schema_init`, `ingest_start`, and `kg_*` writes need provisioning, \
+             which is off unless the operator enabled it. They act only on databases whose names match \
              the operator's provisioning prefixes, including when `db` is omitted, \
              and `ingest_start` reads only from specific directories. \
              `db_schema_init` seeds only a database with no schema yet; it never \
              replaces one. A refusal names what would have been permitted, so read \
              the error rather than retrying.\n\n\
-             Changing the graph: the graph is derived from source. No tool edits a \
-             node or edge directly. `ingest_start` rewrites the rows and edges the \
-             ingested files own, replacing what an earlier ingest derived from \
-             them, so change a file on disk and ingest it.",
+             Ownership: `ingest_start` rewrites rows and edges its files own. \
+             `kg_add_node` and `kg_add_edge` write into separate authored \
+             collections, so re-ingest does not replace those rows. An authored \
+             edge can become dangling if its ingested endpoint is later removed.",
             )
     }
 }
@@ -1110,6 +1310,27 @@ use super::cursor_mock;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_tool_publishes_draft_fields_and_excludes_human_actions() {
+        let schema = serde_json::to_value(schemars::schema_for!(ReadingProposeArgs)).unwrap();
+        let draft = &schema["$defs"]["Draft"];
+        for field in ["highlight", "standing", "basis", "inferred"] {
+            assert!(draft["properties"].get(field).is_some());
+            assert!(
+                draft["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(field))
+            );
+        }
+        assert!(
+            serde_json::from_value::<ReadingAgentAction>(
+                serde_json::json!({"action":"accept","id":"proposal","proposal_revision":1})
+            )
+            .is_err()
+        );
+    }
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use tower::ServiceExt;
@@ -1315,7 +1536,7 @@ mod tests {
     // --- tool surface ------------------------------------------------------
 
     #[test]
-    fn tool_surface_is_the_curated_eighteen() {
+    fn tool_surface_includes_authored_kg_writes() {
         let router = HadesMcpServer::tool_router();
         let mut names: Vec<String> = router
             .list_all()
@@ -1326,7 +1547,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                // The three provisioning tools are advertised on every endpoint
+                // Provisioning tools are advertised on every endpoint
                 // and authorized on none by default: calling one without
                 // provisioning returns ACCESS_DENIED naming the permitted
                 // prefixes and roots. Advertised rather than hidden so a client
@@ -1345,7 +1566,13 @@ mod tests {
                 "graph_traverse",
                 "ingest_start",
                 "ingest_status",
+                "kg_add_edge",
+                "kg_add_node",
+                "kg_create",
                 "orient",
+                "reading_context",
+                "reading_exchange_context",
+                "reading_propose",
                 "smell_report",
                 "task_create",
                 "task_list",

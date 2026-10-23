@@ -38,6 +38,8 @@ use hyperlocal::{UnixClientExt, UnixConnector};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
+use crate::embedding_profile::{ContractError, ProviderReceipt};
+
 /// Default timeout for embedding requests (5 min for large batches).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default connection timeout.
@@ -103,6 +105,10 @@ impl Default for EmbeddingClientConfig {
 /// Error type for embedding client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum EmbeddingError {
+    /// Invalid profile, provider binding, or request policy.
+    #[error(transparent)]
+    Contract(#[from] ContractError),
+
     /// Transport/connection error.
     #[error("connection error: {0}")]
     Connection(String),
@@ -207,12 +213,19 @@ pub struct ProviderInfo {
 #[derive(Clone)]
 pub struct EmbeddingClient {
     response_limit: Option<usize>,
+    expected_receipt: Option<ProviderReceipt>,
     config: EmbeddingClientConfig,
     unix_client: Option<Client<UnixConnector, Full<Bytes>>>,
     tcp_client: Option<Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>>,
 }
 
 impl EmbeddingClient {
+    /// Only the profile-bound factory can activate mandatory receipt transport.
+    pub(super) fn with_expected_receipt(mut self, receipt: ProviderReceipt) -> Self {
+        self.expected_receipt = Some(receipt);
+        self
+    }
+
     /// Bound each HTTP response before deserializing it (for single-query search).
     pub fn with_response_limit(mut self, bytes: usize) -> Result<Self, EmbeddingError> {
         if bytes == 0 {
@@ -249,6 +262,7 @@ impl EmbeddingClient {
                 info!("embedding client ready (Unix socket)");
                 Ok(Self {
                     response_limit: None,
+                    expected_receipt: None,
                     config,
                     unix_client: Some(client),
                     tcp_client: None,
@@ -263,6 +277,7 @@ impl EmbeddingClient {
                 info!("embedding client ready (TCP)");
                 Ok(Self {
                     response_limit: None,
+                    expected_receipt: None,
                     config,
                     unix_client: None,
                     tcp_client: Some(client),
@@ -804,10 +819,38 @@ impl EmbeddingClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, EmbeddingError> {
+        self.request_typed(method, path, body).await
+    }
+
+    /// Parse typed internal responses directly from bounded wire bytes so duplicate
+    /// fields cannot disappear through an intermediate JSON Value.
+    pub(super) async fn request_typed<T: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, EmbeddingError> {
         let uri = self.build_uri(path)?;
 
+        let pinned = if method == Method::POST
+            && matches!(
+                path,
+                "/embeddings" | "/passages" | "/late-passages" | "/late-embeddings"
+            ) {
+            self.expected_receipt.as_ref()
+        } else {
+            None
+        };
         let body_bytes = match body {
-            Some(v) => serde_json::to_vec(v)?,
+            Some(v) => {
+                if let Some(expected) = pinned {
+                    let mut value = v.clone();
+                    value["expected_receipt"] = serde_json::to_value(expected)?;
+                    serde_json::to_vec(&value)?
+                } else {
+                    serde_json::to_vec(v)?
+                }
+            }
             None => Vec::new(),
         };
 
@@ -851,6 +894,29 @@ impl EmbeddingClient {
                 status: status.as_u16(),
                 message,
             });
+        }
+
+        if let Some(expected) = pinned {
+            // Deserialize identity directly from bytes: going through Value first
+            // would silently accept duplicate receipt/model keys. Additional
+            // OpenAI response fields remain compatible with the legacy parser.
+            #[derive(Deserialize)]
+            struct Identity {
+                model: String,
+                receipt: ProviderReceipt,
+            }
+            let identity: Identity = serde_json::from_slice(&resp_bytes).map_err(|e| {
+                EmbeddingError::InvalidResponse(format!("invalid provider receipt: {e}"))
+            })?;
+            identity
+                .receipt
+                .check_matches(expected)
+                .map_err(|e| EmbeddingError::InvalidResponse(e.to_string()))?;
+            if identity.model != self.config.model {
+                return Err(EmbeddingError::InvalidResponse(
+                    "bound response must identify the exact configured model".into(),
+                ));
+            }
         }
 
         serde_json::from_slice(&resp_bytes).map_err(|e| {

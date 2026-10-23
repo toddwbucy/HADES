@@ -1,0 +1,56 @@
+{
+  "passed": true,
+  "checks": [
+    "renamed repeated upload resumes saved reading",
+    "intentional separate reading",
+    "passage edit blocks creation and restoration before mutation",
+    "remove and reload",
+    "unsent message retained",
+    "boundary draft blocks retry from another reading",
+    "lost removal response exact retry",
+    "restore notes, graph and chat bindings",
+    "valid audit chain",
+    "wider side panels and responsive fallback"
+  ],
+  "layoutChecks": [
+    {
+      "viewport": 1280,
+      "compact": [
+        220,
+        650.40625,
+        409.59375
+      ],
+      "wide": [
+        240,
+        553.609375,
+        486.390625
+      ]
+    },
+    {
+      "viewport": 1800,
+      "compact": [
+        220,
+        1004,
+        576
+      ],
+      "wide": [
+        324,
+        792,
+        684
+      ]
+    },
+    {
+      "viewport": 2560,
+      "compact": [
+        220,
+        1004,
+        576
+      ],
+      "wide": [
+        360,
+        1227.203125,
+        972.796875
+      ]
+    }
+  ]
+}

@@ -19,6 +19,7 @@ use crate::persephone::extraction::{
 /// Pipeline configuration.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
+    pub late_chunking: bool,
     pub prechunk: crate::chunking::prechunk::PrechunkConfig,
     /// Collection profile to store results in.
     pub profile: &'static CollectionProfile,
@@ -30,17 +31,21 @@ pub struct PipelineConfig {
     pub extract_options: ExtractOptions,
     /// Whether to overwrite existing documents.
     pub overwrite: bool,
+    /// Explicit operator election to replace historical fallback extraction.
+    pub reextract_fallback: bool,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             prechunk: Default::default(),
+            late_chunking: false,
             profile: CollectionProfile::default_profile(),
             embed_task: "retrieval.passage".to_string(),
             embed_batch_size: None,
             extract_options: ExtractOptions::all(),
             overwrite: true,
+            reextract_fallback: false,
         }
     }
 }
@@ -196,6 +201,25 @@ impl Pipeline {
         let batch_start = Instant::now();
         let mut results = Vec::with_capacity(documents.len());
 
+        if let Err(error) =
+            crate::embedding_profile::admission::require_legacy(&self.db, "document ingestion")
+                .await
+        {
+            return PipelineSummary::from_results(
+                documents
+                    .iter()
+                    .map(|(_, id)| DocumentResult {
+                        doc_key: keys::normalize_document_key(id),
+                        success: false,
+                        chunk_count: 0,
+                        duration_ms: 0,
+                        error: Some(error.to_string()),
+                    })
+                    .collect(),
+                batch_start.elapsed().as_millis() as u64,
+            );
+        }
+
         // -- Phase 1: Extract all documents --------------------------------
         info!(count = documents.len(), "phase 1: extracting documents");
         // (doc_key, extract_result, extraction_duration_ms)
@@ -295,6 +319,7 @@ impl Pipeline {
         doc_key: &str,
         chunker: &(dyn ChunkingStrategy + Send + Sync),
     ) -> Result<usize, PipelineError> {
+        crate::embedding_profile::admission::require_legacy(&self.db, "document ingestion").await?;
         // 1. Extract
         let extract_result = self
             .extractor
@@ -323,14 +348,14 @@ impl Pipeline {
         if input.is_empty() {
             return Err(PipelineError::EmptyChunks);
         }
-        let (chunks, parents, embed_result) = crate::chunking::prechunk::embed_chunks(
+        let (chunks, parents, embed_result, window_plan) = crate::chunking::prechunk::embed_chunks(
             &self.embedder,
             &extract_result.full_text,
             input,
             window,
             &self.config.embed_task,
             self.config.embed_batch_size,
-            false,
+            self.config.late_chunking,
         )
         .await
         .map_err(|e| match e.downcast::<EmbeddingError>() {
@@ -354,6 +379,7 @@ impl Pipeline {
             &embed_result,
             &parents,
             window.tokens,
+            window_plan.as_ref(),
         )
         .await?;
 
@@ -370,6 +396,7 @@ impl Pipeline {
         embed_result: &EmbedResult,
         parents: &[usize],
         window_tokens: u32,
+        window_plan: Option<&crate::chunking::windows::WindowPlan>,
     ) -> Result<(), PipelineError> {
         let profile = self.config.profile;
 
@@ -383,6 +410,7 @@ impl Pipeline {
             "chunk_count": chunks.len(),
             "embedding_model": embed_result.model,
             "embedding_dimension": embed_result.dimension,
+            "embedding_window_plan": window_plan,
             "extractor_metadata": extract_result.metadata,
         });
 
@@ -397,6 +425,7 @@ impl Pipeline {
             .collect();
 
         // -- Embedding documents -------------------------------------------
+        let summary = window_plan.map(|p| p.summary()).unwrap_or(Value::Null);
         let embedding_docs: Vec<Value> = embed_result
             .embeddings
             .iter()
@@ -413,6 +442,9 @@ impl Pipeline {
                 row["window_tokens"] = json!(window_tokens);
                 let index = row["chunk_index"].as_u64().expect("mapped chunk index") as usize;
                 row["parent_chunk_index"] = json!(parents[index]);
+                row["embedding_window"] = window_plan
+                    .map(|p| p.chunk_provenance(index, &summary))
+                    .unwrap_or(Value::Null);
                 row
             })
             .collect();
@@ -425,7 +457,20 @@ impl Pipeline {
         let collections = batches.iter().map(|(name, _)| name.to_string()).collect();
         let overwrite = self.config.overwrite;
         let doc_key = doc_key.to_owned();
+        let reextract_fallback = self.config.reextract_fallback;
         transaction::run(&self.db, collections, move |client| async move {
+            if overwrite && !reextract_fallback {
+                match client.get(&format!("document/{}/{doc_key}", profile.metadata)).await {
+                    Ok(stored) if is_fallback_document(&stored) => {
+                        return Err(ArangoError::Request(
+                            "stored pymupdf_fallback extraction preserved; review the source and explicitly re-ingest with --force".into()
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.is_not_found() => {}
+                    Err(e) => return Err(e),
+                }
+            }
             if overwrite {
                 for collection in [profile.chunks, profile.embeddings] {
                     let response = client.post("cursor", &json!({
@@ -460,6 +505,12 @@ impl Pipeline {
         }).await?;
         Ok(())
     }
+}
+
+/// Recognize both the current pipeline envelope and legacy extractor metadata.
+fn is_fallback_document(document: &Value) -> bool {
+    document["extractor_metadata"]["extractor"] == "pymupdf_fallback"
+        || document["metadata"]["extractor"] == "pymupdf_fallback"
 }
 
 impl std::fmt::Debug for Pipeline {

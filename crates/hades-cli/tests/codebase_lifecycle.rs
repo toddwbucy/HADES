@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::process::Command;
 use tokio::task::JoinHandle;
@@ -29,6 +29,8 @@ include!("fixtures/provisioning_scope_outcomes.rs");
 
 struct Embedder {
     fail: Arc<AtomicBool>,
+    models_calls: Arc<AtomicUsize>,
+    fail_repeated_models: Arc<AtomicBool>,
     hold: Arc<AtomicBool>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -52,6 +54,10 @@ impl Embedder {
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let fail = Arc::new(AtomicBool::new(false));
         let fault = fail.clone();
+        let models_calls = Arc::new(AtomicUsize::new(0));
+        let model_requests = models_calls.clone();
+        let fail_repeated_models = Arc::new(AtomicBool::new(false));
+        let models_fault = fail_repeated_models.clone();
         let hold = Arc::new(AtomicBool::new(false));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -59,8 +65,17 @@ impl Embedder {
         let entered_request = entered.clone();
         let release_request = release.clone();
         let app = Router::new()
-            .route("/v1/models", get(|| async {
-                Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]}))
+            .route("/v1/models", get(move || {
+                let calls = model_requests.clone();
+                let fault = models_fault.clone();
+                async move {
+                    if calls.fetch_add(1, Ordering::SeqCst) > 0 && fault.load(Ordering::SeqCst) {
+                        return (axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({"error":"model metadata unavailable after preflight"})));
+                    }
+                    (axum::http::StatusCode::OK,
+                        Json(json!({"data":[{"id":MODEL,"dimension":2048,"max_seq_length":8192,"device":"cpu"}]})))
+                }
             }))
             .route("/v1/embeddings", post(move |Json(body): Json<Value>| {
                 let fault = fault.clone();
@@ -99,6 +114,8 @@ impl Embedder {
         });
         Self {
             fail,
+            models_calls,
+            fail_repeated_models,
             hold,
             entered,
             release,
@@ -108,6 +125,70 @@ impl Embedder {
         }
     }
 }
+
+#[tokio::test]
+async fn raw_files_reuse_run_embedding_policy_when_metadata_becomes_unavailable() {
+    with_temp_db("raw_window_policy", Fixtures::Codebase, |pool| async move {
+        let embedder = Embedder::new().await;
+        embedder.fail_repeated_models.store(true, Ordering::SeqCst);
+        let tree = tempfile::tempdir().unwrap();
+        for name in ["first.legacy", "second.legacy"] {
+            std::fs::write(tree.path().join(name), "quartz raw text\n".repeat(2000)).unwrap();
+        }
+        std::fs::write(
+            tree.path().join("parsed.py"),
+            "def quartz():\n    return 1\n",
+        )
+        .unwrap();
+        // Both Python analyzers reject this, exercising ingest_file's fallback.
+        std::fs::write(tree.path().join("broken.py"), "def (").unwrap();
+        cli(
+            &pool,
+            &embedder,
+            &[
+                "codebase",
+                "ingest",
+                tree.path().to_str().unwrap(),
+                "--unparsed-ext",
+                "legacy",
+            ],
+            true,
+        )
+        .await;
+        assert_eq!(embedder.models_calls.load(Ordering::SeqCst), 1);
+        for name in ["first.legacy", "second.legacy", "parsed.py", "broken.py"] {
+            let key = keys::scoped_file_key(tree.path().to_str().unwrap(), name);
+            let file = pool
+                .reader()
+                .get(&format!("document/codebase_files/{key}"))
+                .await
+                .unwrap();
+            assert!(file["embedding_count"].as_u64().unwrap() > 0, "{file}");
+            assert_eq!(file["chunk_count"], file["embedding_count"]);
+            if name != "parsed.py" {
+                assert_eq!(file["analyzer"], "raw-text", "{file}");
+            }
+        }
+        let budgets = hades_core::db::query::query(
+            &pool,
+            "FOR e IN codebase_embeddings RETURN DISTINCT e.window_tokens",
+            None,
+            None,
+            false,
+            hades_core::db::query::ExecutionTarget::Reader,
+        )
+        .await
+        .unwrap()
+        .results;
+        assert_eq!(
+            budgets,
+            vec![json!(8192 - 256)],
+            "all files use the preflight ceiling and margin"
+        );
+    })
+    .await;
+}
+
 fn vector(text: &str) -> Vec<f32> {
     let mut vector = vec![0.; 2048];
     let index = if text.contains("sapphire") {
@@ -151,7 +232,10 @@ async fn cli(pool: &ArangoPool, embedder: &Embedder, args: &[&str], success: boo
     report["data"].clone()
 }
 async fn ingest(pool: &ArangoPool, embedder: &Embedder, root: &Path) -> Value {
-    cli(pool, embedder, &["ingest", root.to_str().unwrap()], true).await
+    let data = cli(pool, embedder, &["ingest", root.to_str().unwrap()], true).await;
+    assert!(data.get("disabled_by_profile").is_none(), "{data}");
+    assert!(data.get("profile_pin").is_none(), "{data}");
+    data
 }
 async fn validate(pool: &ArangoPool, embedder: &Embedder) {
     let result = cli(pool, embedder, &["codebase", "validate"], true).await;
@@ -317,6 +401,109 @@ impl PrivateMcp {
             .unwrap_or_else(|| panic!("unexpected MCP result: {message}"));
         serde_json::from_str(text).unwrap_or_else(|_| panic!("unexpected tool envelope: {text}"))
     }
+}
+
+/// Round-trip authored graph writes through a private HTTP MCP endpoint.
+#[tokio::test]
+async fn mcp_authored_graph_tool_roundtrip() {
+    with_temp_db("mcp_authored", Fixtures::Empty, |pool| async move {
+        let tree = tempfile::tempdir().unwrap();
+        let token = tree.path().join("token");
+        std::fs::write(&token, "private-fixture-token\n").unwrap();
+        let socket = tree.path().join("daemon.sock");
+        let log = tree.path().join("daemon.log");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let child = Command::new(env!("CARGO_BIN_EXE_hades"))
+            .args(["--db", pool.database(), "daemon", "--socket"])
+            .arg(&socket)
+            .args([
+                "--mcp-bind",
+                &address.to_string(),
+                "--mcp-token-file",
+                token.to_str().unwrap(),
+                "--mcp-db-prefix",
+                pool.database(),
+                "--mcp-ingest-root",
+                tree.path().to_str().unwrap(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap();
+        let mut daemon = PrivateDaemon {
+            child,
+            ingests: Vec::new(),
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while tokio::net::UnixStream::connect(&socket).await.is_err() {
+                assert!(
+                    daemon.child.try_wait().unwrap().is_none(),
+                    "{}",
+                    std::fs::read_to_string(&log).unwrap()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mcp = PrivateMcp::connect(address).await;
+        let db = pool.database();
+        let created = mcp
+            .call_tool("kg_create", json!({"db":db,"name":"research"}))
+            .await;
+        assert_eq!(created["success"], true, "{created}");
+        hades_core::db::crud::insert_document(
+            &pool,
+            "documents",
+            &json!({"_key":"paper-1","title":"Processed paper"}),
+        )
+        .await
+        .unwrap();
+        let node = mcp
+            .call_tool(
+                "kg_add_node",
+                json!({"db":db,"graph":"research","key":"claim-1",
+                "data":{"title":"Claim"}}),
+            )
+            .await;
+        assert_eq!(node["data"]["_id"], "research_nodes/claim-1", "{node}");
+        let edge = mcp
+            .call_tool(
+                "kg_add_edge",
+                json!({"db":db,"graph":"research","key":"supports-1",
+                "from":"research_nodes/claim-1","to":"documents/paper-1",
+                "data":{"relation":"supported_by"}}),
+            )
+            .await;
+        assert_eq!(edge["data"]["_id"], "research_edges/supports-1", "{edge}");
+        let result = mcp
+            .call_tool(
+                "graph_traverse",
+                json!({"db":db,"graph":"research",
+                "start":"research_nodes/claim-1"}),
+            )
+            .await;
+        assert_eq!(result["success"], true, "{result}");
+        assert!(result.to_string().contains("documents/paper-1"), "{result}");
+        let duplicate = mcp
+            .call_tool(
+                "kg_add_node",
+                json!({"db":db,"graph":"research","key":"claim-1",
+                "data":{"title":"Different"}}),
+            )
+            .await;
+        assert_eq!(duplicate["success"], false, "{duplicate}");
+        assert_eq!(
+            hades_core::db::crud::get_document(&pool, "research_nodes", "claim-1")
+                .await
+                .unwrap()["title"],
+            "Claim"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1475,17 +1662,21 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
     .unwrap();
     assert_eq!(ready.info().await.unwrap().max_seq_length, Some(8192));
     let dir = tempfile::tempdir().unwrap();
-    // Trap every database request on a private listener: invalid policy must
-    // fail before touching even this mock, and can never discover a live server.
+    // Only profile-presence reads may precede the legacy provider preflight.
+    // Invalid policy must still fail before any data/collection operation.
     let db_socket = dir.path().join("database.sock");
     let listener = tokio::net::UnixListener::bind(&db_socket).unwrap();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
-    let app = Router::new().fallback(move || {
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
         let calls = observed.clone();
         async move {
             calls.fetch_add(1, Ordering::SeqCst);
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            assert_eq!(request.method(), "GET");
+            assert!(matches!(request.uri().path(),
+                "/_db/hades_test_preflight/_api/collection/hades_workspace/properties" |
+                "/_db/hades_test_preflight/_api/collection/hades_setup/properties"));
+            (axum::http::StatusCode::NOT_FOUND, Json(json!({"error":true,"code":404,"errorNum":1203,"errorMessage":"collection not found"})))
         }
     });
     let database = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -1514,8 +1705,8 @@ async fn prechunk_override_above_backend_ceiling_fails_at_ingest_entry() {
     let _ = database.await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        0,
-        "invalid policy must precede database access"
+        2,
+        "only profile-presence probes may precede invalid legacy policy"
     );
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
