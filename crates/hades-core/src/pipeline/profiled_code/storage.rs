@@ -136,12 +136,13 @@ fn validate_file(
 
 pub(super) async fn admit(
     client: &ArangoClient,
-    key: &str,
+    input: &CodeInput,
+    resolved: &mut graph::ResolvedGraph,
     replace: bool,
     snapshot: &ProfileSnapshot,
-    tier: AnalysisTier,
-    symbols: &[Value],
+    owners: &[OwnedCollection],
 ) -> Result<Option<String>, ArangoError> {
+    let key = &resolved.file_key;
     let Some(row) = file(client, key).await? else {
         return Ok(None);
     };
@@ -149,14 +150,33 @@ pub(super) async fn admit(
         replace,
         "source already exists; code replacement must be explicit",
     )?;
-    validate_file(&row, key, snapshot, tier)?;
-    preserve_symbols(&row, symbols)?;
+    validate_file(&row, key, snapshot, input.analysis.analysis_tier)?;
+    ensure(
+        row["language"] == input.analysis.language.name(),
+        "replacement would change the source language; explicit graph reconciliation is required",
+    )?;
+    let owner = owners
+        .iter()
+        .find(|owner| owner.collection() == CODEBASE.symbols)
+        .expect("admitted symbol owner index");
+    let (symbols, _) = owner
+        .children(client, key, MAX_SYMBOLS, MAX_PREPARED_BYTES)
+        .await?;
+    ensure(
+        json!(graph::record_manifest(&symbols)?) == row["record_manifest"][CODEBASE.symbols],
+        "stored symbol inventory differs; refusing to reconcile incomplete, foreign or edited records",
+    )?;
+    resolved.retain_symbols(
+        input,
+        row["full_text"].as_str().expect("validated stored source"),
+        &symbols,
+    )?;
     Ok(Some(revision(&row)?.into()))
 }
 
 fn preserve_symbols(file: &Value, incoming: &[Value]) -> Result<(), ArangoError> {
     // Keep endpoints alive even when an authored relationship belongs to another collection.
-    // The file inventory is validated before either call to this helper.
+    // The complete file inventory has been validated under the transaction locks.
     let previous = file["record_manifest"][CODEBASE.symbols]
         .as_object()
         .ok_or_else(|| invalid("invalid stored symbol inventory"))?;
@@ -166,7 +186,7 @@ fn preserve_symbols(file: &Value, incoming: &[Value]) -> Result<(), ArangoError>
         .collect();
     ensure(
         previous.keys().all(|key| incoming.contains(key.as_str())),
-        "replacement would retire or move symbol endpoints; explicit graph reconciliation is required",
+        "replacement would retire symbol endpoints; explicit graph reconciliation is required",
     )
 }
 

@@ -103,8 +103,10 @@ the default CI matrix includes it. No real model or installed service is used.
 
 The `profiled_code` contract checks internal [code graph persistence](profile-bound-code.md):
 workload selection, bounded preparation, complete graph publication, replacement
-conflicts/rollback, profile and provider drift, edited-record preservation and
-cross-database refusal. Use `--contract profiled_code`; the default matrix includes it.
+conflicts/rollback, profile and provider drift, edited-record preservation,
+stable symbol IDs across line moves/overload swaps, untouched external references,
+ambiguity/collision refusal and cross-database refusal. Use `--contract profiled_code`;
+the default matrix includes it.
 Public code ingestion remains gated pending its integration.
 
 The `workspace_setup` contract covers [recoverable setup](recoverable-workspace-setup.md):

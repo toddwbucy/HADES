@@ -1,6 +1,7 @@
 //! Internal conventional code preparation and atomic publication of a single file graph.
 //! Analyzers, filesystem admission, cross-file enrichment and public routing are separate owners.
 mod graph;
+mod identity;
 mod ontology;
 mod storage;
 
@@ -147,8 +148,17 @@ impl ProfiledCode {
         input: CodeInput,
         replace: bool,
     ) -> Result<PreparedCodeFile, PipelineError> {
-        let resolved = graph::validate_input(&input, &self.ontology)?;
+        let mut resolved = graph::validate_input(&input, &self.ontology)?;
         self.current().await?;
+        let previous_revision = storage::admit(
+            self.pool.writer(),
+            &input,
+            &mut resolved,
+            replace,
+            &self.snapshot,
+            &self.owners,
+        )
+        .await?;
         let key = &resolved.file_key;
         let (mut file, mut rows) = graph::records(&input, &resolved, self.passage.binding());
         // Full source is retained both in the file and across its passages. Reject
@@ -163,15 +173,6 @@ impl ProfiledCode {
                 <= MAX_PREPARED_BYTES,
             "prepared code graph exceeds 16 MiB before planning; split the source explicitly",
         )?;
-        let previous_revision = storage::admit(
-            self.pool.writer(),
-            key,
-            replace,
-            &self.snapshot,
-            input.analysis.analysis_tier,
-            &rows[CODEBASE.symbols],
-        )
-        .await?;
         let planned = self.passage.plan_passages(&input.text).await?;
         ensure(
             planned.binding == *self.passage.binding(),

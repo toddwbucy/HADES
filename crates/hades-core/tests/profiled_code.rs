@@ -24,6 +24,9 @@ mod admission;
 #[path = "profiled_code/ontology.rs"]
 mod ontology;
 
+#[path = "profiled_code/symbols.rs"]
+mod symbols;
+
 fn input(path: &str, apple: &str) -> CodeInput {
     let text = format!("fn apple() {{ {apple} }}\nfn banana() {{ apple(); }}\n");
     let analysis = code::analyze(&text, "fixture.rs").unwrap();
@@ -136,13 +139,13 @@ async fn explicit_replacement_conflicts_and_late_write_failure_preserve_entire_g
         let requests = peer.requests().len();
         assert!(code.prepare(input("one.rs",""),false).await.is_err());
         assert_eq!(peer.requests().len(),requests);
-        let first = code.prepare(input("one.rs","let x = 1;"),true).await.unwrap();
-        let stale = code.prepare(input("one.rs","let y = 2;"),true).await.unwrap();
+        let first = code.prepare(symbols::shifted_input("one.rs","let x = 1;"),true).await.unwrap();
+        let stale = code.prepare(symbols::shifted_input("one.rs","let y = 2;"),true).await.unwrap();
         code.commit(first).await.unwrap();
         let before = rows(&pool).await;
         assert!(code.commit(stale).await.unwrap_err().to_string().contains("source changed"));
         assert_eq!(rows(&pool).await,before);
-        let prepared = code.prepare(input("one.rs","let x = 3;"),true).await.unwrap();
+        let prepared = code.prepare(symbols::shifted_input("one.rs", "let x = 3;"),true).await.unwrap();
         pool.writer().put(&format!("collection/{}/properties",CODEBASE.calls_edges), &json!({
             "schema":{"rule":{"type":"object","required":["injected_missing_field"]},"level":"strict","message":"fixture rejection"}
         })).await.unwrap();
@@ -376,28 +379,6 @@ async fn symbol_retirement_and_analysis_downgrades_preserve_existing_endpoints()
             .await
             .unwrap();
         let before = rows(&pool).await;
-        let mut shifted = input("one.rs", "");
-        shifted
-            .text
-            .insert_str(0, "// inserted above every symbol\n");
-        shifted.analysis = code::analyze(&shifted.text, "fixture.rs").unwrap();
-        let plans = peer.plans().len();
-        let requests = peer.requests().len();
-        assert!(
-            code.prepare(shifted, true)
-                .await
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("symbol endpoints")
-        );
-        assert_eq!(
-            peer.plans().len(),
-            plans,
-            "line shifts require reconciliation before planning"
-        );
-        assert_eq!(peer.requests().len(), requests);
-        assert_eq!(rows(&pool).await, before);
         let mut next = input("one.rs", "");
         next.analysis.symbols.pop();
         next.relationships.clear();
