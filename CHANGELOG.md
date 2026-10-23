@@ -140,8 +140,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 - Preserve managed code symbol IDs across line moves and unambiguous declaration
   reordering, keeping authored and cross-file references intact. Validate existing
-  symbols before planning; match scoped names, compiler identities and declaration
-  roles; permit unique identity upgrades and allocate fresh keys for new-symbol
+  symbols before planning; match scoped names, full Rust impl headers, compiler
+  identities and declaration roles; permit unique identity upgrades through nested
+  owners and allocate fresh keys for new-symbol
   collisions. Refuse ambiguous changes or symbol retirement. Public code ingestion
   remains gated (#225).
 

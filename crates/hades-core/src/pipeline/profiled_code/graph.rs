@@ -36,6 +36,7 @@ pub struct LocalRelationship {
 pub(super) struct ResolvedGraph {
     pub(super) file_key: String,
     symbols: Vec<Option<String>>,
+    identities: Vec<Option<identity::Metadata>>,
     relationships: Vec<ResolvedRelationship>,
 }
 
@@ -46,7 +47,13 @@ impl ResolvedGraph {
         previous_source: &str,
         previous: &[Value],
     ) -> Result<(), ArangoError> {
-        let symbols = identity::reconcile(input, previous_source, previous, &self.symbols)?;
+        let symbols = identity::reconcile(
+            input,
+            previous_source,
+            previous,
+            &self.symbols,
+            &self.identities,
+        )?;
         let remap: BTreeMap<_, _> = self
             .symbols
             .iter()
@@ -99,6 +106,7 @@ pub(super) fn validate_input(
         analysis.metrics.total_lines == lines,
         "analysis line count differs from source",
     )?;
+    let mut identities = Vec::with_capacity(analysis.symbols.len());
     for symbol in &analysis.symbols {
         ensure(
             !symbol.name.trim().is_empty()
@@ -109,10 +117,11 @@ pub(super) fn validate_input(
                 && symbol.end_line <= lines,
             "code symbol has an invalid name or source span",
         )?;
-        if symbol.kind.is_primitive() {
-            identity::compiler_identity(&symbol.metadata)?;
-            identity::definition_role(&symbol.metadata)?;
-        }
+        identities.push(if symbol.kind.is_primitive() {
+            Some(identity::metadata(&symbol.metadata)?)
+        } else {
+            None
+        });
     }
     // Catch duplicate keys and invalid endpoints before planning or inference.
     let file_key = keys::scoped_file_key(&input.namespace, &input.path);
@@ -150,8 +159,22 @@ pub(super) fn validate_input(
     Ok(ResolvedGraph {
         file_key,
         symbols,
+        identities,
         relationships,
     })
+}
+
+/// Account for source in both the file and its eventual passages before any I/O.
+pub(super) fn check_unplanned_size(
+    input: &CodeInput,
+    file: &Value,
+    rows: &Rows,
+) -> Result<(), ArangoError> {
+    ensure(
+        serde_json::to_vec(&(file, rows))?.len() + serde_json::to_vec(&input.text)?.len()
+            <= MAX_PREPARED_BYTES,
+        "prepared code graph exceeds 16 MiB before planning; split the source explicitly",
+    )
 }
 
 fn symbol_ids(input: &CodeInput, key: &str) -> Result<Vec<Option<String>>, ArangoError> {

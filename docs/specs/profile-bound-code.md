@@ -48,7 +48,8 @@ establish that the stored graph is current.
 
 Limits are 2 MiB of source text, 128 tokenizer-planned passages, 1024 input symbols,
 4096 explicit relationships, 4 MiB of analyzer metadata and 16 MiB of prepared
-records. Known source/graph costs are checked before planning. After planning, a
+records. Known source/graph costs are checked before profile/file reads and symbol
+reconciliation, then rechecked with retained IDs before planning. After planning, a
 conservative bound reserves serialized vectors and inventory overhead before the
 first embedding request; inputs exceeding that bound must be split even if their
 eventual vectors might serialize smaller. Final records are measured without a
@@ -107,6 +108,14 @@ an unambiguous match in the new analysis:
   or overlapping spans that cannot prove ownership require unchanged source and
   exact positions. Compiler identities include semantic ownership and allow a
   definition to move out of its lexical class body.
+- Rust impl members also match `metadata.impl_identity`: the token-rendered impl
+  header, including trait arguments, self type (with references and lifetimes),
+  generic parameters and where clause. `From<io::Error>` and
+  `From<serde_json::Error>` therefore remain distinct despite their shared legacy
+  display name. Whitespace and body edits do not change this discriminator;
+  header changes do. Previously stored impl members lacking this discriminator
+  require explicit reconciliation before adopting it. Existing display names and
+  line-derived legacy keys keep their previous format.
 - Optional `metadata.is_definition` distinguishes a C/C++ declaration from its
   definition even when both share a USR. Both existing vertices survive. Repeated
   declarations with the same role, Python property/setter or overload definitions,
@@ -114,10 +123,14 @@ an unambiguous match in the new analysis:
   and exact positions. Even adding a comment to these ambiguous files is refused
   until explicit reconciliation exists. Body text and declaration order are not
   identity evidence.
-- An analyzer upgrade may add a USR when name/kind/verified scope is unique on
-  both sides and any previously known declaration role is unchanged. This does
-  not permit overload guessing or changes to existing USRs. If an enclosing
-  container's own identity changes, the scope proof must be reconciled explicitly.
+- An analyzer upgrade may add a USR when name/kind/impl discriminator/verified
+  scope is unique on both sides and any previously known declaration role is
+  unchanged. This works through nested namespaces/classes, including when owners
+  and methods gain compiler metadata together. Scope fingerprints omit optional
+  compiler metadata, but every owner must be unique within its lexical chain;
+  each owner's own match still verifies its USR and declaration role. Duplicate
+  owner paths cannot exchange weakly identified children. This does not permit
+  overload guessing or changes to existing USRs.
   USRs remain intact within the shared 4 MiB total analysis budget; they are never
   truncated or silently discarded.
 - Missing matches, ambiguous changes and language changes are refused. Renames,
@@ -130,6 +143,8 @@ Authored references, other files' edges and unrelated collections are never
 rewritten. If a new symbol occupies an existing endpoint's historical line, it
 receives a deterministic, separately salted key. Allocation reserves all retained
 and provisional keys and makes at most 1025 attempts; existing IDs never change.
+Input identity metadata is validated once and compared using fixed SHA-256
+digests. Collision salts use a fixed digest; full USRs remain in stored metadata.
 
 Publication still checks the original file revision and complete graph inventory
 under the transaction locks. Concurrent edits or a later write failure preserve
@@ -137,6 +152,10 @@ the previous graph. Reconciliation trusts the analyzer's qualified names and kin
 it is not a general rename detector or an operation to retire referenced symbols.
 Analyzers without an explicit discriminator may need to provide richer identities
 before files containing repeated qualified names can be updated.
+Unknown ownership still blocks edits anywhere in that file, even if the affected
+name is unique: uniqueness alone cannot prove that a definition kept its owner.
+An explicit analyzer-provided owner path is follow-up work to replace line-span
+inference and admit compact layouts without weakening that check.
 
 ## Validation and remaining integration
 
@@ -152,8 +171,9 @@ The default isolated CI matrix includes this target. Synthetic providers cover
 two/three-dimensional spaces, asymmetric tasks, code-only and ordinary-text-code
 profiles, a mixed document/code load with distinct widths and receipts, exact
 source spans, missing/incorrect owner indexes, retained symbol IDs across repeated
-line moves, scoped Rust method moves/body swaps, declaration/definition roles,
-real Python/Rust ambiguity refusal, unique analyzer upgrades, long USRs,
+line moves, scoped Rust method moves/body swaps, generic/reference impls,
+declaration/definition roles, real Python/Rust ambiguity refusal, nested analyzer
+upgrades and ambiguous-owner refusal, long USRs,
 new-symbol key collisions,
 untouched external references, replacement conflicts, rollback, profile/provider
 drift, invalid graphs, cross-database admission, corruption, cancellation and

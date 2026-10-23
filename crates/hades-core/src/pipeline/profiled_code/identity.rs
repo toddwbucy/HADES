@@ -22,26 +22,37 @@ struct Candidate<'a> {
     qualified_name: String,
     kind: &'a str,
     universal_kind: &'a str,
-    usr: Option<&'a str>,
-    definition: Option<bool>,
+    metadata: Metadata,
     start: usize,
     end: usize,
     index: usize,
 }
 
 type Scope = Option<[u8; 32]>;
-type MatchKey<'a> = (&'a str, &'a str, Option<&'a str>, Option<bool>, Scope);
+type MatchKey<'a> = (&'a str, &'a str, Metadata, Scope);
+
+/// Validate and hash opaque metadata once at input admission. Fixed digests keep
+/// multi-MiB USRs out of match-key copies and fresh-key salt serialization.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(super) struct Metadata {
+    usr: Option<[u8; 32]>,
+    definition: Option<bool>,
+    implementation: Option<[u8; 32]>,
+}
 
 impl Candidate<'_> {
     fn key(&self, scope: Scope) -> MatchKey<'_> {
         (
             &self.qualified_name,
             self.kind,
-            self.usr,
-            self.definition,
+            self.metadata,
             // Compiler identity already includes semantic ownership; an
             // out-of-line definition need not have the same lexical container.
-            if self.usr.is_some() { None } else { scope },
+            if self.metadata.usr.is_some() {
+                None
+            } else {
+                scope
+            },
         )
     }
 }
@@ -52,6 +63,7 @@ pub(super) fn reconcile(
     previous_source: &str,
     previous_rows: &[Value],
     provisional: &[Option<String>],
+    validated: &[Option<Metadata>],
 ) -> Result<Vec<Option<String>>, ArangoError> {
     let previous: Vec<StoredSymbol> = previous_rows
         .iter()
@@ -66,8 +78,7 @@ pub(super) fn reconcile(
                 qualified_name: symbol.qualified_name.clone(),
                 kind: &symbol.lang_kind,
                 universal_kind: &symbol.kind,
-                usr: compiler_identity(&row["metadata"])?,
-                definition: definition_role(&row["metadata"])?,
+                metadata: metadata(&row["metadata"])?,
                 start: symbol.start_line,
                 end: symbol.end_line,
                 index,
@@ -85,8 +96,11 @@ pub(super) fn reconcile(
                 qualified_name: symbol.qualified_name(),
                 kind: symbol.kind.lang_kind(),
                 universal_kind: symbol.kind.universal_kind().unwrap_or_default(),
-                usr: compiler_identity(&symbol.metadata)?,
-                definition: definition_role(&symbol.metadata)?,
+                metadata: validated
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| invalid("missing validated symbol identity"))?,
                 start: symbol.start_line,
                 end: symbol.end_line,
                 index,
@@ -122,7 +136,7 @@ pub(super) fn reconcile(
         let i = old_indices[0];
         let j = new_indices[0];
         let uncertain_scope =
-            old[i].usr.is_none() && (old_scopes[i].is_none() || new_scopes[j].is_none());
+            old[i].metadata.usr.is_none() && (old_scopes[i].is_none() || new_scopes[j].is_none());
         if old_indices.len() == 1 && new_indices.len() == 1 && !uncertain_scope {
             retain(i, j)?;
             continue;
@@ -159,7 +173,8 @@ pub(super) fn reconcile(
         let id = if seen.insert(candidate.clone()) {
             candidate.clone()
         } else {
-            let salt = serde_json::to_string(&symbol.key(new_scopes[i]))?;
+            let salt: [u8; 32] =
+                Sha256::digest(serde_json::to_vec(&symbol.key(new_scopes[i]))?).into();
             (0..=MAX_SYMBOLS)
                 .map(|attempt| {
                     format!(
@@ -199,12 +214,13 @@ fn upgrade(
     new_scopes: &[Scope],
 ) -> Option<usize> {
     let symbol = &old[i];
-    if symbol.usr.is_some() || old_scopes[i].is_none() {
+    if symbol.metadata.usr.is_some() || old_scopes[i].is_none() {
         return None;
     }
     let matches = |other: &Candidate<'_>, scope: Scope| {
         symbol.qualified_name == other.qualified_name
             && symbol.kind == other.kind
+            && symbol.metadata.implementation == other.metadata.implementation
             && old_scopes[i] == scope
     };
     if old
@@ -222,8 +238,9 @@ fn upgrade(
         .filter(|(j, s)| matches(s, new_scopes[*j]));
     let (j, next) = candidates.next()?;
     (candidates.next().is_none()
-        && next.usr.is_some()
-        && (symbol.definition.is_none() || symbol.definition == next.definition))
+        && next.metadata.usr.is_some()
+        && (symbol.metadata.definition.is_none()
+            || symbol.metadata.definition == next.metadata.definition))
         .then_some(j)
 }
 
@@ -231,9 +248,21 @@ fn ambiguous() -> ArangoError {
     invalid("ambiguous symbol identity; explicit graph reconciliation is required")
 }
 
-/// Keep opaque USRs intact, bounded by the same budget as the entire analysis.
-pub(super) fn compiler_identity(metadata: &Value) -> Result<Option<&str>, ArangoError> {
-    let Some(value) = metadata.get("usr").filter(|value| !value.is_null()) else {
+pub(super) fn metadata(value: &Value) -> Result<Metadata, ArangoError> {
+    Ok(Metadata {
+        usr: opaque_identity(value, "usr", "compiler symbol identity")?,
+        definition: definition_role(value)?,
+        implementation: opaque_identity(value, "impl_identity", "Rust impl identity")?,
+    })
+}
+
+/// Original strings remain intact in stored metadata; comparisons use SHA-256.
+fn opaque_identity(
+    metadata: &Value,
+    field: &str,
+    label: &str,
+) -> Result<Option<[u8; 32]>, ArangoError> {
+    let Some(value) = metadata.get(field).filter(|value| !value.is_null()) else {
         return Ok(None);
     };
     value
@@ -243,13 +272,15 @@ pub(super) fn compiler_identity(metadata: &Value) -> Result<Option<&str>, Arango
                 && id.len() <= MAX_ANALYSIS_BYTES
                 && !id.chars().any(char::is_control)
         })
-        .map(Some)
+        .map(|id| Some(Sha256::digest(id.as_bytes()).into()))
         .ok_or_else(|| {
-            invalid("compiler symbol identity must contain 1..=4194304 printable UTF-8 bytes")
+            invalid(&format!(
+                "{label} must contain 1..=4194304 printable UTF-8 bytes"
+            ))
         })
 }
 
-pub(super) fn definition_role(metadata: &Value) -> Result<Option<bool>, ArangoError> {
+fn definition_role(metadata: &Value) -> Result<Option<bool>, ArangoError> {
     match metadata
         .get("is_definition")
         .filter(|value| !value.is_null())

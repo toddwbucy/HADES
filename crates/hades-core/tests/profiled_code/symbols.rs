@@ -5,6 +5,9 @@ use hades_core::db::crud;
 #[path = "symbols/review.rs"]
 mod review;
 
+#[path = "symbols/owners.rs"]
+mod owners;
+
 pub(super) fn shifted_input(path: &str, body: &str) -> CodeInput {
     let mut next = input(path, body);
     next.text.insert_str(0, "// inserted above every symbol\n");
