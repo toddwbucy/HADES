@@ -636,13 +636,29 @@ report is copied first.
 
 ### Roll back 52d04d4
 
-The restore uses the newest backup directory from the install step. Find it first,
-from any shell; the second line must print its path before you continue, and if it
-prints nothing, stop:
+The restore uses the backup directory that holds the pre-deployment executables,
+chosen by content rather than date, because a repeated install can leave a newer
+backup holding the new build or a mix. These are the `f930fbc` hashes recorded for
+the PR #224 install in `.local-install/reading-desk-deployment.json`, and they
+matched `~/.local/bin` on 2026-11-09 before this install:
+
+| Executable | SHA-256 before this deployment (`f930fbc`) |
+| --- | --- |
+| `hades` | `cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42` |
+| `hades-viewer` | `6efac5881ed6b5ea7ac30c0a7a6131979e6b224fc14618104d9a354c6cac2c72` |
+
+Find the directory first, from any shell. The last line must print its path before
+you continue; if it prints nothing, no backup holds that build, so stop:
 
 ```bash
-BACKUP="$(ls -d ~/.local/share/hades/backups/main-52d04d4-* | sort | tail -n 1)"
-test -x "$BACKUP/hades" && test -x "$BACKUP/hades-viewer" && echo "$BACKUP"
+BACKUP=""
+for dir in ~/.local/share/hades/backups/main-52d04d4-*; do
+  printf '%s  %s\n' \
+    cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42 "$dir/hades" \
+    6efac5881ed6b5ea7ac30c0a7a6131979e6b224fc14618104d9a354c6cac2c72 "$dir/hades-viewer" |
+    sha256sum -c --status - 2>/dev/null && BACKUP="$dir" && break
+done
+test -n "$BACKUP" && echo "$BACKUP"
 ```
 
 To restore the executables, stop the viewer and then the daemon, and repeat the two
