@@ -543,12 +543,17 @@ restart.
 ### Install 52d04d4
 
 Run these from the development checkout, in one shell, one at a time, and stop at
-the first failure. The preflight must report zero active conversations.
+the first failure. The hash table above is the source of truth for the build:
+`sha256sum -c` fails on any mismatch, before anything is stopped. The preflight
+must report zero active conversations.
 
 ```bash
 cd ~/Projects/HADES
 BUILD="$HOME/Projects/hades-targets/deploy-main/release"
-sha256sum "$BUILD/hades" "$BUILD/hades-viewer"
+printf '%s  %s\n' \
+  d25cffb4772c7a17be8b4b5e789e2d927914c93f916a754321055c59a6141c49 "$BUILD/hades" \
+  e84d25bcb693f2a7e5e657621364a937dd89abffb1071dc386a2e39c20b2ff9b "$BUILD/hades-viewer" |
+  sha256sum -c -
 snapshot() {
   python3 -c 'import json, runpy
 s = runpy.run_path(".local-install/preflight-224.py")["snapshot"]()
@@ -604,12 +609,6 @@ fails if that conversation has since been removed. Do not use
 executables with `~/Projects/HADES/target/release`, which still holds the `f930fbc`
 build. The first two commands above replace its executable check.
 
-To roll back, stop the viewer and then the daemon, and repeat the two `install`
-and two `mv` commands with `$BACKUP/hades` and `$BACKUP/hades-viewer` as sources.
-Then start the daemon, check its readiness, and start the viewer, as above. The
-deployment changes no configuration, so the executables are the whole rollback;
-reading records written after the install stay in `Conveyance_KG`.
-
 ### Restart the embedder for 52d04d4
 
 Run this after the post-install checks, in the same shell. The first two commands
@@ -634,6 +633,46 @@ The retry window allows up to two minutes for the service to bind, and
 including one over the ceiling that must fail with `PE_INPUT_TOO_LARGE`, and
 rewrites `.local-install/verification/gpu-http.json`, which is why the earlier
 report is copied first.
+
+### Roll back 52d04d4
+
+To restore the executables, stop the viewer and then the daemon, and repeat the two
+`install` and two `mv` commands with `$BACKUP/hades` and `$BACKUP/hades-viewer` as
+sources. Then start the daemon, check its readiness, and start the viewer, as
+above. Reading records written after the install stay in `Conveyance_KG`.
+
+Restoring the executables leaves the embedder on the `52d04d4` services code in
+the development checkout. Before this deployment, the embedder process, started
+2026-10-18 08:39:52 CDT, ran services code from the initial clone,
+`7423624e029c6f117e122456c06a721bf407cb82`. Its Python and package files under
+`services/` are identical to `f930fbc`; only `services/README.md` and
+`services/constraints-jina-v4.txt` differ, and neither is loaded at runtime. After
+the embedder restart above, return it to that code by serving it from a worktree
+at `f930fbc`, leaving the development checkout untouched:
+
+```bash
+git -C ~/Projects/HADES worktree add ~/Projects/hades-worktrees/embedder-f930fbc \
+  f930fbca1c5362f0e8e337ceeb1a1f9d21173cec
+mkdir -p ~/.config/systemd/user/hades-embedder.service.d
+cat > ~/.config/systemd/user/hades-embedder.service.d/rollback.conf <<'EOF'
+[Service]
+WorkingDirectory=%h/Projects/hades-worktrees/embedder-f930fbc/services
+EOF
+systemctl --user daemon-reload
+systemctl --user restart hades-embedder.service
+curl -s --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8087/v1/models
+readlink "/proc/$(systemctl --user show hades-embedder.service -p MainPID --value)/cwd"
+```
+
+The unit runs `python -m embedding.http_server`, which searches its working
+directory first, so `embedding` loads from the worktree even though the shared
+venv's editable install points at the development checkout. `readlink` must print
+the worktree's `services` directory. The environment file, venv and model weights
+are shared and unchanged in either direction. To return to main, remove
+`rollback.conf`, run `systemctl --user daemon-reload`, and restart the unit. Other
+drop-ins in that directory, such as a ceiling override, are independent of
+`rollback.conf`; `systemctl --user cat hades-embedder.service` lists every drop-in
+in effect.
 
 ## Current operating state
 
