@@ -636,6 +636,15 @@ report is copied first.
 
 ### Roll back 52d04d4
 
+The restore uses the newest backup directory from the install step. Find it first,
+from any shell; the second line must print its path before you continue, and if it
+prints nothing, stop:
+
+```bash
+BACKUP="$(ls -d ~/.local/share/hades/backups/main-52d04d4-* | sort | tail -n 1)"
+test -x "$BACKUP/hades" && test -x "$BACKUP/hades-viewer" && echo "$BACKUP"
+```
+
 To restore the executables, stop the viewer and then the daemon, and repeat the two
 `install` and two `mv` commands with `$BACKUP/hades` and `$BACKUP/hades-viewer` as
 sources. Then start the daemon, check its readiness, and start the viewer, as
