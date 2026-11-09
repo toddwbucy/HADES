@@ -249,7 +249,7 @@ User units are installed under `~/.config/systemd/user/`:
 | Unit | Current state and configuration |
 | --- | --- |
 | `hades-extractor.service` | Enabled and running; dedicated Python environment, CPU, OCR disabled, `extractor.env` |
-| `hades-embedder.service` | Enabled and running; pinned Jina alias, GPU 0, batch 1, verified 4,096-token profile in `embedder.env` |
+| `hades-embedder.service` | Enabled and running; pinned Jina alias, GPU 0, batch 1, 20,000-token ceiling in `embedder.env` ([bisection](#sequence-ceiling-bisection-2026-11-09)) |
 | `hades-daemon.service` | Enabled and running; explicit database, Unix socket, loopback guided-reading MCP on port 10444 |
 | `hades-viewer.service` | Enabled and running; loopback port 8088, matching reading socket/database, password-file authentication |
 | `hades-arangodb.service` | Enabled and running; authenticated Unix-only server, `arangod.conf`, data on the Projects volume |
@@ -348,7 +348,9 @@ The `thinkpad-initial` profile uses `cuda:0`, fp16, batch size 1, and a
 Memory was sampled with `nvidia-smi` every 100 ms and includes desktop use and
 allocator reservations; it is not an exact tensor-allocation measurement.
 These are smoke-test observations, not a throughput benchmark or maximum-window
-search. The larger-context work in #208 remains separate.
+search. The larger-context work in #208 remains separate. On 2026-11-09 the
+ceiling was raised to 20,000 tokens after the
+[sequence ceiling bisection](#sequence-ceiling-bisection-2026-11-09).
 
 The installed release CLI then ingested three synthetic text documents through
 the real CPU extractor and GPU embedder on a separate Unix-only ArangoDB server.
@@ -358,6 +360,91 @@ history (cosine 0.632), bread fermentation (0.862), and Saturn/Titan (0.760).
 Creation of a 2,048-dimensional vector index also passed. The disposable
 database was removed; `Conveyance_KG` still contains zero documents, chunks,
 and embeddings. Reports are under `.local-install/verification/`.
+
+### Sequence ceiling bisection, 2026-11-09
+
+On 2026-11-09 the embedder's sequence ceiling was bisected on the RTX PRO 5000
+(24,463 MiB), running the `52d04d4` services code, with real prose rather than
+repeated tokens. The corpus was the 113 `docs/**/*.md` files at `52d04d4`,
+concatenated in sorted order: 215,490 tokens, sha256 `691ef97f62e9e131...`. Each
+candidate ran in a fresh service process. A drop-in, `ceiling.conf`, appended a
+second `EnvironmentFile` setting `HADES_EMBEDDER_MAX_TOKENS`, and `/v1/models` had
+to report the candidate before any request. A drop-in `Environment=` line would
+not work, because `EnvironmentFile` values override it and `embedder.env` sets the
+ceiling.
+
+Each candidate sent three `retrieval.passage` requests with batch size 1: the
+corpus prefix at the ceiling minus 8 tokens, the same prefix late-chunked with
+500-token chunks and 200-token overlap, and a prefix at the ceiling plus 200 tokens,
+which must return 400 `PE_INPUT_TOO_LARGE`. `nvidia-smi` sampled whole-card memory
+every 100 ms. A candidate passed only if the first two requests both returned 200
+with finite 2,048-dimensional vectors and the unit did not restart.
+
+| Ceiling | Result | Late vectors | Sampled peak |
+| --- | --- | --- | --- |
+| 12,000 | Pass | 40 | 18,663 MiB |
+| 16,000 | Pass | 53 | 21,231 MiB |
+| 20,000 | Pass | 66 | 22,491 MiB |
+| 22,000 | Pass | 73 | 23,823 MiB |
+| 23,000 | Pass | 76 | 24,041 MiB |
+| 24,000 | Fail, 503 `PE_BACKEND_OOM` on both requests | None | 23,301 MiB |
+
+Candidates ran in the order 12,000, 16,000, 20,000, 24,000, 22,000, 23,000; the
+bisection stopped at a 1,000-token gap. The late request starts from the plain
+request's reserved peak, held by the PyTorch caching allocator, so the late
+figures are floors rather than independent peaks; the column shows the higher of
+the two. At 24,000 the plain request failed at a sampled 20,515 MiB and the late
+request at 23,301 MiB, each on a single 6.79 GiB allocation. The OOM returned 503
+without killing the process. Every over-ceiling request returned 400
+`PE_INPUT_TOO_LARGE`, and no candidate restarted the unit.
+
+The service bound 2.6 to 2.7 s after each restart and loaded the model in 5.7 to
+7.2 s, inside the first request. That request took 24.6 s at 12,000, with cold
+caches, and 10.7 to 17.0 s afterwards; late-chunked requests took 3.0 to 10.2 s.
+Before each load the card showed 131 MiB in use by the desktop. An idle embedder
+process with the model unloaded holds about 360 MiB more for its CUDA context
+(497 MiB total, observed earlier on 2026-11-09). The records, including the corpus
+file list and full hash, are in
+`docs/evidence/thinkpad-ceiling-bisect-2026-11-09.json`.
+
+The operator chose 20,000 tokens as the operating ceiling on 2026-11-09. Its peak
+of 22,491 MiB leaves about 2 GiB of headroom on a card that also drives the
+desktop.
+23,000 passed with 422 MiB to spare and is not an operating value.
+
+Clients read the ceiling from `/v1/models` and need no configuration change. With
+this laptop's `chunking.prechunk` settings (1,000-token overlap, 256-token safety
+margin, no cap), the prechunk window becomes 20,000 - 256 = 19,744 tokens. The
+client YAML's `embedding.model.max_tokens` is not read by the client and does not
+limit requests.
+
+To apply the ceiling, confirm the checkout and that no conversation is active, then
+replace the bisection override with the `embedder.env` value:
+
+```bash
+cd ~/Projects/HADES
+git rev-parse HEAD
+git status --short -- services
+python3 .local-install/preflight-224.py
+sed -i 's/^HADES_EMBEDDER_MAX_TOKENS=.*/HADES_EMBEDDER_MAX_TOKENS=20000/' \
+  ~/.config/hades/embedder.env
+grep '^HADES_EMBEDDER_MAX_TOKENS=' ~/.config/hades/embedder.env
+rm -f ~/.config/systemd/user/hades-embedder.service.d/ceiling.conf \
+  ~/.config/systemd/user/hades-embedder.service.d/ceiling.env
+systemctl --user daemon-reload
+systemctl --user restart hades-embedder.service
+curl -s --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8087/v1/models
+systemctl --user cat hades-embedder.service
+```
+
+`rev-parse` must print `52d04d4e5d66625466ea2b1b2c60fda19ed06f2e` and `status`
+nothing. `grep` must print `HADES_EMBEDDER_MAX_TOKENS=20000`, `/v1/models` must
+report a `max_seq_length` of 20000, and `systemctl --user cat` must list no
+`ceiling.conf`. This restart also moves the embedder onto the `52d04d4` services
+code, so it replaces [Restart the embedder for 52d04d4](#restart-the-embedder-for-52d04d4)
+if that has not been run. The [rollback](#roll-back-52d04d4) worktree procedure is
+unaffected: it changes only the working directory, and the ceiling in
+`embedder.env` applies to both revisions.
 
 ### Host tuning observations
 
@@ -628,11 +715,13 @@ services/.venv/bin/python .local-install/check-gpu-http.py
 ```
 
 The retry window allows up to two minutes for the service to bind, and
-`/v1/models` answers before the model is loaded. It must report `cuda:0` and a
-`max_seq_length` of 4096. `check-gpu-http.py` sends four embedding requests,
-including one over the ceiling that must fail with `PE_INPUT_TOO_LARGE`, and
-rewrites `.local-install/verification/gpu-http.json`, which is why the earlier
-report is copied first.
+`/v1/models` answers before the model is loaded. It must report `cuda:0` and the
+configured ceiling: 4096 before the
+[20,000-token change](#sequence-ceiling-bisection-2026-11-09), 20000 after it.
+`check-gpu-http.py` asserts the 4,096 ceiling, so run it only before that change.
+It sends four embedding requests, including one over the ceiling that must fail
+with `PE_INPUT_TOO_LARGE`, and rewrites `.local-install/verification/gpu-http.json`,
+which is why the earlier report is copied first.
 
 ### Roll back 52d04d4
 
