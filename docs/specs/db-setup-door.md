@@ -168,10 +168,10 @@ surfaces allowed to break on 2026-11-10.
 
 Add `hades db setup` as an Admin-tier CLI command group with three verbs:
 
-- `hades db setup run --database NAME --provider ID --operation-id ID [--generation
-  G] [--chunking late|conventional] [policy flags]`. Builds the `_system` admin
-  client from the configured credentials, the catalog from `registered_providers`,
-  verifies the provider (this loads the model), constructs the profile through
+- `hades db setup run --database NAME --provider ID --operation-id ID --generation G
+  --chunking late|conventional [policy flags]`. Builds the `_system` admin client
+  from the configured credentials, the catalog from `registered_providers`, verifies
+  the provider (this loads the model), constructs the profile through
   `VerifiedProvider::document_profile`, and calls `WorkspaceSetup::run`. Output is
   the JSON envelope with the `SetupReceipt` as `data`; a non-ready status is a
   failed command (`print_output_with_success`).
@@ -191,8 +191,12 @@ Policy flags: `--chunking` is required (no default policy is silently chosen).
 Setup already validates each policy against the provider's observed ceiling and
 refuses one that does not fit; the CLI adds nothing on top of that.
 
-`--generation` defaults to a UTC timestamp string if omitted, printed in the
-receipt. Changing it on retry is a changed request and is refused by the ledger.
+`--generation` is required, like `--chunking`: a default such as a timestamp would
+change the request digest on every repeat and defeat the ledger's recoverable
+retry, which only admits an identical request under the same operation ID. The
+receipt echoes the request hash, and an operator retries by repeating the exact
+command. Recovering an omitted generation from the saved ledger record would need
+a new coordinator accessor and is deferred to the Part B implementation PR.
 
 Tiering: `db setup` is `Admin`. It needs `_system` database-creation authority; the
 laptop grants the `hades` user rw on `_system` and `*`
@@ -222,7 +226,8 @@ written as the act is exercised:
    socket from the service account.
 4. `hades db setup run` for the new database. Its name is `Conveyance_KG_v2`
    unless the operator renames it before this step (Planner's default; the only
-   constraint is the setup name grammar). Record the receipt and operation ID.
+   constraint is the setup name grammar). Record the receipt, operation ID and
+   generation.
 5. Point the daemon and viewer at the new database (unit edits, operator's lane).
    Move the reading-desk state, after the inventory widening (PR stack item 3) is
    merged and deployed: arangodump of the `hades_reading_*` and `reading_s_*`
@@ -258,12 +263,12 @@ database's profile; changing them later means a new generation.
   database can carry a schema and the reading desk; move the reading-desk state
   into the managed database once that widening is deployed.
 - Planner's calls, open to override while reading: CLI shape and verbs in Part B;
-  `setup` config section; owner = ArangoDB username; `--chunking` required with no
-  silent default; the `HADES_EMBEDDER_*` variables reused by the verified entry
-  point with idle unload 0 on the laptop; ArangoDB endpoint settings frozen for a
-  ledger's lifetime; `hades-embedder-verified.service` added beside the legacy
-  templates; database name `Conveyance_KG_v2`; the repository `docs/` tree as the
-  first corpus; the late policy defaults in Part C.
+  `setup` config section; owner = ArangoDB username; `--chunking` and
+  `--generation` required with no silent default; the `HADES_EMBEDDER_*` variables
+  reused by the verified entry point with idle unload 0 on the laptop; ArangoDB
+  endpoint settings frozen for a ledger's lifetime; `hades-embedder-verified.service`
+  added beside the legacy templates; database name `Conveyance_KG_v2`; the
+  repository `docs/` tree as the first corpus; the late policy defaults in Part C.
 
 ## Open for the operator
 
