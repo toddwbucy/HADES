@@ -101,7 +101,12 @@ interruption before or after index creation, including older Verify/Publish
 checkpoints whose schema originally had only primary indexes. Read-only diagnosis recognizes
 this partial schema without repairing it. It does not create graph schema seeds
 or an unqualified vector index. Retrieval uses the internal exact-scan path.
-Unknown collections, indexes, metadata rows, or preexisting vectors are refused.
+Unknown collections are refused, except the shapes other HADES data paths own:
+exactly `hades_schema`, any `hades_reading_*`, and the reading desk's
+`reading_<id>_nodes` and `reading_<id>_edges`. Once the ownership marker exists,
+setup tolerates these at every checkpoint and never validates, counts, indexes, or
+repairs them; a fresh database holding any of them is still refused before the
+marker. Unknown indexes, metadata rows, or preexisting vectors are refused.
 Ready workspaces from before this requirement remain searchable, and completed
 setup retries still verify them without changing their indexes. Actual writes
 require the owner indexes before extraction/planning; neither ingestion nor a
