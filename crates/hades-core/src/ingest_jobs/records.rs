@@ -261,7 +261,6 @@ async fn own_start(
         .as_str()
         .expect("internally constructed job key");
     let shutdown = reservation.shutdown();
-    let _reservation = reservation;
     if !matches!(
         timeout(
             WRITE_TIMEOUT,
@@ -271,6 +270,7 @@ async fn own_start(
         Ok(Ok(_))
     ) {
         // Insertion may have committed even if the response was lost.
+        reservation.release_tree();
         persist(
             &pool,
             job,
@@ -283,6 +283,7 @@ async fn own_start(
         return;
     }
     if shutdown.is_cancelled() || reply.is_closed() {
+        reservation.release_tree();
         persist(&pool, job, &failed("ingest cancelled before child startup")).await;
         let _ = reply.send(Err(service("ingest cancelled before child startup")));
         return;
@@ -290,6 +291,7 @@ async fn own_start(
     let child = match Process::spawn(&mut command) {
         Ok(child) => child,
         Err(_) => {
+            reservation.release_tree();
             persist(&pool, job, &failed("failed to spawn ingest child")).await;
             let _ = reply.send(Err(service("failed to spawn ingest child")));
             return;
@@ -307,6 +309,7 @@ async fn own_start(
     {
         Ok(child) => child,
         Err(()) => {
+            reservation.release_tree();
             persist(
                 &pool,
                 job,
@@ -324,6 +327,10 @@ async fn own_start(
         Ok(output) => outcome(output),
         Err(error) => failed(&error.to_string()),
     };
+    // The child is reaped. A client may read this outcome and start the next job
+    // over the same tree before this write returns, so the tree is freed first; the
+    // reservation, dropped on return, still holds shutdown drain over the write.
+    reservation.release_tree();
     persist(&pool, job, &update).await;
 }
 
@@ -697,6 +704,48 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// A client that reads the terminal record may start the next job over the same
+    /// tree at once. The terminal write is held here after it reached the database: the
+    /// reaped child must no longer claim the tree, while the owner keeps its identity
+    /// until persistence returns (CI run 42886974807, #225).
+    #[tokio::test]
+    async fn a_visible_terminal_record_leaves_the_tree_free() {
+        let _test = super::super::TEST_LOCK.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_str().unwrap();
+        let canonical = std::fs::canonicalize(root.path()).unwrap();
+        let config = HadesConfig::with_database("fixture");
+        let gate = Arc::new(Notify::new());
+        let mut replies = admission();
+        replies.extend([ok(), ok(), Reply::blocked(json!({}), gate.clone())]);
+        let mut mock = Mock::new(replies).await;
+        start_with(
+            &mock.pool,
+            &config,
+            path,
+            false,
+            false,
+            python("print('{}')"),
+        )
+        .await
+        .unwrap();
+        let row = inserted(&mut mock).await;
+        let job = row["_key"].as_str().unwrap();
+        mock.event(&format!("PATCH document/{COLLECTION}/{job}"))
+            .await;
+        let finished = mock
+            .event(&format!("PATCH document/{COLLECTION}/{job}"))
+            .await;
+        assert_eq!(finished["status"], "completed");
+        let next = super::super::reserve(&canonical);
+        assert!(next.is_ok(), "{:?}", next.err());
+        assert!(super::super::owns("fixture", job));
+        drop(next);
+        gate.notify_one();
+        released(job).await;
+        assert!(mock.events.try_recv().is_err());
     }
 
     #[tokio::test]
