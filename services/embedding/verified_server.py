@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import signal
+import socket
 import stat
 import sys
 import threading
@@ -81,9 +82,31 @@ def check_socket_path(uds: Path) -> Path:
     if not stat.S_ISSOCK(existing.st_mode):
         raise ValueError("socket path is occupied by a non-socket file")
     # A socket left by a crashed run cannot be reused by bind; the private parent
-    # guarantees it was ours, so removing it is safe.
-    os.unlink(uds)
+    # guarantees it was ours, so removing it is safe once nothing listens on it.
+    if not remove_stale_socket(uds):
+        raise ValueError("socket path is in use by a running provider")
     return uds
+
+
+def remove_stale_socket(uds: Path) -> bool:
+    """Unlink the socket unless a process still accepts connections on it.
+
+    Removing a live socket would orphan a running instance: still active under systemd
+    but unreachable (#225). Returns False, leaving the file, when something listens.
+    Two starts racing through the model load are not covered: neither has bound yet,
+    and the second load then fails the free-VRAM preflight on the shared card.
+    """
+    probe = socket.socket(socket.AF_UNIX)
+    try:
+        probe.connect(str(uds))
+    except FileNotFoundError:
+        return True
+    except ConnectionRefusedError:
+        uds.unlink(missing_ok=True)
+        return True
+    finally:
+        probe.close()
+    return False
 
 
 def build_provider(registration: RegisteredModel, space: str, config: EmbeddingConfig, *,
@@ -163,14 +186,19 @@ def main(argv: list[str] | None = None) -> int:
                     provider.model_name, provider.space,
                     description["receipt"]["serving_generation"])
         app = build_app(provider, config)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, RuntimeError) as exc:
+        # RuntimeError covers the free-VRAM preflight refusal (a legacy embedder still
+        # on the card) and CUDA out-of-memory at load: the likeliest start failures,
+        # which deserve one line in the journal, not a traceback per restart attempt.
         print(f"verified server: {exc}", file=sys.stderr)
         return 1
 
     try:
         serve(app, uds)
     finally:
-        uds.unlink(missing_ok=True)
+        # Our server is closed by now; a socket that still answers belongs to another
+        # instance started on the same path, and removing it would orphan that one.
+        remove_stale_socket(uds)
     return 0
 
 

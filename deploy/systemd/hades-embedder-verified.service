@@ -13,6 +13,10 @@ Type=simple
 # owned by this account with no symlink ancestor (#225).
 WorkingDirectory=@SERVICES_DIR@
 EnvironmentFile=%h/.config/hades/embedder.env
+# Read second, so its values win over the shared legacy file; an Environment= line
+# cannot do this, because EnvironmentFile= settings override Environment=. Put
+# HADES_EMBEDDER_IDLE_TIMEOUT=0 here: an idle unload invalidates every held receipt.
+EnvironmentFile=-%h/.config/hades/embedder-verified.env
 Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
 ExecStart=@SERVICES_DIR@/.venv/bin/python -m embedding.verified_server \

@@ -92,6 +92,22 @@ def test_stale_socket_unlinked_but_file_refused(tmp_path):
         verified_server.check_socket_path(path)
 
 
+def test_live_socket_refused_and_kept(tmp_path):
+    """A second start must not unlink a running instance's socket (#225)."""
+    parent = tmp_path / "run"
+    parent.mkdir(mode=0o700)
+    path = parent / "p.sock"
+    live = socket.socket(socket.AF_UNIX)
+    live.bind(str(path))
+    live.listen()
+    try:
+        with pytest.raises(ValueError, match="in use"):
+            verified_server.check_socket_path(path)
+        assert stat.S_ISSOCK(path.lstat().st_mode)
+    finally:
+        live.close()
+
+
 def test_build_provider_selects_space(provider):
     p, _ = provider
     cfg = EmbeddingConfig(device="cpu", model_name=p.model_name, idle_timeout_seconds=0)
@@ -236,3 +252,55 @@ def test_serve_exits_cleanly_on_sigterm(tmp_path):
             proc.kill()
             proc.wait()
     assert (code, uds.exists()) == (0, False)
+
+
+def patch_main_inputs(monkeypatch, p):
+    """Point main() at the CPU fixture provider without a registry or the real config."""
+    from embedding.registry import ModelRegistry
+    monkeypatch.setattr(ModelRegistry, "load", lambda self, provider_id: p._registration)
+    monkeypatch.setattr(EmbeddingConfig, "from_env", classmethod(
+        lambda cls: EmbeddingConfig(device="cpu", model_name=p.model_name,
+                                    idle_timeout_seconds=0)))
+    for key, value in OFFLINE.items():
+        monkeypatch.setenv(key, value)
+
+
+def private_paths(tmp_path):
+    root = tmp_path / "serving-registry"
+    root.mkdir(mode=0o700)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    return root, run_dir / "provider.sock"
+
+
+def test_main_exit_keeps_a_socket_another_instance_serves(provider, monkeypatch, tmp_path):
+    """main()'s cleanup removes only a dead socket, never one another process listens on."""
+    p, _ = provider
+    patch_main_inputs(monkeypatch, p)
+    root, uds = private_paths(tmp_path)
+    other = socket.socket(socket.AF_UNIX)
+    monkeypatch.setattr(verified_server, "serve",
+                        lambda app, path: (other.bind(str(path)), other.listen()))
+    try:
+        assert verified_server.main(["--registry", str(root), "--provider", "verified",
+                                     "--space", "late", "--uds", str(uds)]) == 0
+        assert stat.S_ISSOCK(uds.lstat().st_mode)
+    finally:
+        other.close()
+
+
+def test_main_reports_a_load_refusal_in_one_line(provider, monkeypatch, tmp_path, capsys):
+    """A busy card (preflight RuntimeError) must exit 1 with one line, not a traceback."""
+    p, _ = provider
+    patch_main_inputs(monkeypatch, p)
+    root, uds = private_paths(tmp_path)
+
+    def refuse(self):
+        raise RuntimeError("refusing to load on cuda:0: 131 MiB free of 24463 MiB")
+
+    monkeypatch.setattr(VerifiedJinaLateProvider, "describe", refuse)
+    code = verified_server.main(["--registry", str(root), "--provider", "verified",
+                                 "--space", "late", "--uds", str(uds)])
+    err = capsys.readouterr().err
+    assert code == 1 and err.startswith("verified server: refusing to load on cuda:0")
+    assert not uds.exists()

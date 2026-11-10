@@ -142,11 +142,15 @@ owned by the service account; the service refuses to start otherwise, as the HAD
 provider catalog would refuse the socket later. Change `--space late` to `--space
 conventional` only for a conventional managed database; one process serves one space.
 
-The unit reads the same `embedder.env` as the legacy embedder. `HADES_EMBEDDER_DEVICE`,
+The unit reads the same `embedder.env` as the legacy embedder, then the optional
+`~/.config/hades/embedder-verified.env`, whose values win. `HADES_EMBEDDER_DEVICE`,
 `HADES_EMBEDDER_FP16` and `HADES_EMBEDDER_MAX_TOKENS` apply; `HADES_EMBEDDER_HOST` and
-`HADES_EMBEDDER_PORT` are ignored, because the service listens only on the socket. Set
-`HADES_EMBEDDER_IDLE_TIMEOUT=0`: an idle unload invalidates every receipt a client
-holds, and the next query then pays a full re-verify and reload. CPU fallback is
+`HADES_EMBEDDER_PORT` are ignored, because the service listens only on the socket. Put
+`HADES_EMBEDDER_IDLE_TIMEOUT=0` in `embedder-verified.env`: an idle unload invalidates
+every receipt a client holds, and the next query then pays a full re-verify and reload.
+The legacy `embedder.env` usually sets an idle timeout for the legacy embedder, and a
+drop-in `Environment=` line cannot override it, because systemd lets
+`EnvironmentFile=` settings win over `Environment=`. CPU fallback is
 refused; the service exits if the configured device is unavailable. `GET /v1/status`
 reports model, space and load state without touching the model.
 
