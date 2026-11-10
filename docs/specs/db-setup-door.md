@@ -271,13 +271,19 @@ written as the act is exercised:
    because the reading desk resolves each graph through gharial before every write.
    Verify the desk lists the same readings, then open a reading session and make
    one mutation (a pin or a proposal) to prove the graph definitions resolve.
-   `Conveyance_KG` is left in place until the operator drops it by hand.
 7. First ingest: the repository's own `docs/` tree (113 markdown files and 215,490
    tokens at 52d04d4, the corpus the 2026-11-09 ceiling bisection used; the tree
    has grown since) unless the operator names another tree first. It is real prose
    with known answers, so `hades db query` can be checked with questions such as
    which collections the setup coordinator's inventory accepts. Record the sources
    returned.
+8. Second combined backup, after the reading-desk move and the first ingest: repeat
+   the step 5 procedure into a new dated directory and verify the database portion
+   with scripts/verify_workspace_backup.py as
+   [docs/operations/thinkpad-backup-restore.md](../operations/thinkpad-backup-restore.md)
+   describes. Only after that backup verifies is `Conveyance_KG` retired; the drop
+   is still by hand, outside HADES, since there is no drop-database command (#118).
+   Both backups are kept.
 
 The embedder ceiling is 20,000 tokens (ruled 2026-11-09, recorded by PR #250).
 The late policy saved in step 4 must fit that ceiling, and setup enforces it. The
