@@ -49,6 +49,21 @@ pub struct VerifiedProvider {
     connection: ProviderConnection,
 }
 
+/// Liveness reported by `GET /v1/status`: the serving model, its chunking space and whether
+/// it is loaded. Not an observation: it carries no receipt and cannot mint a
+/// `VerifiedProvider`. The shape is closed so a provider cannot smuggle more in (#225).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderStatus {
+    pub model: String,
+    pub space: String,
+    pub loaded: bool,
+}
+
+/// Three short strings fit in far less; the cap keeps a status probe cheap whatever the
+/// connection's larger profile-sized bound allows (#225).
+const MAX_STATUS_BYTES: usize = 64 * 1024;
+
 /// Require explicit normalized absolute paths rather than cwd-dependent resolution.
 fn absolute(path: &Path) -> bool {
     path.is_absolute()
@@ -108,6 +123,23 @@ impl ProviderCatalog {
     pub async fn inspect(&self, id: &str) -> Result<RegistrationSummary, EmbeddingError> {
         self.connection(id)?;
         Ok(self.registration(id).await?.summary())
+    }
+
+    /// Probe liveness with `GET /v1/status`, which never loads or observes the model. Reads
+    /// no registration, so it reports a provider whose registration is absent or changed;
+    /// only `verify` admits one (#225).
+    pub async fn status(&self, id: &str) -> Result<ProviderStatus, EmbeddingError> {
+        let connection = self.connection(id)?;
+        let path = checked_socket(connection)?;
+        exchange(
+            connection,
+            path,
+            Method::GET,
+            "/v1/status",
+            connection.max_response_bytes.min(MAX_STATUS_BYTES),
+            "status",
+        )
+        .await
     }
 
     /// Explicitly load/observe one configured provider and compare it with protected registration.
@@ -204,6 +236,18 @@ impl VerifiedProvider {
     /// Identify the selected installation entry without exposing endpoint or filesystem paths.
     pub fn provider_id(&self) -> &str {
         &self.registration.value.provider_id
+    }
+
+    /// Whether the observed documents workload is a late-chunking space. The verified
+    /// server serves one space per process, so a late load cannot also serve a
+    /// conventional policy; setup refuses the mismatch before any database work (#225).
+    /// `false` when no documents workload is advertised.
+    pub fn serves_late_only(&self) -> bool {
+        self.description
+            .advertised_workload(WorkloadKind::Documents)
+            .is_some_and(|observed| {
+                observed.capabilities.late_chunking && observed.capabilities.tokenizer_offsets
+            })
     }
 
     /// Build an initializing documents-only profile from the actual observation and explicit policy.
@@ -332,6 +376,22 @@ impl VerifiedProvider {
 
 /// Observe only a same-account Unix service behind a private directory, with bounded HTTP work.
 async fn describe(connection: &ProviderConnection) -> Result<ProviderDescription, EmbeddingError> {
+    let path = checked_socket(connection)?;
+    exchange(
+        connection,
+        path,
+        Method::POST,
+        "/v1/verify",
+        connection.max_response_bytes.min(MAX_PROFILE_BYTES),
+        "description",
+    )
+    .await
+}
+
+/// Admit only a same-account socket inside a private directory under protected ancestors.
+/// Shared by verification and liveness so a status probe cannot reach a socket that
+/// verification would refuse (#225).
+fn checked_socket(connection: &ProviderConnection) -> Result<&Path, EmbeddingError> {
     let EmbeddingEndpoint::Unix(path) = &connection.endpoint else {
         return Err(EmbeddingError::InvalidResponse(
             "local provider requires a Unix socket".into(),
@@ -366,24 +426,34 @@ async fn describe(connection: &ProviderConnection) -> Result<ProviderDescription
             "socket ancestors must not be writable by other accounts outside root-owned sticky directories",
         )?;
     }
+    Ok(path)
+}
+
+/// One bodiless request under the connection timeout, its reply bounded to `limit` bytes
+/// and parsed strictly as `T`. `label` names the reply in errors.
+async fn exchange<T: serde::de::DeserializeOwned>(
+    connection: &ProviderConnection,
+    path: &Path,
+    method: Method,
+    route: &str,
+    limit: usize,
+    label: &str,
+) -> Result<T, EmbeddingError> {
     let request = Request::builder()
-        .method(Method::POST)
-        .uri(hyperlocal::Uri::new(path, "/v1/verify"))
+        .method(method)
+        .uri(hyperlocal::Uri::new(path, route))
         .body(Full::new(Bytes::new()))?;
     let client: Client<_, Full<Bytes>> = Client::unix();
     tokio::time::timeout(connection.timeout, async {
         let response = client.request(request).await?;
         let status = response.status();
-        let body = Limited::new(
-            response.into_body(),
-            connection.max_response_bytes.min(MAX_PROFILE_BYTES),
-        );
+        let body = Limited::new(response.into_body(), limit);
         let bytes = body
             .collect()
             .await
             .map_err(|e| {
                 EmbeddingError::InvalidResponse(format!(
-                    "provider description exceeds response bound: {e}"
+                    "provider {label} exceeds response bound: {e}"
                 ))
             })?
             .to_bytes();
@@ -393,9 +463,8 @@ async fn describe(connection: &ProviderConnection) -> Result<ProviderDescription
                 message: String::from_utf8_lossy(&bytes).into_owned(),
             });
         }
-        serde_json::from_slice(&bytes).map_err(|e| {
-            EmbeddingError::InvalidResponse(format!("invalid provider description: {e}"))
-        })
+        serde_json::from_slice(&bytes)
+            .map_err(|e| EmbeddingError::InvalidResponse(format!("invalid provider {label}: {e}")))
     })
     .await
     .map_err(|_| EmbeddingError::Timeout(connection.timeout.as_secs()))?

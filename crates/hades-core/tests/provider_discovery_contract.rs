@@ -9,7 +9,7 @@ use hades_core::{
     persephone::{
         bound_embedding::ProviderConnection,
         embedding::{EmbeddingEndpoint, EmbeddingError},
-        provider_registry::ProviderCatalog,
+        provider_registry::{ProviderCatalog, ProviderStatus},
     },
 };
 use serde_json::{Value, json};
@@ -26,14 +26,17 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[path = "common/registered_provider.rs"]
-mod registration_fixture;
-
 #[path = "provider_discovery/workloads.rs"]
 mod workloads;
 
 #[path = "provider_discovery/limits.rs"]
 mod limits;
+
+#[allow(dead_code)]
+#[path = "common/profiled_provider.rs"]
+mod provider;
+// The shared peer already loads the registration fixture; one copy, not two (clippy::duplicate_mod).
+use provider::registration_fixture;
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -682,4 +685,88 @@ async fn unsafe_socket_paths_are_rejected_before_http() {
         assert!(catalog.verify("fixture-local-provider").await.is_err());
         assert!(peer.requests().is_empty());
     }
+}
+
+/// Liveness is a GET that never observes or loads: the verify counter stays at zero (#225).
+#[tokio::test]
+async fn status_reads_liveness_without_observation() {
+    let fixture = provider::Fixture::late();
+    let peer = provider::Peer::new(&fixture);
+    let status = peer
+        .catalog()
+        .status(&peer.connection().provider_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        ProviderStatus {
+            model: fixture.profile.model.id.clone(),
+            space: "late".into(),
+            loaded: true,
+        }
+    );
+    assert_eq!(peer.observations(), 0);
+}
+
+/// Unknown IDs and a vanished socket are errors, never a fallback endpoint or a panic (#225).
+#[tokio::test]
+async fn status_refuses_unknown_provider_and_missing_socket() {
+    let fixture = Fixture::new();
+    let peer = Peer::new(vec![]);
+    let catalog = fixture.catalog(&peer);
+    for id in ["unconfigured", "../fixture-local-provider", ""] {
+        assert!(catalog.status(id).await.is_err());
+    }
+    fs::remove_file(&peer.path).unwrap();
+    assert!(catalog.status("fixture-local-provider").await.is_err());
+    assert!(peer.requests().is_empty());
+}
+
+/// The probe is exactly GET /v1/status with an empty body, and the reply shape is closed (#225).
+#[tokio::test]
+async fn status_is_a_strict_get() {
+    let fixture = Fixture::new();
+    let peer = Peer::new(vec![
+        Reply::json(json!({"model":"m","space":"conventional","loaded":false})),
+        Reply::json(json!({"model":"m","space":"conventional","loaded":true,
+            "receipt":fixture.description["receipt"]})),
+        Reply::json(json!({"model":"m","space":"conventional"})),
+    ]);
+    let catalog = fixture.catalog(&peer);
+    let status = catalog.status("fixture-local-provider").await.unwrap();
+    assert_eq!(
+        status,
+        ProviderStatus {
+            model: "m".into(),
+            space: "conventional".into(),
+            loaded: false,
+        }
+    );
+    assert!(catalog.status("fixture-local-provider").await.is_err());
+    assert!(catalog.status("fixture-local-provider").await.is_err());
+    let requests = peer.requests();
+    assert_eq!(requests.len(), 3);
+    for (line, body) in requests {
+        assert_eq!(line, "GET /v1/status HTTP/1.1");
+        assert!(body.is_empty());
+    }
+}
+
+/// Late-only follows the observed documents capabilities, not any caller policy (#225).
+#[tokio::test]
+async fn serves_late_only_follows_capabilities() {
+    let late = provider::Peer::new(&provider::Fixture::late());
+    let verified = late
+        .catalog()
+        .verify(&late.connection().provider_id)
+        .await
+        .unwrap();
+    assert!(verified.serves_late_only());
+    let conventional = provider::Peer::new(&provider::Fixture::new(8));
+    let verified = conventional
+        .catalog()
+        .verify(&conventional.connection().provider_id)
+        .await
+        .unwrap();
+    assert!(!verified.serves_late_only());
 }

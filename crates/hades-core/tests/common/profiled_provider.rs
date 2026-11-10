@@ -26,7 +26,7 @@ use tokio::{
 };
 
 #[path = "registered_provider.rs"]
-mod registration_fixture;
+pub mod registration_fixture;
 
 pub struct Fixture {
     pub profile: EmbeddingProfile,
@@ -231,6 +231,11 @@ impl Peer {
         let path = directory.path().join("provider.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let model = fixture.profile.model.id.clone();
+        // Liveness is not an observation: GET /v1/status never bumps `observations` (#225).
+        let status = json!({"model":model,
+            "space":if fixture.profile.capabilities.late_chunking {"late"} else {"conventional"},
+            "loaded":true})
+        .to_string();
         let workload_key = if fixture.profile.workloads.documents.is_some() {
             "documents"
         } else {
@@ -285,6 +290,11 @@ impl Peer {
                         assert!(headers.len() < 8192);
                     }
                     let headers = String::from_utf8(headers).unwrap();
+                    if headers.starts_with("GET /v1/status HTTP/1.1\r\n") {
+                        let wire = format!("HTTP/1.1 200 Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{status}", status.len());
+                        let _ = stream.write_all(wire.as_bytes()).await;
+                        return;
+                    }
                     let late_planning = headers.starts_with("POST /v1/late-passages HTTP/1.1\r\n");
                     let late_embedding = headers.starts_with("POST /v1/late-embeddings HTTP/1.1\r\n");
                     let planning = late_planning || headers.starts_with("POST /v1/passages HTTP/1.1\r\n");
