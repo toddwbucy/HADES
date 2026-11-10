@@ -264,6 +264,36 @@ class StateChecks(Scratch):
         desk = self.write("d.json", envelope({"database": "DB", "b": 1, "a": 2}))
         self.assertEqual(self.call("desk", desk)[1], '{"a": 2, "b": 1}\n')
 
+    def test_check_providers(self):
+        entry = {"id": "laptop-jina", "model": "m", "space": "late", "loaded": True}
+        status = self.write("st.json", envelope({"verified_providers": [entry]}))
+        self.assertEqual(self.call("check-providers", status, "laptop-jina"),
+                         (0, "verified_providers: laptop-jina late loaded\n"))
+        status.write_text(envelope({"verified_providers": [
+            {"id": "laptop-jina", "error": "connection refused"}]}))
+        self.assertEqual(self.call("check-providers", status, "laptop-jina")[0], 1)
+        status.write_text(envelope({"embedder": {}}))
+        self.assertEqual(self.call("check-providers", status, "laptop-jina")[0], 1)
+
+    def test_manifest_counts_match_the_live_counts_format(self):
+        manifest = self.write("manifest.json", json.dumps({"collections": {
+            "reading_ab_nodes": {"count": 3}, "hades_reading_sessions": {"count": 1},
+            "documents": {"count": 9}}}))
+        moving = self.write("moving.txt", "hades_reading_sessions\nreading_ab_nodes\n")
+        live = self.write("live.json", envelope({"results": [["hades_reading_sessions", 1],
+                                                             ["reading_ab_nodes", 3]]}))
+        self.assertEqual(self.call("manifest-counts", manifest, moving)[1],
+                         self.call("results", live)[1])
+
+    def test_a_filesystem_error_is_a_one_line_refusal(self):
+        backup = self.root / "b"
+        self.write("b/manifest.json", json.dumps({"database": "DB2", "files": {}}))
+        self.write("registry/records/p.json", json.dumps({"snapshot": "s"}))
+        code, out = self.call("add-managed", backup, "DB2", self.root / "no-ledger",
+                              self.root / "registry")
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", out)
+
     def test_verifier_dir(self):
         log = self.write("v.log", "Private recovery artifacts: /tmp/hades-recovery-ab12\n{}\n")
         self.assertEqual(self.call("verifier-dir", log)[1], "/tmp/hades-recovery-ab12\n")
@@ -277,11 +307,15 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("check-ingest", ok, 4)[0], 1)
 
     def test_query_sources(self):
-        hits = [{"source_id": "operations/x.md"}, {"source_id": "specs/db-setup-door.md"}]
+        # Managed search names a root-relative file as relative-file:<path>
+        # (profiled_documents/files.rs), so the match must look past the scheme.
+        hits = [{"source_id": "relative-file:operations/x.md"},
+                {"source_id": "relative-file:specs/db-setup-door.md"}]
         result = self.write("q.json", envelope({"results": hits}))
         code, out = self.call("query-sources", result, "specs/db-setup-door.md")
-        self.assertEqual(code, 0)
-        self.assertEqual(out, "1. operations/x.md\n2. specs/db-setup-door.md\nPASS\n")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "1. relative-file:operations/x.md\n"
+                              "2. relative-file:specs/db-setup-door.md\nPASS\n")
         code, out = self.call("query-sources", result, "specs/other.md")
         self.assertEqual(code, 1)
         self.assertTrue(out.endswith("FAIL: none of specs/other.md\n"))

@@ -115,6 +115,8 @@ def add_managed(backup, database, ledger, registry, copy=copy_tree):
     targets = [backup / "setup-ledger", backup / "model-registry", backup / "inventory"]
     require("managed_workspace" not in manifest and not any(p.exists() for p in targets),
             f"backup {backup.name} already holds a managed workspace copy")
+    # Checked before anything is created, so a wrong path leaves the backup untouched.
+    require(ledger.is_dir(), f"the setup ledger {ledger} is not a directory")
     records = sorted((registry / "records").glob("*.json"))
     require(records, "the model registry holds no registration record")
     snapshots = sorted({load(p)["snapshot"] for p in records})
@@ -223,6 +225,17 @@ def cmd_check_status(a):
     return "status ok"
 
 
+def cmd_check_providers(a):
+    """`hades status` lists the provider as serving the late space with a loaded model."""
+    entries = data(a.file).get("verified_providers")
+    require(isinstance(entries, list), "hades status has no verified_providers")
+    entry = next((e for e in entries if e.get("id") == a.provider), None)
+    require(entry is not None, f"verified_providers does not list {a.provider}")
+    require(entry.get("space") == "late" and entry.get("loaded") is True,
+            f"verified_providers reports {entry}")
+    return f"verified_providers: {a.provider} late loaded"
+
+
 def cmd_check_verify(a):
     report = load(a.file)
     model, caps = report["model"], report["capabilities"]
@@ -291,6 +304,19 @@ def cmd_staying(a):
     return json.dumps([n for n in names if n not in moving and not n.startswith("_")])
 
 
+def cmd_manifest_counts(a):
+    """The backup's counts for the moving collections, in the live counts query's format.
+
+    Compared with the live source before the restore, it proves the final backup still
+    matches the quiet database, however long ago it was taken (#225).
+    """
+    collections = load(a.manifest)["collections"]
+    names = Path(a.moving).read_text().split()
+    missing = [n for n in names if n not in collections]
+    require(not missing, f"the backup manifest lacks {missing}")
+    return json.dumps([[n, collections[n]["count"]] for n in names])
+
+
 def cmd_names_bind(a):
     return json.dumps({"names": Path(a.moving).read_text().split()})
 
@@ -345,7 +371,10 @@ def cmd_query_sources(a):
     """Print the ranked sources; pass when an expected source is among them."""
     sources = [hit.get("source_id", "?") for hit in aql_results(a.file)]
     lines = [f"{rank}. {source}" for rank, source in enumerate(sources, 1)]
-    hit = any(s == e or s.endswith("/" + e) for s in sources for e in a.expected)
+    # Managed search names a root-relative file `relative-file:<path>`
+    # (profiled_documents/files.rs); match the path after the scheme.
+    paths = [s.split(":", 1)[1] if s.startswith("relative-file:") else s for s in sources]
+    hit = any(p == e or p.endswith("/" + e) for p in paths for e in a.expected)
     print("\n".join(lines))
     if not hit:
         print("FAIL: none of " + ", ".join(a.expected))
@@ -379,6 +408,7 @@ def parser():
     add("check-register", cmd_check_register, "file", "md5")
     add("text-state", cmd_text_state, "file", "block", "headers...")
     add("check-status", cmd_check_status, "file", "model", "space")
+    add("check-providers", cmd_check_providers, "file", "provider")
     add("check-verify", cmd_check_verify, "file", "revision", "md5", "max_tokens",
         max_tokens=int)
     add("receipt-state", cmd_receipt_state, "file", "operation", "database")
@@ -389,6 +419,7 @@ def parser():
     add("moving-dump", cmd_moving_dump, "dump")
     add("staying", cmd_staying, "file", "moving")
     add("names-bind", cmd_names_bind, "moving")
+    add("manifest-counts", cmd_manifest_counts, "manifest", "moving")
     add("check-graphs", cmd_check_graphs, "file", "moving")
     add("results", cmd_results, "file")
     add("desk", cmd_desk, "file")
@@ -405,8 +436,14 @@ def main(argv=None):
     os.umask(0o077)
     try:
         result = args.func(args)
-    except (Refused, KeyError, TypeError) as exc:
-        message = str(exc) if isinstance(exc, Refused) else f"unexpected shape: {exc!r}"
+    except (Refused, KeyError, TypeError, OSError) as exc:
+        if isinstance(exc, Refused):
+            message = str(exc)
+        elif isinstance(exc, OSError):
+            # strerror, not str(exc): the latter carries the full path.
+            message = f"{exc.strerror}: {Path(exc.filename or '?').name}"
+        else:
+            message = f"unexpected shape: {exc!r}"
         print(f"managed_workspace {args.command}: {message}", file=sys.stderr)
         return 1
     if result:

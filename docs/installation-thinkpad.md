@@ -814,7 +814,10 @@ and what phase 2 records.
 ### Running the installer
 
 Run it from a checkout that holds the script, as the account that owns the user
-units. `check` is read-only and always safe: it prints the resolved values, the
+units. It changes to the checkout it installs into, `HADES_MW_CHECKOUT`
+(`~/Projects/HADES`), before any step, because the private checks open
+`.local-install/` relative to it. `check` is read-only and always safe: it prints the
+resolved values, the
 preconditions and each step's state. Then run the steps one at a time, each first with
 `--dry-run`, or run `all`:
 
@@ -848,7 +851,9 @@ How it behaves:
   commands, `helper` is `python3 scripts/install/managed_workspace.py`, `DATA` is the
   resolved data directory, and `~` is the home directory.
 - `install-main`, `switch-embedder` and `move-desk` stop or switch services and ask for
-  confirmation; `--yes` skips the question.
+  confirmation before they write or stop anything; `--yes` skips the question. If one
+  of them fails while services are stopped or switched, it says so on exit and names
+  the way back.
 - Values are in one block at the top of the script, each overridable by its
   `HADES_MW_*` variable. Paths come from `$HOME` and `readlink -f ~/.local/share/hades`:
   the provider catalog, the registry and the setup ledger refuse a symlink ancestor, so
@@ -910,7 +915,12 @@ The step checks the build's hashes and refuses unless `~/.local/bin` holds eithe
 the old executables, `hades.yaml` and a `before.json` snapshot; the preflight, which
 must report zero active conversations; the viewer and the daemon stopped; a staged
 install; the daemon's readiness check; and the
-[post-install checks](#post-install-checks-for-52d04d4) with the new hashes. Look at:
+[post-install checks](#post-install-checks-for-52d04d4) with the new hashes. It records
+the backup directory as the marker `install-main.backup` before stopping anything, and
+`install-main.checked` once the checks pass. A re-run after a failure finds the new
+executables and the backup marker, starts the daemon and the viewer if they are
+stopped, and repeats the checks. If the executables were installed some other way, the
+step refuses and names the marker to write after running the checks by hand. Look at:
 
 - the hash and executable checks (`install-sha256.txt`, `install-exe.txt`, no
   `(deleted)`), all five units active, and a silent `cmp` of the before and after
@@ -968,10 +978,14 @@ disabled, not only stopped, and a reboot cannot start two loads on one card. Loo
 - `verify.json`, which the helper checks for the revision, the manifest MD5, the late
   capabilities and a 20,000-token ceiling.
 
-If `/v1/status` never reports a loaded model the step prints how to switch back and
-refuses. While the verified unit holds the card, these legacy paths fail with a
-connection error: `hades embed`, `hades codebase ingest` and code embedding,
-`hades ingest` into a legacy database, and semantic search of a legacy database.
+The step is done when the units are switched and the marker
+`switch-embedder.verified` records a passing verification. A re-run with the units
+already switched asks nothing and repeats only the checks. If a check fails after the
+switch, the step prints how to switch back and refuses.
+
+While the verified unit holds the card, these legacy paths fail with a connection error:
+`hades embed`, `hades codebase ingest` and code embedding, `hades ingest` into a legacy
+database, and semantic search of a legacy database.
 Guided reading, the reading desk, Codex chat and graph reads do not use the embedder.
 The older sections of this record still say
 `systemctl --user restart hades-embedder.service`; after this step that would start the
@@ -1006,8 +1020,10 @@ the only tool that writes the `manifest.json` the verifier reads, followed by th
 helper's ledger and registry copy. As of this draft the driver backs up `Conveyance_KG`
 only, requires the reading-desk collections and sends its preflight to
 `Conveyance_KG`. Extend it as listed under
-[driver changes](operations/thinkpad-backup-restore.md#driver-changes); `check` reports
-`backup driver takes --database` once it does, and `backup-1` refuses until then. Then
+[driver changes](operations/thinkpad-backup-restore.md#driver-changes). `check` reports
+`backup driver takes --database` once the driver's source declares a `"--database"`
+option, a text match rather than a run of the driver, and `backup-1` refuses until
+then. Then
 dry-run the driver against `Conveyance_KG` and confirm the backup still passes the
 verifier. This is the operator's lane.
 
@@ -1034,19 +1050,27 @@ completed one:
    last backup before retirement. The driver restarts the services, so the step stops
    the viewer and the daemon again at once. From here until the services restart,
    nothing may write to either database; if the step fails meanwhile, it says the
-   services may be stopped.
+   services are stopped and how to resume or undo.
 2. The move list, built twice, from the quiet database (`moving.txt`) and from the
    dump's structure files (`moving-dump.txt`), which must agree. The collections that
    stay behind are printed (an empty `hades_schema` is expected). Every `_graphs` key
    must start with `reading_`, and every collection a definition names must be on the
-   list.
+   list. Until the restore is recorded, the live counts of the moving collections must
+   also equal the final backup's manifest (`counts-source.json`,
+   `counts-backup.json`). A reading changed after the backup, or a resume days later
+   over a changed desk, fails here; the step removes the final backup's markers, so the
+   re-run takes a fresh one.
 3. The final backup verified in isolation (`conveyance-kg-final-verify-result.json`);
    the verifier's staging directory under `/tmp` is removed afterwards.
 4. The restore, from a staged copy of the dump, because `arangorestore` writes a
    progress file into its input directory: the reading collections with
    `--overwrite false`, so a name clash fails, then `_graphs` data-only. The step first
-   requires the new database to hold no reading collections and no graph definitions,
-   or else an identical copy, which it accepts without restoring again. The root
+   requires the new database to hold no reading collections and no graph definitions.
+   If an earlier run restored the collections, it accepts them only with counts equal
+   to the source's: with identical graph definitions it restores nothing, and with an
+   empty `_graphs` it restores the definitions alone. Anything else is refused, with
+   the instruction to drop the reading collections and definitions from the new
+   database by hand. The staged copy is removed on exit, also after a failure. The root
    password reaches `arangorestore` from `~/.config/hades/arango-root-password` through
    an environment variable, never on the command line. Counts and graph definitions of
    both databases must then compare equal, and `diagnose` must still report

@@ -121,6 +121,10 @@ STEPS=(install-main register configure switch-embedder setup-db backup-1 move-de
 DRY_RUN=0
 YES=0
 CURRENT=""
+# Set while services are stopped or switched, and printed if the script then fails.
+NOTICE=""
+# A staged dump copy inside the record, removed on any exit.
+STAGE=""
 
 # Output and command plumbing ---------------------------------------------------------
 
@@ -252,6 +256,15 @@ begin_record() {
   install -d -m 700 "$RECORDS" "$STATE" "$RECORD"
 }
 
+on_exit() {
+  local code=$?
+  if [[ -n $STAGE && -d $STAGE && $STAGE == "$RECORD"/move-dump-* ]]; then
+    rm -rf -- "$STAGE"
+    say "removed the staged dump copy $STAGE"
+  fi
+  if ((code)) && [[ -n $NOTICE ]]; then printf '%s\n' "$(display "$NOTICE")" >&2; fi
+}
+
 mark() {
   local name=$1 value=$2
   say "+ mark $name done: $value"
@@ -260,10 +273,11 @@ mark() {
 
 load_env() {
   if [[ -f $DAEMON_ENV ]]; then
-    set -a
+    # Sourced as the runbook did, without -u: a value may hold a literal $.
+    set -a +u
     # shellcheck disable=SC1090  # the operator's file, not part of this repository
     . "$DAEMON_ENV"
-    set +a
+    set +a -u
   fi
   # daemon.env names the YAML; an explicit override wins, for scratch runs.
   YAML=${HADES_MW_YAML:-${HADES_CONFIG:-$CONFIG_DIR/hades.yaml}}
@@ -349,22 +363,30 @@ installed_prior() {
     sha_is "$BIN_DIR/hades-viewer" "$PRIOR_VIEWER_SHA256"
 }
 
-# The verified unit runs python from the checkout's services tree, so that tree must
-# equal the main commit, committed and in the working tree.
+# The verified unit runs python from the checkout's services tree, and the viewer unit
+# runs the checkout's check_daemon_ready.py, so both must equal the main commit,
+# committed and in the working tree. The rest of scripts/ may be newer: this script and
+# its helper live there.
+CHECKOUT_PATHS=(services scripts/check_daemon_ready.py)
 checkout_at_main() {
   git -C "$CHECKOUT" merge-base --is-ancestor "$MAIN_COMMIT" HEAD 2>/dev/null &&
-    git -C "$CHECKOUT" diff --quiet "$MAIN_COMMIT" HEAD -- services &&
-    [[ -z $(git -C "$CHECKOUT" status --short -- services) ]]
+    git -C "$CHECKOUT" diff --quiet "$MAIN_COMMIT" HEAD -- "${CHECKOUT_PATHS[@]}" &&
+    [[ -z $(git -C "$CHECKOUT" status --short -- "${CHECKOUT_PATHS[@]}") ]]
 }
 
+# The executables count as installed once the post-install checks passed and were
+# marked; a later upgrade then leaves the step done rather than blocked.
 state_install_main() {
   local why=()
-  if ! installed_build; then
-    installed_prior || {
+  if [[ ! -f $STATE/install-main.checked ]]; then
+    if installed_build; then
+      why+=("post-install checks not recorded")
+    elif installed_prior; then
+      why+=("installed executables are f930fbc")
+    else
       echo "blocked: installed executables are neither f930fbc nor ${MAIN_COMMIT:0:7}"
       return
-    }
-    why+=("installed executables are f930fbc")
+    fi
   fi
   checkout_at_main || why+=("checkout services/ is not ${MAIN_COMMIT:0:7}")
   if ((${#why[@]})); then echo "pending: $(join "${why[@]}")"; else echo "done"; fi
@@ -416,6 +438,12 @@ state_configure() {
   if ((${#why[@]})); then echo "pending: $(join "${why[@]}")"; else echo "done"; fi
 }
 
+units_switched() {
+  ! unit_enabled hades-embedder.service && ! unit_active hades-embedder.service &&
+    unit_enabled hades-embedder-verified.service &&
+    unit_active hades-embedder-verified.service
+}
+
 state_switch_embedder() {
   [[ -f $TEMPLATE ]] || {
     echo "blocked: the unit template is missing from this checkout"
@@ -430,15 +458,12 @@ state_switch_embedder() {
     echo "pending: verified unit not installed"
     return
   fi
-  unit_enabled hades-embedder.service && {
-    echo "pending: legacy unit still enabled"
-    return
-  }
-  if unit_enabled hades-embedder-verified.service &&
-    unit_active hades-embedder-verified.service; then
-    echo "done"
-  else
+  if ! units_switched; then
     echo "pending: verified unit not enabled and active"
+  elif [[ ! -f $STATE/switch-embedder.verified ]]; then
+    echo "pending: the provider has not been verified"
+  else
+    echo "done"
   fi
 }
 
@@ -524,8 +549,8 @@ require_done() {
 # a backup of the managed database needs it to take the database by name.
 require_driver() {
   [[ -f $DRIVER ]] || refuse "the private backup driver is missing"
-  grep -q -- '--database' "$DRIVER" ||
-    refuse "the backup driver does not take --database yet; extend it first" \
+  driver_ready ||
+    refuse "the backup driver does not declare --database yet; extend it first" \
       "(docs/operations/thinkpad-backup-restore.md, Driver changes)"
 }
 
@@ -551,14 +576,23 @@ take_backup() {
 
 # Verify a backup in isolation, keep result.json, and remove the verifier's staging.
 verify_backup() {
-  local backup=$1 name=$2 dir
-  run_tee "$RECORD/$name-verify.log" python3 "$REPO/scripts/verify_workspace_backup.py" \
-    --backup "$backup" --arangod "$ARANGO_HOME/sbin/arangod" \
-    --arangorestore "$ARANGO_HOME/bin/arangorestore" --hades "$HADES"
+  local backup=$1 name=$2 dir status=0
+  local verifier=(python3 "$REPO/scripts/verify_workspace_backup.py" --backup "$backup"
+    --arangod "$ARANGO_HOME/sbin/arangod" --arangorestore "$ARANGO_HOME/bin/arangorestore"
+    --hades "$HADES")
+  SUFFIX="| tee $RECORD/$name-verify.log" show "${verifier[@]}"
   if ((DRY_RUN)); then
     dir="/tmp/hades-recovery-<printed>"
   else
-    dir=$(helper verifier-dir "$RECORD/$name-verify.log")
+    "${verifier[@]}" 2>&1 | tee "$RECORD/$name-verify.log" | filter || status=$?
+    dir=$(helper verifier-dir "$RECORD/$name-verify.log" 2>/dev/null) || dir=""
+    if ((status)); then
+      # Its staging holds copies of the backup, configuration and credentials included,
+      # on a shared tmpfs; it is kept for diagnosis but must not be forgotten.
+      [[ -z $dir ]] || refuse "the verifier failed; read $dir/server.log and" \
+        "restore.log, then remove $dir, which holds copies of credentials"
+      refuse "the verifier failed before staging; see $name-verify.log"
+    fi
   fi
   run cp "$dir/result.json" "$RECORD/$name-verify-result.json"
   run rm -rf -- "$dir"
@@ -576,32 +610,49 @@ combined_backup() {
 # Steps ---------------------------------------------------------------------------------
 
 act_install_main() {
-  if ! installed_build; then
-    check_hashes "$HADES_SHA256" "$BUILD/hades" "$VIEWER_SHA256" "$BUILD/hades-viewer"
-    [[ -f $LOCAL_INSTALL/preflight-224.py ]] || refuse "the private preflight is missing"
-    need_env
-    confirm "Stop the viewer and the daemon and install ${MAIN_COMMIT:0:7}?"
-    local backup snapshot
-    backup=$DATA_LINK/backups/main-${MAIN_COMMIT:0:7}-$(date -u +%Y%m%dT%H%M%SZ)
-    snapshot=(python3 -c 'import json, runpy, sys
+  local backup="<backup-dir>" snapshot
+  snapshot=(python3 -c 'import json, runpy, sys
 s = runpy.run_path(sys.argv[1])["snapshot"]()
 print(json.dumps(s, sort_keys=True))' "$LOCAL_INSTALL/preflight-224.py")
-    run install -d -m 700 "$backup"
-    run cp -p "$BIN_DIR/hades" "$BIN_DIR/hades-viewer" "$YAML" "$backup/"
-    run_to "$backup/before.json" "${snapshot[@]}"
-    run python3 "$LOCAL_INSTALL/preflight-224.py"
-    run systemctl --user stop hades-viewer.service
-    run systemctl --user stop hades-daemon.service
-    run install -m 755 "$BUILD/hades" "$BIN_DIR/.hades.new"
-    run install -m 755 "$BUILD/hades-viewer" "$BIN_DIR/.hades-viewer.new"
-    run mv -f "$BIN_DIR/.hades.new" "$BIN_DIR/hades"
-    run mv -f "$BIN_DIR/.hades-viewer.new" "$BIN_DIR/hades-viewer"
-    run systemctl --user daemon-reload
+  if [[ ! -f $STATE/install-main.checked ]]; then
+    if ! installed_build; then
+      check_hashes "$HADES_SHA256" "$BUILD/hades" "$VIEWER_SHA256" "$BUILD/hades-viewer"
+      [[ -f $LOCAL_INSTALL/preflight-224.py ]] || refuse "the private preflight is missing"
+      need_env
+      confirm "Stop the viewer and the daemon and install ${MAIN_COMMIT:0:7}?"
+      backup=$DATA_LINK/backups/main-${MAIN_COMMIT:0:7}-$(date -u +%Y%m%dT%H%M%SZ)
+      run install -d -m 700 "$backup"
+      mark install-main.backup "$backup"
+      run cp -p "$BIN_DIR/hades" "$BIN_DIR/hades-viewer" "$YAML" "$backup/"
+      run_to "$backup/before.json" "${snapshot[@]}"
+      run python3 "$LOCAL_INSTALL/preflight-224.py"
+      NOTICE="install-main stopped hades-viewer and hades-daemon and may not have restarted
+them. Re-run install-main: it restarts them and repeats the post-install checks. To
+roll back, see docs/installation-thinkpad.md, Roll back 52d04d4, with $backup."
+      run systemctl --user stop hades-viewer.service
+      run systemctl --user stop hades-daemon.service
+      run install -m 755 "$BUILD/hades" "$BIN_DIR/.hades.new"
+      run install -m 755 "$BUILD/hades-viewer" "$BIN_DIR/.hades-viewer.new"
+      run mv -f "$BIN_DIR/.hades.new" "$BIN_DIR/hades"
+      run mv -f "$BIN_DIR/.hades-viewer.new" "$BIN_DIR/hades-viewer"
+      run systemctl --user daemon-reload
+    elif [[ -f $STATE/install-main.backup ]]; then
+      backup=$(<"$STATE/install-main.backup")
+      say "the executables are installed; restarting the services if needed and repeating" \
+        "the post-install checks against $backup"
+    else
+      refuse "the ${MAIN_COMMIT:0:7} executables were installed without this script; run" \
+        "the post-install checks by hand, then record them with:" \
+        "echo <backup directory> > $STATE/install-main.checked"
+    fi
+    # Starting a running unit does nothing, so a re-run after a failure is safe here.
     run systemctl --user start hades-daemon.service
     run python3 "$REPO/scripts/check_daemon_ready.py" --socket "$DAEMON_SOCK" \
       --database "$SOURCE_DB" --timeout 60
     run systemctl --user start hades-viewer.service
-    # The post-install checks of the 52d04d4 procedure, against the new hashes.
+    NOTICE=""
+    # The post-install checks of the 52d04d4 procedure, against the new hashes. The
+    # private checks open .local-install/ relative to the checkout, where main() runs.
     run_to "$RECORD/install-sha256.txt" sha256sum "$BIN_DIR/hades" "$BIN_DIR/hades-viewer"
     check_hashes "$HADES_SHA256" "$BIN_DIR/hades" "$VIEWER_SHA256" "$BIN_DIR/hades-viewer"
     local unit pid
@@ -610,7 +661,7 @@ print(json.dumps(s, sort_keys=True))' "$LOCAL_INSTALL/preflight-224.py")
         show readlink "/proc/<MainPID-of-$unit>/exe"
       else
         pid=$(systemctl --user show "$unit.service" -p MainPID --value)
-        readlink "/proc/$pid/exe" | tee -a "$RECORD/install-exe.txt"
+        readlink "/proc/$pid/exe" | tee -a "$RECORD/install-exe.txt" | filter
         grep -q '(deleted)' "$RECORD/install-exe.txt" && refuse "$unit runs a deleted executable"
       fi
     done
@@ -621,6 +672,7 @@ print(json.dumps(s, sort_keys=True))' "$LOCAL_INSTALL/preflight-224.py")
     run node "$LOCAL_INSTALL/check-installed-workspace-chat.cjs"
     run_to "$backup/after.json" "${snapshot[@]}"
     run cmp "$backup/before.json" "$backup/after.json"
+    mark install-main.checked "$backup"
     say "installed; to roll back, see docs/installation-thinkpad.md, Roll back 52d04d4," \
       "with $backup"
   fi
@@ -645,7 +697,7 @@ act_register() {
   local have
   have=$(avail_gib "$DATA")
   ((have >= 10)) || refuse "$DATA has $have GiB available; registration needs 10"
-  run install -d -m 700 "$REGISTRY"
+  [[ -d $REGISTRY ]] || run install -d -m 700 "$REGISTRY"
   run_to "$RECORD/register.json" env -C "$CHECKOUT/services" .venv/bin/python \
     -m embedding.registry --registry "$REGISTRY" register --provider "$PROVIDER" \
     --source "$SNAPSHOT" --revision "$REVISION"
@@ -679,44 +731,48 @@ act_configure() {
   [[ -e $VERIFIED_ENV ]] || write_file 600 "$VERIFIED_ENV" render_verified_env
 }
 
-print_switch_back() {
-  say "To switch back to the legacy embedder (this stops managed ingest and search):"
-  say "  systemctl --user disable --now hades-embedder-verified.service"
-  say "  systemctl --user enable --now hades-embedder.service"
-  say "Then read: journalctl --user -u hades-embedder-verified.service -n 50"
-}
+SWITCH_BACK="To switch back to the legacy embedder (this stops managed ingest and search):
+  systemctl --user disable --now hades-embedder-verified.service
+  systemctl --user enable --now hades-embedder.service
+Then read: journalctl --user -u hades-embedder-verified.service -n 50"
 
 act_switch_embedder() {
   [[ $(state_configure) == "done" ]] || refuse "configure is not done; run it first"
-  confirm "Disable the legacy embedder and start the verified provider unit?"
-  if [[ ! -e $UNIT ]]; then
-    write_file 644 "$UNIT" render_unit
-    if ((!DRY_RUN)) && grep -n '@[A-Z_]*@' "$UNIT"; then
-      refuse "the installed unit still holds a placeholder"
+  if ((DRY_RUN)) || ! units_switched; then
+    # Asked before anything is written or reloaded, so a declined run changes nothing.
+    confirm "Disable the legacy embedder and start the verified provider unit?"
+    if [[ ! -e $UNIT ]]; then
+      write_file 644 "$UNIT" render_unit
+      if ((!DRY_RUN)) && grep -n '@[A-Z_]*@' "$UNIT"; then
+        refuse "the installed unit still holds a placeholder"
+      fi
+      run grep -nE '^(WorkingDirectory|ExecStart)|--registry' "$UNIT"
+      run systemctl --user daemon-reload
     fi
-    run grep -nE '^(WorkingDirectory|ExecStart)|--registry' "$UNIT"
-    run systemctl --user daemon-reload
+    # From the switch until the provider is verified, a failure prints how to switch
+    # back.
+    NOTICE="switch-embedder did not finish verifying the provider. $SWITCH_BACK"
+    # Disabled, not only stopped, so a reboot cannot start two loads of the model.
+    run systemctl --user disable --now hades-embedder.service
+    run systemctl --user enable --now hades-embedder-verified.service
   fi
-  # Disabled, not only stopped, so a reboot cannot start two loads of the model.
-  run systemctl --user disable --now hades-embedder.service
-  run systemctl --user enable --now hades-embedder-verified.service
   # The model loads before the socket binds: about 20 s in the qualification.
-  STATUS=0
   run_to_status "$RECORD/status.json" curl -sS --retry 60 --retry-all-errors \
     --retry-delay 2 --unix-socket "$SOCK" http://localhost/v1/status
   if ((!DRY_RUN)); then
     journalctl --user -u hades-embedder-verified.service -b --no-pager -n 80 \
       >"$RECORD/unit-first-start.journal" || true
-    if ((STATUS)) || ! helper check-status "$RECORD/status.json" "$MODEL_ID" late; then
-      print_switch_back
-      refuse "the verified provider did not report a loaded model; journal in the record"
-    fi
+    ((STATUS == 0)) || refuse "/v1/status did not answer; the journal is in the record"
   fi
+  run helper check-status "$RECORD/status.json" "$MODEL_ID" late
   run_to "$RECORD/hades-status.json" "$HADES" status
+  run helper check-providers "$RECORD/hades-status.json" "$PROVIDER"
   run_to "$RECORD/verify.json" curl -sS --unix-socket "$SOCK" -X POST \
     http://localhost/v1/verify
   run helper check-verify "$RECORD/verify.json" "$REVISION" "$MANIFEST_MD5" \
     "$MAX_INPUT_TOKENS"
+  NOTICE=""
+  mark switch-embedder.verified "$RECORD"
   say "While the verified unit holds the card, legacy embedding paths fail with a" \
     "connection error: hades embed, codebase ingest, ingest into a legacy database," \
     "and semantic search of a legacy database."
@@ -780,21 +836,24 @@ graphs() {
   aql "$1" "$2" 'FOR g IN _graphs SORT g._key RETURN UNSET(g, "_id", "_rev")'
 }
 
-# Compare the moving collections' counts and the graph definitions of both databases.
-compare_move() {
-  counts "$SOURCE_DB" "$RECORD/counts-before.raw.json"
-  counts "$DB" "$RECORD/counts-after.raw.json"
-  graphs "$SOURCE_DB" "$RECORD/graphs-before.raw.json"
-  graphs "$DB" "$RECORD/graphs-after.raw.json"
-  local side
-  for side in counts-before counts-after graphs-before graphs-after; do
-    run_to "$RECORD/$side.json" helper results "$RECORD/$side.raw.json"
-  done
+# Record one database's counts of the moving collections, or its graph definitions, as
+# a normalized JSON list in $RECORD/<name>.json.
+record_counts() {
+  counts "$1" "$RECORD/$2.raw.json"
+  run_to "$RECORD/$2.json" helper results "$RECORD/$2.raw.json"
+}
+
+record_graphs() {
+  graphs "$1" "$RECORD/$2.raw.json"
+  run_to "$RECORD/$2.json" helper results "$RECORD/$2.raw.json"
+}
+
+# Whether two recorded lists are identical; an empty left side is a refusal, because two
+# empty outputs would compare equal.
+same() {
   ((DRY_RUN)) && return 0
-  [[ -s $RECORD/counts-before.json && -s $RECORD/graphs-before.json ]] ||
-    refuse "the source comparison came back empty"
-  cmp -s "$RECORD/counts-before.json" "$RECORD/counts-after.json" &&
-    cmp -s "$RECORD/graphs-before.json" "$RECORD/graphs-after.json"
+  [[ -s $RECORD/$1.json ]] || refuse "$1 came back empty"
+  cmp -s "$RECORD/$1.json" "$RECORD/$2.json"
 }
 
 desk() {
@@ -814,17 +873,12 @@ restore() {
   # only this subshell's environment holds it.
   (
     export HADES_RESTORE_PASSWORD
-    HADES_RESTORE_PASSWORD=$(<"$ROOT_PASSWORD_FILE")
+    ((DRY_RUN)) || HADES_RESTORE_PASSWORD=$(<"$ROOT_PASSWORD_FILE")
     run "$ARANGO_HOME/bin/arangorestore" --configuration none \
       --server.endpoint "unix://$ARANGO_SOCK" --server.database "$DB" \
       --server.username root --server.password @HADES_RESTORE_PASSWORD@ \
       --create-database false --input-directory "$1" "${@:2}"
   )
-}
-
-services_stopped_notice() {
-  say "hades-daemon and hades-viewer may be stopped. Re-run move-desk to resume, or undo" \
-    "as docs/installation-thinkpad.md describes."
 }
 
 act_move_desk() {
@@ -835,10 +889,7 @@ act_move_desk() {
   [[ -x $ARANGO_HOME/bin/arangorestore ]] || refuse "arangorestore is missing"
   confirm "Back up $SOURCE_DB, stop the daemon and the viewer, and move the desk to $DB?"
   local phase_dir=$STATE/move-desk backup
-  if ((!DRY_RUN)); then
-    install -d -m 700 "$phase_dir"
-    trap services_stopped_notice EXIT
-  fi
+  ((DRY_RUN)) || install -d -m 700 "$phase_dir"
 
   # A: the final source backup, the last before retirement. The driver restarts the
   # services when it finishes, so they are stopped again straight away.
@@ -854,6 +905,9 @@ act_move_desk() {
     fi
     mark move-desk/final.path "$backup"
   fi
+  NOTICE="move-desk stopped hades-daemon and hades-viewer and has not restarted them.
+Re-run move-desk to resume after its last completed phase, or undo the move as
+docs/installation-thinkpad.md describes and start them by hand."
   run systemctl --user stop hades-viewer.service
   run systemctl --user stop hades-daemon.service
 
@@ -869,6 +923,19 @@ act_move_desk() {
   run helper staying "$RECORD/collections.json" "$RECORD/moving.txt"
   aql "$SOURCE_DB" "$RECORD/graphs-source.json" 'FOR g IN _graphs RETURN g'
   run helper check-graphs "$RECORD/graphs-source.json" "$RECORD/moving.txt"
+  if [[ ! -f $phase_dir/restored ]]; then
+    # The final backup must still match the quiet source, however long ago it was
+    # taken: a reading changed between the driver's restart and the stop above, or a
+    # resume days later, would otherwise restore a stale copy.
+    record_counts "$SOURCE_DB" counts-source
+    run_to "$RECORD/counts-backup.json" helper manifest-counts "$backup/manifest.json" \
+      "$RECORD/moving.txt"
+    if ! same counts-source counts-backup; then
+      run rm -f -- "$phase_dir/final.path" "$phase_dir/final-verified"
+      refuse "$SOURCE_DB changed since the final backup; its markers are removed, so a" \
+        "re-run takes a fresh one"
+    fi
+  fi
 
   # C: verify the final backup in isolation and keep it.
   if [[ ! -f $phase_dir/final-verified ]]; then
@@ -882,39 +949,62 @@ act_move_desk() {
   if [[ ! -f $phase_dir/restored ]]; then
     aql "$DB" "$RECORD/target-collections.json" 'RETURN COLLECTIONS()[*].name'
     aql "$DB" "$RECORD/target-graphs.json" 'RETURN LENGTH(_graphs)'
+    local present="" graphs_count="[0]" restore_collections=1 restore_graphs=1
     if ((!DRY_RUN)); then
-      if [[ -n $(helper moving-aql "$RECORD/target-collections.json") ]]; then
-        compare_move || refuse "$DB already holds reading collections that differ from" \
-          "$SOURCE_DB; inspect by hand"
-        say "$DB already holds an identical copy; not restoring again"
-      else
-        [[ $(helper results "$RECORD/target-graphs.json") == "[0]" ]] ||
-          refuse "$DB already holds graph definitions"
-      fi
+      present=$(helper moving-aql "$RECORD/target-collections.json")
+      graphs_count=$(helper results "$RECORD/target-graphs.json")
     fi
-    if ((DRY_RUN)) || [[ -z $(helper moving-aql "$RECORD/target-collections.json") ]]; then
+    if [[ -n $present ]]; then
+      # An earlier run restored the collections. Accept them only when identical; a
+      # failed graph restore after them is resumed, anything else is the operator's.
+      record_counts "$SOURCE_DB" counts-before
+      record_counts "$DB" counts-after
+      same counts-before counts-after ||
+        refuse "$DB holds reading collections that differ from $SOURCE_DB; drop them," \
+          "and any reading graph definitions in its _graphs, by hand, then re-run"
+      restore_collections=0
+      record_graphs "$SOURCE_DB" graphs-before
+      record_graphs "$DB" graphs-after
+      if same graphs-before graphs-after; then
+        restore_graphs=0
+      elif [[ $graphs_count != "[0]" ]]; then
+        refuse "$DB holds graph definitions that differ from $SOURCE_DB; inspect by hand"
+      fi
+      say "$DB already holds an identical copy of the reading collections"
+    elif [[ $graphs_count != "[0]" ]]; then
+      refuse "$DB already holds graph definitions"
+    fi
+    if ((restore_collections || restore_graphs)); then
       local stage args=()
       if ((DRY_RUN)); then
         stage="$RECORD/move-dump-XXXXXX"
         args=(--collection "<each-name-in-moving.txt>")
       else
         stage=$(mktemp -d "$RECORD/move-dump-XXXXXX")
+        STAGE=$stage
         local name names
         mapfile -t names <"$RECORD/moving.txt"
         for name in "${names[@]}"; do args+=(--collection "$name"); done
       fi
       run cp -a "$backup/dump/." "$stage/"
-      # A name clash fails rather than replacing a collection.
-      restore "$stage" --overwrite false "${args[@]}"
-      # Graph definitions into the existing, empty _graphs, without recreating it.
-      restore "$stage" --include-system-collections true --create-collection false \
-        --collection _graphs
-      run rm -rf -- "$stage"
-      if ((!DRY_RUN)); then
-        compare_move || refuse "counts or graph definitions differ after the restore"
-      else
-        compare_move
+      if ((restore_collections)); then
+        # A name clash fails rather than replacing a collection.
+        restore "$stage" --overwrite false "${args[@]}"
       fi
+      if ((restore_graphs)); then
+        # Graph definitions into the existing, empty _graphs, without recreating it.
+        restore "$stage" --include-system-collections true --create-collection false \
+          --collection _graphs
+      fi
+      run rm -rf -- "$stage"
+      STAGE=""
+    fi
+    record_counts "$SOURCE_DB" counts-before
+    record_counts "$DB" counts-after
+    record_graphs "$SOURCE_DB" graphs-before
+    record_graphs "$DB" graphs-after
+    if ! same counts-before counts-after || ! same graphs-before graphs-after; then
+      refuse "counts or graph definitions differ after the restore"
     fi
     run_to_status "$RECORD/setup-diagnose-moved.json" "$HADES" db setup diagnose \
       --operation-id "$OPERATION_ID"
@@ -927,6 +1017,14 @@ act_move_desk() {
 
   # E: point the daemon and the viewer at the new database (drop-ins and daemon.env).
   if [[ ! -f $phase_dir/switched ]]; then
+    # Check the generated drop-ins before anything is written.
+    if ! render_daemon_dropin | grep -Eq -- "--db $DB .*--mcp-dbs $DB " ||
+      render_daemon_dropin | grep -Eq -- "--(db|mcp-dbs) $SOURCE_DB "; then
+      refuse "the generated daemon drop-in does not name $DB; check the installed unit"
+    fi
+    if render_viewer_dropin | grep -Eq "\b$SOURCE_DB\b"; then
+      refuse "the generated viewer drop-in still names $SOURCE_DB; check the installed unit"
+    fi
     local dropin generator
     for dropin in "$DAEMON_DROPIN" "$VIEWER_DROPIN"; do
       generator=render_daemon_dropin
@@ -934,18 +1032,10 @@ act_move_desk() {
       if [[ -e $dropin ]]; then
         cmp -s <("$generator") "$dropin" || refuse "$dropin exists with other content"
       else
-        run install -d -m 755 "$(dirname "$dropin")"
+        [[ -d $(dirname "$dropin") ]] || run install -d -m 755 "$(dirname "$dropin")"
         write_file 644 "$dropin" "$generator"
       fi
     done
-    if ((!DRY_RUN)); then
-      if ! grep -Eq -- "--db $DB .*--mcp-dbs $DB " "$DAEMON_DROPIN" ||
-        grep -Eq -- "--(db|mcp-dbs) $SOURCE_DB " "$DAEMON_DROPIN"; then
-        refuse "the daemon drop-in does not name $DB"
-      fi
-      ! grep -Eq "\b$SOURCE_DB\b" "$VIEWER_DROPIN" ||
-        refuse "the viewer drop-in still names $SOURCE_DB"
-    fi
     if ! grep -qx "HADES_DATABASE=$DB" "$DAEMON_ENV"; then
       grep -qx "HADES_DATABASE=$SOURCE_DB" "$DAEMON_ENV" ||
         refuse "daemon.env names neither $SOURCE_DB nor $DB"
@@ -961,7 +1051,7 @@ act_move_desk() {
   run python3 "$REPO/scripts/check_daemon_ready.py" --socket "$DAEMON_SOCK" \
     --database "$DB" --timeout 60
   run systemctl --user start hades-viewer.service
-  ((DRY_RUN)) || trap - EXIT
+  NOTICE=""
 
   # F: the desk check. The pin proves the graph definitions resolve, since the desk
   # checks the definition before every write; it is made by hand once the lists match.
@@ -993,11 +1083,11 @@ act_ingest() {
   say "${#corpus[@]} files under $CORPUS (Markdown and text only: a tree ingest would" \
     "also send JSON evidence and PNG screenshots to the extractor)"
   run_to "$RECORD/corpus-commit.txt" git -C "$CORPUS" rev-parse HEAD
-  if ((DRY_RUN)); then
+  if ((DRY_RUN && ${#corpus[@]})); then
     say "+ list the files into $RECORD/corpus-files.txt; first and last:"
     say "    ${corpus[0]}"
     say "    ${corpus[-1]}"
-  else
+  elif ((!DRY_RUN)); then
     printf '%s\n' "${corpus[@]}" >"$RECORD/corpus-files.txt"
   fi
   # --root keys each document by its path under the corpus, so README.md files differ.
@@ -1080,7 +1170,9 @@ arango_tools_ok() {
   [[ -x $ARANGO_HOME/bin/arangorestore && -x $ARANGO_HOME/sbin/arangod ]]
 }
 
-driver_ready() { [[ -f $DRIVER ]] && grep -q -- '--database' "$DRIVER"; }
+# A quoted "--database" option string, as an argparse declaration has; a bare mention
+# in a comment does not count, and --server.database does not match.
+driver_ready() { [[ -f $DRIVER ]] && grep -qE "[\"']--database[\"']" "$DRIVER"; }
 
 corpus_clean() {
   [[ -d $CORPUS && -z $(git -C "$CORPUS" status --short -- . 2>/dev/null) ]]
@@ -1151,6 +1243,14 @@ main() {
     echo "python3 is required" >&2
     exit 1
   }
+  [[ -d $CHECKOUT ]] || {
+    echo "the checkout does not exist (HADES_MW_CHECKOUT)" >&2
+    exit 1
+  }
+  # The runbook ran from the checkout, and the private checks open .local-install/
+  # relative to it.
+  cd "$CHECKOUT"
+  trap on_exit EXIT
   load_env
   case $target in
   check) check ;;
