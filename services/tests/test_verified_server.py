@@ -320,7 +320,7 @@ def test_main_exit_keeps_a_socket_another_instance_serves(provider, monkeypatch,
     root, uds = private_paths(tmp_path)
     other = socket.socket(socket.AF_UNIX)
     monkeypatch.setattr(verified_server, "serve",
-                        lambda app, path: (other.bind(str(path)), other.listen()))
+                        lambda app, path: (other.bind(str(path)), other.listen()) and True)
     try:
         assert verified_server.main(["--registry", str(root), "--provider", "verified",
                                      "--space", "late", "--uds", str(uds)]) == 0
@@ -365,6 +365,7 @@ def test_cleanup_failure_is_one_line_and_keeps_the_exit_code(monkeypatch, tmp_pa
         bound.bind(str(path))
         bound.close()
         run_dir.chmod(0)
+        return True
 
     monkeypatch.setattr(verified_server, "serve", serve)
     try:
@@ -375,6 +376,31 @@ def test_cleanup_failure_is_one_line_and_keeps_the_exit_code(monkeypatch, tmp_pa
     assert code == 0
     assert err == "verified server: could not remove the socket: Permission denied\n"
     assert stat.S_ISSOCK(uds.lstat().st_mode)
+
+
+def test_server_that_never_started_is_not_a_clean_exit(monkeypatch, tmp_path, capsys):
+    """uvicorn returning without ever serving must not exit 0 as if stopped (#225).
+
+    systemd reads exit 0 as a deliberate stop, so a server that returned before it
+    started serving would leave the unit inactive with nothing in the journal.
+    """
+    import uvicorn
+    from fastapi import FastAPI
+
+    async def serve(server, sockets=None):
+        """Return without binding or marking the server started."""
+
+    previous = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(uvicorn.Server, "serve", serve)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    try:
+        code = verified_server.run(run_dir / "provider.sock", FastAPI)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert code == 1
+    assert capsys.readouterr().err == (
+        "verified server: uvicorn returned without starting to serve\n")
 
 
 RUN_STUB = """

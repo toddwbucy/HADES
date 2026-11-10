@@ -168,8 +168,12 @@ def build_app(provider: VerifiedJinaProvider, config: EmbeddingConfig) -> FastAP
     return app
 
 
-def serve(app: FastAPI, uds: Path) -> None:
-    """Serve the app on the socket until a stop signal ends uvicorn's graceful shutdown."""
+def serve(app: FastAPI, uds: Path) -> bool:
+    """Serve the app until a stop signal ends uvicorn's graceful shutdown.
+
+    Returns whether uvicorn ever started serving: it returns normally, without
+    serving, when told to exit before startup completes (#225).
+    """
     import uvicorn
 
     server = uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="info",
@@ -188,6 +192,7 @@ def serve(app: FastAPI, uds: Path) -> None:
         signal.signal(signal.SIGTERM,
                       lambda signum, frame: setattr(server, "should_exit", True))
     server.run()
+    return server.started
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -247,7 +252,7 @@ def run(uds: Path, load: Callable[[], FastAPI]) -> int:
         return 1
 
     try:
-        serve(app, uds)
+        started = serve(app, uds)
     finally:
         # Our server is closed by now; a socket that still answers belongs to another
         # instance started on the same path, and removing it would orphan that one.
@@ -259,6 +264,12 @@ def run(uds: Path, load: Callable[[], FastAPI]) -> int:
             # it. strerror, not str(exc): the latter can carry the private path.
             print(f"verified server: could not remove the socket: {exc.strerror}",
                   file=sys.stderr)
+    if not started:
+        # systemd reads exit 0 as a deliberate stop; a server that never served is a
+        # failed start (#225).
+        print("verified server: uvicorn returned without starting to serve",
+              file=sys.stderr)
+        return 1
     return 0
 
 

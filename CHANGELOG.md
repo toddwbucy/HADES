@@ -210,6 +210,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   stop; the handler now asks the server to exit. An error probing or removing the
   socket after serving is now one line on stderr, the exit code unchanged, rather than
   a traceback and exit 1; the stale socket is left for the next start's check.
+  A server that uvicorn returned from without ever serving now exits 1 with one line
+  instead of 0, which systemd read as a deliberate stop.
 
 - Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
   report the losing side of two concurrent opens as a write-write conflict on the
