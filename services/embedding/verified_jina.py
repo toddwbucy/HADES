@@ -78,6 +78,9 @@ class VerifiedJinaProvider:
 
     embedding_tasks = tuple(PROMPTS)
     passage_tasks = (DOCUMENT_CONTRACT.passage_task,)
+    # The embedding space this process serves; the verified server selects one space per
+    # process and reports it from /v1/status so setup can refuse a mismatched policy (#225).
+    space = "conventional"
 
     def __init__(self, registration: RegisteredModel, *, device="cpu", use_fp16=False,
                  max_input_tokens: int = MAX_TOKENS):
@@ -102,6 +105,11 @@ class VerifiedJinaProvider:
     def is_loaded(self):
         """Expose load status for service ownership and idle cleanup."""
         return self._backend.is_loaded
+
+    @property
+    def device(self) -> str:
+        """Expose the resolved backend device so the service can refuse CPU fallback."""
+        return self._backend.device
 
     def unload(self):
         """Invalidate the observed receipt and release the checked serving copy."""

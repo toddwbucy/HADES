@@ -26,11 +26,12 @@ and development dependency, not an inference runtime requirement. Runtime ML
 libraries remain declared in `pyproject.toml`; model weights are separate assets.
 
 For source development, install `./services[dev]` in editable mode in a dedicated
-venv. The editable build generates sibling `services/generated/` bindings;
-`make -C services proto-gen PROTO_DIR=../proto PYTHON=/path/to/venv/bin/python`
-can regenerate them after protocol edits. Launch modules with `python -m
-training.server`, `python -m extraction.server`, or `python -m embedding.http_server`
-using explicit service configuration. Installing a wheel does not provision
+venv. The editable build generates sibling `services/generated/` bindings; `make -C
+services proto-gen PROTO_DIR=../proto PYTHON=/path/to/venv/bin/python` can regenerate
+them after protocol edits. Launch modules with `python -m training.server`, `python -m
+extraction.server`, `python -m embedding.http_server` (legacy TCP), or `python -m
+embedding.verified_server` (verified provider on a private Unix socket, for managed
+databases) using explicit service configuration. Installing a wheel does not provision
 systemd units or start services.
 
 For the Jina v4 snapshot `853c867b65b749f3c3c72a06868140d842e04f06`, apply the

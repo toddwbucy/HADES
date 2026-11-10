@@ -30,6 +30,9 @@ pub struct HadesConfig {
     /// Explicit installation allowlist for database-bound models. No legacy fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registered_providers: Option<super::RegisteredProvidersConfig>,
+    /// Setup ledger for `hades db setup`; absent means managed databases cannot be created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<super::SetupConfig>,
     /// Document extraction service (docling). `#[serde(default)]` because every
     /// hades.yaml written before this key existed omits it.
     #[serde(default)]

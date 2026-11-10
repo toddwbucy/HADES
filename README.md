@@ -49,6 +49,8 @@ terminal or client; HADES does not host a Codex or Claude Code chat session.
 - **Python services and model assets** for extraction or embedding. Docling
   supplies document conversion. The reference embedder uses Jina embeddings v4
   through the [embedding API contract](docs/persephone-embedding-api.md).
+  Managed (model-bound) databases need the verified provider service
+  (`python -m embedding.verified_server`, see [deploy/systemd](deploy/systemd/README.md)).
 - **A modern browser** for the workspace, with WebGL for the graph view.
 
 Graph reads, authored graph writes, and mechanical Markdown import do not need
@@ -112,6 +114,22 @@ hades --db research db stats
 
 Schema initialization above is for a new database. Do not force a schema reset on
 an existing corpus. Choose one of the workflows below to populate it.
+
+`db create-database` and the MCP `create_database` tool create legacy databases,
+which no embedding model is bound to. A managed database, bound to one verified
+provider and its chunking policy, comes only from `hades db setup run`. It needs the
+`registered_providers` and `setup` sections in installation configuration (see
+[installation](docs/installation.md#5-install-the-system-config)), loads the
+provider's model, and takes every policy value as an explicit flag:
+
+```bash
+hades db setup run --database research --provider local-jina --operation-id research-1 \
+  --generation g1 --chunking conventional --passage-tokens 500 --overlap-tokens 100
+```
+
+Repeat the exact command to retry. `hades db setup inspect --operation-id research-1`
+prints the receipt, and `hades db setup diagnose --operation-id research-1` prints an
+advisory recovery report; neither loads a model.
 
 ### Explore existing knowledge
 

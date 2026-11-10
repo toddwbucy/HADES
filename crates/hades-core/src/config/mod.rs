@@ -8,10 +8,12 @@
 //!   4. Compiled-in defaults
 
 mod providers;
+mod setup;
 pub mod snapshot;
 mod types;
 
 pub use providers::{RegisteredProviderConfig, RegisteredProvidersConfig};
+pub use setup::SetupConfig;
 pub use types::*;
 
 use std::env;

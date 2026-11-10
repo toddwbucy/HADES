@@ -1,4 +1,4 @@
-"""Internal receipt-enforced HTTP app factory; no environment/CLI activation yet."""
+"""Receipt-enforced HTTP app factory; activated by embedding.verified_server."""
 
 from contextlib import asynccontextmanager
 import json
@@ -82,8 +82,8 @@ async def _read_request(request: Request, request_type=VerifiedRequest):
 def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
     """Bind an operator-created provider to owned worker/idle/shutdown lifecycle.
 
-    This factory is for integration and qualification. Production startup keeps
-    using the legacy app; no registry path or profile is accepted over HTTP.
+    embedding.verified_server activates it in production; qualification harnesses
+    also call it directly. No registry path or profile is accepted over HTTP.
     """
     state = AppState(EmbeddingConfig(model_name=provider.model_name), embedder=provider)
     embedding_tasks = getattr(provider, "embedding_tasks", VerifiedJinaProvider.embedding_tasks)
@@ -131,6 +131,16 @@ def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
         except Exception as exc:
             logger.exception("Verified embedding provider failed")
             raise PEError(500, "PE_BACKEND_ERROR", "Verified embedding provider failed") from exc
+
+    @app.get("/v1/status")
+    async def status():
+        """Report liveness without loading or observing the model (#225).
+
+        `hades status` probes this route, so it must never trigger a 9 GiB load or
+        expose a receipt; /v1/verify remains the only observation.
+        """
+        return {"model": provider.model_name, "space": provider.space,
+                "loaded": provider.is_loaded}
 
     @app.post("/v1/verify")
     async def verify():

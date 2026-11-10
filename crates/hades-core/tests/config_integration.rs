@@ -118,3 +118,28 @@ fn load_fixture_yaml_then_apply_overrides() {
     assert_eq!(config.database.host, "localhost");
     assert_eq!(config.embedding.model.dimension, 2048);
 }
+
+#[test]
+fn setup_section_is_optional_and_round_trips() {
+    let config = load_fixture_config();
+    assert!(config.setup.is_none());
+    let path = fixture_yaml_path();
+    let contents = std::fs::read_to_string(&path).expect("failed to read hades.yaml");
+    let with_setup = format!(
+        "{contents}\nsetup:\n  ledger_root: /absolute/private/setup-ledger\n  installation_id: fixture-1\n"
+    );
+    let config: hades_core::config::HadesConfig =
+        serde_yaml::from_str(&with_setup).expect("setup section must parse");
+    let setup = config.setup.as_ref().expect("setup section present");
+    assert_eq!(
+        setup.ledger_root,
+        PathBuf::from("/absolute/private/setup-ledger")
+    );
+    assert_eq!(setup.installation_id, "fixture-1");
+    assert!(setup.validate().is_ok());
+    // The sealed ingestion handoff stays bounded and carries the section.
+    hades_core::config::snapshot::Snapshot::new(&config).expect("snapshot within bound");
+    let restored: hades_core::config::HadesConfig =
+        serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+    assert_eq!(restored.setup.unwrap().installation_id, "fixture-1");
+}

@@ -1,0 +1,36 @@
+[Unit]
+Description=HADES verified embedding provider (Jina v4, one space, private Unix socket)
+Documentation=file:///opt/HADES/docs/specs/db-setup-door.md
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# One registered provider, one embedding space, one model load. Stop
+# hades-embedder.service or any hades-embedder@ instance first: two loads of the
+# 9 GiB model do not share a card. The socket parent must be a 0700 directory
+# owned by this account with no symlink ancestor (#225).
+WorkingDirectory=@SERVICES_DIR@
+EnvironmentFile=%h/.config/hades/embedder.env
+# Read second, so its values win over the shared legacy file; an Environment= line
+# cannot do this, because EnvironmentFile= settings override Environment=. Put
+# HADES_EMBEDDER_IDLE_TIMEOUT=0 here: an idle unload invalidates every held receipt.
+EnvironmentFile=-%h/.config/hades/embedder-verified.env
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=@SERVICES_DIR@/.venv/bin/python -m embedding.verified_server \
+  --registry @REGISTRY_ROOT@ --provider @PROVIDER_ID@ --space late --uds @SOCKET_PATH@
+Restart=on-failure
+RestartSec=10
+UMask=0077
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hades-embedder-verified
+
+[Install]
+WantedBy=default.target

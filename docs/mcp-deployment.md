@@ -41,7 +41,9 @@ section describes the remaining source and adapter ownership boundaries.
 With provisioning enabled for a database prefix such as `example_`, call the
 tools in this order:
 
-1. `create_database {"name":"example_research"}` for a new database. Run
+1. `create_database {"name":"example_research"}` for a new database. It creates a
+   legacy database with no bound embedding model; there is no MCP setup operation, and
+   managed databases come only from the CLI's `hades db setup run`. Run
    `db_schema_init {"db":"example_research","seed":"empty"}` if document
    ingestion will use that database.
 2. `kg_create {"db":"example_research","name":"research"}` creates

@@ -78,7 +78,12 @@ Related: [docs/specs/registered-model-loading.md](registered-model-loading.md),
   receipt to `NeedsReconciliation`, after which every later `run` is refused as
   held for explicit administrative reconciliation. A `run` retry after `Ready`
   returns the same error but leaves the receipt `Ready`. Ingest and search are
-  unaffected, because admission does not run the inventory.
+  unaffected, because admission does not run the inventory. PR stack item 3 widens
+  this inventory to tolerate, once the marker exists, exactly `hades_schema`, any
+  `hades_reading_*`, and `reading_<id>_nodes` and `reading_<id>_edges`. That is
+  more precise than the `reading_s_*` shorthand above: the desk builds both names
+  from caller-supplied graph ids (crates/hades-core/src/reading/mod.rs). A fresh
+  database holding any of them is still refused before the marker.
 - `Conveyance_KG` holds reading-desk collections only (7 readings and 3 saved
   conversations in the 2026-10-19 preflight record; no documents, chunks or
   embeddings). Reading collections are created lazily by the daemon, so a fresh

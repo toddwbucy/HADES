@@ -4064,6 +4064,57 @@ mod handlers {
 
     // ── System handlers ────────────────────────────────────────────
 
+    /// One `verified_providers` entry: liveness fields, or a short error. No socket or
+    /// registry path appears, so status output stays portable (#225).
+    pub fn verified_provider_status(
+        id: &str,
+        result: Result<crate::persephone::provider_registry::ProviderStatus, String>,
+    ) -> Value {
+        match result {
+            Ok(status) => json!({
+                "id": id,
+                "model": status.model,
+                "space": status.space,
+                "loaded": status.loaded,
+            }),
+            Err(error) => json!({"id": id, "error": error}),
+        }
+    }
+
+    /// Probe every configured verified provider with `GET /v1/status`, each bounded to
+    /// the legacy probe's 5 s. Never `verify`: status must not load or observe a 9 GiB
+    /// model. `None` without `registered_providers`, so the output has no entry (#225).
+    pub async fn verified_providers(config: &crate::config::HadesConfig) -> Option<Value> {
+        let routes = config.registered_providers.as_ref()?;
+        let catalog = routes.catalog();
+        let probes = routes.providers.iter().map(|provider| {
+            let catalog = catalog.as_ref();
+            async move {
+                let result = match catalog {
+                    Err(error) => Err(format!("invalid registered_providers: {error}")),
+                    Ok(catalog) => match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        catalog.status(&provider.id),
+                    )
+                    .await
+                    {
+                        Ok(result) => result.map_err(|e| e.to_string()),
+                        Err(_) => Err("connection timed out (5s)".into()),
+                    },
+                };
+                (provider.id.clone(), result)
+            }
+        });
+        let mut results = futures::future::join_all(probes).await;
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(Value::Array(
+            results
+                .into_iter()
+                .map(|(id, result)| verified_provider_status(&id, result))
+                .collect(),
+        ))
+    }
+
     /// Unified system status — ArangoDB, embedder, sync, config.
     pub async fn status(
         pool: &ArangoPool,
@@ -4134,6 +4185,10 @@ mod handlers {
             "embedder": embedder_info,
             "config": config_info,
         });
+        // Verified providers sit beside the legacy probe, which stays unchanged (#225).
+        if let Some(providers) = verified_providers(config).await {
+            result["verified_providers"] = providers;
+        }
 
         // 5. Verbose: per-profile stats (reuses db_stats pattern)
         if verbose {
@@ -9126,5 +9181,102 @@ mod tests {
 
         let cmd = DaemonCommand::DbStats {};
         assert_eq!(cmd.access_tier(), AccessTier::Internal);
+    }
+
+    /// One verified entry per provider: liveness fields, or a short error (#225).
+    #[test]
+    fn verified_provider_status_shapes() {
+        use crate::persephone::provider_registry::ProviderStatus;
+        assert_eq!(
+            handlers::verified_provider_status(
+                "local-jina",
+                Ok(ProviderStatus {
+                    model: "jinaai/jina-embeddings-v4".into(),
+                    space: "late".into(),
+                    loaded: true,
+                }),
+            ),
+            serde_json::json!({"id":"local-jina","model":"jinaai/jina-embeddings-v4","space":"late","loaded":true})
+        );
+        assert_eq!(
+            handlers::verified_provider_status("local-jina", Err("connection refused".into())),
+            serde_json::json!({"id":"local-jina","error":"connection refused"})
+        );
+    }
+
+    /// The status probe sends only GET /v1/status, never POST /v1/verify; a missing
+    /// socket is a short error that names no path; no section means no entry (#225).
+    #[tokio::test]
+    async fn verified_providers_probe_liveness_only() {
+        use crate::config::{RegisteredProviderConfig, RegisteredProvidersConfig};
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let mut config = crate::config::HadesConfig::default();
+        assert!(handlers::verified_providers(&config).await.is_none());
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = directory.path().join("provider.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                recorded.lock().unwrap().push(line.trim_end().to_string());
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).await.unwrap() == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+                let body = r#"{"model":"fixture/model","space":"late","loaded":false}"#;
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = reader.get_mut().write_all(wire.as_bytes()).await;
+            }
+        });
+        let missing = directory.path().join("absent.sock");
+        config.registered_providers = Some(RegisteredProvidersConfig {
+            registry_root: directory.path().join("registry"),
+            providers: vec![
+                RegisteredProviderConfig {
+                    id: "live".into(),
+                    socket: socket.clone(),
+                    timeout_seconds: 120,
+                    max_response_bytes: 1024 * 1024,
+                },
+                RegisteredProviderConfig {
+                    id: "gone".into(),
+                    socket: missing,
+                    timeout_seconds: 120,
+                    max_response_bytes: 1024 * 1024,
+                },
+            ],
+        });
+        let report = handlers::verified_providers(&config).await.unwrap();
+        server.abort();
+        let entries = report.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        // The catalog orders providers by id.
+        assert_eq!(entries[0]["id"], "gone");
+        let error = entries[0]["error"].as_str().unwrap();
+        assert!(!error.is_empty());
+        assert!(
+            !error.contains(directory.path().to_str().unwrap()),
+            "{error}"
+        );
+        assert_eq!(
+            entries[1],
+            serde_json::json!({"id":"live","model":"fixture/model","space":"late","loaded":false})
+        );
+        assert_eq!(*requests.lock().unwrap(), ["GET /v1/status HTTP/1.1"]);
     }
 }

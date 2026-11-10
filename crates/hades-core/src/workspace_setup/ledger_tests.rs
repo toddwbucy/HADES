@@ -71,6 +71,39 @@ async fn diagnostic_lease_requires_existing_metadata_and_preserves_it() {
     assert!(!root.path().join("scope.json").exists());
 }
 
+/// Inspection never initializes a ledger: a fresh root stays empty and reads as no
+/// operation, while an initialized one is still scope-checked (#225 review).
+#[tokio::test]
+async fn inspection_lease_never_initializes_a_ledger() {
+    let root = directory();
+    assert!(
+        Lease::open_initialized(root.path().into(), scope())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    let lease = Lease::open(root.path().into(), scope()).await.unwrap();
+    let record = lease.claim(request(), "owner").await.unwrap();
+    drop(lease);
+    let reopened = Lease::open_initialized(root.path().into(), scope())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reopened.read("fixture-op").await.unwrap().unwrap().receipt,
+        record.receipt
+    );
+    drop(reopened);
+    let mut other = scope();
+    other.endpoint_sha256 = "2".repeat(64);
+    assert!(
+        Lease::open_initialized(root.path().into(), other)
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn durable_reservations_are_exact_and_process_locked() {
     let root = directory();

@@ -2,8 +2,9 @@
 
 This internal [#225](https://github.com/toddwbucy/HADES/issues/225) slice composes
 registered provider verification, database creation, ownership records, profile
-initialization, and readiness. `workspace_setup::WorkspaceSetup` has no public
-CLI/MCP/job/frontend caller. It supports conventional and explicitly configured
+initialization, and readiness. `workspace_setup::WorkspaceSetup` has one public
+caller, the CLI's `hades db setup` (`run`, `inspect`, `diagnose`); there is no
+MCP/job/frontend caller. It supports conventional and explicitly configured
 [late cosine document policies](verified-late-passages.md);
 code, graph presets, legacy adoption, and model migration remain
 outside this setup schema.
@@ -101,7 +102,12 @@ interruption before or after index creation, including older Verify/Publish
 checkpoints whose schema originally had only primary indexes. Read-only diagnosis recognizes
 this partial schema without repairing it. It does not create graph schema seeds
 or an unqualified vector index. Retrieval uses the internal exact-scan path.
-Unknown collections, indexes, metadata rows, or preexisting vectors are refused.
+Unknown collections are refused, except the shapes other HADES data paths own:
+exactly `hades_schema`, any `hades_reading_*`, and the reading desk's
+`reading_<id>_nodes` and `reading_<id>_edges`. Once the ownership marker exists,
+setup tolerates these at every checkpoint and never validates, counts, indexes, or
+repairs them; a fresh database holding any of them is still refused before the
+marker. Unknown indexes, metadata rows, or preexisting vectors are refused.
 Ready workspaces from before this requirement remain searchable, and completed
 setup retries still verify them without changing their indexes. Actual writes
 require the owner indexes before extraction/planning; neither ingestion nor a
@@ -170,5 +176,6 @@ The documented native `--arangod /path/to/arangod` alternative starts a private
 Unix-only test server. [Real-Jina qualification](verified-jina-qualification.md)
 now creates its disposable database through this coordinator and proves an
 identical retry preserves the profile before its fixed ingestion/retrieval gates.
-Public entry-point enforcement, broader workload/schema support, scoped setup
-authorization, frontend creation, and recovery tooling remain subsequent work.
+`hades db setup` is the public CLI entry point and exposes `diagnose` as advisory
+recovery reporting. Broader workload/schema support, scoped setup authorization,
+frontend creation, and administrative reconciliation remain subsequent work.

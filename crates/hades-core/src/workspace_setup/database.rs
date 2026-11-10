@@ -151,12 +151,34 @@ pub(super) async fn identity(client: &ArangoClient) -> Result<Option<String>, Se
     Ok(Some(id.into()))
 }
 
+/// Name the collections other HADES data paths own inside a managed workspace (#225).
+///
+/// The schema store writes `hades_schema`; the reading desk writes `hades_reading_*` and,
+/// per reading graph `reading_<id>`, `<graph>_nodes` and `<graph>_edges`
+/// (reading/mod.rs). The desk accepts caller-supplied ids, so the graph shape is matched
+/// by prefix and suffix around a non-empty id rather than by one id format. Setup
+/// tolerates these at every checkpoint but never validates, counts, indexes or repairs
+/// them: their owners do. Fresh-database checks stay strict, because tolerance begins
+/// only after the ownership marker exists.
+pub(crate) fn is_data_owned(name: &str) -> bool {
+    name == "hades_schema"
+        || name.starts_with("hades_reading_")
+        || name.strip_prefix("reading_").is_some_and(|rest| {
+            [rest.strip_suffix("_nodes"), rest.strip_suffix("_edges")]
+                .into_iter()
+                .flatten()
+                .any(|graph_id| !graph_id.is_empty())
+        })
+}
+
 /// Refuse unknown user collections without deleting or reseeding anything.
 pub(crate) async fn inventory(client: &ArangoClient) -> Result<Vec<String>, SetupError> {
     inventory_with_jobs(client, false).await
 }
 
 /// Ready workspaces may have the separately validated ingestion history collection.
+/// Data-owned names are returned with the rest, so callers that require an empty or
+/// exact inventory (`Ownership::install`, `marker_pending`) still refuse them.
 pub(super) async fn inventory_with_jobs(
     client: &ArangoClient,
     jobs: bool,
@@ -171,7 +193,8 @@ pub(super) async fn inventory_with_jobs(
         verify(
             [MARKERS, crate::embedding_profile::store::COLLECTION].contains(&name)
                 || DATA.contains(&name)
-                || (jobs && name == crate::ingest_jobs::COLLECTION),
+                || (jobs && name == crate::ingest_jobs::COLLECTION)
+                || is_data_owned(name),
             "workspace contains collections outside the confirmed setup schema",
         )?;
         names.push(name.into());
@@ -359,4 +382,35 @@ fn verify(value: bool, message: &str) -> Result<(), SetupError> {
 /// Adapt setup checks to the shared transactional storage error boundary.
 pub(crate) fn storage_error(error: SetupError) -> ArangoError {
     ArangoError::Request(format!("workspace setup: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_data_owned;
+
+    #[test]
+    fn data_owned_shapes() {
+        for name in [
+            "hades_schema",
+            "hades_reading_sessions",
+            "hades_reading_conversations",
+            "reading_s_0123456789abcdef0123456789abcd_nodes",
+            "reading_fixture_edges",
+        ] {
+            assert!(is_data_owned(name), "{name}");
+        }
+        for name in [
+            "authored",
+            "hades_schema2",
+            "reading_s_x",
+            "reading_nodes",
+            "documents",
+            "hades_setup",
+            "hades_ingest_jobs",
+            "_graphs",
+            "",
+        ] {
+            assert!(!is_data_owned(name), "{name}");
+        }
+    }
 }

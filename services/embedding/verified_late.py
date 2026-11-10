@@ -20,6 +20,8 @@ class VerifiedJinaLateProvider(VerifiedJinaProvider):
     are excluded. Context windows are encoded once for their assigned passages.
     """
 
+    space = "late"
+
     def _derive(self):
         """Give contextual pooling its own identity without relabeling conventional vectors."""
         descriptor = super()._derive()
