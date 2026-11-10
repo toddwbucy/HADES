@@ -139,7 +139,10 @@ directory holding `.venv`), `@REGISTRY_ROOT@` (the model registry root),
 `@PROVIDER_ID@` (the registered provider ID) and `@SOCKET_PATH@` (the socket). The
 socket must be an absolute path with no symlink ancestor, inside a 0700 directory
 owned by the service account; the service refuses to start otherwise, as the HADES
-provider catalog would refuse the socket later. Change `--space late` to `--space
+provider catalog would refuse the socket later. Beside the socket the service keeps
+`<socket>.lock`, held from its socket check until it exits, so a second start on the
+same path is refused even while the first is still loading; leave the file in place.
+Change `--space late` to `--space
 conventional` only for a conventional managed database; one process serves one space.
 
 The unit reads the same `embedder.env` as the legacy embedder, then the optional

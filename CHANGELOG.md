@@ -22,7 +22,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Add the verified provider service, `python -m embedding.verified_server` (#225): it
   loads one registered Jina provider in one explicitly selected space
   (`--space conventional|late`), refuses an unsafe socket parent, a socket another
-  instance is serving, missing offline mode and CPU fallback before binding, and serves
+  instance is serving or starting on (an exclusive `<socket>.lock` held from the socket
+  check until exit), missing offline mode and CPU fallback before binding, and serves
   the verified HTTP contract on a private Unix socket until SIGTERM, then exits 0 with
   the socket removed. Ships `deploy/systemd/hades-embedder-verified.service`, which
   reads an optional `embedder-verified.env` after the shared `embedder.env`, a

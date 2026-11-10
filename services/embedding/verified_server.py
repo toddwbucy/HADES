@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
 import os
 import signal
@@ -10,6 +11,7 @@ import socket
 import stat
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -51,10 +53,26 @@ def check_socket_path(uds: Path) -> Path:
     """Refuse a socket location the provider catalog would refuse later.
 
     This mirrors the Rust catalog's socket checks (persephone/provider_registry/mod.rs,
-    in `describe`) so the operator learns about an unsafe parent at service
+    in `checked_socket`) so the operator learns about an unsafe parent at service
     start, not at the first /v1/verify from HADES (#225). lstat is used throughout:
     a symlinked ancestor would let another path's owner redirect the socket.
     """
+    check_socket_parent(uds)
+    try:
+        existing = os.lstat(uds)
+    except FileNotFoundError:
+        return uds
+    if not stat.S_ISSOCK(existing.st_mode):
+        raise ValueError("socket path is occupied by a non-socket file")
+    # A socket left by a crashed run cannot be reused by bind; the private parent
+    # guarantees it was ours, so removing it is safe once nothing listens on it.
+    if not remove_stale_socket(uds):
+        raise ValueError("socket path is in use by a running provider")
+    return uds
+
+
+def check_socket_parent(uds: Path) -> None:
+    """Refuse a relative path or an unsafe parent or ancestor before creating anything."""
     if not uds.is_absolute():
         raise ValueError("socket path must be absolute")
     owner = os.geteuid()
@@ -75,17 +93,30 @@ def check_socket_path(uds: Path) -> Path:
         if shared and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
             raise ValueError("socket ancestors must not be writable by other accounts "
                              f"outside root-owned sticky directories: {ancestor}")
+
+
+def hold_socket_lock(uds: Path) -> int:
+    """Take the path's exclusive start/serve lock and return its descriptor.
+
+    Two starts on one path used to pass the socket check before either bound; uvicorn
+    then unlinked the first instance's live socket and bound the second in its place,
+    leaving the first running but unreachable (#225). The lock, `<uds>.lock` beside the
+    socket in the checked 0700 parent, is held from before the socket check until the
+    process exits, across the load, serving and cleanup. The kernel releases it when
+    the process dies, so a crash leaves a free lock and a stale socket, which
+    remove_stale_socket handles. The lock file is never unlinked: unlinking would
+    reopen the race between that unlink and a new start's open.
+    """
+    check_socket_parent(uds)
+    descriptor = os.open(f"{uds}.lock",
+                         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
-        existing = os.lstat(uds)
-    except FileNotFoundError:
-        return uds
-    if not stat.S_ISSOCK(existing.st_mode):
-        raise ValueError("socket path is occupied by a non-socket file")
-    # A socket left by a crashed run cannot be reused by bind; the private parent
-    # guarantees it was ours, so removing it is safe once nothing listens on it.
-    if not remove_stale_socket(uds):
-        raise ValueError("socket path is in use by a running provider")
-    return uds
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        raise ValueError(
+            "socket path is being started or served by another instance") from None
+    return descriptor
 
 
 def remove_stale_socket(uds: Path) -> bool:
@@ -93,8 +124,8 @@ def remove_stale_socket(uds: Path) -> bool:
 
     Removing a live socket would orphan a running instance: still active under systemd
     but unreachable (#225). Returns False, leaving the file, when something listens.
-    Two starts racing through the model load are not covered: neither has bound yet,
-    and the second load then fails the free-VRAM preflight on the shared card.
+    Two starts racing through the model load are excluded by hold_socket_lock; this
+    probe remains for the socket a crashed instance leaves behind.
     """
     probe = socket.socket(socket.AF_UNIX)
     try:
@@ -175,8 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"verified server: registry root does not exist: {args.registry}",
               file=sys.stderr)
         return 1
-    try:
-        uds = check_socket_path(args.uds)
+
+    def load() -> FastAPI:
         config = EmbeddingConfig.from_env()
         registration = ModelRegistry(args.registry).load(args.provider)
         provider = build_provider(registration, args.space, config)
@@ -185,7 +216,23 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Verified provider ready (model=%s, space=%s, serving_generation=%s)",
                     provider.model_name, provider.space,
                     description["receipt"]["serving_generation"])
-        app = build_app(provider, config)
+        return build_app(provider, config)
+
+    return run(args.uds, load)
+
+
+def run(uds: Path, load: Callable[[], FastAPI]) -> int:
+    """Claim the socket path, load, serve until stopped, then clean up; return the code.
+
+    Split from main() so the claim/serve/cleanup sequence can be exercised with a stub
+    app and no model (#225).
+    """
+    try:
+        # An int descriptor: nothing closes it, so the lock holds until the process
+        # exits, across load, serving and cleanup (see hold_socket_lock).
+        hold_socket_lock(uds)
+        uds = check_socket_path(uds)
+        app = load()
     except (ValueError, OSError, RuntimeError) as exc:
         # RuntimeError covers the free-VRAM preflight refusal (a legacy embedder still
         # on the card) and CUDA out-of-memory at load: the likeliest start failures,

@@ -304,3 +304,69 @@ def test_main_reports_a_load_refusal_in_one_line(provider, monkeypatch, tmp_path
     err = capsys.readouterr().err
     assert code == 1 and err.startswith("verified server: refusing to load on cuda:0")
     assert not uds.exists()
+
+
+RUN_STUB = """
+import sys, time
+from pathlib import Path
+from fastapi import FastAPI
+from embedding import verified_server
+uds, hold = Path(sys.argv[1]), float(sys.argv[2])
+
+def load():
+    # Stand in for the eager model load: announce the claim, then hold the window
+    # in which a second start used to pass the socket check too.
+    print("loading", flush=True)
+    time.sleep(hold)
+    return FastAPI()
+
+raise SystemExit(verified_server.run(uds, load))
+"""
+
+
+def start_run_stub(uds, hold):
+    return subprocess.Popen([sys.executable, "-c", RUN_STUB, str(uds), str(hold)],
+                            env={**os.environ, "PYTHONPATH": str(SERVICES)},
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def test_second_start_during_load_cannot_take_over_the_socket(tmp_path):
+    """Two starts on one path: the second refuses while the first is still loading.
+
+    Without a lock both pass the socket check before either binds; uvicorn then unlinks
+    the first instance's live socket and binds the second in its place, leaving the
+    first running but unreachable (#225, Codex on #252).
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+    first = start_run_stub(uds, 3.0)
+    second = None
+    try:
+        assert first.stdout.readline().strip() == "loading", first.stderr.read()
+        second = start_run_stub(uds, 0.0)
+        try:
+            code = second.wait(20)
+        except subprocess.TimeoutExpired:
+            code = None
+        assert code == 1, "second start was not refused"
+        assert second.stderr.read().strip() == (
+            "verified server: socket path is being started or served by another instance")
+        deadline = time.monotonic() + 30
+        while not (uds.exists() and stat.S_ISSOCK(uds.lstat().st_mode)):
+            assert first.poll() is None, first.stderr.read()
+            assert time.monotonic() < deadline, "first instance did not bind"
+            time.sleep(0.05)
+        probe = socket.socket(socket.AF_UNIX)
+        try:
+            probe.connect(str(uds))
+        finally:
+            probe.close()
+        first.send_signal(signal.SIGTERM)
+        assert first.wait(45) == 0
+        assert not uds.exists()
+    finally:
+        for proc in (first, second):
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait()
