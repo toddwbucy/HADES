@@ -684,3 +684,52 @@ async fn a_restored_ledger_preserves_scope_and_cannot_adopt_a_recreated_database
     })
     .await;
 }
+
+/// Diagnosis of a Ready workspace tolerates data-owned collections and writes nothing,
+/// while an arbitrary collection still reports the schema unverified (#225).
+#[tokio::test]
+async fn ready_diagnostics_tolerate_data_owned_collections() {
+    with_temp_db(
+        "setup_diagnose_data_owned",
+        Fixtures::Empty,
+        |pool| async move {
+            remove_fixture_database(&pool).await;
+            let fixture = Fixture::new(2);
+            let peer = Peer::new(&fixture);
+            let root = ledger();
+            let service = setup(root.path(), admin(&pool), &peer);
+            let request = request(&pool, &fixture);
+            let receipt = service.run(request.clone()).await.unwrap();
+            create_data_owned(
+                &pool,
+                &[
+                    ("hades_schema", 2),
+                    ("hades_reading_sessions", 2),
+                    ("reading_s_abc_nodes", 2),
+                    ("reading_s_abc_edges", 3),
+                ],
+            )
+            .await;
+            let bytes = ledger_bytes(root.path());
+            let rows = metadata_rows(&pool).await;
+            let schema = schema_state(&pool).await;
+            let observations = peer.observations();
+            let report = service.diagnose(&request.operation_id).await.unwrap();
+            assert_eq!(report.action, RecoveryAction::None, "{report:?}");
+            assert_eq!(report.reason, RecoveryReason::Ready);
+            assert_eq!(report.receipt, Some(receipt));
+            assert_eq!(peer.observations(), observations);
+            assert_eq!(ledger_bytes(root.path()), bytes);
+            assert_eq!(metadata_rows(&pool).await, rows);
+            assert_eq!(schema_state(&pool).await, schema);
+            crud::create_collection(&pool, "authored", Some(2))
+                .await
+                .unwrap();
+            let report = service.diagnose(&request.operation_id).await.unwrap();
+            assert_eq!(report.action, RecoveryAction::InspectRequired);
+            assert_eq!(report.reason, RecoveryReason::SchemaNotVerified);
+            assert_eq!(ledger_bytes(root.path()), bytes);
+        },
+    )
+    .await;
+}

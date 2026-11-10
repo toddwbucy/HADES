@@ -451,6 +451,16 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Tolerate data-owned collections in a managed workspace's setup inventory (#225):
+  `hades_schema`, `hades_reading_*`, and the reading desk's `reading_<id>_nodes` and
+  `reading_<id>_edges` no longer make identical setup retries fail or `diagnose`
+  report `SchemaNotVerified` once the ownership marker exists. Setup never
+  validates, counts, indexes or repairs them; any other unknown collection is still
+  refused. A database holding any of them before the marker is still refused; when
+  one appears between database creation and the marker, the refusal now reads
+  "unmarked database contains user collections" in place of "workspace contains
+  collections outside the confirmed setup schema".
+
 - Raise the laptop embedder's operating ceiling from 4,096 to 20,000 tokens after a
   real-prose bisection (23,000 passed, 24,000 ran out of memory), recorded in
   `docs/installation-thinkpad.md` with evidence under `docs/evidence/`.
