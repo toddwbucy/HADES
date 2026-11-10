@@ -40,8 +40,10 @@ gpu:
   device: cuda:0
 ```
 
-The embedding configuration passed GPU inference, late chunking, and explicit
-oversized-input rejection at this ceiling. This is not the GPU's maximum window.
+`embedding.model.max_tokens` is not read by the client and does not limit requests.
+The service ceiling is `HADES_EMBEDDER_MAX_TOKENS` in `embedder.env`, 20,000 tokens
+since 2026-11-09, chosen by the
+[sequence ceiling bisection](installation-thinkpad.md#sequence-ceiling-bisection-2026-11-09).
 This YAML is an override excerpt, not a complete replacement configuration.
 
 ### Codex reading chat
@@ -161,7 +163,7 @@ HADES_EMBEDDER_HOST=127.0.0.1
 HADES_EMBEDDER_PORT=8087
 HADES_EMBEDDER_FP16=true
 HADES_EMBEDDER_BATCH_SIZE=1
-HADES_EMBEDDER_MAX_TOKENS=4096
+HADES_EMBEDDER_MAX_TOKENS=20000
 HADES_EMBEDDER_PROFILE=thinkpad-initial
 HADES_EMBEDDER_IDLE_TIMEOUT=900
 HADES_EMBEDDER_MODEL=/home/todd/.local/share/hades/models/jinaai--jina-embeddings-v4

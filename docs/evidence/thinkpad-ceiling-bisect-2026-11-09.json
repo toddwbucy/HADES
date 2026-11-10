@@ -1,0 +1,514 @@
+{
+  "recorded": "2026-11-09",
+  "purpose": "Bisect the Jina v4 sequence ceiling the laptop GPU sustains, with real prose.",
+  "gpu": "NVIDIA RTX PRO 5000 Blackwell Generation Laptop GPU, 24463 MiB",
+  "service": {
+    "commit": "52d04d4e5d66625466ea2b1b2c60fda19ed06f2e",
+    "unit": "hades-embedder.service",
+    "profile": "thinkpad-initial",
+    "device": "cuda:0",
+    "fp16": true,
+    "batch_size": 1,
+    "task_prompt_reserve_tokens": 8
+  },
+  "method": {
+    "override": "drop-in ceiling.conf appending a second EnvironmentFile (ceiling.env) that sets HADES_EMBEDDER_MAX_TOKENS; a fresh service process per candidate, confirmed by /v1/models max_seq_length before any request",
+    "requests_per_candidate": [
+      "plain: corpus prefix of candidate minus 8 tokens, task retrieval.passage, batch_size 1",
+      "late: the same prefix with late_chunk chunk_size_tokens 500, overlap_tokens 200",
+      "over: corpus prefix of candidate plus 200 tokens, expecting 400 PE_INPUT_TOO_LARGE"
+    ],
+    "gpu_sampling": "nvidia-smi memory.used every 100 ms, whole card",
+    "pass_rule": "plain and late both 200 with finite 2048-dimensional vectors, and no unit restart",
+    "candidates_in_order": [
+      12000,
+      16000,
+      20000,
+      24000,
+      28000,
+      32768
+    ],
+    "bisection_granularity_tokens": 1024,
+    "peak_note": "The late request starts from the plain request's reserved peak (PyTorch caching allocator), so late peaks are floors, not independent peaks."
+  },
+  "corpus": {
+    "source": "docs/**/*.md at 52d04d4, LC_ALL=C sorted, concatenated with blank lines",
+    "file_count": 113,
+    "files": [
+      "docs/audits/2026-09-19-initial-audit.md",
+      "docs/audits/2026-09-19-isolated-audit.md",
+      "docs/audits/2026-09-19-remediation-issues.md",
+      "docs/audits/2026-09-20-deployment-provenance.md",
+      "docs/audits/2026-09-20-evidence-register.md",
+      "docs/audits/acceptance-refresh.md",
+      "docs/audits/active-database-recovery.md",
+      "docs/audits/adapter-failure-handling.md",
+      "docs/audits/adapter-identity.md",
+      "docs/audits/analyzer-preflight-review.md",
+      "docs/audits/api-boundaries.md",
+      "docs/audits/batch-panic-outcomes.md",
+      "docs/audits/cli-contracts.md",
+      "docs/audits/cli-db-response-shapes.md",
+      "docs/audits/cli-insert-outcomes.md",
+      "docs/audits/cli-training-lifecycle.md",
+      "docs/audits/cli-training-release.md",
+      "docs/audits/codebase-command-contracts.md",
+      "docs/audits/compliance-command-contracts.md",
+      "docs/audits/compliance-outcomes.md",
+      "docs/audits/component-coverage.md",
+      "docs/audits/daemon-command-contract.md",
+      "docs/audits/daemon-readiness.md",
+      "docs/audits/database-access-boundary.md",
+      "docs/audits/db-command-contracts.md",
+      "docs/audits/document-metadata-outcomes.md",
+      "docs/audits/document-replacement.md",
+      "docs/audits/embed-extract-contracts.md",
+      "docs/audits/embedding-error-contract.md",
+      "docs/audits/embedding-worker-lifetime.md",
+      "docs/audits/extraction-worker-lifetime.md",
+      "docs/audits/graph-embed-command-contracts.md",
+      "docs/audits/graph-generation-boundaries.md",
+      "docs/audits/graph-response-contracts.md",
+      "docs/audits/graph-update-selection.md",
+      "docs/audits/ingest-job-ownership.md",
+      "docs/audits/ingest-schema-contracts.md",
+      "docs/audits/ingestion-atomicity.md",
+      "docs/audits/ingestion-vector-retention.md",
+      "docs/audits/installer-signatures.md",
+      "docs/audits/lsp-descendant-review.md",
+      "docs/audits/lsp-document-state-review.md",
+      "docs/audits/lsp-memory-review.md",
+      "docs/audits/lsp-transport-review.md",
+      "docs/audits/materialize-outcomes.md",
+      "docs/audits/orientation-outcomes.md",
+      "docs/audits/prefetch-cancellation.md",
+      "docs/audits/provider-contracts.md",
+      "docs/audits/python-import-targets.md",
+      "docs/audits/repros/README.md",
+      "docs/audits/retire-outcomes.md",
+      "docs/audits/schema-apply-outcomes.md",
+      "docs/audits/smell-filesystem-authority.md",
+      "docs/audits/structural-export-failures.md",
+      "docs/audits/structural-vector-provenance.md",
+      "docs/audits/structural-vector-validation.md",
+      "docs/audits/system-command-contracts.md",
+      "docs/audits/task-command-contracts.md",
+      "docs/audits/test-fixture-inventory.md",
+      "docs/audits/training-alignment.md",
+      "docs/audits/training-artifact-publication.md",
+      "docs/audits/training-compute-cancellation.md",
+      "docs/audits/training-session-ownership.md",
+      "docs/audits/training-worker-ownership.md",
+      "docs/audits/viewer-boundary-review.md",
+      "docs/audits/viewer-envelope-review.md",
+      "docs/benchmarks/retrieval.md",
+      "docs/bounded-retrieval.md",
+      "docs/code-file-identities.md",
+      "docs/codebase-graph-ontology.md",
+      "docs/codex-reading.md",
+      "docs/daemon-protocol.md",
+      "docs/database-cursors.md",
+      "docs/declarative-schema.md",
+      "docs/design-agent-memory-and-system-prompt.md",
+      "docs/frontend-workspace.md",
+      "docs/graphable-document-ingestion.md",
+      "docs/guided-reading.md",
+      "docs/ingestion/2026-10-17-mechanical-importer-test.md",
+      "docs/installation-thinkpad-services.md",
+      "docs/installation-thinkpad.md",
+      "docs/installation.md",
+      "docs/long-document-embedding.md",
+      "docs/mcp-deployment.md",
+      "docs/model-operation-vocabulary.md",
+      "docs/og-rag-report.md",
+      "docs/operations/docling-extraction-recovery.md",
+      "docs/operations/model-bound-recovery.md",
+      "docs/operations/thinkpad-backup-restore.md",
+      "docs/pdf-layout-probe.md",
+      "docs/persephone-embedding-api.md",
+      "docs/rebuild-runbook.md",
+      "docs/specs/bound-embedding-client.md",
+      "docs/specs/codex-reading.md",
+      "docs/specs/database-embedding-profiles.md",
+      "docs/specs/embedding-identity-contract.md",
+      "docs/specs/persisted-embedding-profiles.md",
+      "docs/specs/profile-bound-code.md",
+      "docs/specs/profile-bound-documents.md",
+      "docs/specs/profile-token-planning.md",
+      "docs/specs/profiled-file-ingestion.md",
+      "docs/specs/profiled-ingestion-jobs.md",
+      "docs/specs/profiled-search-admission.md",
+      "docs/specs/recoverable-workspace-setup.md",
+      "docs/specs/registered-model-loading.md",
+      "docs/specs/registered-provider-discovery.md",
+      "docs/specs/verified-code-provider.md",
+      "docs/specs/verified-jina-provider.md",
+      "docs/specs/verified-jina-qualification.md",
+      "docs/specs/verified-late-passages.md",
+      "docs/specs/workstation-specific-tests.md",
+      "docs/training-evaluation.md",
+      "docs/viewer-limits.md"
+    ],
+    "chars": 976982,
+    "tokens": 215490,
+    "sha256": "691ef97f62e9e131f41cca6578499ce21e91a67601ac94ef0e3fab88a8363523"
+  },
+  "run": {
+    "started_at": "2026-11-09T23:35:52.321325+00:00",
+    "finished_at": "2026-11-09T23:38:11.356285+00:00",
+    "tested_order": [
+      12000,
+      16000,
+      20000,
+      24000,
+      22000,
+      23000
+    ]
+  },
+  "candidates": [
+    {
+      "candidate": 12000,
+      "prefix_tokens": 11992,
+      "over_tokens": 12200,
+      "restart_to_bind_s": 2.6,
+      "pid": "1536893",
+      "nrestarts_before": "0",
+      "plain": {
+        "status": 200,
+        "seconds": 24.61,
+        "gpu_mib_before": 131,
+        "sampled_peak_mib": 18663,
+        "vectors": 1,
+        "finite_2048": true
+      },
+      "late": {
+        "status": 200,
+        "seconds": 3.03,
+        "gpu_mib_before": 18663,
+        "sampled_peak_mib": 18663,
+        "vectors": 40,
+        "finite_2048": true
+      },
+      "over": {
+        "status": 400,
+        "seconds": 0.01,
+        "gpu_mib_before": 18665,
+        "sampled_peak_mib": 18665,
+        "error": {
+          "error": {
+            "message": "Input 0 has 12200 tokens; ceiling is 11992",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "PE_INPUT_TOO_LARGE",
+            "reported_tokens": 12200,
+            "ceiling": 11992,
+            "input_index": 0
+          }
+        }
+      },
+      "pid_after": "1536893",
+      "nrestarts_after": "0",
+      "journal": [
+        "Stopped HADES local Jina v4 embedding.",
+        "Started HADES local Jina v4 embedding.",
+        "INFO:     Started server process [1536893]",
+        "2026-11-09 17:36:02,607 INFO [embedding.jina_v4] Model loaded in 7.21s (dtype=torch.float16)"
+      ],
+      "unit_restarted": false,
+      "model_load_log": "2026-11-09 17:36:02,607 INFO [embedding.jina_v4] Model loaded in 7.21s (dtype=torch.float16)",
+      "over_ok": true,
+      "passed": true
+    },
+    {
+      "candidate": 16000,
+      "prefix_tokens": 15992,
+      "over_tokens": 16200,
+      "restart_to_bind_s": 2.6,
+      "pid": "1538868",
+      "nrestarts_before": "0",
+      "plain": {
+        "status": 200,
+        "seconds": 16.95,
+        "gpu_mib_before": 131,
+        "sampled_peak_mib": 21231,
+        "vectors": 1,
+        "finite_2048": true
+      },
+      "late": {
+        "status": 200,
+        "seconds": 10.23,
+        "gpu_mib_before": 21231,
+        "sampled_peak_mib": 21231,
+        "vectors": 53,
+        "finite_2048": true
+      },
+      "over": {
+        "status": 400,
+        "seconds": 0.02,
+        "gpu_mib_before": 21231,
+        "sampled_peak_mib": 21231,
+        "error": {
+          "error": {
+            "message": "Input 0 has 16200 tokens; ceiling is 15992",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "PE_INPUT_TOO_LARGE",
+            "reported_tokens": 16200,
+            "ceiling": 15992,
+            "input_index": 0
+          }
+        }
+      },
+      "pid_after": "1538868",
+      "nrestarts_after": "0",
+      "journal": [
+        "Stopped HADES local Jina v4 embedding.",
+        "Started HADES local Jina v4 embedding.",
+        "INFO:     Started server process [1538868]",
+        "2026-11-09 17:36:32,719 INFO [embedding.jina_v4] Model loaded in 6.82s (dtype=torch.float16)"
+      ],
+      "unit_restarted": false,
+      "model_load_log": "2026-11-09 17:36:32,719 INFO [embedding.jina_v4] Model loaded in 6.82s (dtype=torch.float16)",
+      "over_ok": true,
+      "passed": true
+    },
+    {
+      "candidate": 20000,
+      "prefix_tokens": 19992,
+      "over_tokens": 20200,
+      "restart_to_bind_s": 2.6,
+      "pid": "1541405",
+      "nrestarts_before": "0",
+      "plain": {
+        "status": 200,
+        "seconds": 11.05,
+        "gpu_mib_before": 131,
+        "sampled_peak_mib": 22491,
+        "vectors": 1,
+        "finite_2048": true
+      },
+      "late": {
+        "status": 200,
+        "seconds": 5.96,
+        "gpu_mib_before": 22491,
+        "sampled_peak_mib": 22491,
+        "vectors": 66,
+        "finite_2048": true
+      },
+      "over": {
+        "status": 400,
+        "seconds": 0.02,
+        "gpu_mib_before": 22491,
+        "sampled_peak_mib": 22491,
+        "error": {
+          "error": {
+            "message": "Input 0 has 20200 tokens; ceiling is 19992",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "PE_INPUT_TOO_LARGE",
+            "reported_tokens": 20200,
+            "ceiling": 19992,
+            "input_index": 0
+          }
+        }
+      },
+      "pid_after": "1541405",
+      "nrestarts_after": "0",
+      "journal": [
+        "Stopped HADES local Jina v4 embedding.",
+        "Started HADES local Jina v4 embedding.",
+        "INFO:     Started server process [1541405]",
+        "2026-11-09 17:37:02,513 INFO [embedding.jina_v4] Model loaded in 6.47s (dtype=torch.float16)"
+      ],
+      "unit_restarted": false,
+      "model_load_log": "2026-11-09 17:37:02,513 INFO [embedding.jina_v4] Model loaded in 6.47s (dtype=torch.float16)",
+      "over_ok": true,
+      "passed": true
+    },
+    {
+      "candidate": 24000,
+      "prefix_tokens": 23992,
+      "over_tokens": 24200,
+      "restart_to_bind_s": 2.7,
+      "pid": "1541786",
+      "nrestarts_before": "0",
+      "plain": {
+        "status": 503,
+        "seconds": 11.1,
+        "gpu_mib_before": 131,
+        "sampled_peak_mib": 20515,
+        "error": {
+          "error": {
+            "message": "Embedding backend exhausted memory",
+            "type": "server_error",
+            "param": null,
+            "code": "PE_BACKEND_OOM"
+          }
+        }
+      },
+      "late": {
+        "status": 503,
+        "seconds": 4.88,
+        "gpu_mib_before": 18259,
+        "sampled_peak_mib": 23301,
+        "error": {
+          "error": {
+            "message": "Embedding backend exhausted memory",
+            "type": "server_error",
+            "param": null,
+            "code": "PE_BACKEND_OOM"
+          }
+        }
+      },
+      "over": {
+        "status": 400,
+        "seconds": 0.03,
+        "gpu_mib_before": 20275,
+        "sampled_peak_mib": 20275,
+        "error": {
+          "error": {
+            "message": "Input 0 has 24200 tokens; ceiling is 23992",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "PE_INPUT_TOO_LARGE",
+            "reported_tokens": 24200,
+            "ceiling": 23992,
+            "input_index": 0
+          }
+        }
+      },
+      "pid_after": "1541786",
+      "nrestarts_after": "0",
+      "journal": [
+        "Stopped HADES local Jina v4 embedding.",
+        "Started HADES local Jina v4 embedding.",
+        "INFO:     Started server process [1541786]",
+        "2026-11-09 17:37:22,051 INFO [embedding.jina_v4] Model loaded in 6.02s (dtype=torch.float16)",
+        "Traceback (most recent call last):",
+        "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 6.79 GiB. GPU 0 has a total capacity of 23.51 GiB of which 5.68 GiB is free. Including non-PyTorch memory, this process has 17.70 GiB memory in use. Of the allocated memory 15.19 GiB is allocated by PyTorch, and 2.18 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+        "Traceback (most recent call last):",
+        "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 6.79 GiB. GPU 0 has a total capacity of 23.51 GiB of which 3.71 GiB is free. Including non-PyTorch memory, this process has 19.67 GiB memory in use. Of the allocated memory 17.91 GiB is allocated by PyTorch, and 1.44 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+      ],
+      "unit_restarted": false,
+      "model_load_log": "2026-11-09 17:37:22,051 INFO [embedding.jina_v4] Model loaded in 6.02s (dtype=torch.float16)",
+      "over_ok": true,
+      "passed": false
+    },
+    {
+      "candidate": 22000,
+      "prefix_tokens": 21992,
+      "over_tokens": 22200,
+      "restart_to_bind_s": 2.6,
+      "pid": "1542139",
+      "nrestarts_before": "0",
+      "plain": {
+        "status": 200,
+        "seconds": 10.67,
+        "gpu_mib_before": 131,
+        "sampled_peak_mib": 23823,
+        "vectors": 1,
+        "finite_2048": true
+      },
+      "late": {
+        "status": 200,
+        "seconds": 4.61,
+        "gpu_mib_before": 23823,
+        "sampled_peak_mib": 23823,
+        "vectors": 73,
+        "finite_2048": true
+      },
+      "over": {
+        "status": 400,
+        "seconds": 0.03,
+        "gpu_mib_before": 23823,
+        "sampled_peak_mib": 23823,
+        "error": {
+          "error": {
+            "message": "Input 0 has 22200 tokens; ceiling is 21992",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "PE_INPUT_TOO_LARGE",
+            "reported_tokens": 22200,
+            "ceiling": 21992,
+            "input_index": 0
+          }
+        }
+      },
+      "pid_after": "1542139",
+      "nrestarts_after": "0",
+      "journal": [
+        "Stopped HADES local Jina v4 embedding.",
+        "Started HADES local Jina v4 embedding.",
+        "INFO:     Started server process [1542139]",
+        "2026-11-09 17:37:40,797 INFO [embedding.jina_v4] Model loaded in 5.84s (dtype=torch.float16)"
+      ],
+      "unit_restarted": false,
+      "model_load_log": "2026-11-09 17:37:40,797 INFO [embedding.jina_v4] Model loaded in 5.84s (dtype=torch.float16)",
+      "over_ok": true,
+      "passed": true
+    },
+    {
+      "candidate": 23000,
+      "prefix_tokens": 22992,
+      "over_tokens": 23200,
+      "restart_to_bind_s": 2.6,
+      "pid": "1544445",
+      "nrestarts_before": "0",
+      "plain": {
+        "status": 200,
+        "seconds": 10.79,
+        "gpu_mib_before": 131,
+        "sampled_peak_mib": 24041,
+        "vectors": 1,
+        "finite_2048": true
+      },
+      "late": {
+        "status": 200,
+        "seconds": 4.8,
+        "gpu_mib_before": 24041,
+        "sampled_peak_mib": 24041,
+        "vectors": 76,
+        "finite_2048": true
+      },
+      "over": {
+        "status": 400,
+        "seconds": 0.02,
+        "gpu_mib_before": 24041,
+        "sampled_peak_mib": 24041,
+        "error": {
+          "error": {
+            "message": "Input 0 has 23200 tokens; ceiling is 22992",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "PE_INPUT_TOO_LARGE",
+            "reported_tokens": 23200,
+            "ceiling": 22992,
+            "input_index": 0
+          }
+        }
+      },
+      "pid_after": "1544445",
+      "nrestarts_after": "0",
+      "journal": [
+        "Stopped HADES local Jina v4 embedding.",
+        "Started HADES local Jina v4 embedding.",
+        "INFO:     Started server process [1544445]",
+        "2026-11-09 17:37:58,878 INFO [embedding.jina_v4] Model loaded in 5.70s (dtype=torch.float16)"
+      ],
+      "unit_restarted": false,
+      "model_load_log": "2026-11-09 17:37:58,878 INFO [embedding.jina_v4] Model loaded in 5.70s (dtype=torch.float16)",
+      "over_ok": true,
+      "passed": true
+    }
+  ],
+  "result": {
+    "highest_pass": 23000,
+    "lowest_failure": 24000
+  },
+  "script_final_state": "left the service at 23000 through ~/.config/systemd/user/hades-embedder.service.d/ceiling.conf",
+  "ruling": {
+    "date": "2026-11-09",
+    "operating_ceiling_tokens": 20000,
+    "reason": "about 2 GiB headroom on a card that also drives the desktop; 23000 passed with 422 MiB to spare and is not an operating value"
+  }
+}

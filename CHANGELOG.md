@@ -437,6 +437,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Changed
 
+- Raise the laptop embedder's operating ceiling from 4,096 to 20,000 tokens after a
+  real-prose bisection (23,000 passed, 24,000 ran out of memory), recorded in
+  `docs/installation-thinkpad.md` with evidence under `docs/evidence/`.
+
 - Managed document writes require persistent `parent_key` indexes on chunks and
   embeddings. Existing workspaces retain search and no-op admission; explicitly
   provision the two non-unique indexes explicitly before further writes, following
