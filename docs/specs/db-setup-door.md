@@ -124,11 +124,12 @@ This is the one piece that is a new capability rather than a wrapper, so it was 
 spec gap needing the operator's election. The options considered:
 
 1. Verified only. Add `python -m embedding.verified_server --registry DIR
-   --provider ID --uds PATH` that loads the registered provider once and serves
-   `create_verified_app` on the Unix socket. Switch `hades-embedder.service` to it.
-   The legacy TCP endpoint disappears. Legacy databases lose semantic ingest and
-   search; on this laptop none has vectors, so nothing is lost. `hades status`
-   needs a verified-aware probe or will report the embedder as absent.
+   --provider ID --space conventional|late --uds PATH` that loads the registered
+   provider once and serves `create_verified_app` on the Unix socket. Switch
+   `hades-embedder.service` to it. The legacy TCP endpoint disappears. Legacy
+   databases lose semantic ingest and search; on this laptop none has vectors, so
+   nothing is lost. `hades status` needs a verified-aware probe or will report the
+   embedder as absent.
 2. Dual bind, one load. The same entry point also serves the legacy `/v1/models`
    and `/v1/embeddings` on TCP from the same loaded provider. Keeps legacy clients
    alive at the cost of making the legacy contract depend on the verified loader.
@@ -152,21 +153,29 @@ example `<data>/run/embedder/`, `<data>/setup-ledger/` and `<data>/model-registr
 
 Configuration contract for the entry point (Planner's call): it reads the existing
 `HADES_EMBEDDER_*` variables (device, fp16, batch size, max tokens, idle timeout)
-so the laptop's `embedder.env` carries over, plus `--registry`, `--provider` and
-`--uds` on the command line. Idle unload is honoured as today; the laptop runbook
-sets it to 0 for the verified unit, because after an unload every held client gets
-`PE_RECEIPT_MISMATCH` and the daemon re-verifies and reloads on the next query.
-The reload costs 6 to 7 s on this laptop (2026-11-09 bisection journal), plus the
-first request's cold-cache penalty. The qualification case states the configured
-timeout it ran with.
+so the laptop's `embedder.env` carries over, plus `--registry`, `--provider`,
+`--space` and `--uds` on the command line. Idle unload is honoured as today; the
+laptop runbook sets it to 0 for the verified unit, because after an unload every
+held client gets `PE_RECEIPT_MISMATCH` and the daemon re-verifies and reloads on
+the next query. The reload costs 6 to 7 s on this laptop (2026-11-09 bisection
+journal), plus the first request's cold-cache penalty. The qualification case
+states the configured timeout it ran with.
 
-The entry point always constructs `VerifiedJinaLateProvider`, which subclasses the
-conventional provider and advertises the late-chunk and tokenizer-offset
-capabilities. A conventional policy validates against that observation too, since
-it requires no late capability, so one provider class serves both policies and no
-class selector is needed. The PR 2 qualification case checks that `/v1/verify`
-over the socket reports both late capabilities and that `/v1/late-passages`
-answers.
+The entry point takes `--space conventional|late` and constructs
+`VerifiedJinaProvider` or `VerifiedJinaLateProvider` accordingly: one process,
+one model load, one embedding space. The two are distinct spaces, not a superset.
+The late provider rewrites the pooling identity and its space ID, refuses
+conventional planning, and embeds only queries, so a conventional policy saved
+against it would pass profile validation and then fail at the first ingest.
+`hades db setup run` therefore refuses a policy that does not match the observed
+documents space: in this codebase a provider advertising the late-chunk and
+tokenizer-offset capabilities serves late planning only, so those flags are the
+discriminator, and a late policy against a provider without them is already
+refused by profile validation. The laptop unit runs `--space late`; a
+conventional managed database on this laptop would need the unit switched, and
+only one space is live at a time. The PR 2 qualification case checks that
+`/v1/verify` over the socket reports the selected space and that the matching
+planning endpoint answers (`/v1/late-passages` for late).
 
 Repository footprint: the repo ships `deploy/systemd/hades-embedder@.service`, the
 `hades-embedder-profile` switcher and the gpu0/1/2 profiles from the Olympus era.
@@ -204,7 +213,9 @@ Policy flags: `--chunking` is required (no default policy is silently chosen).
 `late` takes `--context-cap-tokens`, `--window-overlap-tokens`, `--passage-tokens`,
 `--overlap-tokens`; `conventional` takes `--passage-tokens` and `--overlap-tokens`.
 Setup already validates each policy against the provider's observed ceiling and
-refuses one that does not fit; the CLI adds nothing on top of that.
+refuses one that does not fit. The CLI adds one refusal on top of that: the
+space-match check described in Part A, which refuses a conventional policy against
+a provider advertising the late-chunk and tokenizer-offset capabilities.
 
 `--generation` is required, like `--chunking`: a default such as a timestamp would
 change the request digest on every repeat and defeat the ledger's recoverable
@@ -292,7 +303,8 @@ database's profile; changing them later means a new generation.
 - Planner's calls, open to override while reading: CLI shape and verbs in Part B;
   `setup` config section; owner = ArangoDB username; `--chunking` and
   `--generation` required with no silent default; the `HADES_EMBEDDER_*` variables
-  reused by the verified entry point with idle unload 0 on the laptop; ArangoDB
+  reused by the verified entry point with idle unload 0 on the laptop; the entry
+  point's space selected explicitly with `--space`, `late` on the laptop; ArangoDB
   endpoint settings frozen for a ledger's lifetime; `hades-embedder-verified.service`
   added beside the legacy templates; database name `Conveyance_KG_v2`; the
   repository `docs/` tree as the first corpus; the late policy defaults in Part C.
@@ -317,9 +329,9 @@ the laptop and records evidence under docs/evidence/.
 #249 and #250 are merged. This stack opens with the design as its anchor:
 
 1. docs (anchor, draft to main): this design, under docs/specs/db-setup-door.md.
-2. feat: Part A, the verified-only entry point and `hades-embedder-verified.service`
-   under deploy/systemd/, with the qualification case that proves `/v1/verify` over
-   the socket.
+2. feat: Part A, the verified-only entry point with `--space` and
+   `hades-embedder-verified.service` under deploy/systemd/, with the qualification
+   case that proves `/v1/verify` over the socket reports the selected space.
 3. feat: widen the coordinator inventory for data-owned collections, with
    disposable-database tests for retry and diagnose, and the matching change to
    [docs/specs/recoverable-workspace-setup.md](recoverable-workspace-setup.md).
