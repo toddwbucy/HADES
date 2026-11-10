@@ -1122,6 +1122,26 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::db_schema::run_version(&config))
         }
+        // Managed database setup (#225)
+        Commands::Db(commands::db::DbCmd::Setup(commands::db_setup::DbSetupCmd::Run(args))) => {
+            init_tracing();
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::db_setup::run_run(&config, args))
+        }
+        Commands::Db(commands::db::DbCmd::Setup(commands::db_setup::DbSetupCmd::Inspect {
+            operation_id,
+        })) => {
+            init_tracing();
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::db_setup::run_inspect(&config, &operation_id))
+        }
+        Commands::Db(commands::db::DbCmd::Setup(commands::db_setup::DbSetupCmd::Diagnose {
+            operation_id,
+        })) => {
+            init_tracing();
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::db_setup::run_diagnose(&config, &operation_id))
+        }
         // ── Native system commands ────────────────────────────────────
         Commands::Status { verbose } => {
             init_tracing();
