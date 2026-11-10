@@ -347,6 +347,36 @@ def test_main_reports_a_load_refusal_in_one_line(provider, monkeypatch, tmp_path
     assert not uds.exists()
 
 
+def test_cleanup_failure_is_one_line_and_keeps_the_exit_code(monkeypatch, tmp_path, capsys):
+    """A socket that cannot be probed or removed after serving costs one line, no traceback.
+
+    remove_stale_socket ran unguarded in run()'s finally, so an OSError there (here
+    EACCES on the parent) replaced a clean stop with a traceback and exit 1 (#225).
+    The stale socket is left for the next start's check.
+    """
+    from fastapi import FastAPI
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+
+    def serve(app, path):
+        """Leave a closed socket behind, then lose access to its directory."""
+        bound = socket.socket(socket.AF_UNIX)
+        bound.bind(str(path))
+        bound.close()
+        run_dir.chmod(0)
+
+    monkeypatch.setattr(verified_server, "serve", serve)
+    try:
+        code = verified_server.run(uds, FastAPI)
+    finally:
+        run_dir.chmod(0o700)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert err == "verified server: could not remove the socket: Permission denied\n"
+    assert stat.S_ISSOCK(uds.lstat().st_mode)
+
+
 RUN_STUB = """
 import sys, time
 from pathlib import Path

@@ -207,7 +207,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Close the verified server follow-ups (#225). A SIGTERM that reached
   `embedding.verified_server` after `serve()` replaced the default action but before
   uvicorn installed its own handlers was ignored, so the unit kept serving after a
-  stop; the handler now asks the server to exit.
+  stop; the handler now asks the server to exit. An error probing or removing the
+  socket after serving is now one line on stderr, the exit code unchanged, rather than
+  a traceback and exit 1; the stale socket is left for the next start's check.
 
 - Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
   report the losing side of two concurrent opens as a write-write conflict on the

@@ -251,7 +251,14 @@ def run(uds: Path, load: Callable[[], FastAPI]) -> int:
     finally:
         # Our server is closed by now; a socket that still answers belongs to another
         # instance started on the same path, and removing it would orphan that one.
-        remove_stale_socket(uds)
+        try:
+            remove_stale_socket(uds)
+        except OSError as exc:
+            # A clean stop must not end in a traceback because the socket could not be
+            # probed or removed (#225). The file stays; the next start's check judges
+            # it. strerror, not str(exc): the latter can carry the private path.
+            print(f"verified server: could not remove the socket: {exc.strerror}",
+                  file=sys.stderr)
     return 0
 
 
