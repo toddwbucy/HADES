@@ -222,10 +222,23 @@ pub async fn run_run(config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
         "inspect it with: hades db setup inspect --operation-id {}",
         args.operation_id
     );
-    let receipt = setup
-        .run(request)
-        .await
-        .with_context(|| format!("setup did not complete; {inspect}"))?;
+    let receipt = match setup.run(request).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            // The coordinator reports every non-ready outcome as an error after saving
+            // the receipt, so read it back: a failed command still shows where it
+            // stopped. A ledger that cannot be read leaves only the error.
+            if let Ok(Some(saved)) = setup.inspect(&args.operation_id).await {
+                output::print_output_with_success(
+                    "db.setup.run",
+                    serde_json::to_value(&saved)?,
+                    &OutputFormat::Json,
+                    false,
+                );
+            }
+            return Err(anyhow!(error).context(format!("setup did not complete; {inspect}")));
+        }
+    };
     let ready = receipt.status == SetupStatus::Ready;
     output::print_output_with_success(
         "db.setup.run",
