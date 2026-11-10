@@ -106,6 +106,8 @@ Related: [docs/specs/registered-model-loading.md](registered-model-loading.md),
 - No vector index. Managed search stays exact, as today.
 - No change to the embedding model, ceiling, or Python dependencies.
 - No federation, migration tooling or smaller-model adapter.
+- No managed-workspace restore or ownership rebinding; recovery stays at the
+  model-bound recovery contract's current boundary.
 
 ## Anti-goals
 
@@ -255,17 +257,21 @@ written as the act is exercised:
    unless the operator renames it before this step (Planner's default; the only
    constraint is the setup name grammar). Record the receipt, operation ID and
    generation.
-5. First combined backup, before any ingestion: run the complete "Create a
-   consistent artifact" procedure of
-   [docs/operations/thinkpad-backup-restore.md](../operations/thinkpad-backup-restore.md)
-   against the new database (all writers quiesced, viewer and daemon stopped,
-   inventory recorded before and compared after, referenced transcripts copied and
-   hashed, `manifest.json` written), extended by one thing: the ledger root and the
-   registry root are copied into the same dated directory with ownership and
-   permissions preserved and listed in the manifest's `files`, so the verifier
-   accepts them rather than rejecting the artifact as unmanifested. A database-only
-   backup cannot restore the setup ownership record. The extension is written as a
-   "Managed workspace" section of that document in PR stack item 5; the private
+5. First combined backup, before any ingestion. The procedure is the "Managed
+   workspace" section that PR stack item 5 adds to
+   [docs/operations/thinkpad-backup-restore.md](../operations/thinkpad-backup-restore.md),
+   built on that document's "Create a consistent artifact" steps. The design
+   requires of that section:
+   - every writer quiesced, viewer and daemon stopped, inventory recorded before
+     and compared after, referenced transcripts copied and hashed, and
+     `manifest.json` written, exactly as the existing steps do;
+   - the ledger root copied complete, including `.lock`, and the registry's
+     `records/` and referenced `artifacts/` copied, with `sessions/` excluded as
+     disposable (restore recreates it empty and private);
+   - ownership and modes preserved on both copies and checked against a source
+     inventory, and every copied file listed in the manifest's `files`, since the
+     verifier hashes only manifested files and rejects unmanifested ones.
+   A database-only backup cannot restore the setup ownership record. The private
    backup driver that produces the manifest is the operator's to extend.
 6. Point the daemon and viewer at the new database (unit edits, operator's lane).
    Move the reading-desk state, after the inventory widening (PR stack item 3) is
@@ -283,10 +289,17 @@ written as the act is exercised:
    which collections the setup coordinator's inventory accepts. Record the sources
    returned.
 8. Second combined backup, after the reading-desk move and the first ingest: repeat
-   step 5 into a new dated directory, then run `scripts/verify_workspace_backup.py`
-   on it as the same document describes. Only after that verification passes is
-   `Conveyance_KG` retired; the drop is still by hand, outside HADES, since there is
-   no drop-database command (#118). Both backups are kept.
+   step 5 into a new dated directory and run `scripts/verify_workspace_backup.py`
+   on it. A pass proves the data restores in isolation. It does not prove the
+   managed workspace can be reactivated from that restore: per
+   [docs/operations/model-bound-recovery.md](../operations/model-bound-recovery.md)
+   a restored database has a different incarnation, the copied receipt cannot
+   authorize it, and ownership rebinding is not yet supported, so a restore of
+   `Conveyance_KG_v2` today recovers its records but not a ready managed workspace.
+   Retiring `Conveyance_KG` requires the operator to accept that limitation
+   explicitly, recorded in the runbook, or a supported rebinding procedure, which is
+   outside this stack. The drop is by hand, outside HADES (#118). Both backups are
+   kept.
 
 The embedder ceiling is 20,000 tokens (ruled 2026-11-09, recorded by PR #250).
 The late policy saved in step 4 must fit that ceiling, and setup enforces it. The
