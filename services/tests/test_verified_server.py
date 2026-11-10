@@ -268,6 +268,31 @@ def test_serve_exits_cleanly_on_sigterm(tmp_path):
     assert (code, uds.exists()) == (0, False)
 
 
+def test_sigterm_before_uvicorn_captures_signals_still_stops(monkeypatch):
+    """A SIGTERM between serve()'s handler and uvicorn's own must still stop the server.
+
+    serve() replaces the default SIGTERM action before uvicorn installs its handlers. A
+    signal landing in that window used to be swallowed by a no-op, leaving the unit
+    serving after systemd asked it to stop (#225).
+    """
+    import uvicorn
+    from fastapi import FastAPI
+    seen = {}
+
+    def run(server, sockets=None):
+        """Deliver SIGTERM before uvicorn would capture signals; record the outcome."""
+        signal.raise_signal(signal.SIGTERM)
+        seen["should_exit"] = server.should_exit
+
+    previous = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(uvicorn.Server, "run", run)
+    try:
+        verified_server.serve(FastAPI(), Path("/nonexistent/provider.sock"))
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert seen == {"should_exit": True}
+
+
 def patch_main_inputs(monkeypatch, p):
     """Point main() at the CPU fixture provider without a registry or the real config."""
     from embedding.registry import ModelRegistry

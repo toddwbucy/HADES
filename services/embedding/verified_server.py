@@ -172,16 +172,22 @@ def serve(app: FastAPI, uds: Path) -> None:
     """Serve the app on the socket until a stop signal ends uvicorn's graceful shutdown."""
     import uvicorn
 
+    server = uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="info",
+                                           access_log=False, timeout_graceful_shutdown=30))
     # uvicorn's capture_signals restores the previous handlers after a graceful
     # shutdown, then calls raise_signal for each signal it caught. Under the default
     # SIGTERM handler that kills the process before main() unlinks the socket and
     # returns 0 (#225). Installed here, not at the top of main(), so a SIGTERM during
-    # the eager model load still stops the process by default. signal.signal works
-    # only on the main thread, which is where uvicorn listens for signals too.
+    # the eager model load still stops the process by default. The handler asks the
+    # server to exit rather than ignoring the signal: one that lands before uvicorn
+    # installs its own handlers would otherwise be lost, and the unit would keep
+    # serving after a stop (#225). After a graceful shutdown the re-raised signal
+    # sets a flag nothing reads any more. signal.signal works only on the main
+    # thread, which is where uvicorn listens for signals too.
     if threading.current_thread() is threading.main_thread():
-        signal.signal(signal.SIGTERM, lambda signum, frame: None)
-    uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="info", access_log=False,
-                                  timeout_graceful_shutdown=30)).run()
+        signal.signal(signal.SIGTERM,
+                      lambda signum, frame: setattr(server, "should_exit", True))
+    server.run()
 
 
 def main(argv: list[str] | None = None) -> int:
