@@ -82,8 +82,8 @@ async def _read_request(request: Request, request_type=VerifiedRequest):
 def create_verified_app(provider: VerifiedJinaProvider) -> FastAPI:
     """Bind an operator-created provider to owned worker/idle/shutdown lifecycle.
 
-    This factory is for integration and qualification. Production startup keeps
-    using the legacy app; no registry path or profile is accepted over HTTP.
+    embedding.verified_server activates it in production; qualification harnesses
+    also call it directly. No registry path or profile is accepted over HTTP.
     """
     state = AppState(EmbeddingConfig(model_name=provider.model_name), embedder=provider)
     embedding_tasks = getattr(provider, "embedding_tasks", VerifiedJinaProvider.embedding_tasks)

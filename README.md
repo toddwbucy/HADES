@@ -49,6 +49,8 @@ terminal or client; HADES does not host a Codex or Claude Code chat session.
 - **Python services and model assets** for extraction or embedding. Docling
   supplies document conversion. The reference embedder uses Jina embeddings v4
   through the [embedding API contract](docs/persephone-embedding-api.md).
+  Managed (model-bound) databases need the verified provider service
+  (`python -m embedding.verified_server`, see [deploy/systemd](deploy/systemd/README.md)).
 - **A modern browser** for the workspace, with WebGL for the graph view.
 
 Graph reads, authored graph writes, and mechanical Markdown import do not need

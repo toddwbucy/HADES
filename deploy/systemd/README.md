@@ -9,7 +9,8 @@ environment at execution time.
 |---|---|---|
 | `hades-daemon.service` | `~/.config/systemd/user/` | daemon and optional MCP endpoint |
 | `daemon.env.example` | `~/.config/hades/daemon.env` | ArangoDB connection, MCP exposure |
-| `hades-embedder@.service` | `~/.config/systemd/user/` | embedder, one instance per load profile |
+| `hades-embedder@.service` | `~/.config/systemd/user/` | legacy TCP embedder, one instance per load profile |
+| `hades-embedder-verified.service` | `~/.config/systemd/user/` | verified provider for managed databases, one space on a private Unix socket |
 | `embedder-profile-gpu*.conf.example` | `~/.config/hades/embedder-profiles/<name>.conf` | one load profile per GPU: card, ceiling, batch, VRAM floor |
 | `hades-embedder-profile` | anywhere on `PATH` | switch the embedder between profiles |
 | `arangod.conf.example` | your ArangoDB instance directory | storage, endpoints, vector index |
@@ -123,6 +124,31 @@ the small card admits less and the large card needs a higher floor.
 
 An input above the ceiling is refused with `PE_INPUT_TOO_LARGE`, naming its token
 count, rather than truncated. Pre-chunking oversized inputs is the caller's job.
+
+## Verified provider unit
+
+`hades-embedder-verified.service` runs `python -m embedding.verified_server`: one
+registered provider, one embedding space, one model load, served on a private Unix
+socket. Managed (model-bound) databases use only this service; the templated
+`hades-embedder@.service` and its profiles serve the legacy TCP contract and are not
+used by managed databases. Stop every legacy embedder before starting it, because two
+loads of the model do not share a card.
+
+Replace the placeholders before installing: `@SERVICES_DIR@` (the `services/`
+directory holding `.venv`), `@REGISTRY_ROOT@` (the model registry root),
+`@PROVIDER_ID@` (the registered provider ID) and `@SOCKET_PATH@` (the socket). The
+socket must be an absolute path with no symlink ancestor, inside a 0700 directory
+owned by the service account; the service refuses to start otherwise, as the HADES
+provider catalog would refuse the socket later. Change `--space late` to `--space
+conventional` only for a conventional managed database; one process serves one space.
+
+The unit reads the same `embedder.env` as the legacy embedder. `HADES_EMBEDDER_DEVICE`,
+`HADES_EMBEDDER_FP16` and `HADES_EMBEDDER_MAX_TOKENS` apply; `HADES_EMBEDDER_HOST` and
+`HADES_EMBEDDER_PORT` are ignored, because the service listens only on the socket. Set
+`HADES_EMBEDDER_IDLE_TIMEOUT=0`: an idle unload invalidates every receipt a client
+holds, and the next query then pays a full re-verify and reload. CPU fallback is
+refused; the service exits if the configured device is unavailable. `GET /v1/status`
+reports model, space and load state without touching the model.
 
 `loginctl enable-linger $USER` if the daemon should survive logout. Otherwise
 systemd stops user services when your last session closes, and any remote

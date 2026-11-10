@@ -3,9 +3,10 @@
 This slice of [#225](https://github.com/toddwbucy/HADES/issues/225) produces the
 provider receipts consumed by the [bound Rust client](bound-embedding-client.md).
 It combines [registered loading](registered-model-loading.md) with an explicit
-conventional text-retrieval implementation. Production startup does not select
-this provider; there is no new environment flag, CLI command, database setup,
-or frontend switch.
+conventional text-retrieval implementation. The verified provider service
+(`python -m embedding.verified_server`, [Part A of the setup door](db-setup-door.md))
+serves it on a private Unix socket; database setup and frontend activation are
+separate work.
 
 ## Explicit behavior contract
 
@@ -78,11 +79,13 @@ trusted-runtime boundary.
 
 ## Internal HTTP integration
 
-`embedding.verified_http.create_verified_app(provider)` creates an ASGI app for
-integration and qualification. It reuses the existing worker ownership, idle
-unload, and shutdown-drain lifecycle. Production `embedding.http_server` startup
-continues to construct its current backend.
+`embedding.verified_http.create_verified_app(provider)` creates the ASGI app that
+`embedding.verified_server` serves and that qualification harnesses call directly.
+It reuses the existing worker ownership, idle unload, and shutdown-drain lifecycle.
+The legacy `embedding.http_server` continues to construct its current backend.
 
+- `GET /v1/status` reports `model`, `space` and `loaded` without loading or
+  observing the model, so liveness probes never trigger a load.
 - `POST /v1/verify` explicitly observes the operator-selected provider. HTTP
   callers cannot submit registry paths, artifact digests to adopt, or profiles.
 - `POST /v1/embeddings` requires `model`, `task`, `input`, and `expected_receipt`;
@@ -101,8 +104,8 @@ continues to construct its current backend.
 
 Cancellation drains admitted inference before releasing ownership. Shutdown and
 idle cleanup cannot unload between inputs or before the final receipt check.
-Authentication/credential discovery and installation activation are subsequent
-integration work. This factory is not a deployment guide.
+Authentication/credential discovery remains subsequent work. Deployment is the
+verified provider unit in [deploy/systemd](../../deploy/systemd/README.md).
 
 ## Validation and remaining work
 
