@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Record the accepted design for the first public door into model-bound databases
+  (`docs/specs/db-setup-door.md`, #225): a verified-only provider service, a wider
+  setup inventory, `hades db setup run|inspect|diagnose` and the laptop runbook.
+
 - Record the verified laptop build of main `52d04d4` and its operator runbook:
   executable hashes, install and rollback order, post-install checks, and when the
   embedder needs a restart (`docs/installation-thinkpad.md`).

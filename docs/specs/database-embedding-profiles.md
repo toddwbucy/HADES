@@ -533,6 +533,11 @@ pooling ranges. Managed setup, foreground documents, pinned jobs and public sear
 share the same guarded path. Conventional records remain unchanged; contextual
 records require complete versioned provenance and are never adopted by relabeling.
 
+[The first public door](db-setup-door.md) records the accepted design for opening
+this machinery to an operator: a verified-only provider service on a Unix socket, a
+wider setup inventory, `hades db setup run|inspect|diagnose`, and the laptop
+runbook.
+
 1. **Shared profile and verification contract.** Implement schema/manifest
    canonicalization, provider receipts, an explicit resolved-client factory, and
    Jina verification. Add isolated database creation/profile persistence and one
