@@ -70,7 +70,6 @@ pub(super) struct Lease {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Create,
-    Existing,
     IfInitialized,
 }
 
@@ -82,16 +81,9 @@ impl Lease {
             .ok_or_else(|| SetupError::Invalid("setup ledger was not opened".into()))
     }
 
-    /// Diagnostics require an initialized ledger and never create its scope or lock files.
-    pub async fn open_existing(root: PathBuf, scope: Scope) -> Result<Self, SetupError> {
-        Self::open_with(root, scope, Mode::Existing)
-            .await?
-            .ok_or_else(|| SetupError::Invalid("setup ledger is not initialized".into()))
-    }
-
-    /// Inspection reads an initialized ledger and treats an uninitialized one as holding
-    /// no operations. It never creates files, so a read-only verb cannot bind a fresh
-    /// ledger to whatever endpoint the caller happens to use (#225).
+    /// Inspection and diagnosis read an initialized ledger and treat an uninitialized one
+    /// as holding no operations. It never creates files, so a read-only verb cannot bind a
+    /// fresh ledger to whatever endpoint the caller happens to use (#225).
     pub async fn open_initialized(root: PathBuf, scope: Scope) -> Result<Option<Self>, SetupError> {
         Self::open_with(root, scope, Mode::IfInitialized).await
     }
@@ -149,7 +141,6 @@ impl Lease {
             } else if mode == Mode::IfInitialized {
                 return Ok(None);
             } else {
-                ensure(create, "setup ledger is not initialized")?;
                 write(&guard, "scope.json", &scope)?;
             }
             Ok(Some(Self { guard }))

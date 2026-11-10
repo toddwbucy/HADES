@@ -207,7 +207,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 - Close the db setup follow-ups (#225). `hades db setup run` refuses a bad operation
   ID, database name or ArangoDB username, a `setup.ledger_root` with `..` components,
   and an absent configured database socket before it contacts the provider. Before,
-  these surfaced only after `verify` had loaded the model.
+  these surfaced only after `verify` had loaded the model. `db setup diagnose` of an
+  operation the ledger does not hold now matches `inspect`: `"success": false`, exit
+  1, still carrying the advisory report. A fresh ledger root reads as no operation
+  rather than an error, and is not initialized.
 
 - Close the verified server follow-ups (#225). A SIGTERM that reached
   `embedding.verified_server` after `serve()` replaced the default action but before

@@ -271,6 +271,33 @@ async fn inspect_unknown_operation_reports_null_receipt() {
     assert_eq!(std::fs::read_dir(installation.ledger()).unwrap().count(), 0);
 }
 
+/// Diagnose of an unknown operation matches inspect: a failed envelope, exit 1, with the
+/// advisory report (null receipt, start a new operation). A fresh root reads as no
+/// operation and is not initialized (#225).
+#[tokio::test]
+async fn diagnose_unknown_operation_matches_inspect() {
+    let installation = Installation::new("late");
+    let config = installation.config(true, true);
+    let output = installation
+        .run(&config, &["diagnose", "--operation-id", "setup-one"])
+        .await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["success"], false);
+    assert_eq!(envelope["command"], "db.setup.diagnose");
+    assert_eq!(envelope["data"]["operation_id"], "setup-one");
+    assert!(envelope["data"]["receipt"].is_null());
+    assert_eq!(envelope["data"]["action"], "start_new_operation");
+    assert_eq!(envelope["data"]["reason"], "operation_missing");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no operation setup-one"),
+        "{output:?}"
+    );
+    assert!(installation.provider.contacts().is_empty());
+    assert!(installation.database.contacts().is_empty());
+    assert_eq!(std::fs::read_dir(installation.ledger()).unwrap().count(), 0);
+}
+
 /// An absent configured database socket is refused rather than silently replaced by a
 /// fallback endpoint, which would bind the ledger scope to the wrong endpoint.
 #[tokio::test]

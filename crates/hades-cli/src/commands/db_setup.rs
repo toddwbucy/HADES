@@ -299,19 +299,24 @@ pub async fn run_inspect(config: &HadesConfig, operation_id: &str) -> Result<()>
 }
 
 /// Print the advisory recovery report. Writes nothing and loads no model; the report
-/// cannot authorize or resume work by itself.
+/// cannot authorize or resume work by itself. An operation this ledger does not hold is
+/// a failed envelope, as in inspect, still carrying the report (#225).
 pub async fn run_diagnose(config: &HadesConfig, operation_id: &str) -> Result<()> {
     let (setup_config, catalog) = sections(config)?;
     let report = coordinator(config, setup_config, catalog)?
         .diagnose(operation_id)
         .await
         .context("failed to diagnose the setup operation")?;
+    let found = report.receipt.is_some();
     output::print_output_with_success(
         "db.setup.diagnose",
         serde_json::to_value(&report)?,
         &OutputFormat::Json,
-        true,
+        found,
     );
+    if !found {
+        bail!("no operation {operation_id} in this setup ledger");
+    }
     Ok(())
 }
 

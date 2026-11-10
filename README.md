@@ -132,7 +132,8 @@ hades db setup run --database research --provider local-jina --operation-id rese
 
 Repeat the exact command to retry. `hades db setup inspect --operation-id research-1`
 prints the receipt, and `hades db setup diagnose --operation-id research-1` prints an
-advisory recovery report; neither loads a model. See
+advisory recovery report; neither loads a model. For an operation the ledger does not
+hold, both print `"success": false` with a null receipt and exit 1. See
 [Managed databases](#managed-model-bound-databases) for the pieces involved.
 
 ### Explore existing knowledge
