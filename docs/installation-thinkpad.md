@@ -423,7 +423,7 @@ replace the bisection override with the `embedder.env` value:
 
 ```bash
 cd ~/Projects/HADES
-git rev-parse HEAD
+git diff --stat 52d04d4e5d66625466ea2b1b2c60fda19ed06f2e HEAD -- services/
 git status --short -- services
 python3 .local-install/preflight-224.py
 sed -i 's/^HADES_EMBEDDER_MAX_TOKENS=.*/HADES_EMBEDDER_MAX_TOKENS=20000/' \
@@ -437,8 +437,10 @@ curl -s --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8087/v1/
 systemctl --user cat hades-embedder.service
 ```
 
-`rev-parse` must print `52d04d4e5d66625466ea2b1b2c60fda19ed06f2e` and `status`
-nothing. `grep` must print `HADES_EMBEDDER_MAX_TOKENS=20000`, `/v1/models` must
+`diff` and `status` must both print nothing: the first proves the committed services
+tree equals the verified `52d04d4` tree, whichever later docs-only commit `HEAD` is
+on, and the second that nothing under `services/` is modified locally. `grep` must
+print `HADES_EMBEDDER_MAX_TOKENS=20000`, `/v1/models` must
 report a `max_seq_length` of 20000, and `systemctl --user cat` must list no
 `ceiling.conf`. This restart also moves the embedder onto the `52d04d4` services
 code, so it replaces [Restart the embedder for 52d04d4](#restart-the-embedder-for-52d04d4)
@@ -699,13 +701,14 @@ build. The first two commands above replace its executable check.
 ### Restart the embedder for 52d04d4
 
 Run this after the post-install checks, in the same shell. The first two commands
-confirm that the checkout holds exactly the verified services code. Stop if
-`rev-parse` prints anything other than `52d04d4e5d66625466ea2b1b2c60fda19ed06f2e`,
-or if `status` prints anything.
+confirm that the checkout holds exactly the verified services code, and both must
+print nothing; stop otherwise. `diff` proves the committed services tree equals the
+`52d04d4` tree, whichever later docs-only commit `HEAD` is on, and `status` that
+nothing under `services/` is modified locally.
 
 ```bash
 cd ~/Projects/HADES
-git rev-parse HEAD
+git diff --stat 52d04d4e5d66625466ea2b1b2c60fda19ed06f2e HEAD -- services/
 git status --short -- services
 python3 .local-install/preflight-224.py
 systemctl --user restart hades-embedder.service
