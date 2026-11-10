@@ -23,6 +23,7 @@ MODEL = {"id": "jinaai/jina-embeddings-v4"}
 
 
 def test_check_description_matches_space():
+    """The harness accepts a description only for the space it advertises."""
     late = {"model": MODEL, "capabilities": {"late_chunking": True, "tokenizer_offsets": True}}
     conv = {"model": MODEL, "capabilities": {"late_chunking": False, "tokenizer_offsets": False}}
     harness.check_description(late, "late")
@@ -34,6 +35,7 @@ def test_check_description_matches_space():
 
 
 def test_check_description_refuses_mixed_capabilities_and_other_models():
+    """Half-late capabilities and another model's description are refused."""
     mixed = {"model": MODEL, "capabilities": {"late_chunking": True, "tokenizer_offsets": False}}
     with pytest.raises(ValueError):
         harness.check_description(mixed, "late")
@@ -44,6 +46,7 @@ def test_check_description_refuses_mixed_capabilities_and_other_models():
 
 
 def test_planning_request_shapes():
+    """Planning requests carry each space's route, policy and receipt fields."""
     path, body = harness.planning_request("late", "text", {"r": 1}, 20000)
     assert path == "/v1/late-passages"
     assert body["context_cap_tokens"] == 16384 and body["passage_tokens"] == 500
@@ -57,6 +60,7 @@ def test_planning_request_shapes():
 
 
 def test_planning_request_fields_match_the_verified_app():
+    """Planning request fields match the verified app's request models exactly."""
     from embedding.verified_http import LatePassageRequest, PassageRequest
     _, late = harness.planning_request("late", "text", {"r": 1}, 20000)
     _, conv = harness.planning_request("conventional", "text", {"r": 1}, 20000)
@@ -65,6 +69,7 @@ def test_planning_request_fields_match_the_verified_app():
 
 
 def test_cli_refuses_existing_output_dir(tmp_path):
+    """The qualification CLI refuses an existing output dir and writes nothing."""
     (tmp_path / "out").mkdir()
     r = subprocess.run([sys.executable, str(SCRIPT), "--registry", str(tmp_path), "--provider",
                         "p", "--space", "late", "--device", "cpu", "--output-dir",

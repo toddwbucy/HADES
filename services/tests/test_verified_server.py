@@ -23,6 +23,7 @@ from embedding.verified_late import VerifiedJinaLateProvider
 
 
 def test_space_labels_and_device(provider):
+    """Each provider class names its space, and the fixture runs on CPU."""
     p, _ = provider
     assert p.space == "conventional"
     assert VerifiedJinaLateProvider(p._registration, max_input_tokens=16).space == "late"
@@ -30,10 +31,12 @@ def test_space_labels_and_device(provider):
 
 
 def test_status_route_answers_without_loading(provider):
+    """GET /v1/status reports state without loading; only /v1/verify loads."""
     p, _ = provider
     app = create_verified_app(p)
 
     async def run():
+        """Drive the app's lifespan and query status around one verify."""
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://fixture") as c:
@@ -48,6 +51,7 @@ def test_status_route_answers_without_loading(provider):
 
 
 def test_parse_args_requires_all_four():
+    """The CLI requires --space and accepts only conventional or late."""
     with pytest.raises(SystemExit):
         verified_server.parse_args(["--registry", "/r", "--provider", "p", "--uds", "/s"])
     with pytest.raises(SystemExit):
@@ -59,6 +63,7 @@ def test_parse_args_requires_all_four():
 
 
 def test_socket_parent_must_be_private(tmp_path):
+    """A socket parent that is not 0700 is refused; a private one is accepted."""
     parent = tmp_path / "run"
     parent.mkdir(mode=0o755)
     with pytest.raises(ValueError, match="0700"):
@@ -68,6 +73,7 @@ def test_socket_parent_must_be_private(tmp_path):
 
 
 def test_socket_ancestor_symlink_refused(tmp_path):
+    """A symlinked ancestor is refused, as the Rust catalog would refuse it."""
     real = tmp_path / "real"
     real.mkdir(mode=0o700)
     (real / "run").mkdir(mode=0o700)
@@ -78,6 +84,7 @@ def test_socket_ancestor_symlink_refused(tmp_path):
 
 
 def test_stale_socket_unlinked_but_file_refused(tmp_path):
+    """A dead socket is removed for reuse; a regular file at the path is refused."""
     parent = tmp_path / "run"
     parent.mkdir(mode=0o700)
     path = parent / "p.sock"
@@ -109,6 +116,7 @@ def test_live_socket_refused_and_kept(tmp_path):
 
 
 def test_build_provider_selects_space(provider):
+    """build_provider constructs the late or conventional provider by name."""
     p, _ = provider
     cfg = EmbeddingConfig(device="cpu", model_name=p.model_name, idle_timeout_seconds=0)
     late = verified_server.build_provider(p._registration, "late", cfg, max_input_tokens=16)
@@ -118,6 +126,7 @@ def test_build_provider_selects_space(provider):
 
 
 def test_build_provider_refuses_device_fallback(provider, monkeypatch):
+    """A CUDA device that falls back to CPU is refused, not served."""
     # Force the backend's documented CUDA-unavailable fallback to CPU, so the refusal is
     # exercised on a GPU host too (where an out-of-range ordinal raises a different error).
     monkeypatch.setattr(jina_v4.torch.cuda, "is_available", lambda: False)
@@ -129,6 +138,7 @@ def test_build_provider_refuses_device_fallback(provider, monkeypatch):
 
 
 def test_build_app_applies_idle_timeout(provider):
+    """The configured idle timeout reaches the app before its lifespan starts."""
     p, _ = provider
     cfg = EmbeddingConfig(device="cpu", model_name=p.model_name, idle_timeout_seconds=0)
     app = verified_server.build_app(p, cfg)
@@ -147,6 +157,7 @@ def run_cli(args, env):
 
 
 def test_main_requires_offline_mode(tmp_path):
+    """main() exits 1 without HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1."""
     env = {k: v for k, v in os.environ.items() if k not in OFFLINE}
     r = run_cli(["--registry", str(tmp_path), "--provider", "p", "--space", "late",
                  "--uds", str(tmp_path / "s.sock")], env)
@@ -154,6 +165,7 @@ def test_main_requires_offline_mode(tmp_path):
 
 
 def test_main_refuses_missing_registry(tmp_path):
+    """main() exits 1 on a missing registry root and does not create it."""
     r = run_cli(["--registry", str(tmp_path / "none"), "--provider", "p", "--space", "late",
                  "--uds", str(tmp_path / "s.sock")], {**os.environ, **OFFLINE})
     assert r.returncode == 1 and "registry root does not exist" in r.stderr
@@ -161,6 +173,7 @@ def test_main_refuses_missing_registry(tmp_path):
 
 
 def test_main_serves_and_stops(provider, monkeypatch, tmp_path):
+    """main() loads eagerly, serves on the socket, then exits 0 and removes it."""
     import uvicorn
     from embedding.registry import ModelRegistry
     p, _ = provider
@@ -187,6 +200,7 @@ def test_main_serves_and_stops(provider, monkeypatch, tmp_path):
             bound.close()
 
     def p_status(app):
+        """Whether the app's embedder has loaded the model."""
         return app.state.app_state.embedder.is_loaded
 
     monkeypatch.setattr(uvicorn.Server, "serve", serve)
@@ -266,6 +280,7 @@ def patch_main_inputs(monkeypatch, p):
 
 
 def private_paths(tmp_path):
+    """Create a private registry root and run directory; return root and socket."""
     root = tmp_path / "serving-registry"
     root.mkdir(mode=0o700)
     run_dir = tmp_path / "run"
@@ -296,6 +311,7 @@ def test_main_reports_a_load_refusal_in_one_line(provider, monkeypatch, tmp_path
     root, uds = private_paths(tmp_path)
 
     def refuse(self):
+        """Raise the free-VRAM preflight refusal in place of a load."""
         raise RuntimeError("refusing to load on cuda:0: 131 MiB free of 24463 MiB")
 
     monkeypatch.setattr(VerifiedJinaLateProvider, "describe", refuse)
@@ -325,6 +341,7 @@ raise SystemExit(verified_server.run(uds, load))
 
 
 def start_run_stub(uds, hold):
+    """Start run() in a subprocess with a stub load that holds for `hold` s."""
     return subprocess.Popen([sys.executable, "-c", RUN_STUB, str(uds), str(hold)],
                             env={**os.environ, "PYTHONPATH": str(SERVICES)},
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
