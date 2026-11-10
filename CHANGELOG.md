@@ -19,6 +19,24 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add `scripts/install/thinkpad-managed-workspace.sh` (#225), which turns the laptop's
+  managed workspace runbook into an installation script both operators can re-run:
+  `check` (read-only state), then `install-main`, `register`, `configure`,
+  `switch-embedder`, `setup-db`, `backup-1`, `move-desk`, `ingest` and `backup-2`, or
+  `all`. Each step tests its postcondition first and reports `already done`, refuses
+  in one line when a precondition is missing, and never replaces a file that exists
+  with other content; `all` resumes at the first undone step. `--dry-run` prints every
+  command with resolved values, `--yes` skips the confirmation of the three
+  service-affecting steps, values are overridable by `HADES_MW_*`, and each acting run
+  records its evidence in a new private directory under the resolved data directory.
+  The script never drops a database; it prints the retirement gate and stops. Its
+  helper `scripts/install/managed_workspace.py` holds the JSON checks and the managed
+  backup copy (`add-managed`: the setup ledger and the registry's records and
+  referenced artifacts, checked against source inventories and added to the backup
+  manifest), so the private backup driver now needs only `--database` and tolerance of
+  a database without the reading desk. The runbook section and the managed workspace
+  backup procedure now describe the script.
+
 - Add the laptop's managed workspace runbook (#225), a draft for the operator's run, as
   `docs/installation-thinkpad.md` "Managed workspace, 2026-11-xx": install main
   `09df08f` with its gate counts and SHA-256 table, register the Jina snapshot,
