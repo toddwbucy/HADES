@@ -255,13 +255,18 @@ written as the act is exercised:
    unless the operator renames it before this step (Planner's default; the only
    constraint is the setup name grammar). Record the receipt, operation ID and
    generation.
-5. First combined backup, before any ingestion: with setup quiescent, archive the
-   ledger root and the registry root with ownership and permissions preserved, and
-   take an arangodump of the new database with system collections, into one dated
-   backup directory. A database-only backup cannot restore the setup ownership
-   record. This procedure becomes a "Managed workspace" section of
+5. First combined backup, before any ingestion: run the complete "Create a
+   consistent artifact" procedure of
    [docs/operations/thinkpad-backup-restore.md](../operations/thinkpad-backup-restore.md)
-   in PR stack item 5.
+   against the new database (all writers quiesced, viewer and daemon stopped,
+   inventory recorded before and compared after, referenced transcripts copied and
+   hashed, `manifest.json` written), extended by one thing: the ledger root and the
+   registry root are copied into the same dated directory with ownership and
+   permissions preserved and listed in the manifest's `files`, so the verifier
+   accepts them rather than rejecting the artifact as unmanifested. A database-only
+   backup cannot restore the setup ownership record. The extension is written as a
+   "Managed workspace" section of that document in PR stack item 5; the private
+   backup driver that produces the manifest is the operator's to extend.
 6. Point the daemon and viewer at the new database (unit edits, operator's lane).
    Move the reading-desk state, after the inventory widening (PR stack item 3) is
    merged and deployed: arangodump from `Conveyance_KG` with
@@ -278,12 +283,10 @@ written as the act is exercised:
    which collections the setup coordinator's inventory accepts. Record the sources
    returned.
 8. Second combined backup, after the reading-desk move and the first ingest: repeat
-   the step 5 procedure into a new dated directory and verify the database portion
-   with scripts/verify_workspace_backup.py as
-   [docs/operations/thinkpad-backup-restore.md](../operations/thinkpad-backup-restore.md)
-   describes. Only after that backup verifies is `Conveyance_KG` retired; the drop
-   is still by hand, outside HADES, since there is no drop-database command (#118).
-   Both backups are kept.
+   step 5 into a new dated directory, then run `scripts/verify_workspace_backup.py`
+   on it as the same document describes. Only after that verification passes is
+   `Conveyance_KG` retired; the drop is still by hand, outside HADES, since there is
+   no drop-database command (#118). Both backups are kept.
 
 The embedder ceiling is 20,000 tokens (ruled 2026-11-09, recorded by PR #250).
 The late policy saved in step 4 must fit that ceiling, and setup enforces it. The
@@ -344,8 +347,8 @@ the laptop and records evidence under docs/evidence/.
 4. feat: Part B, the `hades db setup` commands, `setup` config and the verified-aware
    `hades status` probe, with service-free and disposable-database tests.
 5. docs: Part C runbook, written after the operator has run it, which also adds the
-   "Managed workspace" combined-backup section to
-   docs/operations/thinkpad-backup-restore.md.
+   "Managed workspace" section to docs/operations/thinkpad-backup-restore.md: the
+   ledger and registry roots join the manifest.
 
 Each child targets the previous branch. The Planner undrafts children; the operator
 collapses the stack and undrafts the anchor once.
