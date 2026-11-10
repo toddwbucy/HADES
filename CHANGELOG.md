@@ -218,7 +218,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   directory. `scripts/qualify_verified_server.py` refuses a checkout with uncommitted
   changes to tracked files, since its report names `HEAD`; requires the status after
   planning to report the space still loaded, and the plan to be non-empty; and refuses
-  an existing `--output-dir` in one line instead of a traceback.
+  an existing `--output-dir` in one line instead of a traceback. New tests cover the
+  idle monitor staying off from `HADES_EMBEDDER_IDLE_TIMEOUT=0`, the CLI refusing an
+  unsafe socket parent, a world-writable ancestor, and a symlinked socket parent.
 
 - Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
   report the losing side of two concurrent opens as a write-write conflict on the

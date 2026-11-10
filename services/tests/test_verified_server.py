@@ -538,3 +538,61 @@ def test_uvicorn_start_line_hides_the_socket_parent(tmp_path):
     logs = out + err
     assert "Uvicorn running on unix socket <private dir>/provider.sock" in logs
     assert str(tmp_path) not in logs
+
+
+# Coverage the PR 2 review asked for (#225): the paths below were exercised only
+# indirectly, or not at all.
+
+
+def test_idle_monitor_is_not_started_when_the_environment_disables_it(provider,
+                                                                      monkeypatch):
+    """HADES_EMBEDDER_IDLE_TIMEOUT=0 reaches the running app, which starts no monitor.
+
+    An idle unload would invalidate every receipt a client holds; the unit relies on
+    this value, so the test follows it from the environment into the app's lifespan.
+    """
+    p, _ = provider
+    monkeypatch.setenv("HADES_EMBEDDER_IDLE_TIMEOUT", "0")
+    app = verified_server.build_app(p, EmbeddingConfig.from_env())
+
+    async def run():
+        """Enter the lifespan, where the monitor would start."""
+        async with app.router.lifespan_context(app):
+            return app.state.app_state._idle_monitor_task
+    assert asyncio.run(run()) is None
+
+
+def test_cli_refuses_an_unsafe_socket_parent_in_one_line(tmp_path):
+    """The module, run as the unit runs it, refuses a 0755 parent with exit 1.
+
+    One line on stderr, no traceback, and nothing created beside the socket path.
+    """
+    registry = tmp_path / "registry"
+    registry.mkdir(mode=0o700)
+    parent = tmp_path / "run"
+    parent.mkdir(mode=0o755)
+    r = run_cli(["--registry", str(registry), "--provider", "p", "--space", "late",
+                 "--uds", str(parent / "p.sock")], {**os.environ, **OFFLINE})
+    assert r.returncode == 1
+    assert r.stderr.splitlines() == [
+        "verified server: socket parent must be a 0700 directory owned by this account"]
+    assert list(parent.iterdir()) == []
+
+
+def test_world_writable_ancestor_refused(tmp_path):
+    """An ancestor others can write, and not a root-owned sticky directory, is refused."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    (shared / "run").mkdir(mode=0o700)
+    with pytest.raises(ValueError, match=r"writable by other accounts .*\(1 level above"):
+        verified_server.check_socket_path(shared / "run" / "p.sock")
+
+
+def test_symlinked_socket_parent_refused(tmp_path):
+    """The socket's own directory may not be a symlink, even to a private directory."""
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    (tmp_path / "run").symlink_to(real)
+    with pytest.raises(ValueError, match="socket parent must not be a symlink"):
+        verified_server.check_socket_path(tmp_path / "run" / "p.sock")
