@@ -144,6 +144,19 @@ sync:
 #  rust_analyzer: /usr/local/lib/hades/tools/rust-analyzer
 #  gopls: /usr/local/lib/hades/tools/gopls
 
+# Installation-owned verified providers and the setup ledger (model-bound databases).
+# Paths must be absolute, resolved (no symlink ancestor), private to the service account.
+#registered_providers:
+#  registry_root: /absolute/private/model-registry
+#  providers:
+#    - id: local-jina
+#      socket: /absolute/private/run/embedder/provider.sock
+#      timeout_seconds: 120
+#      max_response_bytes: 8388608
+#setup:
+#  ledger_root: /absolute/private/setup-ledger
+#  installation_id: my-installation
+
 # Shared code/document pre-chunking, resolved against /v1/models at ingest startup.
 # The same root-level schema applies to every config search location, including
 # ~/.config/hades/hades.yaml and /etc/hades/hades.yaml; this is a template only.

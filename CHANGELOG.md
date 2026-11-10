@@ -19,6 +19,19 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add `hades db setup` (#225), the CLI door for managed (model-bound) databases:
+  `run` creates one through the recoverable setup ledger, with every policy value an
+  explicit flag (`--generation` and `--chunking` included), and refuses a chunking
+  space the provider does not serve from `GET /v1/status` before loading the model;
+  `inspect` prints the receipt and `diagnose` the advisory recovery report, neither
+  loading a model. A run that stops prints its saved receipt with `success: false`.
+  Adds the optional `setup` configuration section (`ledger_root`,
+  `installation_id`). `hades status` gains a `verified_providers` list from each
+  registered provider's `GET /v1/status`, never loading a model, beside the unchanged
+  legacy `embedder` block. Tests: the service-free `db_setup_refusals` target (in CI)
+  and the `db_setup_lifecycle` contract (`test_isolated_database.py --contract
+  db_setup`).
+
 - Add the verified provider service, `python -m embedding.verified_server` (#225): it
   loads one registered Jina provider in one explicitly selected space
   (`--space conventional|late`), refuses an unsafe socket parent, a socket another

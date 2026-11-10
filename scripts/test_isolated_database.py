@@ -13,6 +13,8 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parents[1]
+# hades-cli lifecycle targets selectable alone; the full run reaches them via cli-lifecycle.
+CLI_CONTRACTS = ["db_setup"]
 DATABASE_CONTRACTS = ["arango_crud", "arango_index", "arango_query", "arango_transport", "arango_cache",
                       "graph_loader", "graph_contract", "kg_authored", "graphable_import", "reading", "reading_chat", "cursor_lifecycle", "transaction", "structural_export_db", "structural_vectors_db", "document_replacement_db", "embedding_profile_store", "profiled_documents", "profiled_code", "workspace_setup", "profiled_search", "profiled_files", "profiled_jobs"]
 # Official library/arangodb:3.12 manifest, resolved 2026-09-20.
@@ -97,7 +99,7 @@ def main():
                            help="run the CLI lifecycle contracts on the private server")
     benchmark.add_argument("--mcp-authored", action="store_true",
                            help="run the authored-graph MCP roundtrip on the private server")
-    benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS,
+    benchmark.add_argument("--contract", choices=DATABASE_CONTRACTS + CLI_CONTRACTS,
                            help="run one database contract on the same strict private server")
     benchmark.add_argument("--verified-jina", type=Path,
                            help="run the opt-in real provider contract using this qualification context")
@@ -317,6 +319,9 @@ def main():
                 command(target, ["-p", "hades-core", "--test", target], ignored=True)
                 return
             if args.contract:
+                if args.contract == "db_setup":
+                    command("db-setup-cli", ["-p", "hades-cli", "--test", "db_setup_lifecycle"])
+                    return
                 if args.contract == "graphable_import":
                     command("graphable-unit", ["-p", "hades-core", "--lib", "graphable"])
                 if args.contract == "reading_chat":
@@ -338,7 +343,7 @@ def main():
             targets = DATABASE_CONTRACTS
             command("database-contracts", ["-p", "hades-core", *[arg for target in targets for arg in ("--test", target)]])
             command("codebase", ["-p", "hades-cli", "--bin", "hades", "commands::codebase_"])
-            command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle", "--test", "graphable_import", "--test", "profiled_admission", "--test", "profiled_ingestion", "--test", "profiled_jobs"])
+            command("cli-lifecycle", ["-p", "hades-cli", "--test", "file_identity", "--test", "codebase_lifecycle", "--test", "graphable_import", "--test", "profiled_admission", "--test", "profiled_ingestion", "--test", "profiled_jobs", "--test", "db_setup_lifecycle"])
         finally:
             stop_group(child)
             if args.docker:

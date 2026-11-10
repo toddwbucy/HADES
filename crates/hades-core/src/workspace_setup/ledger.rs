@@ -66,18 +66,42 @@ pub(super) struct Lease {
     guard: Arc<Guard>,
 }
 
+/// How a lease treats a ledger that has no lock or scope file yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Create,
+    Existing,
+    IfInitialized,
+}
+
 impl Lease {
     /// Acquire a process-wide lease without blocking an async worker on filesystem sync.
     pub async fn open(root: PathBuf, scope: Scope) -> Result<Self, SetupError> {
-        Self::open_with(root, scope, true).await
+        Self::open_with(root, scope, Mode::Create)
+            .await?
+            .ok_or_else(|| SetupError::Invalid("setup ledger was not opened".into()))
     }
 
     /// Diagnostics require an initialized ledger and never create its scope or lock files.
     pub async fn open_existing(root: PathBuf, scope: Scope) -> Result<Self, SetupError> {
-        Self::open_with(root, scope, false).await
+        Self::open_with(root, scope, Mode::Existing)
+            .await?
+            .ok_or_else(|| SetupError::Invalid("setup ledger is not initialized".into()))
     }
 
-    async fn open_with(root: PathBuf, scope: Scope, create: bool) -> Result<Self, SetupError> {
+    /// Inspection reads an initialized ledger and treats an uninitialized one as holding
+    /// no operations. It never creates files, so a read-only verb cannot bind a fresh
+    /// ledger to whatever endpoint the caller happens to use (#225).
+    pub async fn open_initialized(root: PathBuf, scope: Scope) -> Result<Option<Self>, SetupError> {
+        Self::open_with(root, scope, Mode::IfInitialized).await
+    }
+
+    async fn open_with(
+        root: PathBuf,
+        scope: Scope,
+        mode: Mode,
+    ) -> Result<Option<Self>, SetupError> {
+        let create = mode == Mode::Create;
         blocking(move || {
             absolute(&root)?;
             let mut directory = OpenOptions::new()
@@ -96,11 +120,18 @@ impl Lease {
                 info.is_dir() && owned(&info) && info.mode() & 0o7777 == 0o700,
                 "ledger root must be an existing private 0700 directory owned by this account",
             )?;
-            let lock = child(
+            let lock = match child(
                 &directory,
                 ".lock",
                 libc::O_RDWR | if create { libc::O_CREAT } else { 0 },
-            )?;
+            ) {
+                Err(SetupError::Io(e))
+                    if mode == Mode::IfInitialized && e.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    return Ok(None);
+                }
+                result => result?,
+            };
             regular(&lock)?;
             // SAFETY: lock owns the live descriptor; Guard releases the acquired lease.
             if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
@@ -115,11 +146,13 @@ impl Lease {
                     saved == scope,
                     "ledger belongs to a different installation or endpoint",
                 )?;
+            } else if mode == Mode::IfInitialized {
+                return Ok(None);
             } else {
                 ensure(create, "setup ledger is not initialized")?;
                 write(&guard, "scope.json", &scope)?;
             }
-            Ok(Self { guard })
+            Ok(Some(Self { guard }))
         })
         .await
     }
