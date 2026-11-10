@@ -8,8 +8,10 @@ import pytest
 
 from test_verified_jina_provider import provider  # noqa: F401
 from test_model_registration import source, registry  # noqa: F401
-from embedding import verified_server
+from embedding import jina_v4, verified_server
+from embedding.config import EmbeddingConfig
 from embedding.verified_http import create_verified_app
+from embedding.verified_jina import VerifiedJinaProvider
 from embedding.verified_late import VerifiedJinaLateProvider
 
 
@@ -81,3 +83,30 @@ def test_stale_socket_unlinked_but_file_refused(tmp_path):
     path.write_text("")
     with pytest.raises(ValueError, match="non-socket"):
         verified_server.check_socket_path(path)
+
+
+def test_build_provider_selects_space(provider):
+    p, _ = provider
+    cfg = EmbeddingConfig(device="cpu", model_name=p.model_name, idle_timeout_seconds=0)
+    late = verified_server.build_provider(p._registration, "late", cfg, max_input_tokens=16)
+    conv = verified_server.build_provider(p._registration, "conventional", cfg,
+                                          max_input_tokens=16)
+    assert isinstance(late, VerifiedJinaLateProvider) and type(conv) is VerifiedJinaProvider
+
+
+def test_build_provider_refuses_device_fallback(provider, monkeypatch):
+    # Force the backend's documented CUDA-unavailable fallback to CPU, so the refusal is
+    # exercised on a GPU host too (where an out-of-range ordinal raises a different error).
+    monkeypatch.setattr(jina_v4.torch.cuda, "is_available", lambda: False)
+    p, _ = provider
+    cfg = EmbeddingConfig(device="cuda:7", model_name=p.model_name)
+    with pytest.raises(ValueError, match="CPU fallback is refused"):
+        verified_server.build_provider(p._registration, "conventional", cfg,
+                                       max_input_tokens=16)
+
+
+def test_build_app_applies_idle_timeout(provider):
+    p, _ = provider
+    cfg = EmbeddingConfig(device="cpu", model_name=p.model_name, idle_timeout_seconds=0)
+    app = verified_server.build_app(p, cfg)
+    assert app.state.app_state.config.idle_timeout_seconds == 0

@@ -7,6 +7,12 @@ import os
 import stat
 from pathlib import Path
 
+from fastapi import FastAPI
+
+from .config import EmbeddingConfig
+from .jina_v4 import MAX_TOKENS
+from .registry import RegisteredModel
+from .verified_http import create_verified_app
 from .verified_jina import VerifiedJinaProvider
 from .verified_late import VerifiedJinaLateProvider
 
@@ -72,3 +78,31 @@ def check_socket_path(uds: Path) -> Path:
     # guarantees it was ours, so removing it is safe.
     os.unlink(uds)
     return uds
+
+
+def build_provider(registration: RegisteredModel, space: str, config: EmbeddingConfig, *,
+                   max_input_tokens: int = MAX_TOKENS) -> VerifiedJinaProvider:
+    """Construct the selected space's provider on the configured device, without loading.
+
+    The backend silently falls back to CPU when CUDA is unavailable; a 9 GiB model on CPU
+    is not a serving configuration, so that fallback is refused here rather than
+    discovered as a hung first request (same rule as scripts/qualify_verified_*.py).
+    """
+    provider = SPACES[space](registration, device=config.device,
+                             use_fp16=config.use_fp16 and config.device.startswith("cuda"),
+                             max_input_tokens=max_input_tokens)
+    if provider.device != config.device:
+        raise ValueError("configured device is unavailable; CPU fallback is refused")
+    return provider
+
+
+def build_app(provider: VerifiedJinaProvider, config: EmbeddingConfig) -> FastAPI:
+    """Bind the provider and honor the configured idle timeout.
+
+    create_verified_app builds its own default config (900 s idle unload). After an
+    unload every held receipt is invalid, so the operator's HADES_EMBEDDER_IDLE_TIMEOUT
+    (0 disables the monitor) must reach the app before its lifespan starts (#225).
+    """
+    app = create_verified_app(provider)
+    app.state.app_state.config.idle_timeout_seconds = config.idle_timeout_seconds
+    return app
