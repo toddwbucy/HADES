@@ -216,6 +216,10 @@ mod tests {
                 max_response_bytes: 8 * 1024 * 1024,
             }],
         });
+        config.setup = Some(super::super::SetupConfig {
+            ledger_root: "/private/fixture/setup-ledger".into(),
+            installation_id: "fixture-installation".into(),
+        });
         config
     }
     #[test]
