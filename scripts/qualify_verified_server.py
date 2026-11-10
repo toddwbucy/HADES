@@ -145,6 +145,10 @@ def main(argv=None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--idle-timeout", type=float, default=0)
     args = parser.parse_args(argv)
+    # The child runs with cwd services/, so a relative --registry would name a different
+    # directory there. Resolve it against the operator's cwd; resolve() also shows the
+    # real path the server's symlink-ancestor refusal will judge (#225).
+    args.registry = args.registry.resolve(strict=False)
     os.umask(0o077)
     # Evidence never overwrites an earlier run.
     args.output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)

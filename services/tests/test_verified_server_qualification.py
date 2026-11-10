@@ -1,5 +1,6 @@
 """Pure helpers and refusals of the verified-server qualification harness (#225)."""
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -76,3 +77,34 @@ def test_cli_refuses_existing_output_dir(tmp_path):
                         str(tmp_path / "out")], capture_output=True, text=True, timeout=60)
     assert r.returncode != 0
     assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_relative_registry_reaches_the_child_absolute(tmp_path, monkeypatch):
+    """A relative --registry is resolved against the caller's cwd, not services/."""
+    (tmp_path / "registry").mkdir()
+    monkeypatch.chdir(tmp_path)
+    launched = {}
+    real = subprocess.Popen
+
+    def capture(command, **kwargs):
+        """Capture the server launch and stop; pass other commands through."""
+        if "embedding.verified_server" not in command:
+            return real(command, **kwargs)
+        launched["command"], launched["cwd"] = command, kwargs.get("cwd")
+        raise RuntimeError("launch captured")
+
+    monkeypatch.setattr(harness.subprocess, "Popen", capture)
+    # main() sets a process-wide umask; restore it so later tests' modes are unchanged.
+    umask = os.umask(0o022)
+    os.umask(umask)
+    try:
+        code = harness.main(["--registry", "registry", "--provider", "p",
+                             "--space", "late", "--device", "cpu",
+                             "--output-dir", str(tmp_path / "out")])
+    finally:
+        os.umask(umask)
+    assert code == 1
+    command = launched["command"]
+    registry = command[command.index("--registry") + 1]
+    assert launched["cwd"] != tmp_path
+    assert registry == str((tmp_path / "registry").resolve())
