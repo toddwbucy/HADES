@@ -221,6 +221,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   an existing `--output-dir` in one line instead of a traceback. New tests cover the
   idle monitor staying off from `HADES_EMBEDDER_IDLE_TIMEOUT=0`, the CLI refusing an
   unsafe socket parent, a world-writable ancestor, and a symlinked socket parent.
+  `services/README.md` lists which embedder variables the verified server applies and
+  which it ignores, and why its unit omits `PrivateTmp=`.
 
 - Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
   report the losing side of two concurrent opens as a write-write conflict on the
