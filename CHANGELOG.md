@@ -213,6 +213,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   rather than an error, and is not initialized. The `db setup` row of the
   daemon-protocol table of CLI-only commands is aligned with its columns. The
   lifecycle contract proves a refused request leaves the setup ledger byte-identical.
+  New unit and contract cases pin the empty graph id in `reading__nodes` and
+  `reading__edges` as not data-owned. They also pin a schema that appears inside the
+  marker window as held at `needs_reconciliation`, step `marker`.
 
 - Close the verified server follow-ups (#225). A SIGTERM that reached
   `embedding.verified_server` after `serve()` replaced the default action but before
