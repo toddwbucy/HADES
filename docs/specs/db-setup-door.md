@@ -52,9 +52,11 @@ Related: [docs/specs/registered-model-loading.md](registered-model-loading.md),
   configuration surface for the setup ledger root or the installation ID.
 - `python -m embedding.registry --registry DIR register --provider ID --source
   SNAPSHOT --revision COMMIT` writes a `hades-model-registration-v1` record. The
-  approved snapshot is at ~/.local/share/hades/models/jinaai--jina-embeddings-v4.
-  The 2026-10-21 qualification registered it in a temporary registry; manifest MD5
-  446160668af00248832ed8cf5d8d4432. No durable registry exists.
+  approved snapshot is `models/jinaai--jina-embeddings-v4` under the persistent
+  data directory named in [docs/installation-thinkpad.md](../installation-thinkpad.md),
+  which `~/.local/share/hades` links to. The 2026-10-21 qualification registered it
+  in a temporary registry; manifest MD5 446160668af00248832ed8cf5d8d4432. No
+  durable registry exists.
 - `embedding.verified_http.create_verified_app(VerifiedJinaProvider)` serves
   `/v1/verify`, `/v1/embeddings`, `/v1/passages`, `/v1/late-passages` and
   `/v1/late-embeddings`. Its module docstring says "no environment/CLI activation
@@ -140,8 +142,13 @@ Elected: option 1 (operator, 2026-11-10, on the Planner's recommendation). It is
 the smallest, it matches the spec's intent that the managed path is the path, and
 the laptop has no legacy vectors to protect. The Olympus-era profile switcher is
 not installed here, so there is no second unit to coordinate with. The socket
-parent must be a 0700 directory owned by the service account (for example
-~/.local/share/hades/run/embedder/).
+parent must be a 0700 directory owned by the service account, and the socket path,
+the ledger root and the registry root must all be given as resolved paths with no
+symlink ancestor: the catalog and the ledger open every ancestor without following
+links. On this laptop `~/.local/share/hades` is itself a symlink, so the runbook
+uses its resolved target (the persistent data directory named in
+[docs/installation-thinkpad.md](../installation-thinkpad.md)) for all three, for
+example `<data>/run/embedder/`, `<data>/setup-ledger/` and `<data>/model-registry/`.
 
 Configuration contract for the entry point (Planner's call): it reads the existing
 `HADES_EMBEDDER_*` variables (device, fp16, batch size, max tokens, idle timeout)
@@ -152,6 +159,14 @@ sets it to 0 for the verified unit, because after an unload every held client ge
 The reload costs 6 to 7 s on this laptop (2026-11-09 bisection journal), plus the
 first request's cold-cache penalty. The qualification case states the configured
 timeout it ran with.
+
+The entry point always constructs `VerifiedJinaLateProvider`, which subclasses the
+conventional provider and advertises the late-chunk and tokenizer-offset
+capabilities. A conventional policy validates against that observation too, since
+it requires no late capability, so one provider class serves both policies and no
+class selector is needed. The PR 2 qualification case checks that `/v1/verify`
+over the socket reports both late capabilities and that `/v1/late-passages`
+answers.
 
 Repository footprint: the repo ships `deploy/systemd/hades-embedder@.service`, the
 `hades-embedder-profile` switcher and the gpu0/1/2 profiles from the Olympus era.
@@ -217,8 +232,9 @@ under its prefix, which the docs must now say plainly.
 A new section in [docs/installation-thinkpad.md](../installation-thinkpad.md),
 written as the act is exercised:
 
-1. Register the snapshot into a durable registry (`~/.local/share/hades/
-   model-registry`) with the resolved commit ID. Record the manifest MD5 and
+1. Register the snapshot into a durable registry (`<data>/model-registry`, under
+   the resolved data directory, never through the `~/.local/share/hades` link) with
+   the resolved commit ID. Record the manifest MD5 and
    compare it with the 2026-10-21 evidence.
 2. Configure `registered_providers` and `setup` in the HADES YAML. Create the
    ledger root and the socket parent with mode 0700.
@@ -228,13 +244,24 @@ written as the act is exercised:
    unless the operator renames it before this step (Planner's default; the only
    constraint is the setup name grammar). Record the receipt, operation ID and
    generation.
-5. Point the daemon and viewer at the new database (unit edits, operator's lane).
+5. First combined backup, before any ingestion: with setup quiescent, archive the
+   ledger root and the registry root with ownership and permissions preserved, and
+   take an arangodump of the new database with system collections, into one dated
+   backup directory. A database-only backup cannot restore the setup ownership
+   record. This procedure becomes a "Managed workspace" section of
+   [docs/operations/thinkpad-backup-restore.md](../operations/thinkpad-backup-restore.md)
+   in PR stack item 5.
+6. Point the daemon and viewer at the new database (unit edits, operator's lane).
    Move the reading-desk state, after the inventory widening (PR stack item 3) is
-   merged and deployed: arangodump of the `hades_reading_*` and `reading_s_*`
-   collections from `Conveyance_KG`, arangorestore into the new database, then
-   verify the desk lists the same readings. `Conveyance_KG` is left in place until
-   the operator drops it by hand.
-6. First ingest: the repository's own `docs/` tree (113 markdown files and 215,490
+   merged and deployed: arangodump from `Conveyance_KG` with
+   `--include-system-collections true`, as thinkpad-backup-restore.md already does,
+   and arangorestore into the new database the `hades_reading_*` and `reading_s_*`
+   collections together with the `_graphs` definitions for the reading graphs,
+   because the reading desk resolves each graph through gharial before every write.
+   Verify the desk lists the same readings, then open a reading session and make
+   one mutation (a pin or a proposal) to prove the graph definitions resolve.
+   `Conveyance_KG` is left in place until the operator drops it by hand.
+7. First ingest: the repository's own `docs/` tree (113 markdown files and 215,490
    tokens at 52d04d4, the corpus the 2026-11-09 ceiling bisection used; the tree
    has grown since) unless the operator names another tree first. It is real prose
    with known answers, so `hades db query` can be checked with questions such as
@@ -274,7 +301,7 @@ database's profile; changing them later means a new generation.
 
 Nothing blocks the build. Two values can still be changed before the runbook
 reaches them: the database name (before step 4 of Part C) and the first corpus
-(before step 6).
+(before step 7).
 
 ## Left to the builder
 
@@ -298,7 +325,9 @@ the laptop and records evidence under docs/evidence/.
    [docs/specs/recoverable-workspace-setup.md](recoverable-workspace-setup.md).
 4. feat: Part B, the `hades db setup` commands, `setup` config and the verified-aware
    `hades status` probe, with service-free and disposable-database tests.
-5. docs: Part C runbook, written after the operator has run it.
+5. docs: Part C runbook, written after the operator has run it, which also adds the
+   "Managed workspace" combined-backup section to
+   docs/operations/thinkpad-backup-restore.md.
 
 Each child targets the previous branch. The Planner undrafts children; the operator
 collapses the stack and undrafts the anchor once.
