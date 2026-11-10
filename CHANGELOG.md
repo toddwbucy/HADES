@@ -24,13 +24,14 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   `09df08f` with its gate counts and SHA-256 table, register the Jina snapshot,
   configure `registered_providers` and `setup`, switch to
   `hades-embedder-verified.service`, create `Conveyance_KG_v2` with `hades db setup`,
-  move the reading desk into it, ingest the repository `docs/` tree, and take two
-  combined backups, with a retirement gate for `Conveyance_KG`. The superseded 52d04d4
+  move the reading desk into it, ingest the Markdown and text of the repository
+  `docs/` tree, and take two combined backups once the private backup driver is
+  extended, with a retirement gate for `Conveyance_KG`. The superseded 52d04d4
   deployment section now points to it. Add the "Managed workspace" section to
   `docs/operations/thinkpad-backup-restore.md`: the setup ledger (including `.lock`)
   and the registry's records and referenced artifacts join the artifact, `sessions/`
-  excluded, with modes and owners checked against a source inventory and every copied
-  file in the manifest.
+  excluded, with modes and owners checked against a source inventory, every copied
+  file in the manifest, and the driver changes this needs listed.
 
 - Add `hades db setup` (#225), the CLI door for managed (model-bound) databases:
   `run` creates one through the recoverable setup ledger, with every policy value an

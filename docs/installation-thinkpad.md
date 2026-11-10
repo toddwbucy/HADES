@@ -812,6 +812,7 @@ running this block again:
 
 ```bash
 cd ~/Projects/HADES
+set -o pipefail
 set -a; . "$HOME/.config/hades/daemon.env"; set +a
 DATA=$(readlink -f ~/.local/share/hades)
 SOCK="$DATA/run/verified/provider.sock"
@@ -825,8 +826,11 @@ RUN="$HOME/.local/share/hades/backups/managed-workspace"
   `ARANGO_RW_SOCKET` values. Those override the YAML sockets, and the setup ledger
   hashes the endpoint, so always run `hades db setup` from a shell that loaded
   `daemon.env`.
-- `RUN` holds this run's records (receipts, query results). Step 0 creates it. Its
-  files stay private; phase 2 copies sanitized values into `docs/evidence/`.
+- `RUN` holds this run's records (receipts, query results). Step 0 creates it. It also
+  holds copies of `hades.yaml` and `daemon.env`, which carry credentials, so it stays
+  private: phase 2 copies only selected, sanitized values into `docs/evidence/`, never
+  the directory.
+- `set -o pipefail` makes a command piped into `tee` or a check report its own failure.
 
 The fixed values below come from the design and
 [the verified-server qualification](evidence/verified-server-thinkpad-2026-11-10.json).
@@ -939,9 +943,11 @@ To roll back the executables, follow [Roll back 52d04d4](#roll-back-52d04d4) wit
 
 ### Step 1: register the snapshot
 
-Registration copies the approved snapshot's runtime files, about 9 GiB, into the
-registry and freezes them read-only, so check the free space first. The registry is
-append-only: a provider ID is never rebound to other files.
+Registration copies the approved snapshot's runtime files, 7.4 GiB, into the registry
+and freezes them read-only, so check the free space first. Each start of the verified
+service makes another private copy under `model-registry/sessions/`, and each combined
+backup another. The registry is append-only: a provider ID is never rebound to other
+files.
 
 ```bash
 df -h "$DATA"
@@ -1030,6 +1036,21 @@ sed -e "s|@SERVICES_DIR@|$HOME/Projects/HADES/services|g" \
 grep -n '@[A-Z_]*@' ~/.config/systemd/user/hades-embedder-verified.service
 grep -nE '^(WorkingDirectory|ExecStart)|--registry' \
   ~/.config/systemd/user/hades-embedder-verified.service
+```
+
+The template sets `PrivateTmp=true`. A user manager can provide that only inside a user
+namespace, where root-owned directories such as the parent of `$HOME` appear owned by
+uid 65534, and the service refuses a socket path with an ancestor owned by anyone
+other than root or itself. The first command shows what this manager does: `65534`
+means the template cannot start here. Record its output and install the drop-in either
+way; it is harmless where not needed, because the service writes nothing to `/tmp`:
+
+```bash
+systemd-run --user -p PrivateTmp=yes --wait -P stat -c %u "$(dirname "$HOME")" |
+  tee "$RUN/privatetmp-check.txt"
+mkdir -p ~/.config/systemd/user/hades-embedder-verified.service.d
+printf '[Service]\nPrivateTmp=no\n' \
+  > ~/.config/systemd/user/hades-embedder-verified.service.d/no-private-tmp.conf
 systemctl --user daemon-reload
 ```
 
@@ -1045,8 +1066,10 @@ curl -sS --retry 60 --retry-all-errors --retry-delay 2 --unix-socket "$SOCK" \
 
 The service loads the model before it binds the socket, about 20 seconds in the
 qualification, and the retry window allows two minutes. `/v1/status` must print
-`{"model":"jinaai/jina-embeddings-v4","space":"late","loaded":true}`. If it does not,
-read `journalctl --user -u hades-embedder-verified.service -n 50`.
+`{"model":"jinaai/jina-embeddings-v4","space":"late","loaded":true}`. A refused start
+restarts three times and then stops; if `/v1/status` never answers, switch back as
+below, so an embedder is serving while you investigate, then read
+`journalctl --user -u hades-embedder-verified.service -n 50`.
 
 Check the new `hades status` list and an explicit verification over the socket:
 
@@ -1074,7 +1097,11 @@ While the verified unit holds the card, these legacy paths lose their embedder a
 fail with a connection error: `hades embed`, `hades codebase ingest` and code
 embedding, `hades ingest` into a legacy database, and semantic search of a legacy
 database. Guided reading, the reading desk, Codex chat and graph reads do not use the
-embedder. To switch back, which in turn stops managed ingest and search:
+embedder. The older sections of this record still say
+`systemctl --user restart hades-embedder.service`; after this step, restarting the
+disabled legacy unit would still start it beside the verified service, which never
+idles out. Switch units only this way. To switch back, which in turn stops managed
+ingest and search:
 
 ```bash
 systemctl --user disable --now hades-embedder-verified.service
@@ -1101,13 +1128,30 @@ hades db setup diagnose --operation-id conveyance-kg-v2-1 | tee "$RUN/setup-diag
 `inspect` must print the same receipt, with the same `request_sha256`, and `diagnose`
 must report `"action": "none"`.
 
-If `run` exits 1, it has printed the saved receipt with `"success": false`. Read
-`diagnose`. For `retry_identical_request`, repeat the exact command above; the ledger
-admits only an identical request under the same operation ID, and refuses a changed
-flag. For `inspect_required`, stop and keep the ledger and database untouched. Do not
-start a new operation ID for the same database name: the first operation holds the
-name. Phase 2 records the receipt as
+If `run` exits 1 after printing a receipt with `"success": false`, the ledger saved
+it; read `diagnose`. For `retry_identical_request`, repeat the exact command above: the
+ledger admits only an identical request under the same operation ID and refuses a
+changed flag. For `inspect_required`, stop and keep the ledger and database untouched.
+Do not start a new operation ID for the same database name: the first operation holds
+the name. A refusal before the ledger (configuration, status, space check,
+verification or an absent database socket) prints only an error on stderr and leaves
+the ledger untouched; fix the cause and run the same command.
+Phase 2 records the receipt as
 `docs/evidence/db-setup-receipt-thinkpad-2026-11-xx.json`.
+
+### Before step 5: extend the backup driver
+
+The combined backups in steps 5, 6 and 8 are made by the private driver
+`.local-install/backup-workspace.py`, the only tool that writes the `manifest.json` the
+verifier reads. As of this draft it backs up `Conveyance_KG` only, requires the
+reading-desk collections, sends its preflight to `Conveyance_KG`, and restarts the
+daemon and the viewer when it finishes. Extend it as listed under
+[driver changes](operations/thinkpad-backup-restore.md#driver-changes), then dry-run it
+against `Conveyance_KG`, which it already supports, and confirm it still passes the
+verifier. Do not start step 5 until it does. This is the operator's lane.
+
+The driver records its backup directory in
+`.local-install/latest-workspace-backup.txt`; the steps below read it from there.
 
 ### Step 5: first combined backup
 
@@ -1117,7 +1161,8 @@ registry, following the
 Record the backup directory:
 
 ```bash
-echo "$backup_dir" > "$RUN/backup-1.path"
+backup_dir=$(cat .local-install/latest-workspace-backup.txt)
+test -f "$backup_dir/manifest.json" && echo "$backup_dir" > "$RUN/backup-1.path"
 ```
 
 The isolated verifier is not run on this backup: it requires the reading-desk
@@ -1128,13 +1173,33 @@ collections, which arrive in step 6. Step 8 verifies the second backup.
 The reading desk resolves each reading graph through ArangoDB's graph API before every
 write, so the move copies the `hades_reading_*` collections, every reading graph's
 `reading_<id>_nodes` and `reading_<id>_edges` collections, and the graph definitions in
-`_graphs`. The database must still be idle: the daemon creates reading collections
-lazily, so it is pointed at the new database only after the restore.
+`_graphs`. The new database must stay idle until the restore is compared: the daemon
+creates reading collections lazily, so it is pointed at the new database last.
 
-First list what moves. The first command prints the moving collections; review them.
-The second prints every other non-system collection in `Conveyance_KG`, which stay
-behind (an empty `hades_schema` is expected). The third prints the graph definitions;
-every key must start with `reading_`, because the restore copies all of `_graphs`:
+Take the final backup of `Conveyance_KG` with the driver, as in Create a consistent
+artifact in
+[the backup procedure](operations/thinkpad-backup-restore.md#create-a-consistent-artifact).
+It is the source of the move and the last backup of `Conveyance_KG` before retirement.
+The driver restarts the daemon and the viewer when it finishes, so stop them again
+straight away; from here until the end of this step nothing may write to either
+database:
+
+```bash
+backup_dir=$(cat .local-install/latest-workspace-backup.txt)
+python3 -c 'import json, sys
+assert json.load(open(sys.argv[1]))["database"] == "Conveyance_KG"' \
+  "$backup_dir/dump/dump.json"
+echo "$backup_dir" > "$RUN/conveyance-kg-final.path"
+systemctl --user stop hades-viewer.service
+systemctl --user stop hades-daemon.service
+```
+
+If a reading changed between the dump and the stop, the count comparison below fails;
+take the backup again with the services stopped.
+
+List what moves, twice: from the quiet database and from the dump. The `cmp` must
+print nothing. The next command prints every other non-system collection, which stays
+behind (an empty `hades_schema` is expected):
 
 ```bash
 hades --db Conveyance_KG db aql -f json 'RETURN COLLECTIONS()[*].name' |
@@ -1142,53 +1207,91 @@ hades --db Conveyance_KG db aql -f json 'RETURN COLLECTIONS()[*].name' |
 names = json.load(sys.stdin)["data"]["results"][0]
 rule = re.compile(r"hades_reading_.+|reading_.+_(nodes|edges)")
 print("\n".join(sorted(n for n in names if rule.fullmatch(n))))' > "$RUN/moving.txt"
+python3 - "$backup_dir/dump" <<'EOF' > "$RUN/moving-dump.txt"
+import json, pathlib, re, sys
+rule = re.compile(r"hades_reading_.+|reading_.+_(nodes|edges)")
+names = {json.load(open(p))["parameters"]["name"]
+         for p in pathlib.Path(sys.argv[1]).glob("*.structure.json")}
+print("\n".join(sorted(n for n in names if rule.fullmatch(n))))
+EOF
+test -s "$RUN/moving.txt" && cmp "$RUN/moving.txt" "$RUN/moving-dump.txt"
 cat "$RUN/moving.txt"
 hades --db Conveyance_KG db aql -f json 'RETURN COLLECTIONS()[*].name' |
   python3 -c 'import json, sys
 moving = set(open(sys.argv[1]).read().split())
 names = json.load(sys.stdin)["data"]["results"][0]
 print([n for n in names if n not in moving and not n.startswith("_")])' "$RUN/moving.txt"
-hades --db Conveyance_KG db aql 'FOR g IN _graphs SORT g._key RETURN g._key'
 ```
 
-Confirm that the new database holds no reading state and no graph definitions. The
-first command must print no reading collection names, and the second must return 0:
+Check the graph definitions. The restore copies all of `_graphs`, so every key must
+start with `reading_`, and every collection a definition names must be on the list.
+The command must print `graphs ok` and a count:
+
+```bash
+hades --db Conveyance_KG db aql -f json 'FOR g IN _graphs RETURN g' |
+  python3 -c 'import json, sys
+moving = set(open(sys.argv[1]).read().split())
+graphs = json.load(sys.stdin)["data"]["results"]
+for g in graphs:
+    assert g["_key"].startswith("reading_"), g["_key"]
+    names = set(g.get("orphanCollections", []))
+    for d in g["edgeDefinitions"]:
+        names |= {d["collection"], *d["from"], *d["to"]}
+    assert names <= moving, (g["_key"], sorted(names - moving))
+print("graphs ok:", len(graphs))' "$RUN/moving.txt"
+```
+
+Verify the `Conveyance_KG` backup in isolation and keep it. The verifier stages the
+backup under `/tmp`; the first command must succeed, and the last line removes the
+staging directory, which `/tmp`'s tmpfs holds in memory, after its `result.json` is
+recorded:
+
+```bash
+test "$(df --output=avail -B1G /tmp | tail -1)" -ge 2
+python3 scripts/verify_workspace_backup.py --backup "$backup_dir" \
+  --arangod ~/.local/opt/arangodb-3.12.12.1/sbin/arangod \
+  --arangorestore ~/.local/opt/arangodb-3.12.12.1/bin/arangorestore \
+  --hades ~/.local/bin/hades | tee "$RUN/conveyance-kg-final-verify.log"
+```
+
+Copy the printed `Private recovery artifacts` directory's `result.json` into `$RUN`,
+then remove that directory.
+
+Confirm, right before the restore, that the new database holds no reading state and no
+graph definitions. The first command must print no reading collection names, and the
+second must return 0:
 
 ```bash
 hades --db Conveyance_KG_v2 db aql 'RETURN COLLECTIONS()[*].name'
 hades --db Conveyance_KG_v2 db aql 'RETURN LENGTH(_graphs)'
 ```
 
-Take a consistent backup of `Conveyance_KG` with steps 1 to 4 of Create a consistent
-artifact in
-[the backup procedure](operations/thinkpad-backup-restore.md#create-a-consistent-artifact),
-with one change: at the end of its step 4, do not restart the daemon and the viewer.
-Use `--server.endpoint "unix://$DATA/run/arango.sock"` in its `arangodump` command.
-This is the source of the move and the last backup of `Conveyance_KG` before
-retirement, so verify it in isolation as that document describes, then keep it:
+Restore in two runs, from a private copy of the dump: `arangorestore` writes a
+progress file into its input directory, and the backup must keep exactly its manifested
+files. The root password is in `~/.config/hades/arango-root-password`; enter it at each
+prompt. The first run creates the reading collections, and `--overwrite false` makes a
+name clash fail instead of replacing a collection. The second loads the graph
+definitions into the existing, empty `_graphs` without recreating that system
+collection:
 
 ```bash
-echo "$backup_dir" > "$RUN/conveyance-kg-final.path"
-python3 scripts/verify_workspace_backup.py --backup "$backup_dir" \
-  --arangod ~/.local/opt/arangodb-3.12.12.1/sbin/arangod \
-  --arangorestore ~/.local/opt/arangodb-3.12.12.1/bin/arangorestore \
-  --hades ~/.local/bin/hades
-```
-
-With the daemon and viewer still stopped, restore the listed collections and `_graphs`
-from that dump into the new database. Enter the root password at its prompt:
-
-```bash
+stage=$(mktemp -d "$RUN/move-dump-XXXXXX")
+cp -a "$backup_dir/dump/." "$stage/"
+restore() {
+  ~/.local/opt/arangodb-3.12.12.1/bin/arangorestore --configuration none \
+    --server.endpoint "unix://$DATA/run/arango.sock" \
+    --server.database Conveyance_KG_v2 --server.username root \
+    --create-database false --input-directory "$stage" "$@"
+}
 args=()
 while read -r name; do args+=(--collection "$name"); done < "$RUN/moving.txt"
-~/.local/opt/arangodb-3.12.12.1/bin/arangorestore --configuration none \
-  --server.endpoint "unix://$DATA/run/arango.sock" \
-  --server.database Conveyance_KG_v2 --server.username root \
-  --create-database false --include-system-collections true \
-  --input-directory "$backup_dir/dump" "${args[@]}" --collection _graphs
+restore --overwrite false "${args[@]}"
+restore --include-system-collections true --create-collection false --collection _graphs
+rm -rf "$stage"
 ```
 
-Compare the two databases. Both `cmp` commands must print nothing:
+Compare the two databases. Each `test -s` guards against two empty outputs comparing
+equal; both `cmp` commands must print nothing, and `cat` shows the counts:
 
 ```bash
 results() {
@@ -1200,14 +1303,18 @@ counts() {
 print(json.dumps({"names": open(sys.argv[1]).read().split()}))' "$RUN/moving.txt")" \
     'FOR n IN @names RETURN [n, COLLECTION_COUNT(n)]' | results
 }
-counts Conveyance_KG > "$RUN/counts-before.json"
-counts Conveyance_KG_v2 > "$RUN/counts-after.json"
-cmp "$RUN/counts-before.json" "$RUN/counts-after.json"
 graphs() {
   hades --db "$1" db aql -f json \
     'FOR g IN _graphs SORT g._key RETURN UNSET(g, "_id", "_rev")' | results
 }
-cmp <(graphs Conveyance_KG) <(graphs Conveyance_KG_v2)
+counts Conveyance_KG > "$RUN/counts-before.json"
+counts Conveyance_KG_v2 > "$RUN/counts-after.json"
+graphs Conveyance_KG > "$RUN/graphs-before.json"
+graphs Conveyance_KG_v2 > "$RUN/graphs-after.json"
+test -s "$RUN/counts-before.json" && test -s "$RUN/graphs-before.json"
+cmp "$RUN/counts-before.json" "$RUN/counts-after.json"
+cmp "$RUN/graphs-before.json" "$RUN/graphs-after.json"
+cat "$RUN/counts-after.json"
 hades db setup diagnose --operation-id conveyance-kg-v2-1 |
   tee "$RUN/setup-diagnose-moved.json"
 ```
@@ -1270,10 +1377,10 @@ print(json.dumps(data, sort_keys=True))'
 }
 desk Conveyance_KG > "$RUN/desk-before.json"
 desk Conveyance_KG_v2 > "$RUN/desk-after.json"
-cmp "$RUN/desk-before.json" "$RUN/desk-after.json"
+test -s "$RUN/desk-before.json" && cmp "$RUN/desk-before.json" "$RUN/desk-after.json"
 ```
 
-Do not make the pin until the list matches. `Conveyance_KG` keeps its copy unchanged;
+Do not make the pin until the lists match. `Conveyance_KG` keeps its copy unchanged;
 nothing writes to it after this step. To undo the move, remove both
 `managed-database.conf` drop-ins, restore `daemon.env` from `$RUN`, run
 `systemctl --user daemon-reload` and restart the daemon and then the viewer, as above
@@ -1281,21 +1388,32 @@ with `--database Conveyance_KG`. Desk changes made in the new database stay ther
 
 ### Step 7: first ingest
 
-The first corpus is the repository's `docs/` tree at the checkout's commit, recorded
-first. The managed path ingests the Markdown and text files, lists the Python and Rust
-examples under `disabled_by_profile.code` because managed databases take no code
-workload, and lists JSON and images under `unrouted`:
+The first corpus is the Markdown and text under the repository's `docs/` tree. The
+files are named explicitly, because a tree ingest would also route the tree's JSON
+evidence files and PNG screenshots to the extractor as documents. Record the commit
+and confirm the tree is clean first; `status` must print nothing:
 
 ```bash
 git -C ~/Projects/HADES rev-parse HEAD | tee "$RUN/corpus-commit.txt"
-find ~/Projects/HADES/docs -type f \( -name '*.md' -o -name '*.txt' \) | wc -l
-hades --db Conveyance_KG_v2 ingest ~/Projects/HADES/docs | tee "$RUN/ingest.json"
+git -C ~/Projects/HADES status --short -- docs
+mapfile -t corpus < <(find ~/Projects/HADES/docs -type f \
+  \( -name '*.md' -o -name '*.txt' \) | sort)
+echo "${#corpus[@]} files"
+hades --db Conveyance_KG_v2 ingest --root ~/Projects/HADES/docs "${corpus[@]}" |
+  tee "$RUN/ingest.json"
+python3 - "$RUN/ingest.json" "${#corpus[@]}" <<'EOF'
+import json, sys
+envelope = json.load(open(sys.argv[1]))
+data = envelope["data"]
+assert envelope["success"] and data["failed"] == 0, data
+assert data["completed"] == int(sys.argv[2]), data
+assert data["embedding_profile_state"] == "ready", data
+print("ingested", data["completed"], "documents")
+EOF
 ```
 
-The envelope must print `"success": true`, `routed.documents` equal to the `find`
-count (a difference names files the walk skipped; read them before going on), an empty
-`failed_requests`, and `"embedding_profile_state": "ready"`. Then ask
-two questions with known answers:
+`--root` keys each document by its path under `docs/`, so the many `README.md` files do
+not collide. Then ask two questions with known answers:
 
 ```bash
 hades --db Conveyance_KG_v2 db query \
@@ -1318,16 +1436,22 @@ records the sources each query returned, in rank order.
 
 Repeat the
 [managed workspace backup](operations/thinkpad-backup-restore.md#managed-workspace)
-into a new dated directory, then verify it in isolation:
+into a new dated directory, then verify it in isolation. The verifier stages every
+manifested file under `/tmp`, including the registered artifacts (7.4 GiB measured),
+and restores a database there; `/tmp` is a 32 GiB tmpfs shared with other work. The
+first command must succeed; if it fails, free space before going on:
 
 ```bash
-echo "$backup_dir" > "$RUN/backup-2.path"
+test "$(df --output=avail -B1G /tmp | tail -1)" -ge 15
+backup_dir=$(cat .local-install/latest-workspace-backup.txt)
+test -f "$backup_dir/manifest.json" && echo "$backup_dir" > "$RUN/backup-2.path"
 python3 scripts/verify_workspace_backup.py --backup "$backup_dir" \
   --arangod ~/.local/opt/arangodb-3.12.12.1/sbin/arangod \
   --arangorestore ~/.local/opt/arangodb-3.12.12.1/bin/arangorestore \
-  --hades ~/.local/bin/hades
+  --hades ~/.local/bin/hades | tee "$RUN/backup-2-verify.log"
 ```
 
+Copy the printed directory's `result.json` into `$RUN`, then remove the directory.
 A pass proves the records restore in isolation. Keep both backups, and the final
 `Conveyance_KG` backup from step 6.
 

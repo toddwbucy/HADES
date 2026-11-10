@@ -156,11 +156,14 @@ and writes only under `sessions/`, which is excluded.
 
 ### Steps
 
-Follow steps 1 to 3 of [Create a consistent artifact](#create-a-consistent-artifact)
-with two changes to the `arangodump` command: `--server.database` names the managed
-database, and the endpoint is written from the resolved data directory,
-`--server.endpoint "unix://$DATA/run/arango.sock"`. In the same shell, before step 4,
-copy the ledger and the registry. `DATA` is the resolved directory because the ledger
+The private driver `.local-install/backup-workspace.py` makes the artifact, as it does
+for `Conveyance_KG`: it quiesces, stops the viewer and the daemon, dumps the database
+with system collections, copies configuration, units, binaries and transcripts,
+compares the inventory, writes `manifest.json` and restarts the services. For a
+managed database it must also run the ledger and registry copy below after the dump
+and before it hashes the manifest, with `backup_dir` set to its backup directory. The
+block is the reference for that copy; it was dry-run on a synthetic ledger and
+registry, not yet on this laptop. `DATA` is the resolved directory because the ledger
 and registry paths in the configuration are resolved:
 
 ```bash
@@ -183,11 +186,16 @@ def add(path):
     rows.append(row)
 add(root)
 for part in parts:
+    parent = os.path.dirname(os.path.normpath(part))
+    while parent:
+        add(os.path.join(root, parent))
+        parent = os.path.dirname(parent)
     for top, dirs, files in os.walk(os.path.join(root, part)):
         add(top)
         for name in files:
             add(os.path.join(top, name))
-print(json.dumps(sorted(rows, key=lambda row: row["path"]), indent=1))
+unique = {row["path"]: row for row in rows}
+print(json.dumps([unique[k] for k in sorted(unique)], indent=1))
 EOF
 }
 mapfile -t snaps < <(python3 -c 'import json, pathlib, sys
@@ -215,20 +223,29 @@ for pair in ledger-source-before:ledger-copy ledger-source-before:ledger-source-
 done
 ```
 
-Every `cmp` must print nothing. A difference means a mode, owner or byte changed, or a
-writer ran during the copy: reject the artifact. Hashing reads the registered
-artifacts, about 9 GiB, three times. Then finish step 4 as written, and restart the
-daemon and the viewer.
+Every `cmp` must print nothing; on `REJECT`, the driver must fail. A difference means a
+mode, owner or byte changed, or a writer ran during the copy. Building the inventories
+reads the registered artifacts, 7.4 GiB, three times, and the manifest and the
+verifier read them again.
 
-The private backup driver, `.local-install/backup-workspace.py`, is the operator's to
-extend. It must:
+### Driver changes
 
-- take the managed database name instead of `Conveyance_KG`;
-- produce `setup-ledger/`, `model-registry/` and `inventory/` as above, or run the
-  commands above, and fail when any comparison differs;
-- list every file under those three directories in `files` with its SHA-256, as it
-  already does for the dump, configuration, units, binaries and transcripts;
-- record `model-registry/sessions/` and the registry `.lock` among its exclusions.
+The driver is the operator's to extend. As of 2026-11-10 it hardcodes `Conveyance_KG`,
+requires the reading-desk collections, sends its preflight to `Conveyance_KG`, and has
+no step for the copy above. It must:
+
+- take the database name as an argument, and send its preflight and readiness checks
+  to that database;
+- tolerate a database without the reading-desk collections, since the first managed
+  backup is taken before the reading desk moves in;
+- run the copy block above after the dump and before computing the manifest, and fail
+  when any comparison differs;
+- list every file under `setup-ledger/`, `model-registry/` and `inventory/` in `files`
+  with its SHA-256, as it already does for the dump, configuration, units, binaries
+  and transcripts;
+- record `model-registry/sessions/` and the registry `.lock` among its exclusions;
+- keep writing its backup directory to `.local-install/latest-workspace-backup.txt`,
+  which the runbook reads.
 
 ### Verify
 
@@ -237,9 +254,10 @@ Run `scripts/verify_workspace_backup.py` as in
 collections, so it cannot pass on a managed backup taken before the reading desk
 moves in; the runbook verifies its second backup only. It stages every manifested file
 in a new `/tmp/hades-recovery-*` directory, and `/tmp` on this laptop is a 32 GiB
-tmpfs, so the registered artifacts take about 9 GiB of memory while it runs. Check
-`df -h /tmp` and `free -h` first, and remove the directory once its `result.json` is
-recorded.
+tmpfs shared with other work, and the registered artifacts alone take 7.4 GiB of it
+while it runs. Require at least 15 GiB available first
+(`test "$(df --output=avail -B1G /tmp | tail -1)" -ge 15`), and remove the directory
+once its `result.json` is recorded.
 
 The verifier compares content, not modes or owners; the inventory comparison above is
 that evidence. A pass proves the records restore in isolation. It does not reactivate
