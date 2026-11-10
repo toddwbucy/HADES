@@ -489,6 +489,216 @@ Local evidence is in `.local-install/reading-desk-deployment.json`,
 `.local-install/browser/installed-reading-desk-wide.png`. The deployment manifest
 is also stored with the backup binaries. These local artifacts are outside Git.
 
+## Deployment of main 52d04d4
+
+On 2026-11-09, main commit `52d04d4e5d66625466ea2b1b2c60fda19ed06f2e`, the merge
+of PR #203, was built and verified in a separate worktree. The commit adds merged
+PRs #203 and #226 through #248, except #232, to the installed build.
+
+The executables it replaces were built from
+`f930fbca1c5362f0e8e337ceeb1a1f9d21173cec` (PR #224) and installed on 2026-10-19.
+Their hashes match `.local-install/reading-desk-deployment.json`, and their backup
+is `~/.local/share/hades/backups/pr224-20261019T055443Z/`.
+
+```bash
+CARGO_TARGET_DIR=~/Projects/hades-targets/deploy-main \
+  cargo build --release --locked -p hades-cli -p hades-frontend
+```
+
+On the same commit and target directory, `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets --locked -- -D warnings` passed.
+`cargo test --workspace --lib --bins --locked` passed 837 tests with 1 ignored,
+and the service-free `tests/` targets run by `.github/workflows/ci.yml` passed
+173 tests. Both executables report version 0.3.0.
+
+| Executable | SHA-256 |
+| --- | --- |
+| `hades` | `d25cffb4772c7a17be8b4b5e789e2d927914c93f916a754321055c59a6141c49` |
+| `hades-viewer` | `e84d25bcb693f2a7e5e657621364a937dd89abffb1071dc386a2e39c20b2ff9b` |
+
+### Supporting services for 52d04d4
+
+The extractor and embedder units run Python from the development checkout,
+`~/Projects/HADES/services` and its `.venv`, not from the installed executables.
+Replacing the executables therefore restarts neither. The viewer's readiness
+step, `scripts/check_daemon_ready.py`, is unchanged.
+
+Between `f930fbc` and `52d04d4`, `services/extraction`, the Python requirements,
+constraints and package files, and `services/systemd` are unchanged. The embedder
+changed: `services/embedding/http_server.py` and `jina_v4.py` were modified and
+13 modules were added, with no new dependencies. Every package they import is
+already in `services/.venv`. Over HTTP, the only behaviour change is that each
+model load first releases cached CUDA memory; the new registered-loading path is
+not reachable from the service configuration. `deploy/systemd/README.md` and
+`hades-embedder-profile` also changed, but this laptop runs the non-templated
+`hades-embedder.service` and does not install the profile switcher.
+
+The development checkout was fast-forwarded to `52d04d4` on 2026-11-09, while the
+embedder process started on 2026-10-18 still runs the earlier code. Restart the
+embedder in this deployment, so the running process matches the code on disk;
+otherwise a later automatic restart would switch code without a record. Do not
+reinstall `services/.venv`. The extractor's code is unchanged and it needs no
+restart.
+
+### Install 52d04d4
+
+Run these from the development checkout, in one shell, one at a time, and stop at
+the first failure. The hash table above is the source of truth for the build:
+`sha256sum -c` fails on any mismatch, before anything is stopped. The preflight
+must report zero active conversations.
+
+```bash
+cd ~/Projects/HADES
+BUILD="$HOME/Projects/hades-targets/deploy-main/release"
+printf '%s  %s\n' \
+  d25cffb4772c7a17be8b4b5e789e2d927914c93f916a754321055c59a6141c49 "$BUILD/hades" \
+  e84d25bcb693f2a7e5e657621364a937dd89abffb1071dc386a2e39c20b2ff9b "$BUILD/hades-viewer" |
+  sha256sum -c -
+snapshot() {
+  python3 -c 'import json, runpy
+s = runpy.run_path(".local-install/preflight-224.py")["snapshot"]()
+print(json.dumps(s, sort_keys=True))'
+}
+BACKUP="$HOME/.local/share/hades/backups/main-52d04d4-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 700 "$BACKUP"
+cp -p ~/.local/bin/hades ~/.local/bin/hades-viewer ~/.config/hades/hades.yaml "$BACKUP/"
+snapshot > "$BACKUP/before.json"
+python3 .local-install/preflight-224.py
+systemctl --user stop hades-viewer.service
+systemctl --user stop hades-daemon.service
+install -m 755 "$BUILD/hades" ~/.local/bin/.hades.new
+install -m 755 "$BUILD/hades-viewer" ~/.local/bin/.hades-viewer.new
+mv -f ~/.local/bin/.hades.new ~/.local/bin/hades
+mv -f ~/.local/bin/.hades-viewer.new ~/.local/bin/hades-viewer
+systemctl --user daemon-reload
+systemctl --user start hades-daemon.service
+python3 scripts/check_daemon_ready.py --socket ~/.local/share/hades/run/hades.sock \
+  --database Conveyance_KG --timeout 60
+systemctl --user start hades-viewer.service
+```
+
+Both services are stopped because a running daemon would keep executing the
+replaced file. Both new files are staged before either rename, and each `mv` is a
+same-directory rename, so `~/.local/bin` never holds a partial executable.
+
+### Post-install checks for 52d04d4
+
+Run these in the same shell, before anyone opens a reading chat: the final
+comparison includes live conversation state.
+
+```bash
+sha256sum ~/.local/bin/hades ~/.local/bin/hades-viewer
+for unit in hades-daemon hades-viewer; do
+  readlink "/proc/$(systemctl --user show "$unit.service" -p MainPID --value)/exe"
+done
+systemctl --user is-active hades-arangodb hades-extractor hades-embedder \
+  hades-daemon hades-viewer
+python3 .local-install/check-installed-services.py
+node .local-install/check-installed-reading-desk.cjs
+node .local-install/check-installed-workspace-chat.cjs
+snapshot > "$BACKUP/after.json" && cmp "$BACKUP/before.json" "$BACKUP/after.json"
+```
+
+The hashes must match the table above. Each `readlink` must print the
+`~/.local/bin` path without `(deleted)`, and all five units must be active. `cmp`
+must print nothing, which confirms that readings, conversation identities,
+permissions and saved exchanges are unchanged. `check-installed-workspace-chat.cjs`
+chooses its conversation from `.local-install/preflight-224.json` (2026-10-19), and
+fails if that conversation has since been removed. Do not use
+`check-installed-reading-chat.py` for this deployment: it compares the installed
+executables with `~/Projects/HADES/target/release`, which still holds the `f930fbc`
+build. The first two commands above replace its executable check.
+
+### Restart the embedder for 52d04d4
+
+Run this after the post-install checks, in the same shell. The first two commands
+confirm that the checkout holds exactly the verified services code. Stop if
+`rev-parse` prints anything other than `52d04d4e5d66625466ea2b1b2c60fda19ed06f2e`,
+or if `status` prints anything.
+
+```bash
+cd ~/Projects/HADES
+git rev-parse HEAD
+git status --short -- services
+python3 .local-install/preflight-224.py
+systemctl --user restart hades-embedder.service
+curl -s --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8087/v1/models
+cp -p .local-install/verification/gpu-http.json "$BACKUP/gpu-http-before.json"
+services/.venv/bin/python .local-install/check-gpu-http.py
+```
+
+The retry window allows up to two minutes for the service to bind, and
+`/v1/models` answers before the model is loaded. It must report `cuda:0` and a
+`max_seq_length` of 4096. `check-gpu-http.py` sends four embedding requests,
+including one over the ceiling that must fail with `PE_INPUT_TOO_LARGE`, and
+rewrites `.local-install/verification/gpu-http.json`, which is why the earlier
+report is copied first.
+
+### Roll back 52d04d4
+
+The restore uses the backup directory that holds the pre-deployment executables,
+chosen by content rather than date, because a repeated install can leave a newer
+backup holding the new build or a mix. These are the `f930fbc` hashes recorded for
+the PR #224 install in `.local-install/reading-desk-deployment.json`, and they
+matched `~/.local/bin` on 2026-11-09 before this install:
+
+| Executable | SHA-256 before this deployment (`f930fbc`) |
+| --- | --- |
+| `hades` | `cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42` |
+| `hades-viewer` | `6efac5881ed6b5ea7ac30c0a7a6131979e6b224fc14618104d9a354c6cac2c72` |
+
+Find the directory first, from any shell. The last line must print its path before
+you continue; if it prints nothing, no backup holds that build, so stop:
+
+```bash
+BACKUP=""
+for dir in ~/.local/share/hades/backups/main-52d04d4-*; do
+  printf '%s  %s\n' \
+    cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42 "$dir/hades" \
+    6efac5881ed6b5ea7ac30c0a7a6131979e6b224fc14618104d9a354c6cac2c72 "$dir/hades-viewer" |
+    sha256sum -c --status - 2>/dev/null && BACKUP="$dir" && break
+done
+test -n "$BACKUP" && echo "$BACKUP"
+```
+
+To restore the executables, stop the viewer and then the daemon, and repeat the two
+`install` and two `mv` commands with `$BACKUP/hades` and `$BACKUP/hades-viewer` as
+sources. Then start the daemon, check its readiness, and start the viewer, as
+above. Reading records written after the install stay in `Conveyance_KG`.
+
+Restoring the executables leaves the embedder on the `52d04d4` services code in
+the development checkout. Before this deployment, the embedder process, started
+2026-10-18 08:39:52 CDT, ran services code from the initial clone,
+`7423624e029c6f117e122456c06a721bf407cb82`. Its Python and package files under
+`services/` are identical to `f930fbc`; only `services/README.md` and
+`services/constraints-jina-v4.txt` differ, and neither is loaded at runtime. After
+the embedder restart above, return it to that code by serving it from a worktree
+at `f930fbc`, leaving the development checkout untouched:
+
+```bash
+git -C ~/Projects/HADES worktree add ~/Projects/hades-worktrees/embedder-f930fbc \
+  f930fbca1c5362f0e8e337ceeb1a1f9d21173cec
+mkdir -p ~/.config/systemd/user/hades-embedder.service.d
+cat > ~/.config/systemd/user/hades-embedder.service.d/rollback.conf <<'EOF'
+[Service]
+WorkingDirectory=%h/Projects/hades-worktrees/embedder-f930fbc/services
+EOF
+systemctl --user daemon-reload
+systemctl --user restart hades-embedder.service
+curl -s --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8087/v1/models
+readlink "/proc/$(systemctl --user show hades-embedder.service -p MainPID --value)/cwd"
+```
+
+The unit runs `python -m embedding.http_server`, which searches its working
+directory first, so `embedding` loads from the worktree even though the shared
+venv's editable install points at the development checkout. `readlink` must print
+the worktree's `services` directory. The environment file, venv and model weights
+are shared and unchanged in either direction. To return to main, remove
+`rollback.conf`, run `systemctl --user daemon-reload`, and restart the unit. Other
+drop-ins in that directory, such as a ceiling override, are independent of
+`rollback.conf`; `systemctl --user cat hades-embedder.service` lists every drop-in
+in effect.
+
 ## Current operating state
 
 All five user services are enabled and active. Guided reading is available at

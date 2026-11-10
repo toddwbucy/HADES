@@ -19,6 +19,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Record the verified laptop build of main `52d04d4` and its operator runbook:
+  executable hashes, install and rollback order, post-install checks, and when the
+  embedder needs a restart (`docs/installation-thinkpad.md`).
+
 - Add internal profile-bound conventional code graph preparation and atomic
   publication. Pin the selected code workload, retain complete source/graph
   provenance, and refuse stale, foreign, edited or downgraded replacements.
