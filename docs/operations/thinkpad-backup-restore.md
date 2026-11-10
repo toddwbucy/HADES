@@ -128,11 +128,12 @@ Do not treat local binary rollback backups as database recovery coverage.
 This section extends the procedure above to a database created by `hades db setup`,
 the first being `Conveyance_KG_v2` in the
 [managed workspace runbook](../installation-thinkpad.md#managed-workspace-2026-11-xx).
-It was written before its first run; the runbook records the run. A database-only
-backup cannot restore the setup ownership record, so one artifact holds three parts
-taken in one quiet window: the database dump, the complete setup ledger, and the model
-registry's records with the artifacts they name. The
-[model-bound recovery contract](model-bound-recovery.md) says why each part matters
+It was written before its first run, and the installer's runs were on scratch copies;
+the runbook records the real run. A database-only backup cannot restore the setup
+ownership record, so one artifact holds three parts: the database dump, taken in the
+driver's quiet window, then the complete setup ledger and the model registry's records
+with the artifacts they name, copied straight after it under an inventory comparison.
+The [model-bound recovery contract](model-bound-recovery.md) says why each part matters
 and where restore stops.
 
 Each artifact meets three requirements:
@@ -156,96 +157,60 @@ and writes only under `sessions/`, which is excluded.
 
 ### Steps
 
-The private driver `.local-install/backup-workspace.py` makes the artifact, as it does
-for `Conveyance_KG`: it quiesces, stops the viewer and the daemon, dumps the database
-with system collections, copies configuration, units, binaries and transcripts,
-compares the inventory, writes `manifest.json` and restarts the services. For a
-managed database it must also run the ledger and registry copy below after the dump
-and before it hashes the manifest, with `backup_dir` set to its backup directory. The
-block is the reference for that copy; it was dry-run on a synthetic ledger and
-registry, not yet on this laptop. `DATA` is the resolved directory because the ledger
-and registry paths in the configuration are resolved:
+The installer makes each artifact, in its `backup-1` and `backup-2` steps
+([runbook](../installation-thinkpad.md#managed-workspace-2026-11-xx)), in two parts:
 
-```bash
-DATA=$(readlink -f ~/.local/share/hades)
-REG="$DATA/model-registry"
-inventory() {
-  python3 - "$@" <<'EOF'
-import hashlib, json, os, stat, sys
-root, parts = sys.argv[1], sys.argv[2:] or ["."]
-rows = []
-def add(path):
-    info = os.lstat(path)
-    row = {"path": os.path.relpath(path, root), "mode": oct(stat.S_IMODE(info.st_mode)),
-           "uid": info.st_uid, "gid": info.st_gid,
-           "type": "dir" if stat.S_ISDIR(info.st_mode)
-           else "file" if stat.S_ISREG(info.st_mode) else "other"}
-    if row["type"] == "file":
-        with open(path, "rb") as stream:
-            row["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
-    rows.append(row)
-add(root)
-for part in parts:
-    parent = os.path.dirname(os.path.normpath(part))
-    while parent:
-        add(os.path.join(root, parent))
-        parent = os.path.dirname(parent)
-    for top, dirs, files in os.walk(os.path.join(root, part)):
-        add(top)
-        for name in files:
-            add(os.path.join(top, name))
-unique = {row["path"]: row for row in rows}
-print(json.dumps([unique[k] for k in sorted(unique)], indent=1))
-EOF
-}
-mapfile -t snaps < <(python3 -c 'import json, pathlib, sys
-records = pathlib.Path(sys.argv[1]).glob("*.json")
-print("\n".join(sorted({json.loads(p.read_text())["snapshot"] for p in records})))' \
-  "$REG/records")
-parts=(records "${snaps[@]/#/artifacts/}")
-inv="$backup_dir/inventory"
-install -d -m 700 "$inv" "$backup_dir/model-registry" \
-  "$backup_dir/model-registry/artifacts"
-inventory "$DATA/setup-ledger" > "$inv/ledger-source-before.json"
-inventory "$REG" "${parts[@]}" > "$inv/registry-source-before.json"
-cp -a "$DATA/setup-ledger" "$backup_dir/setup-ledger"
-cp -a "$REG/records" "$backup_dir/model-registry/"
-for snap in "${snaps[@]}"; do
-  cp -a "$REG/artifacts/$snap" "$backup_dir/model-registry/artifacts/"
-done
-inventory "$backup_dir/setup-ledger" > "$inv/ledger-copy.json"
-inventory "$backup_dir/model-registry" "${parts[@]}" > "$inv/registry-copy.json"
-inventory "$DATA/setup-ledger" > "$inv/ledger-source-after.json"
-inventory "$REG" "${parts[@]}" > "$inv/registry-source-after.json"
-for pair in ledger-source-before:ledger-copy ledger-source-before:ledger-source-after \
-    registry-source-before:registry-copy registry-source-before:registry-source-after; do
-  cmp "$inv/${pair%%:*}.json" "$inv/${pair##*:}.json" || echo "REJECT: $pair differs"
-done
-```
+1. The private driver, run as `.local-install/backup-workspace.py --database <name>`,
+   does what it does for `Conveyance_KG`: it quiesces, stops the viewer and the daemon,
+   dumps the database with system collections, copies configuration, units, binaries
+   and transcripts, compares the inventory, writes `manifest.json`, records its
+   directory in `.local-install/latest-workspace-backup.txt` and restarts the
+   services.
+2. The repository helper then adds the managed parts to that artifact:
 
-Every `cmp` must print nothing; on `REJECT`, the driver must fail. A difference means a
-mode, owner or byte changed, or a writer ran during the copy. Building the inventories
-reads the registered artifacts, 7.4 GiB, three times, and the manifest and the
-verifier read them again.
+   ```bash
+   python3 scripts/install/managed_workspace.py add-managed \
+     "$backup_dir" Conveyance_KG_v2 "$DATA/setup-ledger" "$DATA/model-registry"
+   python3 scripts/install/managed_workspace.py check-manifest \
+     "$backup_dir" Conveyance_KG_v2
+   ```
+
+   `add-managed` refuses a backup of another database or one that already holds a
+   copy. It records inventories of the ledger root and of the registry's `records/` and
+   referenced `artifacts/<snapshot>` (path, mode, owner, type and SHA-256, ancestors
+   included) under `inventory/`, copies them with `cp -a`, and records inventories of
+   the copies and of the sources again. Any difference between source-before and copy,
+   or source-before and source-after, is a refusal (`REJECT`) that leaves the manifest
+   unchanged, so the verifier rejects the unmanifested copy. Otherwise every file under
+   `setup-ledger/`, `model-registry/` and `inventory/` joins `files`, the manifest gains
+   a `managed_workspace` block naming the records and snapshots, and `sessions/` and the
+   registry `.lock` are listed among the exclusions. `check-manifest` runs the
+   verifier's own file check: every manifested file present with its SHA-256, and no
+   unmanifested file.
+
+The copy runs after the driver restarts the services. Neither the daemon nor the viewer
+writes the ledger or the registry: the ledger is written only by `hades db setup`, and
+the registry by registration and, under the excluded `sessions/`, the verified provider.
+The before and after comparison is the evidence that nothing did. Building the
+inventories reads the registered artifacts, 7.4 GiB, three times, and the manifest and
+the verifier read them again.
 
 ### Driver changes
 
 The driver is the operator's to extend. As of 2026-11-10 it hardcodes `Conveyance_KG`,
-requires the reading-desk collections, sends its preflight to `Conveyance_KG`, and has
-no step for the copy above. It must:
+requires the reading-desk collections and sends its preflight to `Conveyance_KG`. It
+must:
 
-- take the database name as an argument, and send its preflight and readiness checks
-  to that database;
+- take the database name as `--database <name>`, and dump, snapshot, preflight and
+  check readiness against that database; the installer refuses a backup step until the
+  driver mentions `--database`;
 - tolerate a database without the reading-desk collections, since the first managed
   backup is taken before the reading desk moves in;
-- run the copy block above after the dump and before computing the manifest, and fail
-  when any comparison differs;
-- list every file under `setup-ledger/`, `model-registry/` and `inventory/` in `files`
-  with its SHA-256, as it already does for the dump, configuration, units, binaries
-  and transcripts;
-- record `model-registry/sessions/` and the registry `.lock` among its exclusions;
 - keep writing its backup directory to `.local-install/latest-workspace-backup.txt`,
-  which the runbook reads.
+  which the installer reads, and write it only for a complete backup.
+
+The ledger and registry copy, its inventory comparison, the manifest entries and the
+exclusions are the helper's, so the driver needs no step for them.
 
 ### Verify
 

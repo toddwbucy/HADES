@@ -264,10 +264,12 @@ Configure the `registered_providers` and `setup` sections as described in
 [model-bound recovery contract](docs/operations/model-bound-recovery.md) and the
 workstation
 [backup procedure](docs/operations/thinkpad-backup-restore.md#managed-workspace);
-a worked installation is in
-[the laptop runbook](docs/installation-thinkpad.md#managed-workspace-2026-11-xx). A
-restore recovers a managed database's records, not a ready managed workspace:
-ownership rebinding is not yet supported.
+a worked installation is
+[`scripts/install/thinkpad-managed-workspace.sh`](scripts/install/thinkpad-managed-workspace.sh),
+an idempotent step-by-step installer with `check` and `--dry-run`, run as
+[the laptop runbook](docs/installation-thinkpad.md#managed-workspace-2026-11-xx)
+describes. A restore recovers a managed database's records, not a ready managed
+workspace: ownership rebinding is not yet supported.
 
 ## Connect an agent through MCP
 
