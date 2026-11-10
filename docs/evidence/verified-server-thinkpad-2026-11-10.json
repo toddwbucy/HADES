@@ -1,0 +1,83 @@
+{
+  "protocol": "hades-verified-server-qualification-v1",
+  "space": "late",
+  "device": "cuda:0",
+  "idle_timeout": 0,
+  "passed": true,
+  "implementation_commit": "fdc665dfa0de20490d32109d3fc86bec7b081f4e",
+  "status_before": {
+    "model": "jinaai/jina-embeddings-v4",
+    "space": "late",
+    "loaded": true
+  },
+  "startup_seconds": 20.263,
+  "description": {
+    "model": {
+      "id": "jinaai/jina-embeddings-v4",
+      "revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+      "manifest_md5": "446160668af00248832ed8cf5d8d4432",
+      "tokenizer_files": [
+        "added_tokens.json",
+        "config.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ]
+    },
+    "space": {
+      "format": "hades-embedding-space-v1",
+      "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+      "tokenizer_manifest_md5": "2fde023f51e74e65fdcf7f0b77d18638",
+      "tokenizer_contract": "qwen2-fast-no-truncation-v1:b225bc296fd91c726f60e6df44f55f8b03850fdd3739f8cdaffb9bc4cfd7027f",
+      "representation": {
+        "dimension": 2048,
+        "output": "dense-f32",
+        "normalize": "l2",
+        "pooling": "query-all-tokens-passage-intersecting-window-tokens-mean-fp32-v1",
+        "distance": "cosine",
+        "inference_precision": "no-autocast-parameters-sha256:b4176bbc9b1891690e34f7e1e3d31d0104c09473c56327f049a9df6da732d18c",
+        "implementation": "hades-jina-raw-text-v1:4b9bd6c2ad71a817e773f003b5f63d41f231e22e5f6ae365685cd5a49d4d43b9:late-passages-v1"
+      },
+      "passage": {
+        "task": "retrieval.passage",
+        "prompt": "Passage: ",
+        "adapter": "retrieval",
+        "special_tokens": "qwen2-add-special-tokens-v1"
+      },
+      "query": {
+        "task": "retrieval.query",
+        "prompt": "Query: ",
+        "adapter": "retrieval",
+        "special_tokens": "qwen2-add-special-tokens-v1"
+      }
+    },
+    "receipt": {
+      "format": "hades-provider-receipt-v1",
+      "artifact_md5": "446160668af00248832ed8cf5d8d4432",
+      "space_id": "77a94ced36a452df54f4ab8c991d3b1d18978b5473fe3173b977479004adcc19",
+      "serving_generation": "d42eaa0c4c13420aabc2aa354339ce01"
+    },
+    "capabilities": {
+      "text": true,
+      "image_embedding": false,
+      "specialized_code": false,
+      "late_chunking": true,
+      "tokenizer_offsets": true,
+      "tasks": [
+        "retrieval.passage",
+        "retrieval.query"
+      ],
+      "max_input_tokens": 20000
+    }
+  },
+  "planning_endpoint": "/v1/late-passages",
+  "planning_status": 200,
+  "status_after": {
+    "model": "jinaai/jina-embeddings-v4",
+    "space": "late",
+    "loaded": true
+  },
+  "shutdown_seconds": 1.718
+}
