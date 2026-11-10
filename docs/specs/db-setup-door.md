@@ -361,7 +361,8 @@ the laptop and records evidence under docs/evidence/.
    `hades status` probe, with service-free and disposable-database tests.
 5. docs: Part C runbook, written after the operator has run it, which also adds the
    "Managed workspace" section to docs/operations/thinkpad-backup-restore.md: the
-   ledger and registry roots join the manifest.
+   ledger root and the registry's records and referenced artifacts join the
+   manifest.
 
 Each child targets the previous branch. The Planner undrafts children; the operator
 collapses the stack and undrafts the anchor once.
