@@ -186,6 +186,13 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
+  report the losing side of two concurrent opens as a write-write conflict on the
+  `_graphs` primary index, which escaped `reading::open` beside the already tolerated
+  1925 and 1210 (CI run 42844488455 on #254). The existing definition is still reused
+  only when it matches. The test setup proxy can now answer a chosen status and
+  errorNum after forwarding the real request.
+
 - Detect enabled embedder instances when `list-unit-files` reports only the
   indirect template. Discover persistent/runtime enablement links independently
   of profile files, validate batched state queries, and report discovery or
