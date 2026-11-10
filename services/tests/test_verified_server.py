@@ -2,6 +2,7 @@
 import asyncio
 import os
 from pathlib import Path
+import signal
 import socket
 import stat
 import subprocess
@@ -194,3 +195,44 @@ def test_main_serves_and_stops(provider, monkeypatch, tmp_path):
     worker.join(30)
     assert not worker.is_alive() and result["code"] == 0
     assert not uds.exists()
+
+
+SERVE_STUB = """
+import sys
+from pathlib import Path
+from fastapi import FastAPI
+from embedding import verified_server
+uds = Path(sys.argv[1])
+try:
+    verified_server.serve(FastAPI(), uds)
+finally:
+    uds.unlink(missing_ok=True)
+"""
+
+
+def test_serve_exits_cleanly_on_sigterm(tmp_path):
+    """A stop signal must end in exit 0 with the socket removed, as main() promises.
+
+    uvicorn re-raises a captured SIGTERM after its graceful shutdown; under the default
+    handler that kills the process before main() unlinks the socket (#225). The stub
+    mirrors main()'s tail around serve() with a real uvicorn server, not a stand-in.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+    proc = subprocess.Popen([sys.executable, "-c", SERVE_STUB, str(uds)],
+                            env={**os.environ, "PYTHONPATH": str(SERVICES)},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 30
+        while not (uds.exists() and stat.S_ISSOCK(uds.lstat().st_mode)):
+            assert proc.poll() is None, proc.stderr.read()
+            assert time.monotonic() < deadline, "stub server did not bind"
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        code = proc.wait(45)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert (code, uds.exists()) == (0, False)

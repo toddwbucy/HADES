@@ -23,9 +23,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   loads one registered Jina provider in one explicitly selected space
   (`--space conventional|late`), refuses an unsafe socket parent, missing offline mode
   and CPU fallback before binding, and serves the verified HTTP contract on a private
-  Unix socket. Ships `deploy/systemd/hades-embedder-verified.service`, a read-only
-  `GET /v1/status` route reporting model, space and load state, and a `space` label on
-  `VerifiedJinaProvider` and `VerifiedJinaLateProvider`.
+  Unix socket until SIGTERM, then exits 0 with the socket removed. Ships
+  `deploy/systemd/hades-embedder-verified.service`, a read-only `GET /v1/status` route
+  reporting model, space and load state, and a `space` label on `VerifiedJinaProvider`
+  and `VerifiedJinaLateProvider`.
 
 - Record the accepted design for the first public door into model-bound databases
   (`docs/specs/db-setup-door.md`, #225): a verified-only provider service, a wider
