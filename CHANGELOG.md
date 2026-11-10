@@ -211,7 +211,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   socket after serving is now one line on stderr, the exit code unchanged, rather than
   a traceback and exit 1; the stale socket is left for the next start's check.
   A server that uvicorn returned from without ever serving now exits 1 with one line
-  instead of 0, which systemd read as a deliberate stop.
+  instead of 0, which systemd read as a deliberate stop. Private paths no longer reach
+  the journal: socket refusals name the directory by role or depth, a missing registry
+  by its option, a start-time `OSError` by its strerror and file name, and uvicorn's
+  "running on unix socket" line shows `<private dir>/` in place of the socket's
+  directory.
 
 - Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
   report the losing side of two concurrent opens as a write-write conflict on the

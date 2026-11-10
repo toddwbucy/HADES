@@ -468,3 +468,73 @@ def test_second_start_during_load_cannot_take_over_the_socket(tmp_path):
             if proc is not None and proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+# Private paths stay out of the journal (#225): the unit's stderr and uvicorn's log lines
+# land in journald, where another reader must not learn the registry or socket locations.
+
+
+def test_socket_refusals_name_no_path(tmp_path):
+    """Parent and ancestor refusals name the failing component by role, not by path."""
+    parent = tmp_path / "run"
+    parent.mkdir(mode=0o755)
+    with pytest.raises(ValueError) as refused:
+        verified_server.check_socket_path(parent / "p.sock")
+    assert str(tmp_path) not in str(refused.value)
+    assert "socket parent" in str(refused.value)
+
+    real = tmp_path / "real"
+    (real / "run").mkdir(mode=0o700, parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(ValueError) as refused:
+        verified_server.check_socket_path(link / "run" / "p.sock")
+    assert str(tmp_path) not in str(refused.value)
+    assert "1 level above the socket parent" in str(refused.value)
+
+
+def test_main_registry_refusal_names_no_path(tmp_path):
+    """A missing registry root is refused by its option name, not its path."""
+    r = run_cli(["--registry", str(tmp_path / "none"), "--provider", "p", "--space", "late",
+                 "--uds", str(tmp_path / "s.sock")], {**os.environ, **OFFLINE})
+    assert r.returncode == 1 and "registry root does not exist" in r.stderr
+    assert str(tmp_path) not in r.stderr
+
+
+def test_load_os_error_names_only_the_file_name(monkeypatch, tmp_path, capsys):
+    """An OSError at load reports its strerror and the file's name, never its path."""
+    _, uds = private_paths(tmp_path)
+
+    def load():
+        """Fail as an unreadable registered artifact would."""
+        raise PermissionError(13, "Permission denied",
+                              str(tmp_path / "private" / "model.safetensors"))
+
+    assert verified_server.run(uds, load) == 1
+    err = capsys.readouterr().err
+    assert err == "verified server: Permission denied (model.safetensors)\n"
+
+
+def test_uvicorn_start_line_hides_the_socket_parent(tmp_path):
+    """uvicorn's "running on" line names the socket file, not its private directory."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+    proc = subprocess.Popen([sys.executable, "-c", SERVE_STUB, str(uds)],
+                            env={**os.environ, "PYTHONPATH": str(SERVICES)},
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 30
+        while not (uds.exists() and stat.S_ISSOCK(uds.lstat().st_mode)):
+            assert proc.poll() is None, proc.stderr.read()
+            assert time.monotonic() < deadline, "stub server did not bind"
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=45)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    logs = out + err
+    assert "Uvicorn running on unix socket <private dir>/provider.sock" in logs
+    assert str(tmp_path) not in logs

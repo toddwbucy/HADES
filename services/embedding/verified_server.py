@@ -25,6 +25,9 @@ from .verified_late import VerifiedJinaLateProvider
 
 logger = logging.getLogger(__name__)
 
+# What journal output says in place of the socket's private directory (#225).
+PRIVATE_DIR = "<private dir>"
+
 # One process serves exactly one embedding space (#225). The late provider is a distinct
 # space, not a superset: it rewrites the pooling identity, refuses conventional planning
 # and embeds only queries, so the operator names the space rather than the service
@@ -79,20 +82,23 @@ def check_socket_parent(uds: Path) -> None:
     parent = uds.parent
     info = os.lstat(parent)
     if stat.S_ISLNK(info.st_mode):
-        raise ValueError(f"socket parent must not be a symlink: {parent}")
+        raise ValueError("socket parent must not be a symlink")
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o7777 != 0o700:
-        raise ValueError(f"socket parent must be a 0700 directory owned by this account: {parent}")
-    for ancestor in parent.parents:
+        raise ValueError("socket parent must be a 0700 directory owned by this account")
+    # Refusals name the failing directory by its depth, not its path: they reach the
+    # journal, which must not carry private locations (#225).
+    for depth, ancestor in enumerate(parent.parents, start=1):
+        where = f"{depth} level{'s' if depth > 1 else ''} above the socket parent"
         info = os.lstat(ancestor)
         if stat.S_ISLNK(info.st_mode):
-            raise ValueError(f"socket ancestors must not be symlinks: {ancestor}")
+            raise ValueError(f"socket ancestors must not be symlinks ({where})")
         if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, owner):
             raise ValueError("socket ancestors must be directories owned by this account "
-                             f"or root: {ancestor}")
+                             f"or root ({where})")
         shared = info.st_mode & 0o022
         if shared and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
             raise ValueError("socket ancestors must not be writable by other accounts "
-                             f"outside root-owned sticky directories: {ancestor}")
+                             f"outside root-owned sticky directories ({where})")
 
 
 def hold_socket_lock(uds: Path) -> int:
@@ -168,6 +174,37 @@ def build_app(provider: VerifiedJinaProvider, config: EmbeddingConfig) -> FastAP
     return app
 
 
+class HidePrivateDir(logging.Filter):
+    """Rewrite the socket's private directory out of a log record's message.
+
+    uvicorn logs "Uvicorn running on unix socket <path>" at startup, and that line
+    reaches the journal (#225). The record keeps the socket's file name, which says
+    which instance it is, and loses the directory.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__()
+        self.directory = str(directory)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if self.directory in message:
+            record.msg, record.args = message.replace(self.directory, PRIVATE_DIR), ()
+        return True
+
+
+def describe(exc: BaseException) -> str:
+    """One journal line for a start failure, without the path an OSError carries.
+
+    str(OSError) embeds the full filename; the strerror and the file's own name say
+    what failed without saying where (#225).
+    """
+    if isinstance(exc, OSError) and exc.strerror:
+        name = f" ({Path(exc.filename).name})" if exc.filename else ""
+        return f"{exc.strerror}{name}"
+    return str(exc)
+
+
 def serve(app: FastAPI, uds: Path) -> bool:
     """Serve the app until a stop signal ends uvicorn's graceful shutdown.
 
@@ -178,6 +215,9 @@ def serve(app: FastAPI, uds: Path) -> bool:
 
     server = uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="info",
                                            access_log=False, timeout_graceful_shutdown=30))
+    # Attached to the logger after uvicorn.Config has applied its logging config, so the
+    # configuration cannot drop it.
+    logging.getLogger("uvicorn.error").addFilter(HidePrivateDir(uds.parent))
     # uvicorn's capture_signals restores the previous handlers after a graceful
     # shutdown, then calls raise_signal for each signal it caught. Under the default
     # SIGTERM handler that kills the process before main() unlinks the socket and
@@ -214,7 +254,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not args.registry.is_dir():
         # ModelRegistry creates a missing root; a typo must not create an empty registry.
-        print(f"verified server: registry root does not exist: {args.registry}",
+        # Named by its option, not its path, which would reach the journal (#225).
+        print("verified server: registry root does not exist (--registry)",
               file=sys.stderr)
         return 1
 
@@ -248,7 +289,7 @@ def run(uds: Path, load: Callable[[], FastAPI]) -> int:
         # RuntimeError covers the free-VRAM preflight refusal (a legacy embedder still
         # on the card) and CUDA out-of-memory at load: the likeliest start failures,
         # which deserve one line in the journal, not a traceback per restart attempt.
-        print(f"verified server: {exc}", file=sys.stderr)
+        print(f"verified server: {describe(exc)}", file=sys.stderr)
         return 1
 
     try:
