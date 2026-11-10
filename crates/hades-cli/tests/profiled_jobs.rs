@@ -53,6 +53,14 @@ fn config(pool: &ArangoPool, peer: &Peer, extractor: &Extractor) -> HadesConfig 
     config
 }
 
+/// The started job's ID, or a panic that prints the whole reply. A refused start has no
+/// `job_id`, and a bare unwrap hid which refusal CI hit in run 42886974807 (#225).
+fn job_id(reply: &Value) -> &str {
+    reply["data"]["job_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("ingest.start returned no job_id: {reply}"))
+}
+
 async fn request(socket: &Path, command: &str, params: Value) -> Value {
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
@@ -236,7 +244,7 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
                     assert_eq!(pin["database"], pool.database());
                     assert_eq!(pin["profile_revision"], 2);
                     let row = daemon
-                        .terminal(started["data"]["job_id"].as_str().unwrap())
+                        .terminal(job_id(&started))
                         .await;
                     assert_eq!(row["status"], "completed", "{row}");
                     assert_eq!(&row["profile_pin"], pin);
@@ -277,12 +285,12 @@ async fn daemon_jobs_ingest_files_and_directories_with_persisted_profile_pins() 
                 );
                 let refused = daemon.start_job(&file, false).await;
                 let row = daemon
-                    .terminal(refused["data"]["job_id"].as_str().unwrap())
+                    .terminal(job_id(&refused))
                     .await;
                 assert_eq!(row["status"], "failed");
                 let replacement = daemon.start_job(&file, true).await;
                 let row = daemon
-                    .terminal(replacement["data"]["job_id"].as_str().unwrap())
+                    .terminal(job_id(&replacement))
                     .await;
                 assert_eq!(row["status"], "completed", "{row}");
                 assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 2);
@@ -336,9 +344,7 @@ async fn code_enabled_mixed_jobs_refuse_before_provider_or_history_writes() {
         std::fs::write(root.path().join(".hadesignore"), "module.py\n").unwrap();
         let started = daemon.start_job(root.path(), false).await;
         assert_eq!(started["success"], true, "{started}");
-        let row = daemon
-            .terminal(started["data"]["job_id"].as_str().unwrap())
-            .await;
+        let row = daemon.terminal(job_id(&started)).await;
         assert_eq!(row["status"], "completed", "{row}");
         assert_eq!(crud::count_collection(&pool, "documents").await.unwrap(), 1);
         daemon.finish().await;
@@ -410,7 +416,7 @@ async fn profile_drift_provider_reload_and_shutdown_do_not_publish_partial_jobs(
                 .await
                 .unwrap()
                 .unwrap();
-            let job = started["data"]["job_id"].as_str().unwrap();
+            let job = job_id(&started);
             let row = if failure == "shutdown" {
                 daemon.finish().await;
                 let _ = release.send(());
