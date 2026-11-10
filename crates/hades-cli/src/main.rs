@@ -1482,3 +1482,47 @@ mod format_contract_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod db_setup_parse_tests {
+    use super::*;
+
+    /// `db setup run --database` names the database to create (the spec's flag). It shares
+    /// the id of the global `--database`, so clap also writes its value to the global
+    /// target. That is harmless: setup builds its admin client against `_system` and never
+    /// reads the configured database name. A distinct id would make clap refuse the
+    /// duplicate long flag (#225).
+    #[test]
+    fn setup_database_flag_names_the_new_database() {
+        let cli = Cli::try_parse_from([
+            "hades",
+            "--db",
+            "elsewhere",
+            "db",
+            "setup",
+            "run",
+            "--database",
+            "managed",
+            "--provider",
+            "p",
+            "--operation-id",
+            "o",
+            "--generation",
+            "g",
+            "--chunking",
+            "conventional",
+            "--passage-tokens",
+            "500",
+            "--overlap-tokens",
+            "200",
+        ])
+        .unwrap();
+        assert_eq!(cli.database.as_deref(), Some("managed"));
+        let Commands::Db(commands::db::DbCmd::Setup(commands::db_setup::DbSetupCmd::Run(args))) =
+            cli.command
+        else {
+            panic!("expected db setup run");
+        };
+        assert_eq!(args.database, "managed");
+    }
+}

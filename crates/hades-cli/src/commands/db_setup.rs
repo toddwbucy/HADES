@@ -3,10 +3,16 @@
 //! CLI-only and in-process, like `db create-database`: there is no daemon or MCP
 //! variant. Every policy value is explicit; no default policy is silently chosen,
 //! because the request digest must be reproducible for an identical retry.
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Subcommand;
-use hades_core::config::HadesConfig;
+use hades_core::config::{HadesConfig, SetupConfig};
+use hades_core::db::ArangoClient;
 use hades_core::embedding_profile::{ChunkPolicy, PassagePolicy};
+use hades_core::persephone::provider_registry::ProviderCatalog;
+use hades_core::workspace_setup::{SetupRequest, SetupStatus, WorkspaceSetup};
+use serde_json::json;
+
+use super::output::{self, OutputFormat};
 
 #[derive(Debug, Subcommand)]
 pub enum DbSetupCmd {
@@ -111,20 +117,168 @@ pub fn policy(args: &SetupRunArgs) -> Result<ChunkPolicy> {
     }
 }
 
-/// Create the managed database (Task 4).
-pub async fn run_run(_config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
-    policy(&args)?;
-    bail!("not implemented")
+/// The installation sections setup needs, checked before any network or ledger access:
+/// the `setup` section (validated) and the provider catalog from `registered_providers`.
+fn sections(config: &HadesConfig) -> Result<(SetupConfig, ProviderCatalog)> {
+    let setup = config.setup.clone().ok_or_else(|| {
+        anyhow!(
+            "db setup requires the setup section (ledger_root, installation_id) in \
+             installation configuration"
+        )
+    })?;
+    setup.validate().map_err(|e| anyhow!(e))?;
+    let catalog = config
+        .registered_providers
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow!("db setup requires registered_providers in installation configuration")
+        })?
+        .catalog()
+        .context("invalid registered_providers configuration")?;
+    Ok((setup, catalog))
 }
 
-/// Print the ledger receipt for an operation (Task 4).
-pub async fn run_inspect(_config: &HadesConfig, _operation_id: &str) -> Result<()> {
-    bail!("not implemented")
+/// Bind the coordinator to the configured ledger. The admin client targets `_system`
+/// exactly as `db create-database` builds it, because the ledger scope hashes that
+/// client's socket path and base URL. The owner is the ArangoDB user the CLI connects
+/// as, so two users on one installation hold separate operations. Building the client
+/// makes no request.
+fn coordinator(
+    config: &HadesConfig,
+    setup: SetupConfig,
+    catalog: ProviderCatalog,
+) -> Result<WorkspaceSetup> {
+    let mut system_config = config.clone();
+    system_config.database.name = Some("_system".to_string());
+    let admin = ArangoClient::from_config(&system_config, false)
+        .context("failed to build the ArangoDB _system client for setup")?;
+    WorkspaceSetup::new(
+        setup.ledger_root,
+        setup.installation_id,
+        config.database.username.clone(),
+        admin,
+        catalog,
+    )
+    .context("failed to open the setup ledger")
 }
 
-/// Print the advisory recovery report for an operation (Task 4).
-pub async fn run_diagnose(_config: &HadesConfig, _operation_id: &str) -> Result<()> {
-    bail!("not implemented")
+/// Refuse a policy for the space the provider does not serve. The verified server serves
+/// one space per process, so a late load cannot honour a conventional policy, and a
+/// conventional load cannot plan late windows.
+fn check_space(provider: &str, serves_late: bool, policy: &ChunkPolicy) -> Result<()> {
+    match policy {
+        ChunkPolicy::Conventional { .. } if serves_late => bail!(
+            "provider {provider} serves the late space only; use --chunking late or a \
+             conventional provider"
+        ),
+        ChunkPolicy::Late { .. } if !serves_late => bail!(
+            "provider {provider} does not advertise late chunking; use --chunking conventional"
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Map the liveness report's space to late or not, refusing a space this CLI does not know.
+fn status_serves_late(provider: &str, space: &str) -> Result<bool> {
+    match space {
+        "late" => Ok(true),
+        "conventional" => Ok(false),
+        other => bail!("provider {provider} reports an unknown space {other:?}"),
+    }
+}
+
+/// Create the managed database. A space mismatch is refused from `GET /v1/status` before
+/// `verify`, so it never loads or observes the model; the verified observation is then
+/// checked again, because liveness is not an observation.
+pub async fn run_run(config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
+    let policy = policy(&args)?;
+    let (setup_config, catalog) = sections(config)?;
+    let provider = args.provider.as_str();
+    let status = catalog
+        .status(provider)
+        .await
+        .with_context(|| format!("provider {provider} status probe failed"))?;
+    check_space(
+        provider,
+        status_serves_late(provider, &status.space)?,
+        &policy,
+    )?;
+    let verified = catalog
+        .verify(provider)
+        .await
+        .with_context(|| format!("provider {provider} verification failed"))?;
+    check_space(provider, verified.serves_late_only(), &policy)?;
+    let profile = verified
+        .document_profile(args.generation.clone(), policy)
+        .context("provider cannot serve the requested policy")?;
+    let request = SetupRequest {
+        operation_id: args.operation_id.clone(),
+        database: args.database.clone(),
+        profile,
+        manifest: verified.manifest().clone(),
+    };
+    let setup = coordinator(config, setup_config, catalog)?;
+    let inspect = format!(
+        "inspect it with: hades db setup inspect --operation-id {}",
+        args.operation_id
+    );
+    let receipt = setup
+        .run(request)
+        .await
+        .with_context(|| format!("setup did not complete; {inspect}"))?;
+    let ready = receipt.status == SetupStatus::Ready;
+    output::print_output_with_success(
+        "db.setup.run",
+        serde_json::to_value(&receipt)?,
+        &OutputFormat::Json,
+        ready,
+    );
+    if !ready {
+        bail!(
+            "setup is {:?} at {:?}; {inspect}",
+            receipt.status,
+            receipt.step
+        );
+    }
+    Ok(())
+}
+
+/// Print the ledger receipt for an operation. No model or database request is made; an
+/// operation this ledger does not hold is a failed envelope with a null receipt.
+pub async fn run_inspect(config: &HadesConfig, operation_id: &str) -> Result<()> {
+    let (setup_config, catalog) = sections(config)?;
+    let receipt = coordinator(config, setup_config, catalog)?
+        .inspect(operation_id)
+        .await
+        .context("failed to read the setup ledger")?;
+    let found = receipt.is_some();
+    output::print_output_with_success(
+        "db.setup.inspect",
+        json!({"operation_id": operation_id, "receipt": receipt}),
+        &OutputFormat::Json,
+        found,
+    );
+    if !found {
+        bail!("no operation {operation_id} in this setup ledger");
+    }
+    Ok(())
+}
+
+/// Print the advisory recovery report. Writes nothing and loads no model; the report
+/// cannot authorize or resume work by itself.
+pub async fn run_diagnose(config: &HadesConfig, operation_id: &str) -> Result<()> {
+    let (setup_config, catalog) = sections(config)?;
+    let report = coordinator(config, setup_config, catalog)?
+        .diagnose(operation_id)
+        .await
+        .context("failed to diagnose the setup operation")?;
+    output::print_output_with_success(
+        "db.setup.diagnose",
+        serde_json::to_value(&report)?,
+        &OutputFormat::Json,
+        true,
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -281,5 +435,46 @@ mod tests {
             error.to_string().contains("--window-overlap-tokens"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn check_space_refuses_each_mismatch_by_name() {
+        let late = policy(&args(
+            Chunking::Late,
+            Some(16384),
+            Some(1000),
+            Some(500),
+            Some(200),
+        ))
+        .unwrap();
+        let conventional = policy(&args(
+            Chunking::Conventional,
+            None,
+            None,
+            Some(500),
+            Some(200),
+        ))
+        .unwrap();
+        assert!(check_space("p", true, &late).is_ok());
+        assert!(check_space("p", false, &conventional).is_ok());
+        assert!(
+            check_space("p", true, &conventional)
+                .unwrap_err()
+                .to_string()
+                .contains("provider p serves the late space only")
+        );
+        assert!(
+            check_space("p", false, &late)
+                .unwrap_err()
+                .to_string()
+                .contains("provider p does not advertise late chunking")
+        );
+    }
+
+    #[test]
+    fn status_space_is_late_conventional_or_refused() {
+        assert!(status_serves_late("p", "late").unwrap());
+        assert!(!status_serves_late("p", "conventional").unwrap());
+        assert!(status_serves_late("p", "Late").is_err());
     }
 }
