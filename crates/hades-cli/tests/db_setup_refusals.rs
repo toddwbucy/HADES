@@ -254,4 +254,26 @@ async fn inspect_unknown_operation_reports_null_receipt() {
     assert!(envelope["data"]["receipt"].is_null());
     assert!(installation.provider.contacts().is_empty());
     assert!(installation.database.contacts().is_empty());
+    // A read-only verb must not initialize the ledger and bind it to an endpoint.
+    assert_eq!(std::fs::read_dir(installation.ledger()).unwrap().count(), 0);
+}
+
+/// An absent configured database socket is refused rather than silently replaced by a
+/// fallback endpoint, which would bind the ledger scope to the wrong endpoint.
+#[tokio::test]
+async fn refuses_an_absent_configured_database_socket() {
+    let installation = Installation::new("late");
+    let config = installation.config(true, true);
+    std::fs::remove_file(&installation.database.path).unwrap();
+    for args in [
+        &["inspect", "--operation-id", "setup-one"][..],
+        &["diagnose", "--operation-id", "setup-one"][..],
+    ] {
+        let output = installation.run(&config, args).await;
+        refused(
+            &installation,
+            &output,
+            "configured ArangoDB socket is absent",
+        );
+    }
 }

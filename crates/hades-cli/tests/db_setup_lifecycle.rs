@@ -218,6 +218,14 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         ] {
             let refused = cli.run(&args).await;
             assert!(!refused.status.success(), "{args:?}");
+            // The stored receipt belongs to another request; printing it as this
+            // run's result would report the wrong database as ready.
+            assert!(refused.stdout.is_empty(), "{args:?}: {refused:?}");
+            assert!(
+                stderr(&refused).contains("different request"),
+                "{args:?}: {}",
+                stderr(&refused)
+            );
             assert!(
                 stderr(&refused).contains("hades db setup inspect --operation-id setup-one"),
                 "{args:?}: {}",

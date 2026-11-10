@@ -152,6 +152,17 @@ fn coordinator(
     system_config.database.name = Some("_system".to_string());
     let admin = ArangoClient::from_config(&system_config, false)
         .context("failed to build the ArangoDB _system client for setup")?;
+    // The client falls back to another socket or TCP when the configured socket file is
+    // absent, as during an arangod restart. The ledger scope hashes the endpoint, so a
+    // fallback would refuse a valid ledger or bind a fresh one to the wrong endpoint.
+    if let Some(configured) = config.effective_socket(false)
+        && admin.socket_path() != Some(std::path::Path::new(configured))
+    {
+        bail!(
+            "configured ArangoDB socket is absent; setup will not fall back to another \
+             endpoint, because the setup ledger is bound to one"
+        );
+    }
     WorkspaceSetup::new(
         setup.ledger_root,
         setup.installation_id,
@@ -218,6 +229,7 @@ pub async fn run_run(config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
         manifest: verified.manifest().clone(),
     };
     let setup = coordinator(config, setup_config, catalog)?;
+    let digest = request.request_sha256().context("invalid setup request")?;
     let inspect = format!(
         "inspect it with: hades db setup inspect --operation-id {}",
         args.operation_id
@@ -227,8 +239,12 @@ pub async fn run_run(config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
         Err(error) => {
             // The coordinator reports every non-ready outcome as an error after saving
             // the receipt, so read it back: a failed command still shows where it
-            // stopped. A ledger that cannot be read leaves only the error.
-            if let Ok(Some(saved)) = setup.inspect(&args.operation_id).await {
+            // stopped. Only a receipt for THIS request is shown; a refusal under a
+            // reused ID must not print an earlier request's receipt as this run's
+            // result. A ledger that cannot be read leaves only the error.
+            if let Ok(Some(saved)) = setup.inspect(&args.operation_id).await
+                && saved.request_sha256 == digest
+            {
                 output::print_output_with_success(
                     "db.setup.run",
                     serde_json::to_value(&saved)?,

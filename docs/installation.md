@@ -164,7 +164,9 @@ setup:
 - The ArangoDB endpoint settings (host, port and socket) are frozen for a ledger's
   lifetime, because the ledger scope hashes the `_system` client's socket path and
   base URL. A changed host, port or socket needs a new `ledger_root`; keep the old
-  ledger for the operations it records.
+  ledger for the operations it records. When the configured socket is absent, as
+  during an ArangoDB restart, `hades db setup` refuses rather than fall back to
+  another endpoint; retry once the socket is back.
 - The ledger owner is the ArangoDB username `hades` connects as, so two users on one
   installation hold separate operations.
 
