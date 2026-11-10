@@ -88,8 +88,11 @@ struct Cli {
 
 impl Cli {
     async fn run(&self, args: &[&str]) -> std::process::Output {
+        self.raw(&[&["db", "setup"][..], args].concat()).await
+    }
+
+    async fn raw(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_hades"))
-            .args(["db", "setup"])
             .args(args)
             .env("HADES_CONFIG", &self.config)
             .env("ARANGO_RO_SOCKET", &self.socket)
@@ -271,6 +274,19 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         );
         assert_eq!(peer.observations(), observations);
         assert_eq!(snapshot(root.path()), before);
+
+        // 6. hades status reports the verified provider from GET /v1/status alone: no
+        //    observation, no paths, and the legacy embedder block is still present.
+        let status = cli.raw(&["--db", &database, "status"]).await;
+        assert!(status.status.success(), "{}", stderr(&status));
+        let status = envelope(&status);
+        assert_eq!(
+            status["data"]["verified_providers"],
+            serde_json::json!([{"id":"fixture-provider-2","model":"fixture/model-2",
+                "space":"late","loaded":true}])
+        );
+        assert_eq!(status["data"]["embedder"]["status"], "unavailable");
+        assert_eq!(peer.observations(), observations);
     })
     .await;
 }
