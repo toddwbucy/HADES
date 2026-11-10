@@ -8,7 +8,9 @@ commit `15e2c9565a9c051ca8a2b17c625cc6005b3aa0fa`. It covers the local
 For workspaces created with a saved embedding profile, also follow the
 [model-bound recovery contract](model-bound-recovery.md). This older workstation
 rehearsal does not cover setup ledgers, provider registrations or ownership
-reconciliation after restoring a managed database.
+reconciliation after restoring a managed database. The
+[Managed workspace](#managed-workspace) section below adds the ledger and the registry
+to the artifact.
 
 ## Backup scope
 
@@ -120,3 +122,129 @@ verify conversation discovery before resuming work.
 This is one on-device backup. Off-device storage, encryption for transport,
 retention, scheduling, freshness monitoring and recovery objectives remain open.
 Do not treat local binary rollback backups as database recovery coverage.
+
+## Managed workspace
+
+This section extends the procedure above to a database created by `hades db setup`,
+the first being `Conveyance_KG_v2` in the
+[managed workspace runbook](../installation-thinkpad.md#managed-workspace-2026-11-xx).
+It was written before its first run; the runbook records the run. A database-only
+backup cannot restore the setup ownership record, so one artifact holds three parts
+taken in one quiet window: the database dump, the complete setup ledger, and the model
+registry's records with the artifacts they name. The
+[model-bound recovery contract](model-bound-recovery.md) says why each part matters
+and where restore stops.
+
+Each artifact meets three requirements:
+
+- Every writer is quiesced, the viewer and then the daemon are stopped, the inventory
+  is recorded before and compared after, referenced transcripts are copied and hashed,
+  and `manifest.json` is written, exactly as in
+  [Create a consistent artifact](#create-a-consistent-artifact). Writers include
+  `hades db setup` and registry registration: run neither during a backup.
+- The ledger root is copied complete, including its empty `.lock` file. From the
+  registry, `records/` and every `artifacts/<snapshot>` that a record names are copied.
+  `sessions/` is excluded as disposable, and restore recreates it empty and private.
+  The registry's own `.lock` is not copied either; the registry recreates it, mode
+  0600, on first use.
+- Ownership and modes are preserved on both copies and checked against an inventory of
+  the source, and every copied file is listed in the manifest's `files`, because the
+  verifier hashes only manifested files and rejects unmanifested ones.
+
+The verified provider service may keep running. It reads the registry when it starts
+and writes only under `sessions/`, which is excluded.
+
+### Steps
+
+Follow steps 1 to 3 of [Create a consistent artifact](#create-a-consistent-artifact)
+with two changes to the `arangodump` command: `--server.database` names the managed
+database, and the endpoint is written from the resolved data directory,
+`--server.endpoint "unix://$DATA/run/arango.sock"`. In the same shell, before step 4,
+copy the ledger and the registry. `DATA` is the resolved directory because the ledger
+and registry paths in the configuration are resolved:
+
+```bash
+DATA=$(readlink -f ~/.local/share/hades)
+REG="$DATA/model-registry"
+inventory() {
+  python3 - "$@" <<'EOF'
+import hashlib, json, os, stat, sys
+root, parts = sys.argv[1], sys.argv[2:] or ["."]
+rows = []
+def add(path):
+    info = os.lstat(path)
+    row = {"path": os.path.relpath(path, root), "mode": oct(stat.S_IMODE(info.st_mode)),
+           "uid": info.st_uid, "gid": info.st_gid,
+           "type": "dir" if stat.S_ISDIR(info.st_mode)
+           else "file" if stat.S_ISREG(info.st_mode) else "other"}
+    if row["type"] == "file":
+        with open(path, "rb") as stream:
+            row["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+    rows.append(row)
+add(root)
+for part in parts:
+    for top, dirs, files in os.walk(os.path.join(root, part)):
+        add(top)
+        for name in files:
+            add(os.path.join(top, name))
+print(json.dumps(sorted(rows, key=lambda row: row["path"]), indent=1))
+EOF
+}
+mapfile -t snaps < <(python3 -c 'import json, pathlib, sys
+records = pathlib.Path(sys.argv[1]).glob("*.json")
+print("\n".join(sorted({json.loads(p.read_text())["snapshot"] for p in records})))' \
+  "$REG/records")
+parts=(records "${snaps[@]/#/artifacts/}")
+inv="$backup_dir/inventory"
+install -d -m 700 "$inv" "$backup_dir/model-registry" \
+  "$backup_dir/model-registry/artifacts"
+inventory "$DATA/setup-ledger" > "$inv/ledger-source-before.json"
+inventory "$REG" "${parts[@]}" > "$inv/registry-source-before.json"
+cp -a "$DATA/setup-ledger" "$backup_dir/setup-ledger"
+cp -a "$REG/records" "$backup_dir/model-registry/"
+for snap in "${snaps[@]}"; do
+  cp -a "$REG/artifacts/$snap" "$backup_dir/model-registry/artifacts/"
+done
+inventory "$backup_dir/setup-ledger" > "$inv/ledger-copy.json"
+inventory "$backup_dir/model-registry" "${parts[@]}" > "$inv/registry-copy.json"
+inventory "$DATA/setup-ledger" > "$inv/ledger-source-after.json"
+inventory "$REG" "${parts[@]}" > "$inv/registry-source-after.json"
+for pair in ledger-source-before:ledger-copy ledger-source-before:ledger-source-after \
+    registry-source-before:registry-copy registry-source-before:registry-source-after; do
+  cmp "$inv/${pair%%:*}.json" "$inv/${pair##*:}.json" || echo "REJECT: $pair differs"
+done
+```
+
+Every `cmp` must print nothing. A difference means a mode, owner or byte changed, or a
+writer ran during the copy: reject the artifact. Hashing reads the registered
+artifacts, about 9 GiB, three times. Then finish step 4 as written, and restart the
+daemon and the viewer.
+
+The private backup driver, `.local-install/backup-workspace.py`, is the operator's to
+extend. It must:
+
+- take the managed database name instead of `Conveyance_KG`;
+- produce `setup-ledger/`, `model-registry/` and `inventory/` as above, or run the
+  commands above, and fail when any comparison differs;
+- list every file under those three directories in `files` with its SHA-256, as it
+  already does for the dump, configuration, units, binaries and transcripts;
+- record `model-registry/sessions/` and the registry `.lock` among its exclusions.
+
+### Verify
+
+Run `scripts/verify_workspace_backup.py` as in
+[Validate in isolation](#validate-in-isolation). It needs the reading-desk
+collections, so it cannot pass on a managed backup taken before the reading desk
+moves in; the runbook verifies its second backup only. It stages every manifested file
+in a new `/tmp/hades-recovery-*` directory, and `/tmp` on this laptop is a 32 GiB
+tmpfs, so the registered artifacts take about 9 GiB of memory while it runs. Check
+`df -h /tmp` and `free -h` first, and remove the directory once its `result.json` is
+recorded.
+
+The verifier compares content, not modes or owners; the inventory comparison above is
+that evidence. A pass proves the records restore in isolation. It does not reactivate
+the managed workspace: a restored database has a new incarnation that the copied
+receipt cannot authorize, and ownership rebinding is not supported.
+
+Registered artifacts are frozen read-only and keep those modes in the copy. To delete
+an old backup, run `chmod -R u+w` on it first.

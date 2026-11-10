@@ -580,6 +580,9 @@ is also stored with the backup binaries. These local artifacts are outside Git.
 
 ## Deployment of main 52d04d4
 
+Superseded by [Managed workspace, 2026-11-xx](#managed-workspace-2026-11-xx), which
+installs main `09df08f` over the same `f930fbc` executables instead.
+
 On 2026-11-09, main commit `52d04d4e5d66625466ea2b1b2c60fda19ed06f2e`, the merge
 of PR #203, was built and verified in a separate worktree. The commit adds merged
 PRs #203 and #226 through #248, except #232, to the installed build.
@@ -790,6 +793,560 @@ are shared and unchanged in either direction. To return to main, remove
 drop-ins in that directory, such as a ceiling override, are independent of
 `rollback.conf`; `systemctl --user cat hades-embedder.service` lists every drop-in
 in effect.
+
+## Managed workspace, 2026-11-xx
+
+Draft for the operator's run. Replace `2026-11-xx` with the run date when the run is
+recorded; until then this section is the plan, not a record. It carries out Part C of
+the managed database design,
+[db-setup-door.md](specs/db-setup-door.md#part-c-the-laptop-runbook-and-first-corpus-docs-operator-steps):
+install main `09df08f`, register the Jina snapshot, switch the embedder to the verified
+provider, create `Conveyance_KG_v2` with `hades db setup`, back it up, move the reading
+desk into it, ingest the first corpus, and back it up again. `Conveyance_KG` stays
+until the [retirement gate](#retirement-gate) is passed.
+
+Run every step in order and stop at the first failure. Each step names what it must
+print. Commands run from the development checkout, as the account that owns the user
+units, in a shell prepared with these variables. Open a new shell at any step by
+running this block again:
+
+```bash
+cd ~/Projects/HADES
+set -a; . "$HOME/.config/hades/daemon.env"; set +a
+DATA=$(readlink -f ~/.local/share/hades)
+SOCK="$DATA/run/verified/provider.sock"
+RUN="$HOME/.local/share/hades/backups/managed-workspace"
+```
+
+- `DATA` is the resolved data directory. `~/.local/share/hades` is a symlink, and the
+  provider catalog, the registry and the setup ledger refuse any path with a symlink
+  ancestor, so every path they read is written from `$DATA`.
+- `daemon.env` supplies the database account and the `ARANGO_RO_SOCKET` and
+  `ARANGO_RW_SOCKET` values. Those override the YAML sockets, and the setup ledger
+  hashes the endpoint, so always run `hades db setup` from a shell that loaded
+  `daemon.env`.
+- `RUN` holds this run's records (receipts, query results). Step 0 creates it. Its
+  files stay private; phase 2 copies sanitized values into `docs/evidence/`.
+
+The fixed values below come from the design and
+[the verified-server qualification](evidence/verified-server-thinkpad-2026-11-10.json).
+To change the database name, change it here and in every command before step 4.
+
+| Value | Setting |
+| --- | --- |
+| Provider ID | `laptop-jina` |
+| Model revision | `853c867b65b749f3c3c72a06868140d842e04f06` |
+| Expected manifest MD5 | `446160668af00248832ed8cf5d8d4432` (2026-10-21 and 2026-11-10 evidence) |
+| Installation ID | `laptop-2026-11` |
+| Database | `Conveyance_KG_v2` |
+| Operation ID | `conveyance-kg-v2-1` |
+| Generation | `2026-11-10-g1`, a label; a retry repeats it exactly |
+| Late policy | context cap 16,384; window overlap 1,000; passages 500 with 200 overlap |
+
+### Step 0: install main 09df08f
+
+Main commit `09df08febe62570a883563030e9c1cf4d9f9aabc`, the merge of PR #252, replaces
+the `f930fbc` executables installed on 2026-10-19. It carries every change merged since
+then, including the three this runbook needs: the verified provider service, the
+widened setup inventory and `hades db setup` (PRs #252 to #255). The
+[52d04d4 deployment](#deployment-of-main-52d04d4) was not installed; this step uses its
+procedure with the new commit and hashes.
+
+The build used a detached worktree at `09df08f` and the same flags as before, with
+toolchain 1.98.1 and `RUSTFLAGS=-Dwarnings`:
+
+```bash
+CARGO_TARGET_DIR=~/Projects/hades-targets/deploy-main \
+  cargo build --release --locked -p hades-cli -p hades-frontend
+```
+
+On the same commit and target directory, `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets --locked -- -D warnings` passed.
+`cargo test --workspace --lib --bins --locked` passed 849 tests with 1 ignored, and the
+23 service-free `tests/` targets run by `.github/workflows/ci.yml` passed 184 tests.
+Both executables report version 0.3.0.
+
+| Executable | SHA-256 |
+| --- | --- |
+| `hades` | `633b68a1a9c1ce919d2c22ac227e07cb48ccb5bc071ff1926057e9ab44774b4c` |
+| `hades-viewer` | `22ac0c56a12a16b79af8f7c2c84ae9116efbeaa6a5f5e825559f30f3f494131f` |
+
+The first check verifies the build. The second confirms that `~/.local/bin` still holds
+the `f930fbc` executables that the rollback below restores; if it fails, stop and find
+out what is installed. The preflight must report zero active conversations.
+
+```bash
+BUILD="$HOME/Projects/hades-targets/deploy-main/release"
+printf '%s  %s\n' \
+  633b68a1a9c1ce919d2c22ac227e07cb48ccb5bc071ff1926057e9ab44774b4c "$BUILD/hades" \
+  22ac0c56a12a16b79af8f7c2c84ae9116efbeaa6a5f5e825559f30f3f494131f "$BUILD/hades-viewer" |
+  sha256sum -c -
+BIN="$HOME/.local/bin"
+printf '%s  %s\n' \
+  cf0573ebbb42893cb7f1ccf5f2a69caf506df57cbe422e0fcd705e31c3ec6b42 "$BIN/hades" \
+  6efac5881ed6b5ea7ac30c0a7a6131979e6b224fc14618104d9a354c6cac2c72 "$BIN/hades-viewer" |
+  sha256sum -c -
+install -d -m 700 "$RUN"
+snapshot() {
+  python3 -c 'import json, runpy
+s = runpy.run_path(".local-install/preflight-224.py")["snapshot"]()
+print(json.dumps(s, sort_keys=True))'
+}
+BACKUP="$HOME/.local/share/hades/backups/main-09df08f-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 700 "$BACKUP"
+cp -p ~/.local/bin/hades ~/.local/bin/hades-viewer ~/.config/hades/hades.yaml "$BACKUP/"
+snapshot > "$BACKUP/before.json"
+python3 .local-install/preflight-224.py
+systemctl --user stop hades-viewer.service
+systemctl --user stop hades-daemon.service
+install -m 755 "$BUILD/hades" ~/.local/bin/.hades.new
+install -m 755 "$BUILD/hades-viewer" ~/.local/bin/.hades-viewer.new
+mv -f ~/.local/bin/.hades.new ~/.local/bin/hades
+mv -f ~/.local/bin/.hades-viewer.new ~/.local/bin/hades-viewer
+systemctl --user daemon-reload
+systemctl --user start hades-daemon.service
+python3 scripts/check_daemon_ready.py --socket ~/.local/share/hades/run/hades.sock \
+  --database Conveyance_KG --timeout 60
+systemctl --user start hades-viewer.service
+```
+
+Then run the [post-install checks](#post-install-checks-for-52d04d4) as written there,
+in the same shell. The hashes must match the table above, not the 52d04d4 table; every
+other expectation is unchanged, including the note on
+`check-installed-workspace-chat.cjs`.
+
+Bring the development checkout to the same commit. The verified unit in step 3 runs
+`python -m embedding.verified_server` from `~/Projects/HADES/services`, and the
+checkout predates it. Both `status` commands must print nothing before the merge; the
+final `diff` must print nothing after it, which proves the services and scripts trees
+equal `09df08f` whichever later commit `HEAD` is on:
+
+```bash
+git -C ~/Projects/HADES status --short -- services scripts
+git -C ~/Projects/HADES fetch origin
+git -C ~/Projects/HADES merge --ff-only 09df08febe62570a883563030e9c1cf4d9f9aabc
+git -C ~/Projects/HADES diff --stat 09df08febe62570a883563030e9c1cf4d9f9aabc HEAD \
+  -- services/ scripts/
+```
+
+Between the previous checkout commit `ca37c93` and `09df08f`, the legacy embedder's
+modules (`http_server.py`, `jina_v4.py`) and the Python dependencies are unchanged, so
+the running `hades-embedder.service` needs no restart; step 3 replaces it. Do not
+reinstall `services/.venv`.
+
+To roll back the executables, follow [Roll back 52d04d4](#roll-back-52d04d4) with
+`main-09df08f-*` as the loop's glob; the `f930fbc` hashes are the same.
+
+### Step 1: register the snapshot
+
+Registration copies the approved snapshot's runtime files, about 9 GiB, into the
+registry and freezes them read-only, so check the free space first. The registry is
+append-only: a provider ID is never rebound to other files.
+
+```bash
+df -h "$DATA"
+install -d -m 700 "$DATA/model-registry"
+(cd services && .venv/bin/python -m embedding.registry \
+  --registry "$DATA/model-registry" register --provider laptop-jina \
+  --source "$DATA/models/jina-v4/853c867b65b749f3c3c72a06868140d842e04f06" \
+  --revision 853c867b65b749f3c3c72a06868140d842e04f06) | tee "$RUN/register.json"
+python3 - "$RUN/register.json" <<'EOF'
+import json, sys
+record = json.load(open(sys.argv[1]))
+assert record["manifest_md5"] == "446160668af00248832ed8cf5d8d4432", record
+print("manifest MD5 matches the 2026-10-21 evidence;", record["files"], "files")
+EOF
+```
+
+The command prints one JSON line with `"loaded_verified": false`; registration loads
+no model. If the MD5 differs, stop: the snapshot is not the qualified one. The record
+stays, and a corrected registration needs a new provider ID in every later step.
+
+### Step 2: configure the provider and the ledger
+
+Create the ledger root and the socket parent with mode 0700, and confirm all three
+directories. Each line must print `700` and the service account:
+
+```bash
+install -d -m 700 "$DATA/setup-ledger" "$DATA/run/verified"
+stat -c '%a %U %n' "$DATA/model-registry" "$DATA/setup-ledger" "$DATA/run/verified"
+```
+
+Add the two sections to the HADES YAML. The `grep` must print nothing first; if it
+prints a line, edit the existing section by hand instead. The heredoc is unquoted on
+purpose, so the file receives the resolved paths:
+
+```bash
+grep -nE '^(registered_providers|setup):' ~/.config/hades/hades.yaml
+cp -p ~/.config/hades/hades.yaml "$RUN/hades.yaml.before-step2"
+cat >> ~/.config/hades/hades.yaml <<EOF
+
+registered_providers:
+  registry_root: $DATA/model-registry
+  providers:
+    - id: laptop-jina
+      socket: $SOCK
+setup:
+  ledger_root: $DATA/setup-ledger
+  installation_id: laptop-2026-11
+EOF
+```
+
+The provider's request timeout defaults to 120 seconds and its response bound to
+8 MiB. Check that the configuration parses and that a read-only verb leaves the ledger
+untouched. `inspect` must exit 1 with `"receipt": null`, and `ls -A` must print
+nothing:
+
+```bash
+hades db setup inspect --operation-id conveyance-kg-v2-1
+ls -A "$DATA/setup-ledger"
+```
+
+Give the verified unit its own environment file. The unit reads `embedder.env` first,
+then this file, whose values win. An idle unload would invalidate every receipt a
+client holds, so the timeout is 0:
+
+```bash
+test ! -e ~/.config/hades/embedder-verified.env
+(umask 077 && cat > ~/.config/hades/embedder-verified.env <<'EOF'
+HADES_EMBEDDER_IDLE_TIMEOUT=0
+HADES_EMBEDDER_MAX_TOKENS=20000
+EOF
+)
+```
+
+### Step 3: switch the embedder to the verified provider
+
+Install the unit from the repository with its four placeholders replaced. The first
+`grep` must print nothing; the second shows the substituted lines for review:
+
+```bash
+sed -e "s|@SERVICES_DIR@|$HOME/Projects/HADES/services|g" \
+    -e "s|@REGISTRY_ROOT@|$DATA/model-registry|g" \
+    -e "s|@PROVIDER_ID@|laptop-jina|g" \
+    -e "s|@SOCKET_PATH@|$SOCK|g" \
+    deploy/systemd/hades-embedder-verified.service \
+  > ~/.config/systemd/user/hades-embedder-verified.service
+grep -n '@[A-Z_]*@' ~/.config/systemd/user/hades-embedder-verified.service
+grep -nE '^(WorkingDirectory|ExecStart)|--registry' \
+  ~/.config/systemd/user/hades-embedder-verified.service
+systemctl --user daemon-reload
+```
+
+Under the elected design only one embedder runs. The legacy unit is disabled, not only
+stopped, so that a reboot does not start two loads of the model on one card:
+
+```bash
+systemctl --user disable --now hades-embedder.service
+systemctl --user enable --now hades-embedder-verified.service
+curl -sS --retry 60 --retry-all-errors --retry-delay 2 --unix-socket "$SOCK" \
+  http://localhost/v1/status
+```
+
+The service loads the model before it binds the socket, about 20 seconds in the
+qualification, and the retry window allows two minutes. `/v1/status` must print
+`{"model":"jinaai/jina-embeddings-v4","space":"late","loaded":true}`. If it does not,
+read `journalctl --user -u hades-embedder-verified.service -n 50`.
+
+Check the new `hades status` list and an explicit verification over the socket:
+
+```bash
+hades status | python3 -c 'import json, sys
+print(json.dumps(json.load(sys.stdin)["data"]["verified_providers"]))'
+curl -sS --unix-socket "$SOCK" -X POST http://localhost/v1/verify > "$RUN/verify.json"
+python3 - "$RUN/verify.json" <<'EOF'
+import json, sys
+report = json.load(open(sys.argv[1]))
+model, caps = report["model"], report["capabilities"]
+assert model["revision"] == "853c867b65b749f3c3c72a06868140d842e04f06", model
+assert model["manifest_md5"] == "446160668af00248832ed8cf5d8d4432", model
+assert caps["late_chunking"] and caps["tokenizer_offsets"], caps
+assert caps["max_input_tokens"] == 20000, caps
+print("verified; space", report["receipt"]["space_id"])
+EOF
+```
+
+`verified_providers` must hold one entry with `"id": "laptop-jina"`, `"space": "late"`
+and `"loaded": true`. The legacy `embedder` block beside it now reports the TCP
+endpoint unavailable, which is expected.
+
+While the verified unit holds the card, these legacy paths lose their embedder and
+fail with a connection error: `hades embed`, `hades codebase ingest` and code
+embedding, `hades ingest` into a legacy database, and semantic search of a legacy
+database. Guided reading, the reading desk, Codex chat and graph reads do not use the
+embedder. To switch back, which in turn stops managed ingest and search:
+
+```bash
+systemctl --user disable --now hades-embedder-verified.service
+systemctl --user enable --now hades-embedder.service
+curl -s --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8087/v1/models
+```
+
+### Step 4: create the managed database
+
+Every flag was checked against `hades db setup run --help` of the `09df08f` build.
+`run` verifies the provider (the model is already loaded), saves the policy into the
+new database's profile, and prints the receipt:
+
+```bash
+hades db setup run --database Conveyance_KG_v2 --provider laptop-jina \
+  --operation-id conveyance-kg-v2-1 --generation 2026-11-10-g1 --chunking late \
+  --context-cap-tokens 16384 --window-overlap-tokens 1000 \
+  --passage-tokens 500 --overlap-tokens 200 | tee "$RUN/setup-run.json"
+hades db setup inspect --operation-id conveyance-kg-v2-1 | tee "$RUN/setup-inspect.json"
+hades db setup diagnose --operation-id conveyance-kg-v2-1 | tee "$RUN/setup-diagnose.json"
+```
+
+`run` must print `"success": true` with `"status": "ready"` and `"step": "complete"`.
+`inspect` must print the same receipt, with the same `request_sha256`, and `diagnose`
+must report `"action": "none"`.
+
+If `run` exits 1, it has printed the saved receipt with `"success": false`. Read
+`diagnose`. For `retry_identical_request`, repeat the exact command above; the ledger
+admits only an identical request under the same operation ID, and refuses a changed
+flag. For `inspect_required`, stop and keep the ledger and database untouched. Do not
+start a new operation ID for the same database name: the first operation holds the
+name. Phase 2 records the receipt as
+`docs/evidence/db-setup-receipt-thinkpad-2026-11-xx.json`.
+
+### Step 5: first combined backup
+
+Before any ingestion, back up `Conveyance_KG_v2` together with the setup ledger and the
+registry, following the
+[managed workspace backup](operations/thinkpad-backup-restore.md#managed-workspace).
+Record the backup directory:
+
+```bash
+echo "$backup_dir" > "$RUN/backup-1.path"
+```
+
+The isolated verifier is not run on this backup: it requires the reading-desk
+collections, which arrive in step 6. Step 8 verifies the second backup.
+
+### Step 6: move the reading desk
+
+The reading desk resolves each reading graph through ArangoDB's graph API before every
+write, so the move copies the `hades_reading_*` collections, every reading graph's
+`reading_<id>_nodes` and `reading_<id>_edges` collections, and the graph definitions in
+`_graphs`. The database must still be idle: the daemon creates reading collections
+lazily, so it is pointed at the new database only after the restore.
+
+First list what moves. The first command prints the moving collections; review them.
+The second prints every other non-system collection in `Conveyance_KG`, which stay
+behind (an empty `hades_schema` is expected). The third prints the graph definitions;
+every key must start with `reading_`, because the restore copies all of `_graphs`:
+
+```bash
+hades --db Conveyance_KG db aql -f json 'RETURN COLLECTIONS()[*].name' |
+  python3 -c 'import json, re, sys
+names = json.load(sys.stdin)["data"]["results"][0]
+rule = re.compile(r"hades_reading_.+|reading_.+_(nodes|edges)")
+print("\n".join(sorted(n for n in names if rule.fullmatch(n))))' > "$RUN/moving.txt"
+cat "$RUN/moving.txt"
+hades --db Conveyance_KG db aql -f json 'RETURN COLLECTIONS()[*].name' |
+  python3 -c 'import json, sys
+moving = set(open(sys.argv[1]).read().split())
+names = json.load(sys.stdin)["data"]["results"][0]
+print([n for n in names if n not in moving and not n.startswith("_")])' "$RUN/moving.txt"
+hades --db Conveyance_KG db aql 'FOR g IN _graphs SORT g._key RETURN g._key'
+```
+
+Confirm that the new database holds no reading state and no graph definitions. The
+first command must print no reading collection names, and the second must return 0:
+
+```bash
+hades --db Conveyance_KG_v2 db aql 'RETURN COLLECTIONS()[*].name'
+hades --db Conveyance_KG_v2 db aql 'RETURN LENGTH(_graphs)'
+```
+
+Take a consistent backup of `Conveyance_KG` with steps 1 to 4 of Create a consistent
+artifact in
+[the backup procedure](operations/thinkpad-backup-restore.md#create-a-consistent-artifact),
+with one change: at the end of its step 4, do not restart the daemon and the viewer.
+Use `--server.endpoint "unix://$DATA/run/arango.sock"` in its `arangodump` command.
+This is the source of the move and the last backup of `Conveyance_KG` before
+retirement, so verify it in isolation as that document describes, then keep it:
+
+```bash
+echo "$backup_dir" > "$RUN/conveyance-kg-final.path"
+python3 scripts/verify_workspace_backup.py --backup "$backup_dir" \
+  --arangod ~/.local/opt/arangodb-3.12.12.1/sbin/arangod \
+  --arangorestore ~/.local/opt/arangodb-3.12.12.1/bin/arangorestore \
+  --hades ~/.local/bin/hades
+```
+
+With the daemon and viewer still stopped, restore the listed collections and `_graphs`
+from that dump into the new database. Enter the root password at its prompt:
+
+```bash
+args=()
+while read -r name; do args+=(--collection "$name"); done < "$RUN/moving.txt"
+~/.local/opt/arangodb-3.12.12.1/bin/arangorestore --configuration none \
+  --server.endpoint "unix://$DATA/run/arango.sock" \
+  --server.database Conveyance_KG_v2 --server.username root \
+  --create-database false --include-system-collections true \
+  --input-directory "$backup_dir/dump" "${args[@]}" --collection _graphs
+```
+
+Compare the two databases. Both `cmp` commands must print nothing:
+
+```bash
+results() {
+  python3 -c 'import json, sys
+print(json.dumps(json.load(sys.stdin)["data"]["results"]))'
+}
+counts() {
+  hades --db "$1" db aql -f json -b "$(python3 -c 'import json, sys
+print(json.dumps({"names": open(sys.argv[1]).read().split()}))' "$RUN/moving.txt")" \
+    'FOR n IN @names RETURN [n, COLLECTION_COUNT(n)]' | results
+}
+counts Conveyance_KG > "$RUN/counts-before.json"
+counts Conveyance_KG_v2 > "$RUN/counts-after.json"
+cmp "$RUN/counts-before.json" "$RUN/counts-after.json"
+graphs() {
+  hades --db "$1" db aql -f json \
+    'FOR g IN _graphs SORT g._key RETURN UNSET(g, "_id", "_rev")' | results
+}
+cmp <(graphs Conveyance_KG) <(graphs Conveyance_KG_v2)
+hades db setup diagnose --operation-id conveyance-kg-v2-1 |
+  tee "$RUN/setup-diagnose-moved.json"
+```
+
+`diagnose` must still report `"action": "none"`: the widened inventory accepts the
+reading collections once the database is initialized.
+
+Point the daemon and the viewer at the new database (operator's lane). The drop-ins
+are generated from the installed units, changing only the database arguments; the
+daemon keeps its `--mcp-db-prefix`. `daemon.env` gets the same default database:
+
+```bash
+mkdir -p ~/.config/systemd/user/hades-daemon.service.d \
+  ~/.config/systemd/user/hades-viewer.service.d
+{ echo '[Service]'; echo 'ExecStart='
+  grep '^ExecStart=' ~/.config/systemd/user/hades-daemon.service |
+    sed -e 's/--db Conveyance_KG /--db Conveyance_KG_v2 /' \
+        -e 's/--mcp-dbs Conveyance_KG /--mcp-dbs Conveyance_KG_v2 /'
+} > ~/.config/systemd/user/hades-daemon.service.d/managed-database.conf
+{ echo '[Service]'; echo 'ExecStartPre='; echo 'ExecStart='
+  grep -E '^ExecStart(Pre)?=' ~/.config/systemd/user/hades-viewer.service |
+    sed -e 's/\bConveyance_KG\b/Conveyance_KG_v2/g'
+} > ~/.config/systemd/user/hades-viewer.service.d/managed-database.conf
+cp -p ~/.config/hades/daemon.env "$RUN/daemon.env.before-step6"
+sed -i 's/^HADES_DATABASE=Conveyance_KG$/HADES_DATABASE=Conveyance_KG_v2/' \
+  ~/.config/hades/daemon.env
+systemctl --user daemon-reload
+systemctl --user cat hades-daemon.service hades-viewer.service | grep -n Conveyance_KG
+grep -n '^HADES_DATABASE=' ~/.config/hades/daemon.env
+```
+
+Read the `grep` output. The daemon's effective `ExecStart` (the last one) must name
+`--db Conveyance_KG_v2` and `--mcp-dbs Conveyance_KG_v2`. The viewer's last
+`ExecStartPre` and `ExecStart` must name only `Conveyance_KG_v2`. `daemon.env` must
+say `HADES_DATABASE=Conveyance_KG_v2`. The drop-ins sit beside `reading-chat.conf`,
+which is unchanged. Then start the services in order:
+
+```bash
+systemctl --user start hades-daemon.service
+python3 scripts/check_daemon_ready.py --socket ~/.local/share/hades/run/hades.sock \
+  --database Conveyance_KG_v2 --timeout 60
+systemctl --user start hades-viewer.service
+```
+
+The desk check. The active and archived reading lists and the source archive of both
+databases must be identical (`cmp` prints nothing; the database name is dropped from
+each list). Then open `http://127.0.0.1:8088/reading`, confirm the same readings are
+listed, open one reading, and make one pin. The pin proves the graph definitions
+resolve, because the desk checks the definition before every write:
+
+```bash
+desk() {
+  for view in state archived sources; do
+    hades --db "$1" -f json reading read --view "$view" |
+      python3 -c 'import json, sys
+data = json.load(sys.stdin)["data"]
+data.pop("database", None)
+print(json.dumps(data, sort_keys=True))'
+  done
+}
+desk Conveyance_KG > "$RUN/desk-before.json"
+desk Conveyance_KG_v2 > "$RUN/desk-after.json"
+cmp "$RUN/desk-before.json" "$RUN/desk-after.json"
+```
+
+Do not make the pin until the list matches. `Conveyance_KG` keeps its copy unchanged;
+nothing writes to it after this step. To undo the move, remove both
+`managed-database.conf` drop-ins, restore `daemon.env` from `$RUN`, run
+`systemctl --user daemon-reload` and restart the daemon and then the viewer, as above
+with `--database Conveyance_KG`. Desk changes made in the new database stay there.
+
+### Step 7: first ingest
+
+The first corpus is the repository's `docs/` tree at the checkout's commit, recorded
+first. The managed path ingests the Markdown and text files, lists the Python and Rust
+examples under `disabled_by_profile.code` because managed databases take no code
+workload, and lists JSON and images under `unrouted`:
+
+```bash
+git -C ~/Projects/HADES rev-parse HEAD | tee "$RUN/corpus-commit.txt"
+find ~/Projects/HADES/docs -type f \( -name '*.md' -o -name '*.txt' \) | wc -l
+hades --db Conveyance_KG_v2 ingest ~/Projects/HADES/docs | tee "$RUN/ingest.json"
+```
+
+The envelope must print `"success": true`, `routed.documents` equal to the `find`
+count (a difference names files the walk skipped; read them before going on), an empty
+`failed_requests`, and `"embedding_profile_state": "ready"`. Then ask
+two questions with known answers:
+
+```bash
+hades --db Conveyance_KG_v2 db query \
+  "which collections does the setup coordinator's inventory accept" -n 5 |
+  tee "$RUN/query-inventory.json"
+hades --db Conveyance_KG_v2 db query \
+  "what sequence ceiling does the laptop embedder run with and how was it chosen" -n 5 |
+  tee "$RUN/query-ceiling.json"
+```
+
+| Question | Known answer | Expected sources |
+| --- | --- | --- |
+| Inventory | `hades_setup`, `hades_workspace`, `documents`, `chunks`, `embeddings`, then `hades_ingest_jobs`; once initialized also `hades_schema`, `hades_reading_*` and the reading graph collections | `docs/specs/recoverable-workspace-setup.md`, `docs/specs/db-setup-door.md` |
+| Ceiling | 20,000 tokens, ruled 2026-11-09 from a real-prose bisection (23,000 passed, 24,000 ran out of memory) | `docs/installation-thinkpad.md`, `docs/installation-thinkpad-services.md`, `docs/specs/db-setup-door.md` |
+
+A question passes when one of its expected sources is among the five results. Phase 2
+records the sources each query returned, in rank order.
+
+### Step 8: second combined backup
+
+Repeat the
+[managed workspace backup](operations/thinkpad-backup-restore.md#managed-workspace)
+into a new dated directory, then verify it in isolation:
+
+```bash
+echo "$backup_dir" > "$RUN/backup-2.path"
+python3 scripts/verify_workspace_backup.py --backup "$backup_dir" \
+  --arangod ~/.local/opt/arangodb-3.12.12.1/sbin/arangod \
+  --arangorestore ~/.local/opt/arangodb-3.12.12.1/bin/arangorestore \
+  --hades ~/.local/bin/hades
+```
+
+A pass proves the records restore in isolation. Keep both backups, and the final
+`Conveyance_KG` backup from step 6.
+
+### Retirement gate
+
+A pass in step 8 does not prove that the managed workspace can be brought back from
+that backup. Per the model-bound recovery contract's
+[restore boundary](operations/model-bound-recovery.md#restore-and-migration-boundary),
+a restored database has a different database incarnation even at the same name and
+endpoint, the copied setup receipt cannot authorize it, and ownership rebinding is not
+supported. A restore of `Conveyance_KG_v2` today therefore recovers its records, not a
+ready managed workspace.
+
+`Conveyance_KG` is retired only after the operator accepts that limitation explicitly,
+recorded here with the date, or after a supported rebinding procedure exists, which is
+outside this work. The drop is by hand, outside HADES, because HADES has no
+drop-database command (#118).
+
+Operator decision: pending.
 
 ## Current operating state
 

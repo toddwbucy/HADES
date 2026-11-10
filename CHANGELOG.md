@@ -19,6 +19,19 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add the laptop's managed workspace runbook (#225), a draft for the operator's run, as
+  `docs/installation-thinkpad.md` "Managed workspace, 2026-11-xx": install main
+  `09df08f` with its gate counts and SHA-256 table, register the Jina snapshot,
+  configure `registered_providers` and `setup`, switch to
+  `hades-embedder-verified.service`, create `Conveyance_KG_v2` with `hades db setup`,
+  move the reading desk into it, ingest the repository `docs/` tree, and take two
+  combined backups, with a retirement gate for `Conveyance_KG`. The superseded 52d04d4
+  deployment section now points to it. Add the "Managed workspace" section to
+  `docs/operations/thinkpad-backup-restore.md`: the setup ledger (including `.lock`)
+  and the registry's records and referenced artifacts join the artifact, `sessions/`
+  excluded, with modes and owners checked against a source inventory and every copied
+  file in the manifest.
+
 - Add `hades db setup` (#225), the CLI door for managed (model-bound) databases:
   `run` creates one through the recoverable setup ledger, with every policy value an
   explicit flag (`--generation` and `--chunking` included), and refuses a chunking
@@ -464,6 +477,12 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   matrix; clarify that reader/writer routes share credentials and permissions (#74).
 
 ### Changed
+
+- Fill the README's omissions (#225): the H1 is now "HADES"; a "Managed (model-bound)
+  databases" section names the verified provider, model registry, setup ledger and
+  profile admission and links their configuration, designs, recovery and backup
+  documents and the laptop runbook; the Codex reading desk and long-document embedding
+  are linked; and the capability table lists managed databases.
 
 - Tolerate data-owned collections in a managed workspace's setup inventory (#225):
   `hades_schema`, `hades_reading_*`, and the reading desk's `reading_<id>_nodes` and
