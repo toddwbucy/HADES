@@ -248,12 +248,18 @@ def cmd_check_verify(a):
     return f"verified; space {report['receipt']['space_id']}"
 
 
-def receipt_of(path, operation, database):
+# Where each `hades db setup` verb puts the receipt (commands/db_setup.rs): `run` prints
+# the receipt itself as `data`; `inspect` prints {"operation_id", "receipt"}; `diagnose`
+# prints a recovery report whose `receipt` sits beside `action`. The values compared
+# below are serde's snake_case names of SetupStatus and SetupStep (workspace_setup/mod.rs)
+# and RecoveryAction (workspace_setup/recovery.rs), all #[serde(rename_all =
+# "snake_case")]. The db_setup contract runs check-receipt on real envelopes (#225).
+def receipt_of(path, operation, database, *, nested=True):
     try:
         value = data(path)
     except Refused:
         return "error", None
-    receipt = value.get("receipt")
+    receipt = value.get("receipt") if nested else value
     if receipt is None:
         return "none", None
     require(receipt.get("operation_id") == operation and receipt.get("database") == database,
@@ -267,7 +273,7 @@ def cmd_receipt_state(a):
 
 
 def cmd_check_receipt(a):
-    state, run = receipt_of(a.run, a.operation, a.database)
+    state, run = receipt_of(a.run, a.operation, a.database, nested=False)
     require(state == "ready", f"setup run receipt is {state}")
     state, inspected = receipt_of(a.inspect, a.operation, a.database)
     require(state == "ready", f"inspect receipt is {state}")

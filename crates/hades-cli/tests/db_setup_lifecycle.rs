@@ -116,6 +116,33 @@ fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Run the installer helper's receipt check on real envelopes from this binary. Its
+/// fixtures in scripts/tests only mirror these shapes; this contract is the authority on
+/// them, because `run` prints the receipt as `data` while `inspect` nests it under
+/// `data.receipt` and `diagnose` returns a report beside `data.action` (#225).
+fn check_receipt(
+    directory: &Path,
+    envelopes: [&[u8]; 3],
+    operation: &str,
+    database: &str,
+) -> std::process::Output {
+    let mut paths = Vec::new();
+    for (name, bytes) in ["run", "inspect", "diagnose"].iter().zip(envelopes) {
+        let path = directory.join(format!("receipt-{name}.json"));
+        std::fs::write(&path, bytes).unwrap();
+        paths.push(path);
+    }
+    let helper =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install/managed_workspace.py");
+    std::process::Command::new("python3")
+        .arg(helper)
+        .arg("check-receipt")
+        .args(&paths)
+        .args([operation, database])
+        .output()
+        .unwrap()
+}
+
 /// The late policy the synthetic late fixture serves: 1000/1 windows, 500/0 passages.
 fn run_args<'a>(database: &'a str, operation: &'a str, passage: &'a str) -> Vec<&'a str> {
     vec![
@@ -238,6 +265,7 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         //    writes nothing to the ledger.
         let inspected = cli.run(&["inspect", "--operation-id", "setup-one"]).await;
         assert!(inspected.status.success(), "{}", stderr(&inspected));
+        let inspected_bytes = inspected.stdout.clone();
         let inspected = envelope(&inspected);
         assert_eq!(inspected["success"], true);
         assert_eq!(inspected["data"]["operation_id"], "setup-one");
@@ -251,6 +279,22 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         assert_eq!(report["data"]["reason"], "ready");
         assert_eq!(report["data"]["receipt"], receipt);
         assert_eq!(snapshot(root.path()), before);
+
+        // The installer's setup-db check accepts these three real envelopes.
+        let checked = check_receipt(
+            directory.path(),
+            [&first.stdout, &inspected_bytes, &diagnosed.stdout],
+            "setup-one",
+            &database,
+        );
+        assert!(checked.status.success(), "{checked:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&checked.stdout),
+            format!(
+                "ready; request_sha256 {}\n",
+                receipt["request_sha256"].as_str().unwrap()
+            )
+        );
 
         // 5. A conventional policy against the late provider stops before verification
         //    and records no operation.
@@ -354,6 +398,18 @@ async fn failed_setup_prints_its_receipt_and_the_identical_retry_resumes() {
         assert_eq!(
             envelope(&diagnosed)["data"]["action"],
             "retry_identical_request"
+        );
+        // The installer's check refuses the failed run by its real status.
+        let checked = check_receipt(
+            directory.path(),
+            [&failed.stdout, &inspected.stdout, &diagnosed.stdout],
+            "setup-one",
+            &database,
+        );
+        assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&checked.stderr),
+            "managed_workspace check-receipt: setup run receipt is failed\n"
         );
 
         let resumed = cli.run(&run_args(&database, "setup-one", "500")).await;

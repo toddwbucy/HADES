@@ -216,7 +216,9 @@ class StateChecks(Scratch):
                                    "DB2")[1], "error\n")
 
     def test_check_receipt(self):
-        run = self.write("run.json", envelope({"receipt": self.receipt()}))
+        # Shapes as the CLI prints them; the db_setup contract checks the real binary's
+        # envelopes and is the authority. `run` prints the receipt itself as `data`.
+        run = self.write("run.json", envelope(self.receipt()))
         inspect = self.write("inspect.json", envelope({"operation_id": "op",
                                                        "receipt": self.receipt()}))
         diagnose = self.write("diagnose.json", envelope({"action": "none",
