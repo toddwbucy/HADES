@@ -2,8 +2,9 @@
 
 This internal [#225](https://github.com/toddwbucy/HADES/issues/225) slice composes
 registered provider verification, database creation, ownership records, profile
-initialization, and readiness. `workspace_setup::WorkspaceSetup` has no public
-CLI/MCP/job/frontend caller. It supports conventional and explicitly configured
+initialization, and readiness. `workspace_setup::WorkspaceSetup` has one public
+caller, the CLI's `hades db setup` (`run`, `inspect`, `diagnose`); there is no
+MCP/job/frontend caller. It supports conventional and explicitly configured
 [late cosine document policies](verified-late-passages.md);
 code, graph presets, legacy adoption, and model migration remain
 outside this setup schema.
@@ -175,5 +176,6 @@ The documented native `--arangod /path/to/arangod` alternative starts a private
 Unix-only test server. [Real-Jina qualification](verified-jina-qualification.md)
 now creates its disposable database through this coordinator and proves an
 identical retry preserves the profile before its fixed ingestion/retrieval gates.
-Public entry-point enforcement, broader workload/schema support, scoped setup
-authorization, frontend creation, and recovery tooling remain subsequent work.
+`hades db setup` is the public CLI entry point and exposes `diagnose` as advisory
+recovery reporting. Broader workload/schema support, scoped setup authorization,
+frontend creation, and administrative reconciliation remain subsequent work.

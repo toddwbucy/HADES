@@ -271,6 +271,10 @@ pub enum DbCmd {
     /// Schema management — define and inspect database ontologies.
     #[command(subcommand)]
     Schema(DbSchemaCmd),
+
+    /// Managed (model-bound) databases through the recoverable setup ledger.
+    #[command(subcommand)]
+    Setup(super::db_setup::DbSetupCmd),
 }
 
 // ── db graph ───────────────────────────────────────────────────────

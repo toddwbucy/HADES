@@ -129,9 +129,13 @@ impl WorkspaceSetup {
     }
 
     /// Inspect only this authorized owner's operation; no model or database request is made.
+    /// It never initializes the ledger: a fresh root reads as no operation (#225).
     pub async fn inspect(&self, operation_id: &str) -> Result<Option<SetupReceipt>, SetupError> {
         token(operation_id)?;
-        let lease = Lease::open(self.root.clone(), self.scope.clone()).await?;
+        let Some(lease) = Lease::open_initialized(self.root.clone(), self.scope.clone()).await?
+        else {
+            return Ok(None);
+        };
         let record = lease.read(operation_id).await?;
         if let Some(record) = &record {
             ensure(
@@ -334,6 +338,12 @@ impl SetupRequest {
             "setup requires initializing revision one with explicit cosine document passage policies only",
         )
     }
+    /// The digest a receipt echoes as `request_sha256`, so a caller can tell whether a
+    /// stored receipt answers this request or an earlier one under the same ID (#225).
+    pub fn request_sha256(&self) -> Result<String, SetupError> {
+        self.digest()
+    }
+
     /// Hash typed intent with canonical artifact order, including the selected database and operation.
     fn digest(&self) -> Result<String, SetupError> {
         let mut request = self.clone();

@@ -143,6 +143,33 @@ username can also be overridden out-of-band with the `ARANGO_USERNAME`
 env var, parallel to `ARANGO_PASSWORD` / `ARANGO_HOST` / `ARANGO_PORT` /
 `ARANGO_RO_SOCKET` / `ARANGO_RW_SOCKET`.
 
+Managed (model-bound) databases need two optional sections, shown commented in
+`config/hades.yaml`. `hades db setup` refuses to run without either one, by name:
+
+```yaml
+registered_providers:
+  registry_root: /absolute/private/model-registry
+  providers:
+    - id: local-jina
+      socket: /absolute/private/run/embedder/provider.sock
+setup:
+  ledger_root: /absolute/private/setup-ledger
+  installation_id: my-installation
+```
+
+- The verified unit's socket, the registry root and the ledger root are absolute,
+  resolved paths with no symlink ancestor. The socket's parent and the ledger root are
+  0700 directories owned by the account running `hades`; setup never creates the
+  ledger root.
+- The ArangoDB endpoint settings (host, port and socket) are frozen for a ledger's
+  lifetime, because the ledger scope hashes the `_system` client's socket path and
+  base URL. A changed host, port or socket needs a new `ledger_root`; keep the old
+  ledger for the operations it records. When the configured socket is absent, as
+  during an ArangoDB restart, `hades db setup` refuses rather than fall back to
+  another endpoint; retry once the socket is back.
+- The ledger owner is the ArangoDB username `hades` connects as, so two users on one
+  installation hold separate operations.
+
 ## 6. Set the daemon environment
 
 `/etc/hades/daemon.conf` is sourced by `hades-daemon.service` via

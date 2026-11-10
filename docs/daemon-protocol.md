@@ -797,6 +797,7 @@ request-response socket model.
 | `link`                     | Interactive confirmation             |
 | `db export`                | Batch export to file                 |
 | `db create-database`       | Infrastructure DDL (rare)            |
+| `db setup run/inspect/diagnose` | Managed-database setup ledger (#225) |
 | `db databases`             | Multi-database query (rare)          |
 | `db index-status`          | Index diagnostics (rare)             |
 | `db search`                | Use `db.query` via daemon instead    |
