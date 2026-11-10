@@ -53,7 +53,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   check until exit), missing offline mode and CPU fallback before binding, and serves
   the verified HTTP contract on a private Unix socket until SIGTERM, then exits 0 with
   the socket removed. Ships `deploy/systemd/hades-embedder-verified.service`, which
-  reads an optional `embedder-verified.env` after the shared `embedder.env`, a
+  reads an optional `embedder-verified.env` after the shared `embedder.env` and omits
+  `PrivateTmp=` (in a user manager it implies a user namespace whose root-owned
+  ancestors the socket check refuses), a
   read-only `GET /v1/status` route reporting model, space and load state, and a `space`
   label on `VerifiedJinaProvider` and `VerifiedJinaLateProvider`.
 

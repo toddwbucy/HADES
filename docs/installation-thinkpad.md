@@ -1023,8 +1023,10 @@ EOF
 
 ### Step 3: switch the embedder to the verified provider
 
-Install the unit from the repository with its four placeholders replaced. The first
-`grep` must print nothing; the second shows the substituted lines for review:
+This is the unit's first start as a systemd unit: the 2026-11-10 qualification ran the
+module directly. Keep the journal of this start for the record. Install the unit from
+the repository with its four placeholders replaced. The first `grep` must print
+nothing; the second shows the substituted lines for review:
 
 ```bash
 sed -e "s|@SERVICES_DIR@|$HOME/Projects/HADES/services|g" \
@@ -1036,21 +1038,6 @@ sed -e "s|@SERVICES_DIR@|$HOME/Projects/HADES/services|g" \
 grep -n '@[A-Z_]*@' ~/.config/systemd/user/hades-embedder-verified.service
 grep -nE '^(WorkingDirectory|ExecStart)|--registry' \
   ~/.config/systemd/user/hades-embedder-verified.service
-```
-
-The template sets `PrivateTmp=true`. A user manager can provide that only inside a user
-namespace, where root-owned directories such as the parent of `$HOME` appear owned by
-uid 65534, and the service refuses a socket path with an ancestor owned by anyone
-other than root or itself. The first command shows what this manager does: `65534`
-means the template cannot start here. Record its output and install the drop-in either
-way; it is harmless where not needed, because the service writes nothing to `/tmp`:
-
-```bash
-systemd-run --user -p PrivateTmp=yes --wait -P stat -c %u "$(dirname "$HOME")" |
-  tee "$RUN/privatetmp-check.txt"
-mkdir -p ~/.config/systemd/user/hades-embedder-verified.service.d
-printf '[Service]\nPrivateTmp=no\n' \
-  > ~/.config/systemd/user/hades-embedder-verified.service.d/no-private-tmp.conf
 systemctl --user daemon-reload
 ```
 

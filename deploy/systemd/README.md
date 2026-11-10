@@ -142,6 +142,9 @@ owned by the service account; the service refuses to start otherwise, as the HAD
 provider catalog would refuse the socket later. Beside the socket the service keeps
 `<socket>.lock`, held from its socket check until it exits, so a second start on the
 same path is refused even while the first is still loading; leave the file in place.
+The unit deliberately omits `PrivateTmp=`: in a user manager it implies a user
+namespace in which root-owned ancestors read as uid 65534, which the socket check
+refuses, and the socket's private directory makes it unnecessary.
 Change `--space late` to `--space
 conventional` only for a conventional managed database; one process serves one space.
 
