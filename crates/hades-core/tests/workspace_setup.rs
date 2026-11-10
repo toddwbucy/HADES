@@ -784,3 +784,212 @@ async fn proxy_failures_cannot_satisfy_expected_rejections() {
     })
     .await;
 }
+
+/// Create collections other HADES data paths own: the schema store's and the reading desk's.
+async fn create_data_owned(pool: &ArangoPool, names: &[(&str, u32)]) {
+    for (name, kind) in names {
+        crud::create_collection(pool, name, Some(*kind))
+            .await
+            .unwrap();
+    }
+}
+
+/// Assert a collection is present, empty, and carries only the indexes ArangoDB creates
+/// with it (primary, plus edge for an edge collection): setup did not repair it.
+async fn assert_untouched(pool: &ArangoPool, name: &str) {
+    assert_eq!(
+        crud::count_collection(pool, name).await.unwrap(),
+        0,
+        "{name}"
+    );
+    let indexes = pool
+        .writer()
+        .get(&format!("index?collection={name}"))
+        .await
+        .unwrap();
+    let indexes = indexes["indexes"].as_array().unwrap();
+    assert!(
+        indexes
+            .iter()
+            .all(|index| index["type"] == "primary" || index["type"] == "edge"),
+        "{name}: {indexes:?}"
+    );
+}
+
+/// Data-owned collections created after readiness never hold identical retries (#225),
+/// while an arbitrary collection still does and never downgrades the Ready receipt.
+#[tokio::test]
+async fn data_owned_collections_are_tolerated_by_identical_retries() {
+    with_temp_db(
+        "setup_data_owned_ready",
+        Fixtures::Empty,
+        |pool| async move {
+            remove_fixture_database(&pool).await;
+            let fixture = Fixture::new(2);
+            let peer = Peer::new(&fixture);
+            let root = ledger();
+            let setup = setup(root.path(), admin(&pool), &peer);
+            let request = request(&pool, &fixture);
+            let receipt = setup.run(request.clone()).await.unwrap();
+            assert_eq!(receipt.status, SetupStatus::Ready);
+            create_data_owned(
+                &pool,
+                &[
+                    ("hades_schema", 2),
+                    ("hades_reading_sessions", 2),
+                    ("reading_s_abc_nodes", 2),
+                    ("reading_s_abc_edges", 3),
+                    ("reading_fixture_edges", 3),
+                ],
+            )
+            .await;
+            let retried = setup.run(request.clone()).await.unwrap();
+            assert_eq!(retried, receipt);
+            assert_eq!(retried.step, SetupStep::Complete);
+            for name in ["hades_schema", "reading_s_abc_edges"] {
+                assert_untouched(&pool, name).await;
+            }
+            crud::create_collection(&pool, "authored", Some(2))
+                .await
+                .unwrap();
+            assert!(matches!(
+                setup.run(request.clone()).await,
+                Err(SetupError::Reconciliation(_))
+            ));
+            assert_eq!(
+                setup.inspect(&request.operation_id).await.unwrap(),
+                Some(receipt)
+            );
+        },
+    )
+    .await;
+}
+
+/// A data-owned collection created while setup sits at the Schema checkpoint lets the
+/// identical retry finish Ready, untouched (#225; the "unknown" variant of
+/// changed_ownership_schema_and_profile_are_preserved_and_refused keeps `authored` refused).
+#[tokio::test]
+async fn data_owned_collections_during_initialization_do_not_hold_the_operation() {
+    with_temp_db(
+        "setup_data_owned_schema",
+        Fixtures::Empty,
+        |pool| async move {
+            remove_fixture_database(&pool).await;
+            let fixture = Fixture::new(2);
+            let peer = Peer::new(&fixture);
+            let root = ledger();
+            let mut injection = rule("POST", "collection", Some("documents"), 1);
+            injection.before = true;
+            let proxy = Proxy::new(pool.writer(), injection);
+            let setup = setup(root.path(), proxy.admin.clone(), &peer);
+            let request = request(&pool, &fixture);
+            assert!(setup.run(request.clone()).await.is_err());
+            let failed = setup.inspect(&request.operation_id).await.unwrap().unwrap();
+            assert_eq!(failed.step, SetupStep::Schema);
+            create_data_owned(&pool, &[("hades_schema", 2), ("reading_s_abc_nodes", 2)]).await;
+            let receipt = setup.run(request.clone()).await.unwrap();
+            assert_eq!(receipt.status, SetupStatus::Ready);
+            assert_eq!(receipt.step, SetupStep::Complete);
+            for name in [
+                "hades_setup",
+                "hades_workspace",
+                "documents",
+                "chunks",
+                "embeddings",
+            ] {
+                let properties = pool
+                    .writer()
+                    .get(&format!("collection/{name}/properties"))
+                    .await
+                    .unwrap();
+                assert_eq!(properties["type"], 2, "{name}");
+                assert_eq!(properties["waitForSync"], true, "{name}");
+            }
+            for name in ["chunks", "embeddings"] {
+                let indexes = pool
+                    .writer()
+                    .get(&format!("index?collection={name}"))
+                    .await
+                    .unwrap();
+                assert!(
+                    indexes["indexes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|index| index["fields"] == json!(["parent_key"])),
+                    "{name} lacks its owner index"
+                );
+            }
+            for name in ["hades_schema", "reading_s_abc_nodes"] {
+                assert_untouched(&pool, name).await;
+            }
+        },
+    )
+    .await;
+}
+
+/// Tolerance begins only after ownership: a database already holding hades_schema is
+/// never adopted, whether it predates setup or appears before the marker (#225).
+#[tokio::test]
+async fn fresh_database_with_hades_schema_is_still_refused() {
+    with_temp_db(
+        "setup_data_owned_existing",
+        Fixtures::Empty,
+        |pool| async move {
+            create_data_owned(&pool, &[("hades_schema", 2)]).await;
+            let fixture = Fixture::new(2);
+            let peer = Peer::new(&fixture);
+            let root = ledger();
+            let setup = setup(root.path(), admin(&pool), &peer);
+            let request = request(&pool, &fixture);
+            assert!(matches!(
+                setup.run(request.clone()).await,
+                Err(SetupError::Reconciliation(_))
+            ));
+            let receipt = setup.inspect(&request.operation_id).await.unwrap().unwrap();
+            assert_eq!(receipt.status, SetupStatus::NeedsReconciliation);
+            // An existing database is refused at Validate, before any create is attempted.
+            assert_eq!(receipt.step, SetupStep::Validate);
+            assert!(pool.writer().get("collection/hades_setup").await.is_err());
+            assert_untouched(&pool, "hades_schema").await;
+        },
+    )
+    .await;
+    // Ownership::install: setup created the database, the marker step failed before the
+    // marker collection existed, and hades_schema appeared in between.
+    with_temp_db(
+        "setup_data_owned_marker",
+        Fixtures::Empty,
+        |pool| async move {
+            remove_fixture_database(&pool).await;
+            let fixture = Fixture::new(2);
+            let peer = Peer::new(&fixture);
+            let root = ledger();
+            let mut injection = rule("POST", "collection", Some("hades_setup"), 1);
+            injection.before = true;
+            let proxy = Proxy::new(pool.writer(), injection);
+            let setup = setup(root.path(), proxy.admin.clone(), &peer);
+            let request = request(&pool, &fixture);
+            assert!(setup.run(request.clone()).await.is_err());
+            let failed = setup.inspect(&request.operation_id).await.unwrap().unwrap();
+            assert_eq!(failed.step, SetupStep::Marker);
+            create_data_owned(&pool, &[("hades_schema", 2)]).await;
+            assert!(matches!(
+                setup.run(request.clone()).await,
+                Err(SetupError::Reconciliation(_))
+            ));
+            assert_ne!(
+                setup
+                    .inspect(&request.operation_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                SetupStatus::Ready
+            );
+            assert!(pool.writer().get("collection/hades_setup").await.is_err());
+            assert_untouched(&pool, "hades_schema").await;
+        },
+    )
+    .await;
+}
