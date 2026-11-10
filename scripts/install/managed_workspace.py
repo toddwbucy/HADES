@@ -323,6 +323,135 @@ def cmd_manifest_counts(a):
     return json.dumps([[n, collections[n]["count"]] for n in names])
 
 
+DIGEST_CHUNK = 1 << 16
+OUTSIDE_RESULTS = 1 << 16
+
+
+def canonical(value):
+    """The backup driver's and the verifier's canonical JSON bytes."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+class _JsonStream:
+    """Just enough incremental reading to walk one top-level array of objects."""
+
+    def __init__(self, stream, chunk_size, name):
+        self.stream, self.chunk_size, self.name = stream, chunk_size, name
+        self.buffer = ""
+        self.decoder = json.JSONDecoder()
+
+    def fill(self):
+        more = self.stream.read(self.chunk_size)
+        self.buffer += more
+        return bool(more)
+
+    def peek(self):
+        """The next non-whitespace character, without consuming it."""
+        while True:
+            self.buffer = self.buffer.lstrip()
+            if self.buffer:
+                return self.buffer[0]
+            if not self.fill():
+                raise Refused(f"{self.name} ends inside the AQL results")
+
+    def take(self, expected):
+        found = self.peek()
+        require(found == expected, f"{self.name}: expected {expected!r}, found {found!r}")
+        self.buffer = self.buffer[1:]
+
+    def document(self):
+        """Decode one object, reading more until it is complete. An object ends at its
+        closing brace, so a decode that succeeds is never a truncated prefix."""
+        require(self.peek() == "{", f"{self.name}: AQL results must be documents")
+        while True:
+            try:
+                value, end = self.decoder.raw_decode(self.buffer)
+            except json.JSONDecodeError:
+                if not self.fill():
+                    raise Refused(f"{self.name} ends inside a document") from None
+                continue
+            self.buffer = self.buffer[end:]
+            return value
+
+
+def collection_digest(path, chunk_size=DIGEST_CHUNK):
+    """Digest one collection's `hades db aql` results as the backup manifest does.
+
+    The driver and the verifier hash canonical(list of documents) for the projection
+    `FOR d IN @@c SORT d._key RETURN UNSET(d, "_rev")`. That byte string is "[", the
+    documents' canonical forms joined by ",", and "]", so it is hashed one document at a
+    time and the result list is never held in memory. `_rev` is dropped here too: it
+    differs between a database and its restored copy, while `_key` and `_id` do not.
+    Comparing contents, not counts, is what catches a desk record updated in place, as
+    reading::chat::reconcile does (#225). Returns (sha256, document count).
+    """
+    name = Path(path).name
+    digest, count = hashlib.sha256(b"["), 0
+    try:
+        with open(path, encoding="utf-8") as handle:
+            stream = _JsonStream(handle, chunk_size, name)
+            # The envelope's own fields hold no documents; only the results array is
+            # streamed. Its key is the first "results" in the file: `-f json` sorts keys,
+            # and only command and count come before it.
+            while (at := stream.buffer.find('"results"')) < 0:
+                require(len(stream.buffer) < OUTSIDE_RESULTS and stream.fill(),
+                        f"{name} has no AQL results")
+            before = stream.buffer[:at]
+            stream.buffer = stream.buffer[at + len('"results"'):]
+            stream.take(":")
+            stream.take("[")
+            if stream.peek() == "]":
+                stream.take("]")
+            else:
+                while True:
+                    document = stream.document()
+                    document.pop("_rev", None)
+                    digest.update(b"," if count else b"")
+                    digest.update(canonical(document))
+                    count += 1
+                    if stream.peek() == "]":
+                        stream.take("]")
+                        break
+                    stream.take(",")
+            after = stream.buffer + handle.read(OUTSIDE_RESULTS)
+            require(not handle.read(1), f"{name} has too much text outside its results")
+    except UnicodeDecodeError:
+        raise Refused(f"{name} is not UTF-8") from None
+    digest.update(b"]")
+    # The envelope with the streamed array taken out must parse whole, with that array as
+    # data.results: a truncated, failed or partial result must not pass as a
+    # collection's contents.
+    try:
+        envelope = json.loads(before + '"results":[]' + after)
+    except ValueError:
+        raise Refused(f"{name} is not a whole HADES envelope") from None
+    require(isinstance(envelope, dict) and isinstance(envelope.get("data"), dict)
+            and envelope["data"].get("results") == [], f"{name} is not an AQL result envelope")
+    require(envelope.get("success") is True, f"{name} is a failed AQL result")
+    reported = envelope["data"].get("count")
+    require(reported == count, f"{name} reports {reported} results but holds {count}")
+    return digest.hexdigest(), count
+
+
+def cmd_collection_digest(a):
+    return collection_digest(a.file)[0]
+
+
+def cmd_collection_digests(a):
+    """[[name, sha256], ...] for each moving collection, from <prefix><name>.raw.json."""
+    names = Path(a.moving).read_text().split()
+    return json.dumps([[n, collection_digest(f"{a.prefix}{n}.raw.json")[0]] for n in names])
+
+
+def cmd_manifest_digests(a):
+    """The backup's digests for the moving collections, in collection-digests' format."""
+    collections = load(a.manifest)["collections"]
+    names = Path(a.moving).read_text().split()
+    missing = [n for n in names if n not in collections]
+    require(not missing, f"the backup manifest lacks {missing}")
+    return json.dumps([[n, collections[n]["sha256"]] for n in names])
+
+
 def cmd_names_bind(a):
     return json.dumps({"names": Path(a.moving).read_text().split()})
 
@@ -425,6 +554,9 @@ def parser():
     add("moving-dump", cmd_moving_dump, "dump")
     add("staying", cmd_staying, "file", "moving")
     add("names-bind", cmd_names_bind, "moving")
+    add("collection-digest", cmd_collection_digest, "file")
+    add("collection-digests", cmd_collection_digests, "moving", "prefix")
+    add("manifest-digests", cmd_manifest_digests, "manifest", "moving")
     add("manifest-counts", cmd_manifest_counts, "manifest", "moving")
     add("check-graphs", cmd_check_graphs, "file", "moving")
     add("results", cmd_results, "file")

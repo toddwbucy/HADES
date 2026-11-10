@@ -848,6 +848,27 @@ record_graphs() {
   run_to "$RECORD/$2.json" helper results "$RECORD/$2.raw.json"
 }
 
+# Record one database's content digest of each moving collection, as [[name, sha256],
+# ...] in $RECORD/<name>.json. Counts cannot see a record updated in place, as the desk's
+# chat reconcile updates exchanges, so a copy is accepted only on equal contents. The
+# projection and digest are the backup manifest's, so a live digest also compares with
+# a backup (#225). Each query runs while the daemon and the viewer are stopped.
+CONTENTS_AQL='FOR d IN @@c SORT d._key RETURN UNSET(d, "_rev")'
+record_contents() {
+  local name names
+  if ((DRY_RUN)); then
+    aql "$1" "$RECORD/$2-<each-name-in-moving.txt>.raw.json" \
+      -b '{"@c": "<each-name-in-moving.txt>"}' "$CONTENTS_AQL"
+  else
+    mapfile -t names <"$RECORD/moving.txt"
+    # The names match the reading-collection pattern, so they need no JSON escaping.
+    for name in "${names[@]}"; do
+      aql "$1" "$RECORD/$2-$name.raw.json" -b "{\"@c\": \"$name\"}" "$CONTENTS_AQL"
+    done
+  fi
+  run_to "$RECORD/$2.json" helper collection-digests "$RECORD/moving.txt" "$RECORD/$2-"
+}
+
 # Whether two recorded lists are identical; an empty left side is a refusal, because two
 # empty outputs would compare equal.
 same() {
@@ -927,10 +948,18 @@ docs/installation-thinkpad.md describes and start them by hand."
     # The final backup must still match the quiet source, however long ago it was
     # taken: a reading changed between the driver's restart and the stop above, or a
     # resume days later, would otherwise restore a stale copy.
+    # Counts first, a cheap refusal; then contents, which counts cannot vouch for.
     record_counts "$SOURCE_DB" counts-source
     run_to "$RECORD/counts-backup.json" helper manifest-counts "$backup/manifest.json" \
       "$RECORD/moving.txt"
-    if ! same counts-source counts-backup; then
+    local fresh=0
+    if same counts-source counts-backup; then
+      record_contents "$SOURCE_DB" contents-source
+      run_to "$RECORD/contents-backup.json" helper manifest-digests \
+        "$backup/manifest.json" "$RECORD/moving.txt"
+      same contents-source contents-backup && fresh=1
+    fi
+    if ((!fresh)); then
       run rm -f -- "$phase_dir/final.path" "$phase_dir/final-verified"
       refuse "$SOURCE_DB changed since the final backup; its markers are removed, so a" \
         "re-run takes a fresh one"
@@ -957,11 +986,14 @@ docs/installation-thinkpad.md describes and start them by hand."
     if [[ -n $present ]]; then
       # An earlier run restored the collections. Accept them only when identical; a
       # failed graph restore after them is resumed, anything else is the operator's.
+      local differ="$DB holds reading collections that differ from $SOURCE_DB; drop them,"
+      differ+=" and any reading graph definitions in its _graphs, by hand, then re-run"
       record_counts "$SOURCE_DB" counts-before
       record_counts "$DB" counts-after
-      same counts-before counts-after ||
-        refuse "$DB holds reading collections that differ from $SOURCE_DB; drop them," \
-          "and any reading graph definitions in its _graphs, by hand, then re-run"
+      same counts-before counts-after || refuse "$differ"
+      record_contents "$SOURCE_DB" contents-before
+      record_contents "$DB" contents-after
+      same contents-before contents-after || refuse "$differ"
       restore_collections=0
       record_graphs "$SOURCE_DB" graphs-before
       record_graphs "$DB" graphs-after
@@ -1001,10 +1033,15 @@ docs/installation-thinkpad.md describes and start them by hand."
     fi
     record_counts "$SOURCE_DB" counts-before
     record_counts "$DB" counts-after
+    record_contents "$SOURCE_DB" contents-before
+    record_contents "$DB" contents-after
+    # The graph definitions are compared whole: every field but _rev, and _id, which is
+    # _graphs/<key> in both databases.
     record_graphs "$SOURCE_DB" graphs-before
     record_graphs "$DB" graphs-after
-    if ! same counts-before counts-after || ! same graphs-before graphs-after; then
-      refuse "counts or graph definitions differ after the restore"
+    if ! same counts-before counts-after || ! same contents-before contents-after ||
+      ! same graphs-before graphs-after; then
+      refuse "counts, contents or graph definitions differ after the restore"
     fi
     run_to_status "$RECORD/setup-diagnose-moved.json" "$HADES" db setup diagnose \
       --operation-id "$OPERATION_ID"

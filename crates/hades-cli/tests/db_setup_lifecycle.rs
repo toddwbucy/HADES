@@ -4,7 +4,10 @@
 //! `scripts/test_isolated_database.py --contract db_setup`, never the live server.
 use hades_core::{
     config::{HadesConfig, SetupConfig},
-    db::{ArangoClient, ArangoPool, crud},
+    db::{
+        ArangoClient, ArangoPool, crud,
+        query::{self, ExecutionTarget},
+    },
     embedding_profile::{ProfileState, store::ProfileStore},
     test_support::{Fixtures, with_temp_db},
 };
@@ -132,15 +135,44 @@ fn check_receipt(
         std::fs::write(&path, bytes).unwrap();
         paths.push(path);
     }
-    let helper =
+    let mut args: Vec<std::ffi::OsString> = vec!["check-receipt".into()];
+    args.extend(paths.into_iter().map(Into::into));
+    args.extend([operation.into(), database.into()]);
+    helper(&args)
+}
+
+/// Run scripts/install/managed_workspace.py with these arguments.
+fn helper(args: &[std::ffi::OsString]) -> std::process::Output {
+    let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install/managed_workspace.py");
     std::process::Command::new("python3")
-        .arg(helper)
-        .arg("check-receipt")
-        .args(&paths)
-        .args([operation, database])
+        .arg(script)
+        .args(args)
         .output()
         .unwrap()
+}
+
+/// Serialize compact JSON with every object's keys in reverse order. Written as text,
+/// because a serde_json map in this build sorts its keys whatever the insertion order;
+/// a digest that agrees across this layout and the CLI's cannot depend on key order.
+fn reversed_keys(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            keys.reverse();
+            let fields: Vec<_> = keys
+                .into_iter()
+                .map(|k| format!("{}:{}", Value::from(k.as_str()), reversed_keys(&map[k])))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Value::Array(items) => {
+            let items: Vec<_> = items.iter().map(reversed_keys).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
+    }
 }
 
 /// The late policy the synthetic late fixture serves: 1000/1 windows, 500/0 passages.
@@ -218,6 +250,49 @@ async fn run_retry_inspect_diagnose_and_refusals() {
                 .unwrap()["count"],
             5
         );
+        // The installer's move-desk compares collections by a content digest of this
+        // binary's `db aql` output (#225). Pin that the helper reads that envelope, and
+        // that it agrees with the same rows fetched directly and written compact with
+        // keys reversed.
+        let contents = r#"FOR d IN @@c SORT d._key RETURN UNSET(d, "_rev")"#;
+        let bind = r#"{"@c": "hades_workspace"}"#;
+        let printed = cli
+            .raw(&[
+                "--db", &database, "db", "aql", "-f", "json", "-b", bind, contents,
+            ])
+            .await;
+        assert!(printed.status.success(), "{}", stderr(&printed));
+        let printed_path = directory.path().join("contents-printed.raw.json");
+        std::fs::write(&printed_path, &printed.stdout).unwrap();
+        let rows = query::query(
+            &pool,
+            contents,
+            Some(&serde_json::json!({"@c": "hades_workspace"})),
+            None,
+            false,
+            ExecutionTarget::Reader,
+        )
+        .await
+        .unwrap()
+        .results;
+        assert_eq!(rows.len(), 5);
+        let direct = serde_json::json!({"timestamp": "t", "success": true,
+            "data": {"results": rows, "count": 5}, "command": "db.aql"});
+        let direct_path = directory.path().join("contents-direct.raw.json");
+        let reversed = reversed_keys(&direct);
+        assert!(reversed.starts_with(r#"{"timestamp""#), "{reversed}");
+        std::fs::write(&direct_path, reversed).unwrap();
+        let digests: Vec<_> = [&printed_path, &direct_path]
+            .into_iter()
+            .map(|path| {
+                let out = helper(&["collection-digest".into(), path.into()]);
+                assert!(out.status.success(), "{out:?}");
+                String::from_utf8(out.stdout).unwrap()
+            })
+            .collect();
+        assert_eq!(digests[0].trim().len(), 64, "{digests:?}");
+        assert_eq!(digests[0], digests[1]);
+
         let store = ProfileStore::new(pool.clone()).unwrap();
         let saved = store.load().await.unwrap();
         assert_eq!(saved.profile().state, ProfileState::Ready);

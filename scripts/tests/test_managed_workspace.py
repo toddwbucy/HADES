@@ -287,6 +287,67 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("manifest-counts", manifest, moving)[1],
                          self.call("results", live)[1])
 
+    def aql_file(self, name, docs, *, pretty=True, count=None, success=True):
+        """An AQL envelope as `hades db aql -f json` prints it: sorted keys, pretty."""
+        value = {"command": "db.aql", "success": success, "timestamp": "t",
+                 "data": {"count": len(docs) if count is None else count, "results": docs}}
+        return self.write(name, json.dumps(value, indent=2 if pretty else None,
+                                           sort_keys=True, ensure_ascii=False))
+
+    def manifest_sha(self, docs):
+        """The backup driver's per-collection digest of the same projection."""
+        return hashlib.sha256(json.dumps(docs, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=False).encode()).hexdigest()
+
+    def test_collection_digest_matches_the_backup_manifest(self):
+        docs = [{"_key": "a", "_id": "c/a", "text": "caf\u00e9 \"q\" ]}", "n": [1, 2.5]},
+                {"_key": "b", "_id": "c/b", "nested": {"z": 1, "a": None}}]
+        path = self.aql_file("c.raw.json", docs)
+        # A tiny chunk forces documents and tokens to straddle reads.
+        self.assertEqual(mw.collection_digest(path, chunk_size=3), (self.manifest_sha(docs), 2))
+        self.assertEqual(self.call("collection-digest", path)[1], self.manifest_sha(docs) + "\n")
+
+    def test_collection_digest_ignores_key_order_and_rev(self):
+        docs = [{"_key": "a", "_id": "c/a", "v": 1, "w": 2}]
+        reordered = [{"w": 2, "v": 1, "_id": "c/a", "_key": "a", "_rev": "_hX1"}]
+        self.assertEqual(mw.collection_digest(self.aql_file("1.json", docs)),
+                         mw.collection_digest(self.aql_file("2.json", reordered, pretty=False)))
+
+    def test_collection_digest_changes_with_one_field(self):
+        docs = [{"_key": "a", "v": 1}, {"_key": "b", "state": "open"}]
+        changed = [{"_key": "a", "v": 1}, {"_key": "b", "state": "closed"}]
+        self.assertNotEqual(mw.collection_digest(self.aql_file("1.json", docs)),
+                            mw.collection_digest(self.aql_file("2.json", changed)))
+
+    def test_empty_collection_digest_is_stable(self):
+        empty = hashlib.sha256(b"[]").hexdigest()
+        self.assertEqual(mw.collection_digest(self.aql_file("1.json", [])), (empty, 0))
+        self.assertEqual(mw.collection_digest(self.aql_file("2.json", [], pretty=False)),
+                         (empty, 0))
+
+    def test_collection_digest_refuses_a_partial_or_failed_result(self):
+        docs = [{"_key": "a"}]
+        for path in (self.aql_file("count.json", docs, count=2),
+                     self.aql_file("failed.json", docs, success=False),
+                     self.write("cut.json", self.aql_file("whole.json", docs).read_text()[:-20]),
+                     self.write("none.json", envelope({"count": 0}))):
+            with self.subTest(path=path.name), self.assertRaises(mw.Refused):
+                mw.collection_digest(path)
+
+    def test_collection_digests_pair_with_manifest_digests(self):
+        rows = {"hades_reading_sessions": [{"_key": "s", "open": True}],
+                "reading_ab_nodes": []}
+        moving = self.write("moving.txt", "hades_reading_sessions\nreading_ab_nodes\n")
+        for name, docs in rows.items():
+            self.aql_file(f"contents-source-{name}.raw.json", docs)
+        manifest = self.write("manifest.json", json.dumps({"collections": {
+            name: {"count": len(docs), "sha256": self.manifest_sha(docs)}
+            for name, docs in rows.items()}}))
+        live = self.call("collection-digests", moving, self.root / "contents-source-")
+        self.assertEqual(live[0], 0, live[1])
+        self.assertEqual(live[1], self.call("manifest-digests", manifest, moving)[1])
+        self.assertEqual(json.loads(live[1])[0][0], "hades_reading_sessions")
+
     def test_a_filesystem_error_is_a_one_line_refusal(self):
         backup = self.root / "b"
         self.write("b/manifest.json", json.dumps({"database": "DB2", "files": {}}))

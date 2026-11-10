@@ -29,7 +29,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   command with resolved values, `--yes` skips the confirmation of the three
   service-affecting steps, values are overridable by `HADES_MW_*`, and each acting run
   records its evidence in a new private directory under the resolved data directory.
-  The script never drops a database; it prints the retirement gate and stops. Its
+  The script never drops a database; it prints the retirement gate and stops.
+  `move-desk` treats the final backup as current, and accepts a resumed restore, only
+  when each moving collection's content digest matches as well as its count, since the
+  desk's chat reconcile updates records in place without changing counts. Its
   helper `scripts/install/managed_workspace.py` holds the JSON checks and the managed
   backup copy (`add-managed`: the setup ledger and the registry's records and
   referenced artifacts, checked against source inventories and added to the backup

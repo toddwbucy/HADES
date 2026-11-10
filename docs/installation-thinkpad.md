@@ -1055,25 +1055,30 @@ completed one:
    dump's structure files (`moving-dump.txt`), which must agree. The collections that
    stay behind are printed (an empty `hades_schema` is expected). Every `_graphs` key
    must start with `reading_`, and every collection a definition names must be on the
-   list. Until the restore is recorded, the live counts of the moving collections must
-   also equal the final backup's manifest (`counts-source.json`,
-   `counts-backup.json`). A reading changed after the backup, or a resume days later
-   over a changed desk, fails here; the step removes the final backup's markers, so the
-   re-run takes a fresh one.
+   list. Until the restore is recorded, the moving collections must also match the
+   final backup's manifest: counts first (`counts-source.json`, `counts-backup.json`),
+   then a content digest per collection (`contents-source.json`,
+   `contents-backup.json`). The digest is the manifest's own: SHA-256 of the documents
+   sorted by `_key`, without `_rev`, as canonical JSON. Counts alone cannot see a
+   record updated in place, as the desk's chat reconcile updates exchanges. A reading
+   changed after the backup, or a resume days later over a changed desk, fails here;
+   the step removes the final backup's markers, so the re-run takes a fresh one.
 3. The final backup verified in isolation (`conveyance-kg-final-verify-result.json`);
    the verifier's staging directory under `/tmp` is removed afterwards.
 4. The restore, from a staged copy of the dump, because `arangorestore` writes a
    progress file into its input directory: the reading collections with
    `--overwrite false`, so a name clash fails, then `_graphs` data-only. The step first
    requires the new database to hold no reading collections and no graph definitions.
-   If an earlier run restored the collections, it accepts them only with counts equal
-   to the source's: with identical graph definitions it restores nothing, and with an
+   If an earlier run restored the collections, it accepts them only with counts and
+   content digests equal to the source's: with identical graph definitions it restores
+   nothing, and with an
    empty `_graphs` it restores the definitions alone. Anything else is refused, with
    the instruction to drop the reading collections and definitions from the new
    database by hand. The staged copy is removed on exit, also after a failure. The root
    password reaches `arangorestore` from `~/.config/hades/arango-root-password` through
-   an environment variable, never on the command line. Counts and graph definitions of
-   both databases must then compare equal, and `diagnose` must still report
+   an environment variable, never on the command line. Counts, content digests and
+   graph definitions (whole, except `_rev`) of both databases must then compare equal,
+   and `diagnose` must still report
    `"action": "none"`.
 5. The daemon and the viewer pointed at the new database: drop-ins named
    `managed-database.conf`, generated from the installed units with only the database
