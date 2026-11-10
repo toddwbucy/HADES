@@ -210,7 +210,8 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   these surfaced only after `verify` had loaded the model. `db setup diagnose` of an
   operation the ledger does not hold now matches `inspect`: `"success": false`, exit
   1, still carrying the advisory report. A fresh ledger root reads as no operation
-  rather than an error, and is not initialized.
+  rather than an error, and is not initialized. The `db setup` row of the
+  daemon-protocol table of CLI-only commands is aligned with its columns.
 
 - Close the verified server follow-ups (#225). A SIGTERM that reached
   `embedding.verified_server` after `serve()` replaced the default action but before
