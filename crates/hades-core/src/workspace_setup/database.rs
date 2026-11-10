@@ -404,6 +404,10 @@ mod tests {
             "hades_schema2",
             "reading_s_x",
             "reading_nodes",
+            // An empty graph id: these pin the non-empty-id branch, which reading_nodes
+            // never reaches because "nodes" has no "_nodes" suffix (#225).
+            "reading__nodes",
+            "reading__edges",
             "documents",
             "hades_setup",
             "hades_ingest_jobs",
