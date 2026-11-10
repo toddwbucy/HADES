@@ -209,8 +209,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   write returned, so a client that read `completed` or `failed` and started again at
   once could get "an ingest already owns this tree", with no job ID. The reaped child
   now frees its tree and concurrency slot before that write; shutdown still waits for
-  the write. Found as an intermittent `profiled_jobs` failure in CI, whose test now
-  prints the whole reply when a start returns no job ID.
+  the write. Since finishing jobs sit outside the concurrency limit, the admission
+  check for unfinished records asks for one row more than the jobs the service holds,
+  so owned records cannot hide one that needs reconciliation. Found as an intermittent
+  `profiled_jobs` failure in CI, whose test now prints the whole reply when a start
+  returns no job ID.
 
 - Close the db setup follow-ups (#225). `hades db setup run` refuses a bad operation
   ID, database name or ArangoDB username, a `setup.ledger_root` with `..` components,

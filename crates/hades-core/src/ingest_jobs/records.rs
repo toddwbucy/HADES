@@ -151,10 +151,15 @@ async fn start_with(
 
     // Database history is not a lock. Unowned unfinished rows require explicit
     // reconciliation; a numeric PID's existence cannot establish ownership.
+    // Owned unfinished rows number at most the registry's entries, so one row more
+    // cannot all be owned when an unowned row exists. Finishing entries sit outside
+    // MAX_CONCURRENT, but each lives only through persist's bounded retries, so the
+    // count stays small without a cap (#225).
+    let limit = super::owned_count() + 1;
     let rows = query::query_fold(pool,
-        "FOR j IN hades_ingest_jobs FILTER j.status IN ['starting','running'] LIMIT 3 RETURN {key:j._key, current_owner:j.owner_instance == @owner}",
-        json!({"owner":super::instance()}),
-        query::FoldLimits { batch_size:3, response_bytes:64*1024, max_rows:3, server_memory_bytes:8*1024*1024 },
+        "FOR j IN hades_ingest_jobs FILTER j.status IN ['starting','running'] LIMIT @limit RETURN {key:j._key, current_owner:j.owner_instance == @owner}",
+        json!({"owner":super::instance(),"limit":limit}),
+        query::FoldLimits { batch_size:limit as u32, response_bytes:64*1024, max_rows:limit as u64, server_memory_bytes:8*1024*1024 },
         Vec::new(), |rows, row| { rows.push(row); Ok(()) }, ()
     ).await.map_err(|e| service(format!("cannot verify ingest admission: {e}")))?;
     if rows.iter().any(|row| {
@@ -746,6 +751,56 @@ mod tests {
         gate.notify_one();
         released(job).await;
         assert!(mock.events.try_recv().is_err());
+    }
+
+    /// Finishing owners sit outside the concurrency limit, so owned unfinished rows can
+    /// outnumber MAX_CONCURRENT. The admission query must still reach an unowned row
+    /// behind them. Here one active and two finishing jobs are owned; the new start's
+    /// own reservation makes four entries, so the query asks for five rows (#225).
+    #[tokio::test]
+    async fn owned_finishing_rows_cannot_hide_an_unowned_record() {
+        let _test = super::super::TEST_LOCK.lock().await;
+        let owned: Vec<_> = (0..3)
+            .map(|index| {
+                let reservation =
+                    super::super::reserve(std::path::Path::new(&format!("/private-owned-{index}")))
+                        .unwrap();
+                let job = format!("{index:032x}");
+                reservation.identify("fixture", &job).unwrap();
+                if index > 0 {
+                    reservation.release_tree();
+                }
+                (reservation, job)
+            })
+            .collect();
+        let mut rows: Vec<_> = owned
+            .iter()
+            .map(|(_, job)| json!({"key":job,"current_owner":true}))
+            .collect();
+        rows.push(json!({"key":"f".repeat(32),"current_owner":true}));
+        let root = tempfile::tempdir().unwrap();
+        let config = HadesConfig::with_database("fixture");
+        let mut mock = Mock::new(vec![
+            ok(),
+            Reply::page(json!({"result":rows,"hasMore":false})),
+        ])
+        .await;
+        let error = start_with(
+            &mock.pool,
+            &config,
+            root.path().to_str().unwrap(),
+            false,
+            false,
+            python("print('{}')"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("not owned"), "{error}");
+        mock.event("POST collection").await;
+        let query = mock.event("POST cursor").await;
+        assert_eq!(query["bindVars"]["limit"], 5, "{query}");
+        assert!(mock.events.try_recv().is_err());
+        drop(owned);
     }
 
     #[tokio::test]

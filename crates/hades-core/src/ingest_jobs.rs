@@ -56,6 +56,13 @@ pub(crate) fn owns(database: &str, job: &str) -> bool {
     })
 }
 
+/// Reservations this process holds, finishing ones included. Admission sizes its
+/// query for unfinished records from this, so owned rows cannot fill the result and
+/// hide an unowned one. A poisoned registry reads as 0; `reserve` refuses first.
+pub(crate) fn owned_count() -> usize {
+    ADMISSION.entries.lock().map_or(0, |entries| entries.len())
+}
+
 const MAX_CONCURRENT: usize = 2;
 static ADMISSION: LazyLock<Arc<Admission>> =
     LazyLock::new(|| Arc::new(Admission::new(MAX_CONCURRENT)));
