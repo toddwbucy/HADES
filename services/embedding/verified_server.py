@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import stat
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from .config import EmbeddingConfig
 from .jina_v4 import MAX_TOKENS
-from .registry import RegisteredModel
+from .registry import ModelRegistry, RegisteredModel
 from .verified_http import create_verified_app
 from .verified_jina import VerifiedJinaProvider
 from .verified_late import VerifiedJinaLateProvider
+
+logger = logging.getLogger(__name__)
 
 # One process serves exactly one embedding space (#225). The late provider is a distinct
 # space, not a superset: it rewrites the pooling identity, refuses conventional planning
@@ -106,3 +110,54 @@ def build_app(provider: VerifiedJinaProvider, config: EmbeddingConfig) -> FastAP
     app = create_verified_app(provider)
     app.state.app_state.config.idle_timeout_seconds = config.idle_timeout_seconds
     return app
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Load one registered provider eagerly and serve it until stopped.
+
+    Every refusal happens before the socket is bound, so a misconfigured unit fails
+    its start instead of listening and failing the first verify. The model loads
+    before serving: a client that sees the socket can verify at once, and a load
+    failure surfaces in the unit's start rather than in a request.
+    """
+    args = parse_args(argv)
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    if os.environ.get("HF_HUB_OFFLINE") != "1" or os.environ.get("TRANSFORMERS_OFFLINE") != "1":
+        # The registered loader refuses otherwise (jina_v4.py); the libraries read
+        # these at import, so they cannot be set from inside this process.
+        print("verified server requires HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1",
+              file=sys.stderr)
+        return 1
+    if not args.registry.is_dir():
+        # ModelRegistry creates a missing root; a typo must not create an empty registry.
+        print(f"verified server: registry root does not exist: {args.registry}",
+              file=sys.stderr)
+        return 1
+    try:
+        uds = check_socket_path(args.uds)
+        config = EmbeddingConfig.from_env()
+        registration = ModelRegistry(args.registry).load(args.provider)
+        provider = build_provider(registration, args.space, config)
+        description = provider.describe()
+        # Identity, never paths: journal output must not leak private locations.
+        logger.info("Verified provider ready (model=%s, space=%s, serving_generation=%s)",
+                    provider.model_name, provider.space,
+                    description["receipt"]["serving_generation"])
+        app = build_app(provider, config)
+    except (ValueError, OSError) as exc:
+        print(f"verified server: {exc}", file=sys.stderr)
+        return 1
+
+    import uvicorn
+
+    try:
+        uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="info", access_log=False,
+                                      timeout_graceful_shutdown=30)).run()
+    finally:
+        uds.unlink(missing_ok=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

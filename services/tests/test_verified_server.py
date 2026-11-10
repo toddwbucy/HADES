@@ -1,7 +1,13 @@
 """The verified provider service: space labels, status route, entry point (#225)."""
 import asyncio
+import os
+from pathlib import Path
 import socket
 import stat
+import subprocess
+import sys
+import threading
+import time
 
 import httpx
 import pytest
@@ -110,3 +116,81 @@ def test_build_app_applies_idle_timeout(provider):
     cfg = EmbeddingConfig(device="cpu", model_name=p.model_name, idle_timeout_seconds=0)
     app = verified_server.build_app(p, cfg)
     assert app.state.app_state.config.idle_timeout_seconds == 0
+
+
+SERVICES = Path(__file__).resolve().parents[1]
+OFFLINE = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+
+
+def run_cli(args, env):
+    """Run the module as the unit does, importing this checkout's services tree."""
+    return subprocess.run([sys.executable, "-m", "embedding.verified_server", *args],
+                          capture_output=True, text=True, timeout=60,
+                          env={**env, "PYTHONPATH": str(SERVICES)})
+
+
+def test_main_requires_offline_mode(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k not in OFFLINE}
+    r = run_cli(["--registry", str(tmp_path), "--provider", "p", "--space", "late",
+                 "--uds", str(tmp_path / "s.sock")], env)
+    assert r.returncode == 1 and "HF_HUB_OFFLINE=1" in r.stderr
+
+
+def test_main_refuses_missing_registry(tmp_path):
+    r = run_cli(["--registry", str(tmp_path / "none"), "--provider", "p", "--space", "late",
+                 "--uds", str(tmp_path / "s.sock")], {**os.environ, **OFFLINE})
+    assert r.returncode == 1 and "registry root does not exist" in r.stderr
+    assert not (tmp_path / "none").exists()
+
+
+def test_main_serves_and_stops(provider, monkeypatch, tmp_path):
+    import uvicorn
+    from embedding.registry import ModelRegistry
+    p, _ = provider
+    root = tmp_path / "serving-registry"
+    root.mkdir(mode=0o700)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+    seen = {}
+
+    async def serve(server, sockets=None):
+        """Stand in for uvicorn: own the app lifespan and the socket until told to exit."""
+        seen["server"], seen["uds"] = server, server.config.uds
+        app = server.config.app
+        bound = socket.socket(socket.AF_UNIX)
+        bound.bind(server.config.uds)
+        try:
+            async with app.router.lifespan_context(app):
+                seen["loaded"] = p_status(app)
+                server.started = True
+                while not server.should_exit:
+                    await asyncio.sleep(0.001)
+        finally:
+            bound.close()
+
+    def p_status(app):
+        return app.state.app_state.embedder.is_loaded
+
+    monkeypatch.setattr(uvicorn.Server, "serve", serve)
+    monkeypatch.setattr(ModelRegistry, "load", lambda self, provider_id: p._registration)
+    monkeypatch.setattr(EmbeddingConfig, "from_env", classmethod(
+        lambda cls: EmbeddingConfig(device="cpu", model_name=p.model_name,
+                                    idle_timeout_seconds=0)))
+    for key, value in OFFLINE.items():
+        monkeypatch.setenv(key, value)
+    result = {}
+    worker = threading.Thread(target=lambda: result.setdefault("code", verified_server.main(
+        ["--registry", str(root), "--provider", "verified", "--space", "late",
+         "--uds", str(uds)])))
+    worker.start()
+    deadline = time.monotonic() + 30
+    while not getattr(seen.get("server"), "started", False):
+        assert worker.is_alive() and time.monotonic() < deadline, result
+        time.sleep(0.01)
+    assert seen["uds"] == str(uds) and seen["loaded"] is True
+    assert uds.exists()
+    seen["server"].should_exit = True
+    worker.join(30)
+    assert not worker.is_alive() and result["code"] == 0
+    assert not uds.exists()
