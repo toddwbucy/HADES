@@ -887,6 +887,18 @@ async fn data_owned_collections_during_initialization_do_not_hold_the_operation(
             let failed = setup.inspect(&request.operation_id).await.unwrap().unwrap();
             assert_eq!(failed.step, SetupStep::Schema);
             create_data_owned(&pool, &[("hades_schema", 2), ("reading_s_abc_nodes", 2)]).await;
+            // Diagnosis at the Schema checkpoint is the only caller of partial_schema; it
+            // must still advise the identical retry with tolerated names present (#225).
+            let diagnostic = setup.diagnose(&request.operation_id).await.unwrap();
+            assert_eq!(
+                (diagnostic.action, diagnostic.reason),
+                (
+                    hades_core::workspace_setup::RecoveryAction::RetryIdenticalRequest,
+                    hades_core::workspace_setup::RecoveryReason::InitializationIncomplete
+                ),
+                "{diagnostic:?}"
+            );
+            assert_eq!(diagnostic.receipt, Some(failed));
             let receipt = setup.run(request.clone()).await.unwrap();
             assert_eq!(receipt.status, SetupStatus::Ready);
             assert_eq!(receipt.step, SetupStep::Complete);
