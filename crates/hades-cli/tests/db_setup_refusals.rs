@@ -88,17 +88,30 @@ impl Installation {
     }
 
     fn config(&self, setup: bool, providers: bool) -> PathBuf {
-        let mut config = json!({"database":{"username":"fixture",
+        self.config_with("hades.json", setup, providers, &self.ledger(), "fixture")
+    }
+
+    /// The configuration with a chosen ledger root and ArangoDB username, written to its
+    /// own file so several can coexist in one installation.
+    fn config_with(
+        &self,
+        file: &str,
+        setup: bool,
+        providers: bool,
+        ledger: &Path,
+        user: &str,
+    ) -> PathBuf {
+        let mut config = json!({"database":{"username":user,
             "sockets":{"readonly":self.database.path,"readwrite":self.database.path}}});
         if setup {
             config["setup"] =
-                json!({"ledger_root":self.ledger(),"installation_id":"fixture-installation"});
+                json!({"ledger_root":ledger,"installation_id":"fixture-installation"});
         }
         if providers {
             config["registered_providers"] = json!({"registry_root":self.root.path().join("registry"),
                 "providers":[{"id":"local-jina","socket":self.provider.path}]});
         }
-        let path = self.root.path().join("hades.json");
+        let path = self.root.path().join(file);
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
         path
     }
@@ -276,4 +289,77 @@ async fn refuses_an_absent_configured_database_socket() {
             "configured ArangoDB socket is absent",
         );
     }
+}
+
+/// Identifier and ledger-root refusals come before the provider is contacted, so a typo
+/// never waits for, or loads, a model (#225). Building the coordinator makes no request.
+#[tokio::test]
+async fn refuses_bad_identifiers_and_ledger_traversal_before_the_provider() {
+    let installation = Installation::new("late");
+    let good = installation.config(true, true);
+    let traversal = installation.ledger().join("..").join("ledger");
+    let cases: Vec<(PathBuf, Vec<&str>, &str)> = vec![
+        (
+            installation.config_with("traversal.json", true, true, &traversal, "fixture"),
+            run_args("local-jina", LATE),
+            "setup.ledger_root must be an absolute path without .. components",
+        ),
+        (
+            installation.config_with("owner.json", true, true, &installation.ledger(), "bad user"),
+            run_args("local-jina", LATE),
+            "setup identifiers must be",
+        ),
+        (
+            good.clone(),
+            [
+                &["run", "--database", "managed", "--operation-id", "bad/id"][..],
+                &["--generation", "g1", "--provider", "local-jina"],
+                LATE,
+            ]
+            .concat(),
+            "setup identifiers must be",
+        ),
+        (
+            good,
+            [
+                &[
+                    "run",
+                    "--database",
+                    "1managed",
+                    "--operation-id",
+                    "setup-one",
+                ][..],
+                &["--generation", "g1", "--provider", "local-jina"],
+                LATE,
+            ]
+            .concat(),
+            "database must be",
+        ),
+    ];
+    for (config, args, needle) in cases {
+        let output = installation.run(&config, &args).await;
+        refused(&installation, &output, needle);
+        assert!(
+            installation.provider.contacts().is_empty(),
+            "{needle}: {:?}",
+            installation.provider.contacts()
+        );
+    }
+}
+
+/// An absent configured database socket stops `run` before the provider too.
+#[tokio::test]
+async fn run_refuses_an_absent_database_socket_before_the_provider() {
+    let installation = Installation::new("late");
+    let config = installation.config(true, true);
+    std::fs::remove_file(&installation.database.path).unwrap();
+    let output = installation
+        .run(&config, &run_args("local-jina", LATE))
+        .await;
+    refused(
+        &installation,
+        &output,
+        "configured ArangoDB socket is absent",
+    );
+    assert!(installation.provider.contacts().is_empty());
 }

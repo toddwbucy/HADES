@@ -204,6 +204,11 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Close the db setup follow-ups (#225). `hades db setup run` refuses a bad operation
+  ID, database name or ArangoDB username, a `setup.ledger_root` with `..` components,
+  and an absent configured database socket before it contacts the provider. Before,
+  these surfaced only after `verify` had loaded the model.
+
 - Close the verified server follow-ups (#225). A SIGTERM that reached
   `embedding.verified_server` after `serve()` replaced the default action but before
   uvicorn installed its own handlers was ignored, so the unit kept serving after a

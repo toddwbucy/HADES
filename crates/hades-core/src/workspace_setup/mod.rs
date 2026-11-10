@@ -305,17 +305,7 @@ impl WorkspaceSetup {
 impl SetupRequest {
     /// Bound the exact intent and refuse unsupported policies before reserving a database name.
     fn validate(&self) -> Result<(), SetupError> {
-        token(&self.operation_id)?;
-        ensure(
-            !self.database.is_empty()
-                && self.database.len() <= 64
-                && self.database.as_bytes()[0].is_ascii_alphabetic()
-                && self
-                    .database
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
-            "database must be 1..64 ASCII letters/digits/underscore/hyphen, starting with a letter",
-        )?;
+        Self::check_identifiers(&self.operation_id, &self.database)?;
         self.profile
             .validate(&self.manifest)
             .map_err(|e| SetupError::Invalid(e.to_string()))?;
@@ -338,6 +328,21 @@ impl SetupRequest {
             "setup requires initializing revision one with explicit cosine document passage policies only",
         )
     }
+    /// Refuse an operation ID or database name the coordinator would refuse, without a
+    /// profile or manifest, so a caller can check them before contacting a provider (#225).
+    pub fn check_identifiers(operation_id: &str, database: &str) -> Result<(), SetupError> {
+        token(operation_id)?;
+        ensure(
+            !database.is_empty()
+                && database.len() <= 64
+                && database.as_bytes()[0].is_ascii_alphabetic()
+                && database
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
+            "database must be 1..64 ASCII letters/digits/underscore/hyphen, starting with a letter",
+        )
+    }
+
     /// The digest a receipt echoes as `request_sha256`, so a caller can tell whether a
     /// stored receipt answers this request or an earlier one under the same ID (#225).
     pub fn request_sha256(&self) -> Result<String, SetupError> {

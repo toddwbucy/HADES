@@ -204,6 +204,12 @@ fn status_serves_late(provider: &str, space: &str) -> Result<bool> {
 pub async fn run_run(config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
     let policy = policy(&args)?;
     let (setup_config, catalog) = sections(config)?;
+    // Every refusal that needs no provider comes first: identifiers, the ledger root, the
+    // owner and the database endpoint. Before #225 they surfaced only after verify had
+    // loaded the model. Building the coordinator makes no request and writes nothing.
+    SetupRequest::check_identifiers(&args.operation_id, &args.database)
+        .context("invalid setup request")?;
+    let setup = coordinator(config, setup_config, catalog.clone())?;
     let provider = args.provider.as_str();
     let status = catalog
         .status(provider)
@@ -228,7 +234,6 @@ pub async fn run_run(config: &HadesConfig, args: SetupRunArgs) -> Result<()> {
         profile,
         manifest: verified.manifest().clone(),
     };
-    let setup = coordinator(config, setup_config, catalog)?;
     let digest = request.request_sha256().context("invalid setup request")?;
     let inspect = format!(
         "inspect it with: hades db setup inspect --operation-id {}",
