@@ -19,6 +19,27 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Added
 
+- Add `scripts/install/thinkpad-managed-workspace.sh` (#225), which turns the laptop's
+  managed workspace runbook into an installation script both operators can re-run:
+  `check` (read-only state), then `install-main`, `register`, `configure`,
+  `switch-embedder`, `setup-db`, `backup-1`, `move-desk`, `ingest` and `backup-2`, or
+  `all`. Each step tests its postcondition first and reports `already done`, refuses
+  in one line when a precondition is missing, and never replaces a file that exists
+  with other content; `all` resumes at the first undone step. `--dry-run` prints every
+  command with resolved values, `--yes` skips the confirmation of the three
+  service-affecting steps, values are overridable by `HADES_MW_*`, and each acting run
+  records its evidence in a new private directory under the resolved data directory.
+  The script never drops a database; it prints the retirement gate and stops.
+  `move-desk` treats the final backup as current, and accepts a resumed restore, only
+  when each moving collection's content digest matches as well as its count, since the
+  desk's chat reconcile updates records in place without changing counts. Its
+  helper `scripts/install/managed_workspace.py` holds the JSON checks and the managed
+  backup copy (`add-managed`: the setup ledger and the registry's records and
+  referenced artifacts, checked against source inventories and added to the backup
+  manifest), so the private backup driver now needs only `--database` and tolerance of
+  a database without the reading desk. The runbook section and the managed workspace
+  backup procedure now describe the script.
+
 - Add the laptop's managed workspace runbook (#225), a draft for the operator's run, as
   `docs/installation-thinkpad.md` "Managed workspace, 2026-11-xx": install main
   `09df08f` with its gate counts and SHA-256 table, register the Jina snapshot,
@@ -185,6 +206,50 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   branch; outgoing-call behavior remains covered (#179, #186).
 
 ### Fixed
+
+- Admit the next ingest job over a tree as soon as the previous job's outcome is
+  readable (#225). The daemon held the tree's admission until the terminal record's
+  write returned, so a client that read `completed` or `failed` and started again at
+  once could get "an ingest already owns this tree", with no job ID. The reaped child
+  now frees its tree and concurrency slot before that write; shutdown still waits for
+  the write. Since finishing jobs sit outside the concurrency limit, the admission
+  check for unfinished records asks for one row more than the jobs the service holds,
+  so owned records cannot hide one that needs reconciliation. Found as an intermittent
+  `profiled_jobs` failure in CI, whose test now prints the whole reply when a start
+  returns no job ID.
+
+- Close the db setup follow-ups (#225). `hades db setup run` refuses a bad operation
+  ID, database name or ArangoDB username, a `setup.ledger_root` with `..` components,
+  and an absent configured database socket before it contacts the provider. Before,
+  these surfaced only after `verify` had loaded the model. `db setup diagnose` of an
+  operation the ledger does not hold now matches `inspect`: `"success": false`, exit
+  1, still carrying the advisory report. A fresh ledger root reads as no operation
+  rather than an error, and is not initialized. The `db setup` row of the
+  daemon-protocol table of CLI-only commands is aligned with its columns. The
+  lifecycle contract proves a refused request leaves the setup ledger byte-identical.
+  New unit and contract cases pin the empty graph id in `reading__nodes` and
+  `reading__edges` as not data-owned. They also pin a schema that appears inside the
+  marker window as held at `needs_reconciliation`, step `marker`.
+
+- Close the verified server follow-ups (#225). A SIGTERM that reached
+  `embedding.verified_server` after `serve()` replaced the default action but before
+  uvicorn installed its own handlers was ignored, so the unit kept serving after a
+  stop; the handler now asks the server to exit. An error probing or removing the
+  socket after serving is now one line on stderr, the exit code unchanged, rather than
+  a traceback and exit 1; the stale socket is left for the next start's check.
+  A server that uvicorn returned from without ever serving now exits 1 with one line
+  instead of 0, which systemd read as a deliberate stop. Private paths no longer reach
+  the journal: socket refusals name the directory by role or depth, a missing registry
+  by its option, a start-time `OSError` by its strerror and file name, and uvicorn's
+  "running on unix socket" line shows `<private dir>/` in place of the socket's
+  directory. `scripts/qualify_verified_server.py` refuses a checkout with uncommitted
+  changes to tracked files, since its report names `HEAD`; requires the status after
+  planning to report the space still loaded, and the plan to be non-empty; and refuses
+  an existing `--output-dir` in one line instead of a traceback. New tests cover the
+  idle monitor staying off from `HADES_EMBEDDER_IDLE_TIMEOUT=0`, the CLI refusing an
+  unsafe socket parent, a world-writable ancestor, and a symlinked socket parent.
+  `services/README.md` lists which embedder variables the verified server applies and
+  which it ignores, and why its unit omits `PrivateTmp=`.
 
 - Tolerate ArangoDB 1200 on concurrent reading graph creation. ArangoDB 3.12 can
   report the losing side of two concurrent opens as a write-write conflict on the

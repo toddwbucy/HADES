@@ -71,8 +71,12 @@ impl WorkspaceSetup {
     /// its normal checks again; this report cannot authorize or resume work by itself.
     pub async fn diagnose(&self, operation_id: &str) -> Result<RecoveryReport, SetupError> {
         token(operation_id)?;
-        let lease = Lease::open_existing(self.root.clone(), self.scope.clone()).await?;
-        let record = lease.read(operation_id).await?;
+        // As inspect: a fresh root reads as no operation and is never initialized (#225).
+        let lease = Lease::open_initialized(self.root.clone(), self.scope.clone()).await?;
+        let record = match &lease {
+            Some(lease) => lease.read(operation_id).await?,
+            None => None,
+        };
         let mut report = RecoveryReport {
             format: "hades-setup-recovery-v1".into(),
             operation_id: operation_id.into(),
@@ -84,7 +88,7 @@ impl WorkspaceSetup {
             action: RecoveryAction::StartNewOperation,
             reason: RecoveryReason::OperationMissing,
         };
-        let Some(record) = record else {
+        let (Some(record), Some(lease)) = (record, lease) else {
             return Ok(report);
         };
         ensure(

@@ -21,6 +21,15 @@ impl SetupConfig {
         if !self.ledger_root.is_absolute() {
             return Err("setup.ledger_root must be an absolute path".into());
         }
+        // The ledger refuses `..` when it opens the root; refusing it here reports the
+        // mistake before `db setup run` contacts the provider (#225).
+        if self
+            .ledger_root
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("setup.ledger_root must be an absolute path without .. components".into());
+        }
         let id = &self.installation_id;
         if id.is_empty()
             || id.len() > 128
@@ -63,6 +72,15 @@ mod tests {
             }
             .validate()
             .is_err()
+        );
+        assert!(
+            SetupConfig {
+                ledger_root: "/a/../b".into(),
+                installation_id: "x".into()
+            }
+            .validate()
+            .unwrap_err()
+            .contains("without .. components")
         );
         assert!(
             serde_yaml::from_str::<SetupConfig>("ledger_root: /a\ninstallation_id: x\nextra: 1\n")
