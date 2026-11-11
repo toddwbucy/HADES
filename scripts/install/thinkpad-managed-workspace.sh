@@ -21,7 +21,8 @@
 #
 # Steps, in order (`all` runs every undone one and stops at the first failure):
 #   check            read-only: values, preconditions and each step's state
-#   install-main     install the main build's executables; bring the checkout to it
+#   install-main     install the main build's executables; hold the checkout's services/
+#                    at this script's commit
 #   register         register the approved Jina snapshot in the model registry
 #   configure        registry and ledger roots, the YAML sections, the unit's env file
 #   switch-embedder  install and start the verified provider unit; disable the legacy one
@@ -88,6 +89,8 @@ CORPUS=${HADES_MW_CORPUS:-$CHECKOUT/docs}
 RECORDS=${HADES_MW_RECORDS:-$DATA/managed-workspace}
 
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+# The commit this script runs from; install-main holds the checkout's services/ at it.
+INSTALLER_COMMIT=$(git -C "$REPO" rev-parse --verify -q HEAD || true)
 HELPER=$REPO/scripts/install/managed_workspace.py
 TEMPLATE=$REPO/deploy/systemd/hades-embedder-verified.service
 HADES=$BIN_DIR/hades
@@ -364,13 +367,23 @@ installed_prior() {
 }
 
 # The verified unit runs python from the checkout's services tree, and the viewer unit
-# runs the checkout's check_daemon_ready.py, so both must equal the main commit,
-# committed and in the working tree. The rest of scripts/ may be newer: this script and
-# its helper live there.
+# runs the checkout's check_daemon_ready.py. Both are held at this script's own commit,
+# not at the main commit: the change that added this script also changed services/
+# (the verified server's SIGTERM handling), and the unit template comes from this
+# checkout. That commit must contain the main commit, whose executables are installed,
+# and both trees must have these paths committed. The rest of scripts/ may differ: this
+# script and its helper live there.
 CHECKOUT_PATHS=(services scripts/check_daemon_ready.py)
-checkout_at_main() {
+installer_ready() {
+  [[ -n $INSTALLER_COMMIT ]] &&
+    git -C "$REPO" merge-base --is-ancestor "$MAIN_COMMIT" "$INSTALLER_COMMIT" \
+      2>/dev/null &&
+    [[ -z $(git -C "$REPO" status --short -- "${CHECKOUT_PATHS[@]}") ]]
+}
+checkout_at_installer() {
   git -C "$CHECKOUT" merge-base --is-ancestor "$MAIN_COMMIT" HEAD 2>/dev/null &&
-    git -C "$CHECKOUT" diff --quiet "$MAIN_COMMIT" HEAD -- "${CHECKOUT_PATHS[@]}" &&
+    git -C "$CHECKOUT" diff --quiet "$INSTALLER_COMMIT" HEAD -- "${CHECKOUT_PATHS[@]}" \
+      2>/dev/null &&
     [[ -z $(git -C "$CHECKOUT" status --short -- "${CHECKOUT_PATHS[@]}") ]]
 }
 
@@ -378,6 +391,12 @@ checkout_at_main() {
 # marked; a later upgrade then leaves the step done rather than blocked.
 state_install_main() {
   local why=()
+  installer_ready || {
+    echo "blocked: this script's checkout (${INSTALLER_COMMIT:0:7}) does not contain" \
+      "${MAIN_COMMIT:0:7} or has local changes under services/ or" \
+      "scripts/check_daemon_ready.py"
+    return
+  }
   if [[ ! -f $STATE/install-main.checked ]]; then
     if installed_build; then
       why+=("post-install checks not recorded")
@@ -388,7 +407,8 @@ state_install_main() {
       return
     fi
   fi
-  checkout_at_main || why+=("checkout services/ is not ${MAIN_COMMIT:0:7}")
+  checkout_at_installer ||
+    why+=("checkout services/ is not at this script's commit ${INSTALLER_COMMIT:0:7}")
   if ((${#why[@]})); then echo "pending: $(join "${why[@]}")"; else echo "done"; fi
 }
 
@@ -676,14 +696,18 @@ roll back, see docs/installation-thinkpad.md, Roll back 52d04d4, with $backup."
     say "installed; to roll back, see docs/installation-thinkpad.md, Roll back 52d04d4," \
       "with $backup"
   fi
-  if ! checkout_at_main; then
-    if ((!DRY_RUN)) && [[ -n $(git -C "$CHECKOUT" status --short -- services scripts) ]]; then
-      refuse "the checkout has local changes under services/ or scripts/"
+  if ! checkout_at_installer; then
+    if ((!DRY_RUN)) &&
+      [[ -n $(git -C "$CHECKOUT" status --short -- "${CHECKOUT_PATHS[@]}") ]]; then
+      refuse "the checkout has local changes under services/ or" \
+        "scripts/check_daemon_ready.py"
     fi
     run git -C "$CHECKOUT" fetch origin
-    run git -C "$CHECKOUT" merge --ff-only "$MAIN_COMMIT"
+    run git -C "$CHECKOUT" merge --ff-only "$INSTALLER_COMMIT"
     if ((!DRY_RUN)); then
-      checkout_at_main || refuse "the checkout's services/ still differs from $MAIN_COMMIT"
+      checkout_at_installer ||
+        refuse "the checkout's services/ still differs from this script's commit" \
+          "$INSTALLER_COMMIT"
     fi
   fi
 }
@@ -1226,6 +1250,7 @@ check() {
     "$WINDOW_OVERLAP_TOKENS, passages $PASSAGE_TOKENS overlapping $OVERLAP_TOKENS," \
     "provider ceiling $MAX_INPUT_TOKENS"
   say "  main build         ${MAIN_COMMIT}, hades $HADES_SHA256"
+  say "  services tree      this script's commit ${INSTALLER_COMMIT:-(not a git checkout)}"
   say "  paths              DATA=$(data_location) (resolved from $DATA_LINK); YAML $YAML;" \
     "checkout $CHECKOUT; corpus $CORPUS; records $RECORDS"
   say "Preconditions"

@@ -830,7 +830,7 @@ scripts/install/thinkpad-managed-workspace.sh all
 
 | Step | What it does |
 | --- | --- |
-| `install-main` | installs the `09df08f` executables; brings `services/` to it |
+| `install-main` | installs the `09df08f` executables; holds `services/` at the script's commit |
 | `register` | registers the approved snapshot in `$DATA/model-registry` |
 | `configure` | private roots, the two YAML sections, `embedder-verified.env` |
 | `switch-embedder` | starts the verified provider unit; disables the legacy one |
@@ -928,12 +928,18 @@ step refuses and names the marker to write after running the checks by hand. Loo
   `.local-install/preflight-224.json` (2026-10-19) and fails if that conversation has
   since been removed.
 
-The step then brings the checkout's `services/` to `09df08f`, refusing local changes
-under `services/` or `scripts/`: the verified unit runs `python -m
-embedding.verified_server` from it. It is done when `09df08f` is an ancestor of `HEAD`
-and `services/` equals it, committed and in the working tree. Between `ca37c93` and
-`09df08f` the legacy embedder's modules and the Python dependencies are unchanged, so
-the running legacy embedder needs no restart. Do not reinstall `services/.venv`.
+The step then holds the checkout's `services/` and `scripts/check_daemon_ready.py` at
+the commit the script runs from, not at `09df08f`: the change that added this script
+also changed `services/` (the verified server's SIGTERM handling), and the verified
+unit runs `python -m embedding.verified_server` from the checkout while its template
+comes from the script's own tree. That commit must contain `09df08f`, whose executables
+are installed, with those paths committed; otherwise the step is blocked. When the
+script runs from another tree, the step fetches `origin` and fast-forwards the checkout
+to that commit, refusing local changes under those two paths only. It is done when
+`09df08f` is an ancestor of `HEAD` and those paths equal the script's commit, committed
+and in the working tree. Between `ca37c93` and the script's commit the legacy
+embedder's modules and the Python dependencies are unchanged, so the running legacy
+embedder needs no restart. Do not reinstall `services/.venv`.
 
 To roll back the executables, follow [Roll back 52d04d4](#roll-back-52d04d4) with
 `main-09df08f-*` as the loop's glob; the `f930fbc` hashes are the same.

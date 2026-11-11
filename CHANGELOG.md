@@ -32,7 +32,10 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   The script never drops a database; it prints the retirement gate and stops.
   `move-desk` treats the final backup as current, and accepts a resumed restore, only
   when each moving collection's content digest matches as well as its count, since the
-  desk's chat reconcile updates records in place without changing counts. Its
+  desk's chat reconcile updates records in place without changing counts.
+  `install-main` holds the checkout's `services/` at the script's own commit, which
+  must contain the main build's commit, since this change itself updates the verified
+  server; it refuses local changes only under the paths the units run. Its
   helper `scripts/install/managed_workspace.py` holds the JSON checks and the managed
   backup copy (`add-managed`: the setup ledger and the registry's records and
   referenced artifacts, checked against source inventories and added to the backup
