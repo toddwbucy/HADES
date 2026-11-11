@@ -204,6 +204,17 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
 
 ### Fixed
 
+- Admit the next ingest job over a tree as soon as the previous job's outcome is
+  readable (#225). The daemon held the tree's admission until the terminal record's
+  write returned, so a client that read `completed` or `failed` and started again at
+  once could get "an ingest already owns this tree", with no job ID. The reaped child
+  now frees its tree and concurrency slot before that write; shutdown still waits for
+  the write. Since finishing jobs sit outside the concurrency limit, the admission
+  check for unfinished records asks for one row more than the jobs the service holds,
+  so owned records cannot hide one that needs reconciliation. Found as an intermittent
+  `profiled_jobs` failure in CI, whose test now prints the whole reply when a start
+  returns no job ID.
+
 - Close the db setup follow-ups (#225). `hades db setup run` refuses a bad operation
   ID, database name or ArangoDB username, a `setup.ledger_root` with `..` components,
   and an absent configured database socket before it contacts the provider. Before,
