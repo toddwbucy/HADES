@@ -58,6 +58,32 @@ def planning_request(space: str, text: str, receipt: dict,
     return "/v1/passages", body
 
 
+def check_status_after(status: dict, space: str) -> None:
+    """Refuse a status after planning that lost the space or the loaded model.
+
+    The idle monitor is off for qualification, so a model unloaded by now means the
+    service dropped it, and every receipt a client holds would be invalid (#225).
+    """
+    require(status.get("space") == space, "status after planning reports a different space")
+    require(status.get("loaded") is True, "status after planning reports the model unloaded")
+
+
+def check_plan(space: str, plan: dict) -> None:
+    """Refuse a 200 that planned nothing: an empty plan qualifies no serving path (#225)."""
+    for key in (("passages", "windows") if space == "late" else ("spans",)):
+        require(bool(plan.get(key)), f"the plan has no {key}")
+
+
+def tracked_changes(repo: Path) -> str:
+    """Return git's short status of tracked files; empty when they match HEAD.
+
+    Untracked files are left out: a local services/.venv link or an operator's notes
+    change no code the report attributes to HEAD.
+    """
+    return subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                          cwd=repo, capture_output=True, text=True, check=True).stdout
+
+
 def require(condition: bool, message: str) -> None:
     """Fail the qualification with a message that names the broken expectation."""
     if not condition:
@@ -122,9 +148,11 @@ def qualify(args, report: dict, output: Path) -> None:
                     planned = client.post(path, json=body)
                     report["planning_status"] = planned.status_code
                     require(planned.status_code == 200, f"{path} returned {planned.status_code}")
+                    check_plan(args.space, planned.json())
                     after = client.get("/v1/status")
                     require(after.status_code == 200, f"status returned {after.status_code}")
                     report["status_after"] = after.json()
+                    check_status_after(report["status_after"], args.space)
                 stopping = time.monotonic()
                 proc.send_signal(signal.SIGTERM)
                 code = proc.wait(SHUTDOWN_SECONDS)
@@ -149,9 +177,25 @@ def main(argv=None) -> int:
     # directory there. Resolve it against the operator's cwd; resolve() also shows the
     # real path the server's symlink-ancestor refusal will judge (#225).
     args.registry = args.registry.resolve(strict=False)
+    # Refusals before any evidence exists are one line on stderr, not a traceback
+    # (#225). Evidence never overwrites an earlier run.
+    existing = "the output directory already exists; name a new one"
+    if args.output_dir.exists():
+        print(f"qualify_verified_server: {existing}", file=sys.stderr)
+        return 1
+    # The report names HEAD as the implementation commit; uncommitted changes to
+    # tracked files would make that a description of code that did not run (#225).
+    if tracked_changes(REPO):
+        print("qualify_verified_server: the checkout has uncommitted changes to tracked "
+              "files; commit or stash them, so the report's commit describes the code "
+              "that ran", file=sys.stderr)
+        return 1
     os.umask(0o077)
-    # Evidence never overwrites an earlier run.
-    args.output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    try:
+        args.output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except FileExistsError:
+        print(f"qualify_verified_server: {existing}", file=sys.stderr)
+        return 1
     report = {"protocol": "hades-verified-server-qualification-v1", "space": args.space,
               "device": args.device, "idle_timeout": args.idle_timeout, "passed": False}
     previous = signal.signal(signal.SIGTERM, _raise_interrupt)

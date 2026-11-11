@@ -132,7 +132,8 @@ hades db setup run --database research --provider local-jina --operation-id rese
 
 Repeat the exact command to retry. `hades db setup inspect --operation-id research-1`
 prints the receipt, and `hades db setup diagnose --operation-id research-1` prints an
-advisory recovery report; neither loads a model. See
+advisory recovery report; neither loads a model. For an operation the ledger does not
+hold, both print `"success": false` with a null receipt and exit 1. See
 [Managed databases](#managed-model-bound-databases) for the pieces involved.
 
 ### Explore existing knowledge
@@ -264,10 +265,12 @@ Configure the `registered_providers` and `setup` sections as described in
 [model-bound recovery contract](docs/operations/model-bound-recovery.md) and the
 workstation
 [backup procedure](docs/operations/thinkpad-backup-restore.md#managed-workspace);
-a worked installation is in
-[the laptop runbook](docs/installation-thinkpad.md#managed-workspace-2026-11-xx). A
-restore recovers a managed database's records, not a ready managed workspace:
-ownership rebinding is not yet supported.
+a worked installation is
+[`scripts/install/thinkpad-managed-workspace.sh`](scripts/install/thinkpad-managed-workspace.sh),
+an idempotent step-by-step installer with `check` and `--dry-run`, run as
+[the laptop runbook](docs/installation-thinkpad.md#managed-workspace-2026-11-xx)
+describes. A restore recovers a managed database's records, not a ready managed
+workspace: ownership rebinding is not yet supported.
 
 ## Connect an agent through MCP
 

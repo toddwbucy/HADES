@@ -4,6 +4,11 @@ use hades_core::{
     test_support::{Fixtures, with_temp_db},
 };
 use serde_json::json;
+
+#[path = "common/setup_proxy.rs"]
+#[allow(dead_code)] // This target uses only the fault-response constructor.
+mod proxy;
+
 fn request(session: &str, revision: u64, action: Action) -> Mutation {
     Mutation {
         session: session.into(),
@@ -505,6 +510,62 @@ fn removing_a_reading_preserves_legacy_state_and_is_human_only() {
         .unwrap();
     assert!(!state.archived);
     assert_eq!(state.revision, 2);
+}
+
+/// ArangoDB 3.12 reports a concurrent graph creation as a write-write conflict on the
+/// `_graphs` primary index (1200) as well as 1925 or 1210. The proxy forwards the real
+/// create, then answers 1200, which is what the losing side of the race sees.
+#[tokio::test]
+async fn open_reuses_a_graph_created_under_a_write_write_conflict() {
+    with_temp_db("reading_conflict", Fixtures::Empty, |pool| async move {
+        let uploaded = reading::upload(
+            &pool,
+            SourceRequest {
+                filename: "race.txt".into(),
+                content_base64: base64::engine::general_purpose::STANDARD.encode(b"Race fixture"),
+            },
+        )
+        .await
+        .unwrap();
+        let hash = uploaded["source_hash"].as_str().unwrap().to_owned();
+        pool.writer()
+            .patch(
+                &format!("document/hades_reading_sources/{hash}"),
+                &json!({"status":"ready","structured":{"format":"docling-blocks-v1","blocks":[]}}),
+            )
+            .await
+            .unwrap();
+        let rule = proxy::Rule {
+            method: "POST",
+            path: "gharial",
+            name: None,
+            nth: 1,
+            before: false,
+            hold: false,
+            fail: true,
+            callback: None,
+        };
+        let proxy = proxy::Proxy::with_fault(pool.writer(), rule, 409, 1200);
+        let client = hades_core::db::ArangoClient::with_socket(
+            proxy.admin.socket_path().unwrap().into(),
+            pool.database(),
+            "fixture",
+            "fixture",
+        );
+        let through = hades_core::db::ArangoPool::new(client.clone(), client);
+        let request = OpenRequest {
+            id: "race".into(),
+            title: "race.txt".into(),
+            source_hash: hash,
+            actor: "human".into(),
+        };
+        let opened = reading::open(&through, request).await.unwrap();
+        assert_eq!(opened["graph"], "reading_race");
+        assert_eq!(proxy.hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let graph = pool.writer().get("gharial/reading_race").await.unwrap();
+        assert_eq!(graph["graph"]["name"], "reading_race");
+    })
+    .await;
 }
 
 #[tokio::test]

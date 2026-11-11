@@ -44,6 +44,12 @@ pub struct Proxy {
 impl Proxy {
     /// Proxy one test's explicit server; use matching request occurrences to target real DDL/commits.
     pub fn new(backend: &ArangoClient, rule: Rule) -> Self {
+        Self::with_fault(backend, rule, 500, 1)
+    }
+
+    /// As `new`, but a failing rule answers with this HTTP status and ArangoDB errorNum,
+    /// so a test can reproduce a specific server error after the real side effect.
+    pub fn with_fault(backend: &ArangoClient, rule: Rule, code: u16, error_num: i64) -> Self {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let socket = directory.path().join("proxy.sock");
@@ -138,7 +144,7 @@ impl Proxy {
                                         if rule.hold && tokio::time::timeout(Duration::from_secs(15),state.2.notified()).await.is_err() {
                                             return broken_response(&state.4,"fixture hold timed out");
                                         }
-                                        if rule.fail { status=500; response=json!({"error":true,"errorNum":1,"code":500,"errorMessage":"injected setup fault"}).to_string(); }
+                                        if rule.fail { status=code; response=json!({"error":true,"errorNum":error_num,"code":code,"errorMessage":"injected setup fault"}).to_string(); }
                                     }
                                     Ok::<_,std::convert::Infallible>(Response::builder().status(status).body(Full::new(Bytes::from(response))).unwrap())
                                 }

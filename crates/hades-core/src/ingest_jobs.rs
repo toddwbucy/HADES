@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -45,13 +46,21 @@ pub(crate) fn instance() -> &'static str {
     &INSTANCE
 }
 pub(crate) fn owns(database: &str, job: &str) -> bool {
-    ADMISSION.paths.lock().is_ok_and(|paths| {
-        paths.values().any(|identity| {
-            identity
+    ADMISSION.entries.lock().is_ok_and(|entries| {
+        entries.values().any(|entry| {
+            entry
+                .identity
                 .as_ref()
                 .is_some_and(|(db, id)| db == database && id == job)
         })
     })
+}
+
+/// Reservations this process holds, finishing ones included. Admission sizes its
+/// query for unfinished records from this, so owned rows cannot fill the result and
+/// hide an unowned one. A poisoned registry reads as 0; `reserve` refuses first.
+pub(crate) fn owned_count() -> usize {
+    ADMISSION.entries.lock().map_or(0, |entries| entries.len())
 }
 
 const MAX_CONCURRENT: usize = 2;
@@ -60,59 +69,81 @@ static ADMISSION: LazyLock<Arc<Admission>> =
 
 struct Admission {
     limit: usize,
-    paths: Mutex<HashMap<PathBuf, Option<(String, String)>>>,
+    // Keyed by reservation, not by path: a finishing owner and the next job over
+    // the same tree hold entries at once.
+    entries: Mutex<HashMap<u64, Entry>>,
+    next: AtomicU64,
     shutdown: CancellationToken,
+}
+
+struct Entry {
+    path: PathBuf,
+    identity: Option<(String, String)>,
+    /// The child is reaped and only its outcome is still being written. Its tree and
+    /// its concurrency slot are free, because a client that reads the terminal record
+    /// may start the next job at once (CI run 42886974807, #225). Drain and `owns`
+    /// still see the entry until the write returns.
+    finishing: bool,
 }
 
 impl Admission {
     fn new(limit: usize) -> Self {
         Self {
             limit,
-            paths: Mutex::new(HashMap::new()),
+            entries: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(0),
             shutdown: CancellationToken::new(),
         }
     }
 
     fn reserve(self: &Arc<Self>, canonical_path: &Path) -> Result<Reservation, String> {
-        let mut paths = self
-            .paths
+        let mut entries = self
+            .entries
             .lock()
             .map_err(|_| "ingest admission unavailable")?;
         if self.shutdown.is_cancelled() {
             return Err("ingest service is shutting down".into());
         }
+        let active: Vec<_> = entries.values().filter(|entry| !entry.finishing).collect();
         // Ancestors and descendants also overlap. Database selection does not
         // make concurrent analyzers over the same source tree independent.
-        if paths
-            .keys()
-            .any(|path| path.starts_with(canonical_path) || canonical_path.starts_with(path))
-        {
+        if active.iter().any(|entry| {
+            entry.path.starts_with(canonical_path) || canonical_path.starts_with(&entry.path)
+        }) {
             return Err("an ingest already owns this tree or an overlapping tree".into());
         }
-        if paths.len() >= self.limit {
+        if active.len() >= self.limit {
             return Err(format!(
                 "{} ingest jobs are already admitted across this service; wait for one to finish",
                 self.limit
             ));
         }
-        paths.insert(canonical_path.to_owned(), None);
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        entries.insert(
+            id,
+            Entry {
+                path: canonical_path.to_owned(),
+                identity: None,
+                finishing: false,
+            },
+        );
         Ok(Reservation {
             admission: Arc::clone(self),
-            path: canonical_path.to_owned(),
+            id,
         })
     }
 
     fn close(&self) {
         // Serialize cancellation with admission. Even on poison, cancellation
         // reaches existing owners and the registry continues failing closed.
-        let _guard = self.paths.lock();
+        let _guard = self.entries.lock();
         self.shutdown.cancel();
     }
 
     async fn drain(&self) -> anyhow::Result<()> {
         loop {
             if self
-                .paths
+                .entries
                 .lock()
                 .map_err(|_| anyhow::anyhow!("ingest registry poisoned during shutdown"))?
                 .is_empty()
@@ -128,21 +159,32 @@ impl Admission {
 /// This type is intentionally neither Clone nor keyed by caller-supplied IDs.
 pub(crate) struct Reservation {
     admission: Arc<Admission>,
-    path: PathBuf,
+    id: u64,
 }
 
 impl Reservation {
     pub(crate) fn identify(&self, database: &str, job: &str) -> Result<(), String> {
-        let mut paths = self
+        let mut entries = self
             .admission
-            .paths
+            .entries
             .lock()
             .map_err(|_| "ingest admission unavailable")?;
-        let identity = paths
-            .get_mut(&self.path)
+        let entry = entries
+            .get_mut(&self.id)
             .ok_or("ingest reservation missing")?;
-        *identity = Some((database.to_owned(), job.to_owned()));
+        entry.identity = Some((database.to_owned(), job.to_owned()));
         Ok(())
+    }
+
+    /// Free the tree once the child is reaped, before its outcome is written. The
+    /// reservation still holds drain and the job's identity until it is dropped.
+    pub(crate) fn release_tree(&self) {
+        // A poisoned registry stays closed; there is nothing safe to mark.
+        if let Ok(mut entries) = self.admission.entries.lock()
+            && let Some(entry) = entries.get_mut(&self.id)
+        {
+            entry.finishing = true;
+        }
     }
 
     pub(crate) fn shutdown(&self) -> CancellationToken {
@@ -170,8 +212,8 @@ impl Drop for Reservation {
     fn drop(&mut self) {
         // A poisoned registry stays unavailable; do not reopen admission after
         // an invariant failure by recovering a potentially inconsistent set.
-        if let Ok(mut paths) = self.admission.paths.lock() {
-            paths.remove(&self.path);
+        if let Ok(mut entries) = self.admission.entries.lock() {
+            entries.remove(&self.id);
         }
     }
 }
@@ -230,6 +272,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_finishing_owner_frees_its_tree_and_slot_but_holds_drain() {
+        let admission = Arc::new(Admission::new(1));
+        let finishing = admission.reserve(Path::new("/fixture/tree")).unwrap();
+        finishing.release_tree();
+        let next = admission.reserve(Path::new("/fixture/tree")).unwrap();
+        assert!(admission.reserve(Path::new("/fixture/tree")).is_err());
+        drop(next);
+        admission.close();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), admission.drain())
+                .await
+                .is_err()
+        );
+        drop(finishing);
+        tokio::time::timeout(std::time::Duration::from_secs(1), admission.drain())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn cancellation_before_spawn_releases_reservation() {
         let admission = Arc::new(Admission::new(1));
         let (ready, started) = tokio::sync::oneshot::channel();
@@ -251,7 +314,7 @@ mod tests {
         let admission = Arc::new(Admission::new(2));
         let broken = Arc::clone(&admission);
         let _ = std::thread::spawn(move || {
-            let _lock = broken.paths.lock().unwrap();
+            let _lock = broken.entries.lock().unwrap();
             panic!("private fixture invariant failure");
         })
         .join();
