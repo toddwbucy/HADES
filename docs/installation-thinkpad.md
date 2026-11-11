@@ -1122,8 +1122,12 @@ results each:
 | `query-ceiling.json` | 20,000 tokens, ruled 2026-11-09 from a real-prose bisection (23,000 passed, 24,000 ran out of memory) | `installation-thinkpad.md`, `installation-thinkpad-services.md`, `specs/db-setup-door.md` |
 
 A question passes when one of its expected sources is among the five results; the step
-prints the sources in rank order. A missed question fails the step after the ingest is
-recorded, so a re-run goes on to `backup-2`; read the query files first.
+prints the sources in rank order. Once the helper accepts the ingest envelope the step
+marks the corpus ingested (`state/ingest.ingested`), and it is done (`state/ingest.done`)
+only when both questions pass. A missed question fails the step and leaves it pending,
+"ingested, query gates not passed", so `backup-2` and `all` stop there. Read the query
+files first; a re-run asks both questions again without ingesting again, which the
+managed path would refuse for every file already stored.
 
 ### backup-2
 

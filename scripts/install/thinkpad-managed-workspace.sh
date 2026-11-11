@@ -547,9 +547,20 @@ state_move_desk() {
   fi
 }
 
+# ingest.ingested records the ingest run once its envelope passed; ingest.done follows
+# only when both questions found their sources. The managed path refuses an existing
+# source without --force, so a re-run after a missed question must not ingest again.
 state_ingest() {
-  if [[ -f $STATE/ingest.done ]]; then echo "done"; else echo "pending: not ingested"; fi
+  if [[ -f $STATE/ingest.done ]]; then
+    echo "done"
+  elif [[ -f $STATE/ingest.ingested ]]; then
+    echo "pending: ingested, query gates not passed"
+  else
+    echo "pending: not ingested"
+  fi
 }
+
+ingest_started() { [[ -f $STATE/ingest.ingested || -f $STATE/ingest.done ]]; }
 
 state_of() {
   local fn=state_${1//-/_}
@@ -834,8 +845,9 @@ act_setup_db() {
 
 act_backup_1() {
   require_done setup-db
-  [[ -f $STATE/move-desk.done || -d $STATE/move-desk || -f $STATE/ingest.done ]] &&
+  if [[ -f $STATE/move-desk.done || -d $STATE/move-desk ]] || ingest_started; then
     refuse "backup-1 must come before the desk move and the first ingest"
+  fi
   require_driver
   need_env
   combined_backup backup-1
@@ -1135,6 +1147,24 @@ corpus_files() {
 act_ingest() {
   require_done move-desk
   need_env
+  if [[ -f $STATE/ingest.ingested ]]; then
+    say "the corpus was ingested by the run recorded in $(<"$STATE/ingest.ingested");" \
+      "asking the two questions again"
+  else
+    ingest_corpus
+  fi
+  run_to "$RECORD/query-inventory.json" "$HADES" --db "$DB" db query "$QUERY_INVENTORY" -n 5
+  run_to "$RECORD/query-ceiling.json" "$HADES" --db "$DB" db query "$QUERY_CEILING" -n 5
+  local failed=0
+  run helper query-sources "$RECORD/query-inventory.json" "${EXPECT_INVENTORY[@]}" ||
+    failed=1
+  run helper query-sources "$RECORD/query-ceiling.json" "${EXPECT_CEILING[@]}" || failed=1
+  ((!failed)) || refuse "a question missed its expected sources; see the query files in" \
+    "the record. Re-running ingest asks again without ingesting again."
+  mark ingest.done "$RECORD"
+}
+
+ingest_corpus() {
   [[ -d $CORPUS ]] || refuse "the corpus $CORPUS is missing"
   [[ -z $(git -C "$CORPUS" status --short -- .) ]] ||
     refuse "the corpus tree has uncommitted changes"
@@ -1155,15 +1185,7 @@ act_ingest() {
   run_to_status "$RECORD/ingest.json" "$HADES" --db "$DB" ingest --root "$CORPUS" \
     "${corpus[@]}"
   run helper check-ingest "$RECORD/ingest.json" "${#corpus[@]}"
-  mark ingest.done "$RECORD"
-  run_to "$RECORD/query-inventory.json" "$HADES" --db "$DB" db query "$QUERY_INVENTORY" -n 5
-  run_to "$RECORD/query-ceiling.json" "$HADES" --db "$DB" db query "$QUERY_CEILING" -n 5
-  local failed=0
-  run helper query-sources "$RECORD/query-inventory.json" "${EXPECT_INVENTORY[@]}" ||
-    failed=1
-  run helper query-sources "$RECORD/query-ceiling.json" "${EXPECT_CEILING[@]}" || failed=1
-  ((!failed)) || refuse "ingest is recorded, but a question missed its expected sources;" \
-    "see the query files in the record"
+  mark ingest.ingested "$RECORD"
 }
 
 act_backup_2() {

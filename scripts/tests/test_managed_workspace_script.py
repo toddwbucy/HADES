@@ -1,9 +1,10 @@
 """End-to-end tests for scripts/install/thinkpad-managed-workspace.sh.
 
 Each test runs the script against scratch git repositories, a scratch data directory
-and a stub `systemctl` that fails, first on PATH, so no run can reach a live unit,
-database or provider.
+and stub commands: a fake `hades` that answers from files, and a `systemctl` that
+fails, first on PATH, so no run can reach a live unit, database or provider.
 """
+import json
 import os
 from pathlib import Path
 import shutil
@@ -15,10 +16,42 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / "install" / "thinkpad-managed-workspace.sh"
 HELPER = SCRIPT.with_name("managed_workspace.py")
 
+FAKE_HADES = """#!/usr/bin/env python3
+\"\"\"Answer `ingest` and `db query` as the CLI would, logging every call.\"\"\"
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["FAKE_HADES_LOG"], "a") as log:
+    log.write(" ".join(args) + "\\n")
+ingested = Path(os.environ["FAKE_HADES_INGESTED"])
+if "ingest" in args:
+    files = args[args.index("--root") + 2:]
+    if ingested.exists():
+        # The managed path refuses an existing source without --force.
+        data = {"completed": 0, "failed": len(files), "skipped": 0}
+        print(json.dumps({"success": False, "command": "ingest", "data": data}))
+        sys.exit(1)
+    ingested.write_text("yes")
+    data = {"completed": len(files), "failed": 0, "skipped": 0,
+            "embedding_profile_state": "ready"}
+    print(json.dumps({"success": True, "command": "ingest", "data": data}))
+elif "query" in args:
+    hits = json.loads(Path(os.environ["FAKE_HADES_HITS"]).read_text())
+    print(json.dumps({"success": True, "command": "db.query", "data": {"results": hits}}))
+else:
+    sys.exit(2)
+"""
+
 STUB_SYSTEMCTL = """#!/bin/sh
 echo "systemctl $*" >> "$STUB_SYSTEMCTL_LOG"
 exit 1
 """
+
+# Sources that answer both first-ingest questions, and sources that answer neither.
+GOOD_HITS = [{"source_id": "relative-file:specs/db-setup-door.md"},
+             {"source_id": "relative-file:installation-thinkpad.md"}]
+BAD_HITS = [{"source_id": "relative-file:unrelated.md"}]
+
 
 class ScriptRun(unittest.TestCase):
     """A scratch home for one script run: data, config, stub binaries and git identity."""
@@ -170,6 +203,52 @@ class CheckoutPin(ScriptRun):
         code, out = self.install_main()
         self.assertEqual(code, 1, out)
         self.assertIn("local changes", out)
+
+
+class IngestGates(ScriptRun):
+    """ingest is done only once both query gates pass, and a re-run never re-ingests."""
+
+    def setUp(self):
+        """Stage a finished desk move, a clean corpus and the fake hades."""
+        super().setUp()
+        (self.state / "move-desk.done").write_text("record\n")
+        (self.config / "daemon.env").write_text("")
+        self.corpus = self.root / "corpus"
+        self.corpus.mkdir()
+        self.git(self.corpus, "init", "-q", "-b", "main")
+        self.commit(self.corpus, {"specs/db-setup-door.md": "door\n",
+                                  "installation-thinkpad.md": "laptop\n"})
+        self.hits = self.root / "hits.json"
+        self.log = self.root / "hades.log"
+        self.executable(self.bin / "hades", FAKE_HADES)
+        self.env.update(HADES_MW_CHECKOUT=str(self.root),
+                        HADES_MW_CORPUS=str(self.corpus),
+                        FAKE_HADES_LOG=str(self.log), FAKE_HADES_HITS=str(self.hits),
+                        FAKE_HADES_INGESTED=str(self.root / "ingested"))
+
+    def calls(self, verb):
+        """Count the fake hades calls whose arguments include VERB."""
+        lines = self.log.read_text().splitlines() if self.log.exists() else []
+        return sum(verb in line.split() for line in lines)
+
+    def test_a_failed_gate_leaves_ingest_undone_and_a_rerun_only_requeries(self):
+        """A missed question keeps ingest pending, and the re-run only asks again."""
+        self.hits.write_text(json.dumps(BAD_HITS))
+        code, out = self.run_script("ingest")
+        self.assertEqual(code, 1, out)
+        self.assertFalse((self.state / "ingest.done").exists(), out)
+        self.assertEqual(self.calls("ingest"), 1)
+
+        code, out = self.run_script("--dry-run", "ingest")
+        self.assertIn("== ingest (ingested, query gates not passed)", out)
+
+        self.hits.write_text(json.dumps(GOOD_HITS))
+        code, out = self.run_script("ingest")
+        self.assertEqual(code, 0, out)
+        self.assertIn("ingest: done", out)
+        self.assertTrue((self.state / "ingest.done").exists())
+        self.assertEqual(self.calls("ingest"), 1)
+        self.assertEqual(self.calls("query"), 4)
 
 
 if __name__ == "__main__":

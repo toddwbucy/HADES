@@ -35,7 +35,9 @@ with the release date, and a fresh `[Unreleased]` is opened above it.
   desk's chat reconcile updates records in place without changing counts.
   `install-main` holds the checkout's `services/` at the script's own commit, which
   must contain the main build's commit, since this change itself updates the verified
-  server; it refuses local changes only under the paths the units run. Its
+  server; it refuses local changes only under the paths the units run. `ingest` is
+  done only when both query gates pass: a missed question leaves it pending, and a
+  re-run asks again without ingesting again. Its
   helper `scripts/install/managed_workspace.py` holds the JSON checks and the managed
   backup copy (`add-managed`: the setup ledger and the registry's records and
   referenced artifacts, checked against source inventories and added to the backup
