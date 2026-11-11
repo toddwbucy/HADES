@@ -75,8 +75,12 @@ def test_cli_refuses_existing_output_dir(tmp_path):
     r = subprocess.run([sys.executable, str(SCRIPT), "--registry", str(tmp_path), "--provider",
                         "p", "--space", "late", "--device", "cpu", "--output-dir",
                         str(tmp_path / "out")], capture_output=True, text=True, timeout=60)
-    assert r.returncode != 0
+    assert r.returncode == 1
     assert list((tmp_path / "out").iterdir()) == []
+    # One line naming the refusal, not a FileExistsError traceback (#225).
+    assert "Traceback" not in r.stderr
+    assert r.stderr.strip().splitlines() == [
+        "qualify_verified_server: the output directory already exists; name a new one"]
 
 
 def test_relative_registry_reaches_the_child_absolute(tmp_path, monkeypatch):
@@ -94,6 +98,8 @@ def test_relative_registry_reaches_the_child_absolute(tmp_path, monkeypatch):
         raise RuntimeError("launch captured")
 
     monkeypatch.setattr(harness.subprocess, "Popen", capture)
+    # This test is about the launch; a developer's uncommitted edits must not stop it.
+    monkeypatch.setattr(harness, "tracked_changes", lambda repo: "")
     # main() sets a process-wide umask; restore it so later tests' modes are unchanged.
     umask = os.umask(0o022)
     os.umask(umask)
@@ -108,3 +114,57 @@ def test_relative_registry_reaches_the_child_absolute(tmp_path, monkeypatch):
     registry = command[command.index("--registry") + 1]
     assert launched["cwd"] != tmp_path
     assert registry == str((tmp_path / "registry").resolve())
+
+
+def test_status_after_must_still_report_the_space_loaded():
+    """The status after planning must report the selected space, still loaded."""
+    harness.check_status_after({"space": "late", "loaded": True}, "late")
+    with pytest.raises(RuntimeError, match="unloaded"):
+        harness.check_status_after({"space": "late", "loaded": False}, "late")
+    with pytest.raises(RuntimeError, match="different space"):
+        harness.check_status_after({"space": "conventional", "loaded": True}, "late")
+
+
+def test_plan_must_not_be_empty():
+    """A 200 with no passages or windows is not a qualifying plan."""
+    harness.check_plan("late", {"passages": [{}], "windows": [{}]})
+    harness.check_plan("conventional", {"spans": [{}]})
+    with pytest.raises(RuntimeError, match="no passages"):
+        harness.check_plan("late", {"passages": [], "windows": [{}]})
+    with pytest.raises(RuntimeError, match="no windows"):
+        harness.check_plan("late", {"passages": [{}], "windows": []})
+    with pytest.raises(RuntimeError, match="no spans"):
+        harness.check_plan("conventional", {"spans": []})
+
+
+def git(repo, *args):
+    """Run git in a scratch repository with a fixed identity."""
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                   cwd=repo, check=True, capture_output=True)
+
+
+def test_tracked_changes_ignores_untracked_files(tmp_path):
+    """A modified tracked file is a change; an untracked one is not."""
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    git(tmp_path, "add", "a.py")
+    git(tmp_path, "commit", "-q", "-m", "a")
+    (tmp_path / "untracked").write_text("")
+    assert harness.tracked_changes(tmp_path) == ""
+    (tmp_path / "a.py").write_text("x = 2\n")
+    assert "a.py" in harness.tracked_changes(tmp_path)
+
+
+def test_cli_refuses_a_dirty_tree_before_writing(tmp_path, monkeypatch, capsys):
+    """A tree with tracked changes is refused in one line; no evidence is written.
+
+    The report records HEAD as the implementation commit, which would misdescribe a
+    run of uncommitted code (#225).
+    """
+    monkeypatch.setattr(harness, "tracked_changes", lambda repo: " M services/x.py\n")
+    code = harness.main(["--registry", str(tmp_path), "--provider", "p", "--space", "late",
+                         "--device", "cpu", "--output-dir", str(tmp_path / "out")])
+    assert code == 1 and not (tmp_path / "out").exists()
+    assert capsys.readouterr().err.strip().splitlines() == [
+        "qualify_verified_server: the checkout has uncommitted changes to tracked files;"
+        " commit or stash them, so the report's commit describes the code that ran"]

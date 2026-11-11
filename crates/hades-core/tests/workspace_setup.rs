@@ -990,14 +990,12 @@ async fn fresh_database_with_hades_schema_is_still_refused() {
                 setup.run(request.clone()).await,
                 Err(SetupError::Reconciliation(_))
             ));
-            assert_ne!(
-                setup
-                    .inspect(&request.operation_id)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .status,
-                SetupStatus::Ready
+            // Held at the marker step for the operator, not merely short of Ready: a
+            // Failed receipt there would invite an identical retry into the same refusal.
+            let held = setup.inspect(&request.operation_id).await.unwrap().unwrap();
+            assert_eq!(
+                (held.status, held.step),
+                (SetupStatus::NeedsReconciliation, SetupStep::Marker)
             );
             assert!(pool.writer().get("collection/hades_setup").await.is_err());
             assert_untouched(&pool, "hades_schema").await;

@@ -32,26 +32,30 @@ fn scope() -> Scope {
     }
 }
 
-/// A reopened ledger retains the exact request, owner and database reservation without rewriting it.
+/// A reopened ledger retains the exact request, owner and database reservation without
+/// rewriting it; the read-only lease diagnose and inspect share reads an uninitialized
+/// ledger as empty and never creates its metadata (#225).
 #[tokio::test]
-async fn diagnostic_lease_requires_existing_metadata_and_preserves_it() {
+async fn diagnostic_lease_reads_existing_metadata_and_preserves_it() {
     let root = directory();
     assert!(
-        Lease::open_existing(root.path().into(), scope())
+        Lease::open_initialized(root.path().into(), scope())
             .await
-            .is_err()
+            .unwrap()
+            .is_none()
     );
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     let lease = Lease::open(root.path().into(), scope()).await.unwrap();
     let record = lease.claim(request(), "owner").await.unwrap();
     let bytes = std::fs::read(root.path().join("op_fixture-op.json")).unwrap();
     assert!(matches!(
-        Lease::open_existing(root.path().into(), scope()).await,
+        Lease::open_initialized(root.path().into(), scope()).await,
         Err(SetupError::Busy)
     ));
     drop(lease);
-    let reopened = Lease::open_existing(root.path().into(), scope())
+    let reopened = Lease::open_initialized(root.path().into(), scope())
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(
         reopened.read("fixture-op").await.unwrap().unwrap().receipt,
@@ -64,9 +68,10 @@ async fn diagnostic_lease_requires_existing_metadata_and_preserves_it() {
     drop(reopened);
     std::fs::remove_file(root.path().join("scope.json")).unwrap();
     assert!(
-        Lease::open_existing(root.path().into(), scope())
+        Lease::open_initialized(root.path().into(), scope())
             .await
-            .is_err()
+            .unwrap()
+            .is_none()
     );
     assert!(!root.path().join("scope.json").exists());
 }

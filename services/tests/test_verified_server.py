@@ -268,6 +268,31 @@ def test_serve_exits_cleanly_on_sigterm(tmp_path):
     assert (code, uds.exists()) == (0, False)
 
 
+def test_sigterm_before_uvicorn_captures_signals_still_stops(monkeypatch):
+    """A SIGTERM between serve()'s handler and uvicorn's own must still stop the server.
+
+    serve() replaces the default SIGTERM action before uvicorn installs its handlers. A
+    signal landing in that window used to be swallowed by a no-op, leaving the unit
+    serving after systemd asked it to stop (#225).
+    """
+    import uvicorn
+    from fastapi import FastAPI
+    seen = {}
+
+    def run(server, sockets=None):
+        """Deliver SIGTERM before uvicorn would capture signals; record the outcome."""
+        signal.raise_signal(signal.SIGTERM)
+        seen["should_exit"] = server.should_exit
+
+    previous = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(uvicorn.Server, "run", run)
+    try:
+        verified_server.serve(FastAPI(), Path("/nonexistent/provider.sock"))
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert seen == {"should_exit": True}
+
+
 def patch_main_inputs(monkeypatch, p):
     """Point main() at the CPU fixture provider without a registry or the real config."""
     from embedding.registry import ModelRegistry
@@ -295,7 +320,7 @@ def test_main_exit_keeps_a_socket_another_instance_serves(provider, monkeypatch,
     root, uds = private_paths(tmp_path)
     other = socket.socket(socket.AF_UNIX)
     monkeypatch.setattr(verified_server, "serve",
-                        lambda app, path: (other.bind(str(path)), other.listen()))
+                        lambda app, path: (other.bind(str(path)), other.listen()) and True)
     try:
         assert verified_server.main(["--registry", str(root), "--provider", "verified",
                                      "--space", "late", "--uds", str(uds)]) == 0
@@ -320,6 +345,62 @@ def test_main_reports_a_load_refusal_in_one_line(provider, monkeypatch, tmp_path
     err = capsys.readouterr().err
     assert code == 1 and err.startswith("verified server: refusing to load on cuda:0")
     assert not uds.exists()
+
+
+def test_cleanup_failure_is_one_line_and_keeps_the_exit_code(monkeypatch, tmp_path, capsys):
+    """A socket that cannot be probed or removed after serving costs one line, no traceback.
+
+    remove_stale_socket ran unguarded in run()'s finally, so an OSError there (here
+    EACCES on the parent) replaced a clean stop with a traceback and exit 1 (#225).
+    The stale socket is left for the next start's check.
+    """
+    from fastapi import FastAPI
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+
+    def serve(app, path):
+        """Leave a closed socket behind, then lose access to its directory."""
+        bound = socket.socket(socket.AF_UNIX)
+        bound.bind(str(path))
+        bound.close()
+        run_dir.chmod(0)
+        return True
+
+    monkeypatch.setattr(verified_server, "serve", serve)
+    try:
+        code = verified_server.run(uds, FastAPI)
+    finally:
+        run_dir.chmod(0o700)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert err == "verified server: could not remove the socket: Permission denied\n"
+    assert stat.S_ISSOCK(uds.lstat().st_mode)
+
+
+def test_server_that_never_started_is_not_a_clean_exit(monkeypatch, tmp_path, capsys):
+    """uvicorn returning without ever serving must not exit 0 as if stopped (#225).
+
+    systemd reads exit 0 as a deliberate stop, so a server that returned before it
+    started serving would leave the unit inactive with nothing in the journal.
+    """
+    import uvicorn
+    from fastapi import FastAPI
+
+    async def serve(server, sockets=None):
+        """Return without binding or marking the server started."""
+
+    previous = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(uvicorn.Server, "serve", serve)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    try:
+        code = verified_server.run(run_dir / "provider.sock", FastAPI)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert code == 1
+    assert capsys.readouterr().err == (
+        "verified server: uvicorn returned without starting to serve\n")
 
 
 RUN_STUB = """
@@ -387,3 +468,131 @@ def test_second_start_during_load_cannot_take_over_the_socket(tmp_path):
             if proc is not None and proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+# Private paths stay out of the journal (#225): the unit's stderr and uvicorn's log lines
+# land in journald, where another reader must not learn the registry or socket locations.
+
+
+def test_socket_refusals_name_no_path(tmp_path):
+    """Parent and ancestor refusals name the failing component by role, not by path."""
+    parent = tmp_path / "run"
+    parent.mkdir(mode=0o755)
+    with pytest.raises(ValueError) as refused:
+        verified_server.check_socket_path(parent / "p.sock")
+    assert str(tmp_path) not in str(refused.value)
+    assert "socket parent" in str(refused.value)
+
+    real = tmp_path / "real"
+    (real / "run").mkdir(mode=0o700, parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(ValueError) as refused:
+        verified_server.check_socket_path(link / "run" / "p.sock")
+    assert str(tmp_path) not in str(refused.value)
+    assert "1 level above the socket parent" in str(refused.value)
+
+
+def test_main_registry_refusal_names_no_path(tmp_path):
+    """A missing registry root is refused by its option name, not its path."""
+    r = run_cli(["--registry", str(tmp_path / "none"), "--provider", "p", "--space", "late",
+                 "--uds", str(tmp_path / "s.sock")], {**os.environ, **OFFLINE})
+    assert r.returncode == 1 and "registry root does not exist" in r.stderr
+    assert str(tmp_path) not in r.stderr
+
+
+def test_load_os_error_names_only_the_file_name(monkeypatch, tmp_path, capsys):
+    """An OSError at load reports its strerror and the file's name, never its path."""
+    _, uds = private_paths(tmp_path)
+
+    def load():
+        """Fail as an unreadable registered artifact would."""
+        raise PermissionError(13, "Permission denied",
+                              str(tmp_path / "private" / "model.safetensors"))
+
+    assert verified_server.run(uds, load) == 1
+    err = capsys.readouterr().err
+    assert err == "verified server: Permission denied (model.safetensors)\n"
+
+
+def test_uvicorn_start_line_hides_the_socket_parent(tmp_path):
+    """uvicorn's "running on" line names the socket file, not its private directory."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    uds = run_dir / "provider.sock"
+    proc = subprocess.Popen([sys.executable, "-c", SERVE_STUB, str(uds)],
+                            env={**os.environ, "PYTHONPATH": str(SERVICES)},
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 30
+        while not (uds.exists() and stat.S_ISSOCK(uds.lstat().st_mode)):
+            assert proc.poll() is None, proc.stderr.read()
+            assert time.monotonic() < deadline, "stub server did not bind"
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=45)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    logs = out + err
+    assert "Uvicorn running on unix socket <private dir>/provider.sock" in logs
+    assert str(tmp_path) not in logs
+
+
+# Coverage the PR 2 review asked for (#225): the paths below were exercised only
+# indirectly, or not at all.
+
+
+def test_idle_monitor_is_not_started_when_the_environment_disables_it(provider,
+                                                                      monkeypatch):
+    """HADES_EMBEDDER_IDLE_TIMEOUT=0 reaches the running app, which starts no monitor.
+
+    An idle unload would invalidate every receipt a client holds; the unit relies on
+    this value, so the test follows it from the environment into the app's lifespan.
+    """
+    p, _ = provider
+    monkeypatch.setenv("HADES_EMBEDDER_IDLE_TIMEOUT", "0")
+    app = verified_server.build_app(p, EmbeddingConfig.from_env())
+
+    async def run():
+        """Enter the lifespan, where the monitor would start."""
+        async with app.router.lifespan_context(app):
+            return app.state.app_state._idle_monitor_task
+    assert asyncio.run(run()) is None
+
+
+def test_cli_refuses_an_unsafe_socket_parent_in_one_line(tmp_path):
+    """The module, run as the unit runs it, refuses a 0755 parent with exit 1.
+
+    One line on stderr, no traceback, and nothing created beside the socket path.
+    """
+    registry = tmp_path / "registry"
+    registry.mkdir(mode=0o700)
+    parent = tmp_path / "run"
+    parent.mkdir(mode=0o755)
+    r = run_cli(["--registry", str(registry), "--provider", "p", "--space", "late",
+                 "--uds", str(parent / "p.sock")], {**os.environ, **OFFLINE})
+    assert r.returncode == 1
+    assert r.stderr.splitlines() == [
+        "verified server: socket parent must be a 0700 directory owned by this account"]
+    assert list(parent.iterdir()) == []
+
+
+def test_world_writable_ancestor_refused(tmp_path):
+    """An ancestor others can write, and not a root-owned sticky directory, is refused."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    (shared / "run").mkdir(mode=0o700)
+    with pytest.raises(ValueError, match=r"writable by other accounts .*\(1 level above"):
+        verified_server.check_socket_path(shared / "run" / "p.sock")
+
+
+def test_symlinked_socket_parent_refused(tmp_path):
+    """The socket's own directory may not be a symlink, even to a private directory."""
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    (tmp_path / "run").symlink_to(real)
+    with pytest.raises(ValueError, match="socket parent must not be a symlink"):
+        verified_server.check_socket_path(tmp_path / "run" / "p.sock")

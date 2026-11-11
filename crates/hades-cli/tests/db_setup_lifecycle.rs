@@ -313,6 +313,9 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         let mut generation = run_args(&database, "setup-one", "500");
         generation[8] = "g2";
         let other = format!("{database}_other");
+        // A refusal must not touch the ledger either: not the Ready record, and no
+        // record for the refused request.
+        let ledger_before_refusals = snapshot(root.path());
         for args in [
             run_args(&database, "setup-one", "400"),
             generation,
@@ -335,6 +338,7 @@ async fn run_retry_inspect_diagnose_and_refusals() {
             );
         }
         assert_eq!(store.load().await.unwrap(), saved);
+        assert_eq!(snapshot(root.path()), ledger_before_refusals);
 
         // 4. inspect returns the original receipt; diagnose reports none/ready and
         //    writes nothing to the ledger.
@@ -353,6 +357,17 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         assert_eq!(report["data"]["action"], "none");
         assert_eq!(report["data"]["reason"], "ready");
         assert_eq!(report["data"]["receipt"], receipt);
+        assert_eq!(snapshot(root.path()), before);
+        // An unknown operation in an initialized ledger: as inspect, a failed
+        // envelope and exit 1, still carrying the advisory report.
+        let unknown = cli
+            .run(&["diagnose", "--operation-id", "setup-unknown"])
+            .await;
+        assert_eq!(unknown.status.code(), Some(1), "{unknown:?}");
+        let unknown = envelope(&unknown);
+        assert_eq!(unknown["success"], false);
+        assert_eq!(unknown["data"]["reason"], "operation_missing");
+        assert!(unknown["data"]["receipt"].is_null());
         assert_eq!(snapshot(root.path()), before);
 
         // The installer's setup-db check accepts these three real envelopes.

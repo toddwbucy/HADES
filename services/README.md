@@ -34,6 +34,24 @@ embedding.verified_server` (verified provider on a private Unix socket, for mana
 databases) using explicit service configuration. Installing a wheel does not provision
 systemd units or start services.
 
+The verified server takes its model from the registry (`--registry`, `--provider`),
+not from the environment. Of the shared embedder variables it applies:
+
+- `HADES_EMBEDDER_DEVICE` and `HADES_EMBEDDER_FP16`;
+- `HADES_EMBEDDER_IDLE_TIMEOUT`, where 0 disables the idle unload. A verified unit
+  needs 0, because an unload invalidates every receipt a client holds;
+- `HADES_EMBEDDER_MAX_TOKENS`, the ceiling `/v1/verify` reports;
+- `HADES_EMBEDDER_MIN_FREE_VRAM_MIB`, the free-VRAM floor checked before the load.
+
+It ignores `HADES_EMBEDDER_MODEL`, because the registered model ID decides. It ignores
+`HADES_EMBEDDER_BATCH_SIZE`, because it runs one input per forward pass, and it
+ignores `HADES_EMBEDDER_PROFILE`. It also ignores `HADES_EMBEDDER_HOST` and
+`HADES_EMBEDDER_PORT`: it listens only on `--uds`. A malformed integer in an ignored
+variable still fails the start, because the shared parser reads it. The
+[systemd unit template](../deploy/systemd/README.md) omits `PrivateTmp=`. In a user
+manager it implies a user namespace in which root-owned ancestors read as uid 65534,
+and the server refuses such a socket parent.
+
 For the Jina v4 snapshot `853c867b65b749f3c3c72a06868140d842e04f06`, apply the
 validated model constraints when installing from the repository root:
 
