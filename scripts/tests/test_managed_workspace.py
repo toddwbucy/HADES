@@ -20,10 +20,12 @@ import managed_workspace as mw  # noqa: E402
 
 
 def sha(path):
+    """Return the SHA-256 of a file's bytes."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def envelope(data, success=True):
+    """Return a HADES CLI envelope around DATA as JSON text."""
     return json.dumps({"success": success, "command": "x", "data": data,
                        "timestamp": "2026-11-10T00:00:00Z"})
 
@@ -32,14 +34,17 @@ class Scratch(unittest.TestCase):
     """A private scratch directory that is removed even when it holds frozen files."""
 
     def setUp(self):
+        """Create a private scratch directory."""
         self.root = Path(tempfile.mkdtemp(prefix="mw-test-"))
         os.chmod(self.root, 0o700)
 
     def tearDown(self):
+        """Make frozen files writable again, then remove the scratch tree."""
         subprocess.run(["chmod", "-R", "u+w", str(self.root)], check=True)
         shutil.rmtree(self.root)
 
     def write(self, relative, text, mode=0o600):
+        """Write TEXT at a scratch-relative path with MODE and return the path."""
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -61,6 +66,7 @@ class ManagedBackup(Scratch):
     """The ledger and registry copy, its inventory comparison and the manifest."""
 
     def setUp(self):
+        """Build a ledger, a registry with a frozen artifact, and a database backup."""
         super().setUp()
         self.ledger = self.root / "data/setup-ledger"
         self.ledger.mkdir(parents=True, mode=0o700)
@@ -85,9 +91,11 @@ class ManagedBackup(Scratch):
             "files": {"dump/dump.json": sha(dump)}}))
 
     def add(self, **kwargs):
+        """Run add_managed on the scratch backup for database DB2."""
         return mw.add_managed(self.backup, "DB2", self.ledger, self.registry, **kwargs)
 
     def test_copies_ledger_and_referenced_artifacts_only(self):
+        """Only the ledger, records and referenced artifacts are copied, modes kept."""
         self.add()
         copied = {str(p.relative_to(self.backup)) for p in self.backup.rglob("*")
                   if p.is_file()}
@@ -103,6 +111,7 @@ class ManagedBackup(Scratch):
         self.assertEqual(stat.S_IMODE(mode), 0o400)
 
     def test_manifest_lists_every_file_and_passes_the_verifier_file_check(self):
+        """Every copied file is manifested, so the verifier's file check passes."""
         summary = self.add()
         manifest = json.loads((self.backup / "manifest.json").read_text())
         self.assertEqual(manifest["managed_workspace"]["snapshots"], ["model_aa"])
@@ -113,6 +122,7 @@ class ManagedBackup(Scratch):
         self.assertIn("files verified", out)
 
     def test_wrong_database_is_refused_before_copying(self):
+        """A backup of another database is refused before anything is copied."""
         manifest = self.backup / "manifest.json"
         manifest.write_text(manifest.read_text().replace('"DB2"', '"DB1"', 1))
         with self.assertRaisesRegex(mw.Refused, "backs up DB1, not DB2"):
@@ -120,12 +130,15 @@ class ManagedBackup(Scratch):
         self.assertFalse((self.backup / "setup-ledger").exists())
 
     def test_a_second_add_is_refused(self):
+        """A backup that already holds a managed copy is refused."""
         self.add()
         with self.assertRaisesRegex(mw.Refused, "already holds"):
             self.add()
 
     def test_a_mode_changed_in_the_copy_is_rejected(self):
+        """A copy whose mode drifts is rejected before the manifest changes."""
         def drifting_copy(source, target):
+            """Copy as usual, then loosen one ledger file's mode in the copy."""
             mw.copy_tree(source, target)
             if target.name == "setup-ledger":
                 (target / "operations/op.json").chmod(0o644)
@@ -136,6 +149,7 @@ class ManagedBackup(Scratch):
         self.assertNotIn("managed_workspace", manifest)
 
     def test_unmanifested_file_fails_the_manifest_check(self):
+        """A file in the backup that the manifest does not list fails the check."""
         self.add()
         self.write("backups/workspace-1/stray.txt", "x")
         code, out = self.call("check-manifest", self.backup, "DB2")
@@ -147,11 +161,13 @@ class StateChecks(Scratch):
     """The small JSON checks the installer runs between commands."""
 
     def test_json_field(self):
+        """json-field prints a present field and refuses an absent one."""
         dump = self.write("dump.json", json.dumps({"database": "DB1"}))
         self.assertEqual(self.call("json-field", dump, "database"), (0, "DB1\n"))
         self.assertEqual(self.call("json-field", dump, "other")[0], 1)
 
     def test_register_state(self):
+        """register-state tells an absent record from a matching or different MD5."""
         registry = self.root / "registry"
         self.assertEqual(self.call("register-state", registry, "p", "abc")[1], "absent\n")
         self.write("registry/records/p.json", json.dumps({"manifest_md5": "abc"}))
@@ -159,6 +175,7 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("register-state", registry, "p", "def")[1], "differ\n")
 
     def test_check_register(self):
+        """check-register accepts the qualified MD5 and names a different one."""
         record = self.write("r.json", json.dumps({"manifest_md5": "abc", "files": 9,
                                                   "loaded_verified": False}))
         self.assertEqual(self.call("check-register", record, "abc")[0], 0)
@@ -167,6 +184,7 @@ class StateChecks(Scratch):
         self.assertIn("manifest MD5", out)
 
     def test_text_state(self):
+        """text-state reports absent, match and differ for a YAML section."""
         block = self.write("block", "\nsetup:\n  ledger_root: /x\n")
         yaml = self.write("hades.yaml", "database:\n  name: x\n")
         self.assertEqual(self.call("text-state", yaml, block, "setup", "registered_providers")[1],
@@ -177,6 +195,7 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("text-state", yaml, block, "setup")[1], "differ\n")
 
     def test_status_and_verify(self):
+        """check-status needs a loaded model; check-verify needs the pinned ceiling."""
         status = self.write("s.json", json.dumps({"model": "jinaai/jina-embeddings-v4",
                                                   "space": "late", "loaded": True}))
         self.assertEqual(self.call("check-status", status, "jinaai/jina-embeddings-v4",
@@ -195,10 +214,12 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("check-verify", verify, "r", "m", 4096)[0], 1)
 
     def receipt(self, status="ready", step="complete", sha="h"):
+        """Return a setup receipt with the given status, step and request hash."""
         return {"operation_id": "op", "database": "DB2", "request_sha256": sha,
                 "status": status, "step": step, "diagnostic": None}
 
     def test_receipt_state(self):
+        """receipt-state reads none, ready, held or error, refusing another database."""
         missing = self.write("i0.json", envelope({"operation_id": "op", "receipt": None},
                                                  success=False))
         self.assertEqual(self.call("receipt-state", missing, "op", "DB2")[1], "none\n")
@@ -216,6 +237,7 @@ class StateChecks(Scratch):
                                    "DB2")[1], "error\n")
 
     def test_check_receipt(self):
+        """check-receipt passes matching run and inspect, and names a request mismatch."""
         # Shapes as the CLI prints them; the db_setup contract checks the real binary's
         # envelopes and is the authority. `run` prints the receipt itself as `data`.
         run = self.write("run.json", envelope(self.receipt()))
@@ -231,6 +253,7 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("diagnose-action", diagnose)[1], "none\n")
 
     def test_moving_lists(self):
+        """The live listing and the dump agree on what moves; the rest stays."""
         names = ["hades_reading_sessions", "reading_ab_nodes", "reading_ab_edges",
                  "documents", "_graphs", "hades_schema", "reading_notes"]
         aql = self.write("names.json", envelope({"results": [names]}))
@@ -248,6 +271,7 @@ class StateChecks(Scratch):
                          {"names": out.split()})
 
     def test_check_graphs(self):
+        """check-graphs refuses an unlisted collection and a non-reading graph."""
         moving = self.write("moving.txt", "reading_ab_edges\nreading_ab_nodes\n")
         good = {"_key": "reading_ab", "orphanCollections": [], "edgeDefinitions": [
             {"collection": "reading_ab_edges", "from": ["reading_ab_nodes"],
@@ -261,12 +285,14 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("check-graphs", graphs, moving)[0], 1)
 
     def test_results_and_desk(self):
+        """results prints the AQL rows; desk drops the database name and sorts keys."""
         rows = self.write("r.json", envelope({"results": [["a", 1]]}))
         self.assertEqual(self.call("results", rows)[1], '[["a", 1]]\n')
         desk = self.write("d.json", envelope({"database": "DB", "b": 1, "a": 2}))
         self.assertEqual(self.call("desk", desk)[1], '{"a": 2, "b": 1}\n')
 
     def test_check_providers(self):
+        """check-providers needs the provider listed, late and loaded."""
         entry = {"id": "laptop-jina", "model": "m", "space": "late", "loaded": True}
         status = self.write("st.json", envelope({"verified_providers": [entry]}))
         self.assertEqual(self.call("check-providers", status, "laptop-jina"),
@@ -278,6 +304,7 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("check-providers", status, "laptop-jina")[0], 1)
 
     def test_manifest_counts_match_the_live_counts_format(self):
+        """manifest-counts prints backup counts in the live counts query's format."""
         manifest = self.write("manifest.json", json.dumps({"collections": {
             "reading_ab_nodes": {"count": 3}, "hades_reading_sessions": {"count": 1},
             "documents": {"count": 9}}}))
@@ -300,6 +327,7 @@ class StateChecks(Scratch):
                                          ensure_ascii=False).encode()).hexdigest()
 
     def test_collection_digest_matches_the_backup_manifest(self):
+        """The streamed digest equals the backup driver's digest, across chunk splits."""
         docs = [{"_key": "a", "_id": "c/a", "text": "caf\u00e9 \"q\" ]}", "n": [1, 2.5]},
                 {"_key": "b", "_id": "c/b", "nested": {"z": 1, "a": None}}]
         path = self.aql_file("c.raw.json", docs)
@@ -308,24 +336,28 @@ class StateChecks(Scratch):
         self.assertEqual(self.call("collection-digest", path)[1], self.manifest_sha(docs) + "\n")
 
     def test_collection_digest_ignores_key_order_and_rev(self):
+        """Key order and _rev do not change a collection's digest."""
         docs = [{"_key": "a", "_id": "c/a", "v": 1, "w": 2}]
         reordered = [{"w": 2, "v": 1, "_id": "c/a", "_key": "a", "_rev": "_hX1"}]
         self.assertEqual(mw.collection_digest(self.aql_file("1.json", docs)),
                          mw.collection_digest(self.aql_file("2.json", reordered, pretty=False)))
 
     def test_collection_digest_changes_with_one_field(self):
+        """One changed field changes the digest although the count stays the same."""
         docs = [{"_key": "a", "v": 1}, {"_key": "b", "state": "open"}]
         changed = [{"_key": "a", "v": 1}, {"_key": "b", "state": "closed"}]
         self.assertNotEqual(mw.collection_digest(self.aql_file("1.json", docs)),
                             mw.collection_digest(self.aql_file("2.json", changed)))
 
     def test_empty_collection_digest_is_stable(self):
+        """An empty collection digests as the hash of [], pretty-printed or not."""
         empty = hashlib.sha256(b"[]").hexdigest()
         self.assertEqual(mw.collection_digest(self.aql_file("1.json", [])), (empty, 0))
         self.assertEqual(mw.collection_digest(self.aql_file("2.json", [], pretty=False)),
                          (empty, 0))
 
     def test_collection_digest_refuses_a_partial_or_failed_result(self):
+        """An envelope with a wrong count, failed, cut short or resultless is refused."""
         docs = [{"_key": "a"}]
         for path in (self.aql_file("count.json", docs, count=2),
                      self.aql_file("failed.json", docs, success=False),
@@ -335,6 +367,7 @@ class StateChecks(Scratch):
                 mw.collection_digest(path)
 
     def test_collection_digests_pair_with_manifest_digests(self):
+        """collection-digests and manifest-digests print the same pairs for equal data."""
         rows = {"hades_reading_sessions": [{"_key": "s", "open": True}],
                 "reading_ab_nodes": []}
         moving = self.write("moving.txt", "hades_reading_sessions\nreading_ab_nodes\n")
@@ -349,6 +382,7 @@ class StateChecks(Scratch):
         self.assertEqual(json.loads(live[1])[0][0], "hades_reading_sessions")
 
     def test_a_filesystem_error_is_a_one_line_refusal(self):
+        """An OSError from add-managed is one line on stderr, with no traceback."""
         backup = self.root / "b"
         self.write("b/manifest.json", json.dumps({"database": "DB2", "files": {}}))
         self.write("registry/records/p.json", json.dumps({"snapshot": "s"}))
@@ -358,18 +392,21 @@ class StateChecks(Scratch):
         self.assertNotIn("Traceback", out)
 
     def test_verifier_dir(self):
+        """verifier-dir accepts the expected recovery directory and refuses another."""
         log = self.write("v.log", "Private recovery artifacts: /tmp/hades-recovery-ab12\n{}\n")
         self.assertEqual(self.call("verifier-dir", log)[1], "/tmp/hades-recovery-ab12\n")
         log.write_text("Private recovery artifacts: /var/x\n")
         self.assertEqual(self.call("verifier-dir", log)[0], 1)
 
     def test_check_ingest(self):
+        """check-ingest needs completed to equal the file count."""
         ok = self.write("i.json", envelope({"completed": 3, "failed": 0,
                                             "embedding_profile_state": "ready"}))
         self.assertEqual(self.call("check-ingest", ok, 3), (0, "ingested 3 documents\n"))
         self.assertEqual(self.call("check-ingest", ok, 4)[0], 1)
 
     def test_query_sources(self):
+        """query-sources matches an expected path behind the relative-file: scheme."""
         # Managed search names a root-relative file as relative-file:<path>
         # (profiled_documents/files.rs), so the match must look past the scheme.
         hits = [{"source_id": "relative-file:operations/x.md"},

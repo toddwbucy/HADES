@@ -47,6 +47,7 @@ def data(path):
 
 
 def require(condition, message):
+    """Raise Refused with MESSAGE unless CONDITION holds."""
     if not condition:
         raise Refused(message)
 
@@ -63,6 +64,7 @@ def inventory(root, parts=None):
     rows = {}
 
     def add(path):
+        """Record one path's mode, owner and type; a file also gets its SHA-256."""
         info = os.lstat(path)
         kind = ("dir" if stat.S_ISDIR(info.st_mode)
                 else "file" if stat.S_ISREG(info.st_mode) else "other")
@@ -126,6 +128,7 @@ def add_managed(backup, database, ledger, registry, copy=copy_tree):
         directory.mkdir(mode=0o700)
 
     def record(name, rows):
+        """Write one inventory privately into the backup and return its rows."""
         write_private(inv / f"{name}.json", json.dumps(rows, indent=1) + "\n")
         return rows
 
@@ -189,12 +192,14 @@ def check_manifest(backup, database):
 # Subcommands ------------------------------------------------------------------------
 
 def cmd_json_field(a):
+    """Print one top-level field of a JSON object, refusing when it is absent."""
     value = load(a.file)
     require(isinstance(value, dict) and a.key in value, f"{Path(a.file).name} has no {a.key}")
     return str(value[a.key])
 
 
 def cmd_register_state(a):
+    """absent, match or differ: the provider's record against the qualified MD5."""
     path = Path(a.registry) / "records" / f"{a.provider}.json"
     if not path.exists():
         return "absent"
@@ -202,6 +207,7 @@ def cmd_register_state(a):
 
 
 def cmd_check_register(a):
+    """Accept a registration only with the qualified manifest MD5 and no model load."""
     record = load(a.file)
     require(record.get("manifest_md5") == a.md5,
             f"manifest MD5 {record.get('manifest_md5')} is not the qualified {a.md5}")
@@ -219,6 +225,7 @@ def cmd_text_state(a):
 
 
 def cmd_check_status(a):
+    """Accept the provider status only when it reports the model and space, loaded."""
     status = load(a.file)
     require(status.get("model") == a.model and status.get("space") == a.space
             and status.get("loaded") is True, f"provider status is {status}")
@@ -237,6 +244,7 @@ def cmd_check_providers(a):
 
 
 def cmd_check_verify(a):
+    """Accept `verify` only with the pinned revision, manifest, late chunking, ceiling."""
     report = load(a.file)
     model, caps = report["model"], report["capabilities"]
     require(model.get("revision") == a.revision, f"verify reports revision {model}")
@@ -255,6 +263,7 @@ def cmd_check_verify(a):
 # and RecoveryAction (workspace_setup/recovery.rs), all #[serde(rename_all =
 # "snake_case")]. The db_setup contract runs check-receipt on real envelopes (#225).
 def receipt_of(path, operation, database, *, nested=True):
+    """Return (state, receipt): error, none, ready, or the receipt's own status."""
     try:
         value = data(path)
     except Refused:
@@ -269,10 +278,12 @@ def receipt_of(path, operation, database, *, nested=True):
 
 
 def cmd_receipt_state(a):
+    """Print the state of the receipt in an `inspect` envelope."""
     return receipt_of(a.file, a.operation, a.database)[0]
 
 
 def cmd_check_receipt(a):
+    """Accept setup only when run and inspect agree on a ready receipt, action none."""
     state, run = receipt_of(a.run, a.operation, a.database, nested=False)
     require(state == "ready", f"setup run receipt is {state}")
     state, inspected = receipt_of(a.inspect, a.operation, a.database)
@@ -285,26 +296,31 @@ def cmd_check_receipt(a):
 
 
 def cmd_diagnose_action(a):
+    """Print the recovery action a `diagnose` envelope recommends."""
     return data(a.file).get("action")
 
 
 def aql_results(path):
+    """Return an AQL envelope's result list, refusing an envelope without one."""
     results = data(path).get("results")
     require(isinstance(results, list), f"{Path(path).name} has no AQL results")
     return results
 
 
 def cmd_moving_aql(a):
+    """List, sorted, the reading-desk collections a live collection listing names."""
     names = aql_results(a.file)[0]
     return "\n".join(sorted(n for n in names if MOVING.fullmatch(n)))
 
 
 def cmd_moving_dump(a):
+    """List, sorted, the reading-desk collections a dump directory holds."""
     names = {load(p)["parameters"]["name"] for p in Path(a.dump).glob("*.structure.json")}
     return "\n".join(sorted(n for n in names if MOVING.fullmatch(n)))
 
 
 def cmd_staying(a):
+    """Print as JSON the non-system collections that stay when the desk moves."""
     moving = set(Path(a.moving).read_text().split())
     names = aql_results(a.file)[0]
     return json.dumps([n for n in names if n not in moving and not n.startswith("_")])
@@ -336,11 +352,13 @@ class _JsonStream:
     """Just enough incremental reading to walk one top-level array of objects."""
 
     def __init__(self, stream, chunk_size, name):
+        """Read STREAM in CHUNK_SIZE pieces, naming the file NAME in refusals."""
         self.stream, self.chunk_size, self.name = stream, chunk_size, name
         self.buffer = ""
         self.decoder = json.JSONDecoder()
 
     def fill(self):
+        """Read one more chunk into the buffer; return False at end of file."""
         more = self.stream.read(self.chunk_size)
         self.buffer += more
         return bool(more)
@@ -355,6 +373,7 @@ class _JsonStream:
                 raise Refused(f"{self.name} ends inside the AQL results")
 
     def take(self, expected):
+        """Consume the next non-whitespace character, refusing anything but EXPECTED."""
         found = self.peek()
         require(found == expected, f"{self.name}: expected {expected!r}, found {found!r}")
         self.buffer = self.buffer[1:]
@@ -434,6 +453,7 @@ def collection_digest(path, chunk_size=DIGEST_CHUNK):
 
 
 def cmd_collection_digest(a):
+    """Print the content digest of one collection's AQL results."""
     return collection_digest(a.file)[0]
 
 
@@ -453,6 +473,7 @@ def cmd_manifest_digests(a):
 
 
 def cmd_names_bind(a):
+    """Print the moving collection names as an AQL bind-parameter object."""
     return json.dumps({"names": Path(a.moving).read_text().split()})
 
 
@@ -471,16 +492,19 @@ def cmd_check_graphs(a):
 
 
 def cmd_results(a):
+    """Print an AQL envelope's results as JSON."""
     return json.dumps(aql_results(a.file))
 
 
 def cmd_desk(a):
+    """Print the desk listing without its database name, so two databases compare."""
     value = data(a.file)
     value.pop("database", None)
     return json.dumps(value, sort_keys=True)
 
 
 def cmd_verifier_dir(a):
+    """Print the artifacts directory the verifier reported, if its name is expected."""
     for line in Path(a.file).read_text().splitlines():
         if line.startswith("Private recovery artifacts: "):
             directory = line.split(": ", 1)[1]
@@ -491,6 +515,7 @@ def cmd_verifier_dir(a):
 
 
 def cmd_check_ingest(a):
+    """Accept ingest only with every file completed, none failed, the profile ready."""
     envelope = load(a.file)
     value = envelope.get("data", {})
     require(envelope.get("success") is True and value.get("failed") == 0,
@@ -518,18 +543,22 @@ def cmd_query_sources(a):
 
 
 def cmd_add_managed(a):
+    """Copy the managed workspace parts into a backup; print the summary as JSON."""
     return json.dumps(add_managed(a.backup, a.database, a.ledger, a.registry))
 
 
 def cmd_check_manifest(a):
+    """Verify every file the backup manifest lists and report how many."""
     return f"{check_manifest(a.backup, a.database)} files verified"
 
 
 def parser():
+    """Build the argument parser, one subcommand per check."""
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="command", required=True)
 
     def add(name, func, *args, **typed):
+        """Declare a subcommand; an argument ending in ... takes one or more values."""
         command = sub.add_parser(name)
         for arg in args:
             if arg.endswith("..."):
@@ -570,6 +599,7 @@ def parser():
 
 
 def main(argv=None):
+    """Run one subcommand; print its result, or a one-line refusal and return 1."""
     args = parser().parse_args(argv)
     os.umask(0o077)
     try:

@@ -183,10 +183,12 @@ class HidePrivateDir(logging.Filter):
     """
 
     def __init__(self, directory: Path) -> None:
+        """Remember the directory to replace in every message."""
         super().__init__()
         self.directory = str(directory)
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Replace the directory in the formatted message; never drop the record."""
         message = record.getMessage()
         if self.directory in message:
             record.msg, record.args = message.replace(self.directory, PRIVATE_DIR), ()
@@ -260,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     def load() -> FastAPI:
+        """Load the registered provider and build its app, logging identity only."""
         config = EmbeddingConfig.from_env()
         registration = ModelRegistry(args.registry).load(args.provider)
         provider = build_provider(registration, args.space, config)
