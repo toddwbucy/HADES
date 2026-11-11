@@ -27,7 +27,10 @@ UMask=0077
 LimitNOFILE=65536
 LimitMEMLOCK=infinity
 NoNewPrivileges=true
-PrivateTmp=true
+# No PrivateTmp: in a user manager it implies a user namespace in which root-owned
+# ancestors read as uid 65534, and the server refuses a socket parent whose ancestors
+# are owned by anyone but this account or root. The socket lives under the account's
+# own private directory, so PrivateTmp buys nothing here (#225).
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hades-embedder-verified

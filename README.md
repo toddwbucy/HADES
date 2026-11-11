@@ -1,4 +1,4 @@
-# H.A.D.E.S.
+# HADES
 
 **Human Augmented Data Exploration System**
 
@@ -34,11 +34,14 @@ for the workflows you use.
 | Import a graphable document | Mechanically map declared headings, glossary terms, keywords, illustrations, and references from Markdown, preserving source versions and repeat-import identities. |
 | Create and extend graphs through MCP | Provision an authorized database, create an authored graph, and add nodes or edges through scoped tools. Guided-reading endpoints deliberately restrict agents to proposals. |
 | Index documents and code | Extract, chunk, embed, and retrieve source content. Code analysis records symbols and relationships with analyzer provenance. |
+| Create a managed database | Register a verified embedding model, create a database bound to it through a recoverable setup ledger, and ingest and search documents under that binding. |
 
 The graph explorer offers Read, Split, and Graph views with Auto, Wide, and
 Compact layouts. The guided-reading desk has its own converted/original PDF
-controls and side-by-side layout. Agent conversations remain in the agent's
-terminal or client; HADES does not host a Codex or Claude Code chat session.
+controls and side-by-side layout. Its optional **Chat** tab connects a saved reading
+to a local Codex conversation, whose history Codex keeps (see
+[Reading with Codex](docs/codex-reading.md)). Other agent conversations remain in the
+agent's terminal or client.
 
 ## Requirements
 
@@ -129,7 +132,9 @@ hades db setup run --database research --provider local-jina --operation-id rese
 
 Repeat the exact command to retry. `hades db setup inspect --operation-id research-1`
 prints the receipt, and `hades db setup diagnose --operation-id research-1` prints an
-advisory recovery report; neither loads a model.
+advisory recovery report; neither loads a model. For an operation the ledger does not
+hold, both print `"success": false` with a null receipt and exit 1. See
+[Managed databases](#managed-model-bound-databases) for the pieces involved.
 
 ### Explore existing knowledge
 
@@ -176,7 +181,8 @@ an agent turn.
 This slice accepts originals up to **8 MiB** and converted surfaces up to **4 MiB**.
 It does not automatically embed accepted notes or corrections. See
 [Guided document reading](docs/guided-reading.md) for recovery, attribution,
-stage requirements, and session limits.
+stage requirements, and session limits, and [Reading with Codex](docs/codex-reading.md)
+to discuss a reading with a local Codex conversation.
 
 ### Import an already graphable document
 
@@ -224,6 +230,47 @@ they are not automatically embedded for `db_query`. Semantic retrieval searches
 the selected collection profile, usually `default` for documents or `codebase`
 for code. Inspect `orient` and `db stats` before interpreting an empty result.
 The `--rerank` option is not implemented and exits with an error.
+
+Context windows are sized from the running embedder's reported sequence ceiling, not
+from a hardcoded length. See [Long-document embedding](docs/long-document-embedding.md)
+for windowing, late chunking, and oversized inputs.
+
+### Managed (model-bound) databases
+
+A managed database is bound when it is created to one verified embedding provider and
+one chunking policy, so every vector in it comes from the model its profile names.
+Four pieces work together:
+
+- **Verified provider.** `python -m embedding.verified_server`, run as
+  `hades-embedder-verified.service`, loads one registered model and serves one
+  embedding space, late or conventional, on a private Unix socket. `hades status`
+  lists it under `verified_providers` without loading the model. See
+  [deploy/systemd](deploy/systemd/README.md#verified-provider-unit).
+- **Model registry.** `python -m embedding.registry register` copies an approved local
+  snapshot into a private registry and records its MD5 manifest. A provider ID stays
+  bound to those files.
+- **Setup ledger and profile.** `hades db setup run` creates the database through a
+  recoverable ledger and saves its profile: model identity, embedding space,
+  generation, and chunking policy. An identical retry resumes, and a changed request
+  under the same operation ID is refused.
+- **Admission.** `hades ingest`, `hades db query`, the daemon, and MCP read the saved
+  profile and refuse a provider that does not match it. Managed databases take
+  documents only; code ingestion and `graph-embed` refuse them.
+
+Configure the `registered_providers` and `setup` sections as described in
+[installation](docs/installation.md#5-install-the-system-config). The design is in
+[database embedding profiles](docs/specs/database-embedding-profiles.md),
+[recoverable workspace setup](docs/specs/recoverable-workspace-setup.md), and
+[the setup door](docs/specs/db-setup-door.md). For operations, read the
+[model-bound recovery contract](docs/operations/model-bound-recovery.md) and the
+workstation
+[backup procedure](docs/operations/thinkpad-backup-restore.md#managed-workspace);
+a worked installation is
+[`scripts/install/thinkpad-managed-workspace.sh`](scripts/install/thinkpad-managed-workspace.sh),
+an idempotent step-by-step installer with `check` and `--dry-run`, run as
+[the laptop runbook](docs/installation-thinkpad.md#managed-workspace-2026-11-xx)
+describes. A restore recovers a managed database's records, not a ready managed
+workspace: ownership rebinding is not yet supported.
 
 ## Connect an agent through MCP
 

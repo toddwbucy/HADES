@@ -316,10 +316,12 @@ async fn open_internal(
     let definition = json!({"name":s.graph,"edgeDefinitions":[{"collection":format!("{}_edges",s.graph),"from":s.graph_collections,"to":s.graph_collections}]});
     match pool.writer().post("gharial", &definition).await {
         Ok(_) => {}
-        // Concurrent graph creation can report either "graph already exists"
-        // or a primary-key collision in _graphs. Reuse only a verified match.
+        // Concurrent graph creation can report "graph already exists" (1925), a
+        // primary-key collision in _graphs (1210), or, on ArangoDB 3.12, a
+        // write-write conflict on the _graphs primary index (1200). Reuse only a
+        // verified match.
         Err(ArangoError::Api {
-            error_num: 1925 | 1210,
+            error_num: 1925 | 1210 | 1200,
             ..
         }) => {
             let existing = pool

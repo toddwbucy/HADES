@@ -4,7 +4,10 @@
 //! `scripts/test_isolated_database.py --contract db_setup`, never the live server.
 use hades_core::{
     config::{HadesConfig, SetupConfig},
-    db::{ArangoClient, ArangoPool, crud},
+    db::{
+        ArangoClient, ArangoPool, crud,
+        query::{self, ExecutionTarget},
+    },
     embedding_profile::{ProfileState, store::ProfileStore},
     test_support::{Fixtures, with_temp_db},
 };
@@ -116,6 +119,62 @@ fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Run the installer helper's receipt check on real envelopes from this binary. Its
+/// fixtures in scripts/tests only mirror these shapes; this contract is the authority on
+/// them, because `run` prints the receipt as `data` while `inspect` nests it under
+/// `data.receipt` and `diagnose` returns a report beside `data.action` (#225).
+fn check_receipt(
+    directory: &Path,
+    envelopes: [&[u8]; 3],
+    operation: &str,
+    database: &str,
+) -> std::process::Output {
+    let mut paths = Vec::new();
+    for (name, bytes) in ["run", "inspect", "diagnose"].iter().zip(envelopes) {
+        let path = directory.join(format!("receipt-{name}.json"));
+        std::fs::write(&path, bytes).unwrap();
+        paths.push(path);
+    }
+    let mut args: Vec<std::ffi::OsString> = vec!["check-receipt".into()];
+    args.extend(paths.into_iter().map(Into::into));
+    args.extend([operation.into(), database.into()]);
+    helper(&args)
+}
+
+/// Run scripts/install/managed_workspace.py with these arguments.
+fn helper(args: &[std::ffi::OsString]) -> std::process::Output {
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install/managed_workspace.py");
+    std::process::Command::new("python3")
+        .arg(script)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Serialize compact JSON with every object's keys in reverse order. Written as text,
+/// because a serde_json map in this build sorts its keys whatever the insertion order;
+/// a digest that agrees across this layout and the CLI's cannot depend on key order.
+fn reversed_keys(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            keys.reverse();
+            let fields: Vec<_> = keys
+                .into_iter()
+                .map(|k| format!("{}:{}", Value::from(k.as_str()), reversed_keys(&map[k])))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Value::Array(items) => {
+            let items: Vec<_> = items.iter().map(reversed_keys).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
 /// The late policy the synthetic late fixture serves: 1000/1 windows, 500/0 passages.
 fn run_args<'a>(database: &'a str, operation: &'a str, passage: &'a str) -> Vec<&'a str> {
     vec![
@@ -191,6 +250,49 @@ async fn run_retry_inspect_diagnose_and_refusals() {
                 .unwrap()["count"],
             5
         );
+        // The installer's move-desk compares collections by a content digest of this
+        // binary's `db aql` output (#225). Pin that the helper reads that envelope, and
+        // that it agrees with the same rows fetched directly and written compact with
+        // keys reversed.
+        let contents = r#"FOR d IN @@c SORT d._key RETURN UNSET(d, "_rev")"#;
+        let bind = r#"{"@c": "hades_workspace"}"#;
+        let printed = cli
+            .raw(&[
+                "--db", &database, "db", "aql", "-f", "json", "-b", bind, contents,
+            ])
+            .await;
+        assert!(printed.status.success(), "{}", stderr(&printed));
+        let printed_path = directory.path().join("contents-printed.raw.json");
+        std::fs::write(&printed_path, &printed.stdout).unwrap();
+        let rows = query::query(
+            &pool,
+            contents,
+            Some(&serde_json::json!({"@c": "hades_workspace"})),
+            None,
+            false,
+            ExecutionTarget::Reader,
+        )
+        .await
+        .unwrap()
+        .results;
+        assert_eq!(rows.len(), 5);
+        let direct = serde_json::json!({"timestamp": "t", "success": true,
+            "data": {"results": rows, "count": 5}, "command": "db.aql"});
+        let direct_path = directory.path().join("contents-direct.raw.json");
+        let reversed = reversed_keys(&direct);
+        assert!(reversed.starts_with(r#"{"timestamp""#), "{reversed}");
+        std::fs::write(&direct_path, reversed).unwrap();
+        let digests: Vec<_> = [&printed_path, &direct_path]
+            .into_iter()
+            .map(|path| {
+                let out = helper(&["collection-digest".into(), path.into()]);
+                assert!(out.status.success(), "{out:?}");
+                String::from_utf8(out.stdout).unwrap()
+            })
+            .collect();
+        assert_eq!(digests[0].trim().len(), 64, "{digests:?}");
+        assert_eq!(digests[0], digests[1]);
+
         let store = ProfileStore::new(pool.clone()).unwrap();
         let saved = store.load().await.unwrap();
         assert_eq!(saved.profile().state, ProfileState::Ready);
@@ -211,6 +313,9 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         let mut generation = run_args(&database, "setup-one", "500");
         generation[8] = "g2";
         let other = format!("{database}_other");
+        // A refusal must not touch the ledger either: not the Ready record, and no
+        // record for the refused request.
+        let ledger_before_refusals = snapshot(root.path());
         for args in [
             run_args(&database, "setup-one", "400"),
             generation,
@@ -233,11 +338,13 @@ async fn run_retry_inspect_diagnose_and_refusals() {
             );
         }
         assert_eq!(store.load().await.unwrap(), saved);
+        assert_eq!(snapshot(root.path()), ledger_before_refusals);
 
         // 4. inspect returns the original receipt; diagnose reports none/ready and
         //    writes nothing to the ledger.
         let inspected = cli.run(&["inspect", "--operation-id", "setup-one"]).await;
         assert!(inspected.status.success(), "{}", stderr(&inspected));
+        let inspected_bytes = inspected.stdout.clone();
         let inspected = envelope(&inspected);
         assert_eq!(inspected["success"], true);
         assert_eq!(inspected["data"]["operation_id"], "setup-one");
@@ -251,6 +358,33 @@ async fn run_retry_inspect_diagnose_and_refusals() {
         assert_eq!(report["data"]["reason"], "ready");
         assert_eq!(report["data"]["receipt"], receipt);
         assert_eq!(snapshot(root.path()), before);
+        // An unknown operation in an initialized ledger: as inspect, a failed
+        // envelope and exit 1, still carrying the advisory report.
+        let unknown = cli
+            .run(&["diagnose", "--operation-id", "setup-unknown"])
+            .await;
+        assert_eq!(unknown.status.code(), Some(1), "{unknown:?}");
+        let unknown = envelope(&unknown);
+        assert_eq!(unknown["success"], false);
+        assert_eq!(unknown["data"]["reason"], "operation_missing");
+        assert!(unknown["data"]["receipt"].is_null());
+        assert_eq!(snapshot(root.path()), before);
+
+        // The installer's setup-db check accepts these three real envelopes.
+        let checked = check_receipt(
+            directory.path(),
+            [&first.stdout, &inspected_bytes, &diagnosed.stdout],
+            "setup-one",
+            &database,
+        );
+        assert!(checked.status.success(), "{checked:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&checked.stdout),
+            format!(
+                "ready; request_sha256 {}\n",
+                receipt["request_sha256"].as_str().unwrap()
+            )
+        );
 
         // 5. A conventional policy against the late provider stops before verification
         //    and records no operation.
@@ -354,6 +488,18 @@ async fn failed_setup_prints_its_receipt_and_the_identical_retry_resumes() {
         assert_eq!(
             envelope(&diagnosed)["data"]["action"],
             "retry_identical_request"
+        );
+        // The installer's check refuses the failed run by its real status.
+        let checked = check_receipt(
+            directory.path(),
+            [&failed.stdout, &inspected.stdout, &diagnosed.stdout],
+            "setup-one",
+            &database,
+        );
+        assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&checked.stderr),
+            "managed_workspace check-receipt: setup run receipt is failed\n"
         );
 
         let resumed = cli.run(&run_args(&database, "setup-one", "500")).await;
